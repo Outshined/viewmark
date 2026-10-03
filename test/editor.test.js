@@ -1364,7 +1364,7 @@ test("mermaid render replaces source", async () => {
     const view = createEditor(mounted.root, doc, doc.length);
     const pres = mounted.findAll((node) => node.tagName === "PRE");
     assert.deepEqual(pres.map((node) => node.textContent), ["A-->B", "C-->D"]);
-    assert.deepEqual(options, [{ startOnLoad: false, securityLevel: "strict", flowchart: { htmlLabels: false } }]);
+    assert.deepEqual(options, [{ startOnLoad: false, securityLevel: "strict", flowchart: { htmlLabels: false }, suppressErrorRendering: true }]);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(renders, 2);
     const boxes = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"));

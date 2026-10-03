@@ -1179,7 +1179,7 @@ function mermaidApi() {
   const api = globalThis.mermaid;
   if (!api || typeof api.initialize !== "function" || typeof api.render !== "function") return null;
   if (!mermaidReady) {
-    api.initialize({ startOnLoad: false, securityLevel: "strict", flowchart: { htmlLabels: false } });
+    api.initialize({ startOnLoad: false, securityLevel: "strict", flowchart: { htmlLabels: false }, suppressErrorRendering: true });
     mermaidReady = true;
   }
   return api;
