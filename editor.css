@@ -195,3 +195,58 @@ a.md-link {
   outline: 2px solid #0b57d0;
   outline-offset: 2px;
 }
+
+.md-line.md-fence-collapsed,
+.md-fence-collapsed {
+  height: 0;
+  overflow: hidden;
+  margin: 0;
+  min-height: 0;
+}
+
+.token.comment,
+.token.prolog,
+.token.cdata {
+  color: #6a737d;
+}
+
+.token.punctuation {
+  color: #24292e;
+}
+
+.token.property,
+.token.tag,
+.token.boolean,
+.token.number,
+.token.constant,
+.token.symbol {
+  color: #005cc5;
+}
+
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin {
+  color: #032f62;
+}
+
+.token.operator,
+.token.entity,
+.token.url,
+.token.atrule,
+.token.attr-value,
+.token.keyword {
+  color: #d73a49;
+}
+
+.token.function,
+.token.class-name {
+  color: #6f42c1;
+}
+
+.token.regex,
+.token.important,
+.token.variable {
+  color: #e36209;
+}

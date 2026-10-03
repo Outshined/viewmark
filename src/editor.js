@@ -1,6 +1,7 @@
 // Source string is the document. The view is a projection: the cursor line keeps
 // the parsed runs and fills marker gaps so those characters stay editable text.
-// The markdown this editor supports is CommonMark, https://commonmark.org/
+// The markdown this editor supports is GitHub, GitLab, and Obsidian markdown.
+// A mermaid fence is a diagram.
 
 const SAMPLE = [
   "# Viewmark",
@@ -27,6 +28,10 @@ const SAMPLE = [
   "| 1 | 2 |",
   "",
   "![alt](sample.svg)",
+  "",
+  "```python",
+  "x = 1",
+  "```",
   "",
   "```mermaid",
   "A-->B",
@@ -137,7 +142,7 @@ function fenceOpen(text) {
   const lang = match[1];
   return {
     lang,
-    diagram: lang === "mermaid" || lang === "diagram",
+    diagram: lang === "mermaid",
   };
 }
 
@@ -165,11 +170,112 @@ function isTableBody(text) {
   return text.trim() !== "" && text.includes("|");
 }
 
-function splitCells(text) {
-  let body = text.trim();
-  if (body.startsWith("|")) body = body.slice(1);
-  if (body.endsWith("|")) body = body.slice(0, -1);
-  return body.split("|").map((cell) => cell.trim());
+function cellRanges(line) {
+  const text = line.text;
+  const leading = text.length - text.trimStart().length;
+  let start = leading;
+  let end = text.length - (text.length - text.trimEnd().length);
+  if (start < end && text[start] === "|") start += 1;
+  if (end > start && text[end - 1] === "|") end -= 1;
+  const cells = [];
+  let index = start;
+  while (index <= end) {
+    const pipe = text.indexOf("|", index);
+    const cellEnd = pipe < 0 || pipe > end ? end : pipe;
+    const raw = text.slice(index, cellEnd);
+    const lead = raw.length - raw.trimStart().length;
+    const core = raw.trim();
+    const at = line.start + index + lead;
+    cells.push({ text: core, start: at, end: at + core.length });
+    if (cellEnd >= end) break;
+    const next = cellEnd + 1;
+    if (next <= index) break;
+    index = next;
+  }
+  return cells;
+}
+
+const CODE_ALIAS = {
+  js: "javascript",
+  ts: "typescript",
+  py: "python",
+  sh: "bash",
+  shell: "bash",
+  yml: "yaml",
+  html: "markup",
+  xml: "markup",
+};
+
+function codeGrammar(lang) {
+  const prism = globalThis.Prism;
+  if (!prism || typeof prism.tokenize !== "function" || !prism.languages || !lang) return null;
+  const name = Object.prototype.hasOwnProperty.call(CODE_ALIAS, lang) ? CODE_ALIAS[lang] : lang;
+  const grammar = prism.languages[name];
+  if (!grammar || typeof grammar !== "object") return null;
+  return grammar;
+}
+
+function flattenTokens(tokens, parentType) {
+  const out = [];
+  const list = Array.isArray(tokens) ? tokens : [tokens];
+  for (const token of list) {
+    if (token == null) continue;
+    if (typeof token === "string") {
+      if (token) out.push({ type: parentType, text: token });
+      continue;
+    }
+    const content = token.content;
+    if (typeof content === "string") {
+      if (content) out.push({ type: token.type || parentType, text: content });
+    } else if (content != null) {
+      out.push(...flattenTokens(content, token.type || parentType));
+    }
+  }
+  return out;
+}
+
+function codeTokens(line, lang) {
+  if (line.start === line.end) return { runs: [], parts: [], images: [] };
+  const grammar = codeGrammar(lang);
+  const prism = globalThis.Prism;
+  if (!grammar || !prism) {
+    return parseSlot(line, { kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" });
+  }
+  let tokens;
+  try {
+    tokens = prism.tokenize(line.text, grammar);
+  } catch {
+    return parseSlot(line, { kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" });
+  }
+  const pieces = flattenTokens(tokens, null);
+  if (pieces.map((piece) => piece.text).join("") !== line.text) {
+    return parseSlot(line, { kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" });
+  }
+  const runs = [];
+  let at = 0;
+  for (const piece of pieces) {
+    if (!piece.text) continue;
+    const classes = piece.type ? ["md-codeblock", "token", piece.type] : ["md-codeblock"];
+    const start = line.start + at;
+    const prev = runs[runs.length - 1];
+    const same = prev && prev.end === start && prev.classes.length === classes.length
+      && prev.classes.every((name, index) => name === classes[index]);
+    if (same) {
+      prev.text += piece.text;
+      prev.end += piece.text.length;
+    } else {
+      runs.push({
+        type: "run",
+        text: piece.text,
+        start,
+        end: start + piece.text.length,
+        classes,
+      });
+    }
+    at += piece.text.length;
+  }
+  if (runs.length === 0) return parseSlot(line, { kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" });
+  return { runs, parts: runs, images: [] };
 }
 
 function matchLinkOrImage(text, index, image) {
@@ -371,14 +477,16 @@ function structures(doc) {
           end: lines[last].end,
           info: opened.lang,
           body: bodyLines.map((line) => line.text).join("\n"),
+          bodyStart: index + 1 < lines.length ? lines[index + 1].start : lines[index].end,
         };
         atoms.push(atom);
         slots.push({ kind: "atom", atom });
       } else {
         const mode = { kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" };
         for (let line = index; line <= last; line += 1) {
-          const parsed = parseSlot(lines[line], mode);
-          slots.push({ kind: "line", line: lines[line], mode, parsed });
+          const edge = line === index || (closed && line === last);
+          const parsed = edge ? parseSlot(lines[line], mode) : codeTokens(lines[line], opened.lang);
+          slots.push({ kind: "line", line: lines[line], mode, parsed, fenceEdge: edge });
         }
       }
       index = last + 1;
@@ -389,12 +497,12 @@ function structures(doc) {
       while (end < lines.length && isTableBody(lines[end].text)) end += 1;
       const last = end - 1;
       const rows = [];
-      for (let line = index + 2; line <= last; line += 1) rows.push(splitCells(lines[line].text));
+      for (let line = index + 2; line <= last; line += 1) rows.push(cellRanges(lines[line]));
       const atom = {
         type: "table",
         start: lines[index].start,
         end: lines[last].end,
-        header: splitCells(lines[index].text),
+        header: cellRanges(lines[index]),
         rows,
       };
       atoms.push(atom);
@@ -690,17 +798,52 @@ function renderedBlock(line, mode, parsed) {
   return block;
 }
 
+function linesBetween(doc, start, end) {
+  const found = [];
+  for (const line of lineSpans(doc)) {
+    if (line.start < start) continue;
+    if (line.start > end || line.end > end) break;
+    found.push(line);
+  }
+  return found;
+}
+
+// cursor === end stays closed so backspace still deletes the whole atom.
+function expandAtom(blocks, doc, atom, cursor) {
+  const lines = linesBetween(doc, atom.start, atom.end);
+  const code = atom.type === "diagram";
+  const mode = code
+    ? { kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" }
+    : { kind: "p", marker: 0, indent: 0, plain: "md-p" };
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const edge = code && (i === 0 || (i === lines.length - 1 && isFenceClose(line.text)));
+    const parsed = code
+      ? (edge ? parseSlot(line, mode) : codeTokens(line, atom.info))
+      : parseSlot(line, mode);
+    const onLine = cursor >= line.start && cursor <= line.end;
+    blocks.push(onLine ? rawBlock(line, mode, parsed) : renderedBlock(line, mode, parsed));
+  }
+}
+
 export function plan(doc, cursor) {
   const { slots } = structures(doc);
   const blocks = [];
   for (const slot of slots) {
     if (slot.kind === "atom") {
-      blocks.push(slot.atom);
+      const atom = slot.atom;
+      if ((atom.type === "table" || atom.type === "diagram") && cursor >= atom.start && cursor < atom.end) {
+        expandAtom(blocks, doc, atom, cursor);
+      } else {
+        blocks.push(atom);
+      }
       continue;
     }
     const { line, mode, parsed } = slot;
-    if (cursor >= line.start && cursor <= line.end) blocks.push(rawBlock(line, mode, parsed));
-    else blocks.push(renderedBlock(line, mode, parsed));
+    const onLine = cursor >= line.start && cursor <= line.end;
+    const block = onLine ? rawBlock(line, mode, parsed) : renderedBlock(line, mode, parsed);
+    if (slot.fenceEdge) block.collapsed = !onLine;
+    blocks.push(block);
   }
   const lines = blocks.filter((block) => block.type === "line");
   const atoms = [];
@@ -730,16 +873,47 @@ export function stepOver(doc, cursor, direction) {
   return atom ? atom.start : cursor;
 }
 
+function movementAtom(doc, cursor, landed, forward) {
+  const atoms = plan(doc, cursor).atoms;
+  if (forward) return atoms.find((item) => landed >= item.start && landed < item.end) || null;
+  return atoms.find((item) => landed > item.start && landed <= item.end) || null;
+}
+
 // A raw line renders no atoms, so only atoms still rendered for that cursor snap.
 export function snapMove(doc, cursor, landed, direction) {
   const forward = direction === "forward" || direction === "right";
-  const atoms = plan(doc, cursor).atoms;
-  if (forward) {
-    const atom = atoms.find((item) => landed >= item.start && landed < item.end);
-    return atom ? atom.end : landed;
+  const atom = movementAtom(doc, cursor, landed, forward);
+  if (!atom) return landed;
+  return forward ? atom.end : atom.start;
+}
+
+// A zero-height fence line is skipped by the caret; stop there so it can open.
+function skippedFence(doc, from, landed, forward) {
+  if (from === landed) return null;
+  const fromLine = lineIndexAt(doc, from);
+  const toLine = lineIndexAt(doc, landed);
+  if (fromLine === toLine) return null;
+  let nearest = null;
+  for (const block of plan(doc, from).blocks) {
+    if (block.type !== "line" || !block.collapsed) continue;
+    const index = lineIndexAt(doc, block.start);
+    const between = forward ? index > fromLine && index < toLine : index < fromLine && index > toLine;
+    if (!between) continue;
+    if (!nearest || (forward ? block.start < nearest.start : block.end > nearest.end)) nearest = block;
   }
-  const atom = atoms.find((item) => landed > item.start && landed <= item.end);
-  return atom ? atom.start : landed;
+  return nearest;
+}
+
+export function placeMove(doc, cursor, landed, direction, granularity) {
+  const forward = direction === "forward" || direction === "right";
+  const snapped = movementAtom(doc, cursor, landed, forward);
+  let next = snapMove(doc, cursor, landed, direction);
+  if (snapped && (snapped.type === "table" || (snapped.type === "diagram" && granularity === "character"))) {
+    next = forward ? snapped.start : snapped.end;
+  }
+  const fence = skippedFence(doc, cursor, landed, forward);
+  if (fence) next = forward ? fence.start : fence.end;
+  return next;
 }
 
 function renderedAtomAt(doc, cursor, hit) {
@@ -827,6 +1001,19 @@ export function cut(state) {
 function hasClass(el, name) {
   if (!el || el.nodeType !== 1 || !el.classList || typeof el.classList.contains !== "function") return false;
   return el.classList.contains(name);
+}
+
+function atomClickOffset(atom, target) {
+  if (hasClass(atom, "md-image")) return Number(atom.dataset.start);
+  if (hasClass(atom, "md-table")) {
+    const cell = target?.closest?.("td, th");
+    if (cell && cell.dataset && cell.dataset.start != null && cell.dataset.start !== "") {
+      return Number(cell.dataset.start);
+    }
+    return Number(atom.dataset.start);
+  }
+  if (hasClass(atom, "md-diagram")) return Number(atom.dataset.bodyStart);
+  return Number(atom.dataset.start);
 }
 
 function nearestTagged(node) {
@@ -933,6 +1120,14 @@ function renderImage(image) {
   return el;
 }
 
+function renderCell(tag, cell) {
+  const el = document.createElement(tag);
+  el.textContent = cell.text;
+  el.dataset.start = String(cell.start);
+  el.dataset.end = String(cell.end);
+  return el;
+}
+
 function renderTable(atom) {
   const el = document.createElement("div");
   el.className = "md-atom md-table";
@@ -942,25 +1137,60 @@ function renderTable(atom) {
   const table = document.createElement("table");
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const cell of atom.header) {
-    const th = document.createElement("th");
-    th.textContent = cell;
-    headRow.appendChild(th);
-  }
+  for (const cell of atom.header) headRow.appendChild(renderCell("th", cell));
   thead.appendChild(headRow);
   const tbody = document.createElement("tbody");
   for (const row of atom.rows) {
     const tr = document.createElement("tr");
-    for (const cell of row) {
-      const td = document.createElement("td");
-      td.textContent = cell;
-      tr.appendChild(td);
-    }
+    for (const cell of row) tr.appendChild(renderCell("td", cell));
     tbody.appendChild(tr);
   }
   table.append(thead, tbody);
   el.appendChild(table);
   return el;
+}
+
+let mermaidReady = false;
+let diagramSerial = 0;
+
+function mermaidApi() {
+  const api = globalThis.mermaid;
+  if (!api || typeof api.initialize !== "function" || typeof api.render !== "function") return null;
+  if (!mermaidReady) {
+    api.initialize({ startOnLoad: false, securityLevel: "strict", htmlLabels: false });
+    mermaidReady = true;
+  }
+  return api;
+}
+
+function diagramMessage(err) {
+  if (err && err.message) return String(err.message);
+  return String(err);
+}
+
+function showDiagramSource(el, source, err) {
+  if (el.isConnected !== true) return;
+  const pre = document.createElement("pre");
+  pre.textContent = source;
+  el.replaceChildren(pre, document.createTextNode(diagramMessage(err)));
+}
+
+function showDiagramSvg(el, source, svg) {
+  if (el.isConnected !== true) return;
+  let parsed;
+  try {
+    parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
+  } catch (err) {
+    showDiagramSource(el, source, err);
+    return;
+  }
+  const node = parsed && parsed.documentElement;
+  const name = node && String(node.localName || node.nodeName || "").toLowerCase();
+  if (!node || name !== "svg" || el.isConnected !== true) {
+    if (el.isConnected === true) showDiagramSource(el, source, new Error("diagram did not return svg"));
+    return;
+  }
+  el.replaceChildren(node);
 }
 
 function renderDiagram(atom) {
@@ -969,18 +1199,49 @@ function renderDiagram(atom) {
   el.contentEditable = "false";
   el.dataset.start = String(atom.start);
   el.dataset.end = String(atom.end);
-  const label = document.createElement("div");
-  label.className = "md-diagram-label";
-  label.textContent = atom.info;
+  el.dataset.bodyStart = String(atom.bodyStart);
   const pre = document.createElement("pre");
   pre.textContent = atom.body;
-  el.append(label, pre);
+  el.appendChild(pre);
+  const api = mermaidApi();
+  if (!api) return el;
+  const source = atom.body;
+  const id = `vm${diagramSerial}`;
+  diagramSerial += 1;
+  Promise.resolve()
+    .then(() => api.render(id, source))
+    .then((result) => {
+      if (el.isConnected !== true) return;
+      const svg = typeof result === "string" ? result : result && result.svg;
+      if (typeof svg !== "string") {
+        showDiagramSource(el, source, new Error("diagram did not return svg"));
+        return;
+      }
+      showDiagramSvg(el, source, svg);
+    })
+    .catch((err) => {
+      showDiagramSource(el, source, err);
+    });
   return el;
+}
+
+function renderCollapsed(block) {
+  const line = document.createElement("div");
+  line.className = "md-line md-fence-collapsed";
+  line.dataset.start = String(block.start);
+  line.dataset.end = String(block.end);
+  const br = document.createElement("br");
+  br.className = "md-fence-collapsed";
+  br.dataset.start = String(block.start);
+  br.dataset.end = String(block.end);
+  line.appendChild(br);
+  return line;
 }
 
 function renderBlock(block) {
   if (block.type === "table") return renderTable(block);
   if (block.type === "diagram") return renderDiagram(block);
+  if (block.collapsed) return renderCollapsed(block);
   const el = document.createElement("div");
   el.className = ["md-line", ...block.classes].join(" ");
   if (typeof block.indent === "number") el.style.setProperty("--indent", String(block.indent));
@@ -1225,7 +1486,7 @@ export function createEditor(root, doc, cursor = 0) {
     if (sel.rangeCount === 0) return;
     const range = sel.getRangeAt(0);
     const landed = mapOffset(range.startContainer, range.startOffset);
-    const next = snapMove(state.doc, beforeCursor, landed, direction);
+    const next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
     const after = lineIndexAt(state.doc, next);
     state = { ...state, cursor: next, anchor: next };
     if (before !== after) render();
@@ -1375,18 +1636,9 @@ export function createEditor(root, doc, cursor = 0) {
     const atom = target?.closest?.(".md-atom");
     if (atom && root.contains(atom)) {
       event.preventDefault();
-      clearAtomMark();
-      atom.classList.add("md-atom-selected");
-      state = {
-        ...state,
-        anchor: Number(atom.dataset.start),
-        cursor: Number(atom.dataset.end),
-      };
-      const sel = window.getSelection();
-      const range = document.createRange();
-      range.selectNode(atom);
-      sel.removeAllRanges();
-      sel.addRange(range);
+      const next = atomClickOffset(atom, target);
+      state = { ...state, anchor: next, cursor: next };
+      render();
       return;
     }
     const pos = document.caretPositionFromPoint(event.clientX, event.clientY);

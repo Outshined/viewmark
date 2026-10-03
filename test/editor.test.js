@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import vm from "node:vm";
 import { readFileSync } from "node:fs";
 import {
   plan,
   mapOffset,
   stepOver,
   snapMove,
+  placeMove,
   createState,
   createEditor,
   insert,
@@ -211,18 +213,44 @@ test("T-raw-image-backspace", () => {
 
 test("T-table-atom", () => {
   assert.equal(D.length, 34);
-  const p = plan(D, 0);
-  const tables = p.blocks.filter((b) => b.type === "table");
+  for (const cursor of [0, 4]) {
+    const open = plan(D, cursor);
+    assert.equal(open.blocks.filter((b) => b.type === "table").length, 0);
+    const pipes = open.lines.filter((line) => line.text.includes("|"));
+    assert.equal(pipes.length, 3);
+    assert.equal(pipes.map((line) => line.text).join("\n"), "| a | b |\n| --- | --- |\n| 1 | 2 |");
+    assert.ok(pipes.every((line) => line.classes.includes("md-p")));
+    for (const line of pipes) {
+      assert.equal(line.runs.map((run) => run.text).join(""), line.text);
+      assert.ok(line.text.includes("|"));
+    }
+  }
+  const closed = plan(D, 33);
+  const tables = closed.blocks.filter((b) => b.type === "table");
   assert.equal(tables.length, 1);
   assert.equal(tables[0].start, 0);
   assert.equal(tables[0].end, 33);
   assert.equal(tables[0].runs, undefined);
-  assert.equal(p.atoms.filter((a) => a.type === "table").length, 1);
-  assert.ok(p.lines.every((line) => line.start >= 33));
-  assert.ok(p.blocks.every((b) => b.type !== "line" || b.raw !== true || b.start >= 33));
-  const inside = plan(D, 4);
-  assert.equal(inside.blocks[0].type, "table");
-  assert.ok(inside.lines.every((line) => line.raw !== true || line.start >= 33));
+  assert.equal(closed.atoms.filter((a) => a.type === "table").length, 1);
+  assert.ok(closed.lines.every((line) => line.start >= 33));
+  assert.equal(tables[0].header[0].text, "a");
+  assert.equal(tables[0].header[0].start, 2);
+  assert.equal(tables[0].header[0].end, 3);
+  assert.equal(tables[0].header[1].text, "b");
+  assert.equal(tables[0].header[1].start, 6);
+  assert.equal(tables[0].header[1].end, 7);
+  assert.equal(tables[0].rows[0][0].text, "1");
+  assert.equal(tables[0].rows[0][0].start, 26);
+  assert.equal(tables[0].rows[0][0].end, 27);
+  assert.equal(tables[0].rows[0][1].text, "2");
+  assert.equal(tables[0].rows[0][1].start, 30);
+  assert.equal(tables[0].rows[0][1].end, 31);
+
+  let inside = createState(D, 4);
+  inside = backspace(inside);
+  assert.equal(inside.cursor, 3);
+  assert.equal(inside.doc.startsWith("| a"), true);
+  assert.notEqual(inside.doc, "\n");
 });
 
 test("T-image-atom", () => {
@@ -244,17 +272,23 @@ test("T-image-atom", () => {
 
 test("T-diagram-atom", () => {
   assert.equal(E.length, 21);
-  const p = plan(E, 0);
-  const diagrams = p.blocks.filter((b) => b.type === "diagram");
+  for (const cursor of [0, 12]) {
+    const open = plan(E, cursor);
+    assert.equal(open.blocks.filter((b) => b.type === "diagram").length, 0);
+    const code = open.lines.filter((line) => line.classes.includes("md-codeblock"));
+    assert.equal(code.length, 3);
+    assert.equal(code.map((line) => line.text).join("\n"), "```mermaid\nA-->B\n```");
+    assert.ok(code.every((line) => line.runs.map((run) => run.text).join("") === line.text));
+  }
+  const closed = plan(E, 20);
+  const diagrams = closed.blocks.filter((b) => b.type === "diagram");
   assert.equal(diagrams.length, 1);
   assert.equal(diagrams[0].start, 0);
   assert.equal(diagrams[0].end, 20);
   assert.equal(diagrams[0].runs, undefined);
-  assert.equal(p.atoms.filter((a) => a.type === "diagram").length, 1);
-  assert.ok(p.lines.every((line) => line.start >= 20));
-  const inside = plan(E, 12);
-  assert.equal(inside.blocks[0].type, "diagram");
-  assert.equal(inside.blocks[0].end, 20);
+  assert.equal(diagrams[0].bodyStart, 11);
+  assert.equal(closed.atoms.filter((a) => a.type === "diagram").length, 1);
+  assert.ok(closed.lines.every((line) => line.start >= 20));
 });
 
 test("T-step-over", () => {
@@ -273,7 +307,29 @@ test("T-step-over", () => {
 test("T-snap-rendered", () => {
   assert.equal(snapMove("![alt](sample.svg)", 0, 1, "forward"), 1);
   assert.equal(snapMove("Go\n![alt](sample.svg)\n", 0, 10, "forward"), 21);
-  assert.equal(snapMove("| a | b |\n| --- | --- |\n| 1 | 2 |\n", 0, 4, "forward"), 33);
+  assert.equal(snapMove(D, 0, 4, "forward"), 4);
+  assert.equal(snapMove(D, 33, 4, "forward"), 33);
+  assert.equal(snapMove(E, 0, 12, "forward"), 12);
+  assert.equal(snapMove(E, 20, 12, "forward"), 20);
+  assert.equal(placeMove(D, 33, 4, "forward", "line"), 0);
+  assert.equal(placeMove(D, 33, 4, "forward", "character"), 0);
+  assert.equal(placeMove(D, 33, 4, "backward", "character"), 33);
+  assert.equal(placeMove(D, 0, 4, "forward", "character"), 4);
+  assert.equal(placeMove(E, 20, 12, "forward", "line"), 20);
+  assert.equal(placeMove(E, 20, 12, "backward", "line"), 0);
+  assert.equal(placeMove(E, 20, 12, "forward", "character"), 0);
+  assert.equal(placeMove(E, 20, 12, "backward", "character"), 20);
+  assert.equal(placeMove(F, 0, 10, "forward", "character"), 21);
+
+  const fenced = "a\n```js\ncode\n```\n";
+  const openFence = fenced.indexOf("```js");
+  const codeAt = fenced.indexOf("code");
+  const closeFence = fenced.lastIndexOf("```");
+  assert.equal(placeMove(fenced, 1, codeAt, "forward", "line"), openFence);
+  assert.equal(placeMove(fenced, codeAt, 0, "backward", "line"), openFence + "```js".length);
+  assert.equal(placeMove(fenced, codeAt + "code".length, fenced.length, "forward", "character"), closeFence);
+  assert.equal(placeMove(fenced, codeAt + "code".length, closeFence, "forward", "character"), closeFence);
+  assert.equal(placeMove(fenced, openFence, codeAt, "forward", "character"), codeAt);
 });
 
 test("selection replace and ends", () => {
@@ -324,8 +380,10 @@ test("marks hide their markers", () => {
   assert.ok(under.lines[0].runs[0].classes.includes("md-em"));
 
   const spaced = plan("``` diagram\nA\n```\n", 30);
-  assert.equal(spaced.blocks[0].type, "diagram");
-  assert.equal(spaced.blocks[0].info, "diagram");
+  assert.equal(spaced.blocks.some((block) => block.type === "diagram"), false);
+  assert.ok(spaced.lines.some((line) => line.classes.includes("md-codeblock") && line.text === "A"));
+  assert.equal(spaced.lines[0].collapsed, true);
+  assert.equal(spaced.lines[0].text.startsWith("```"), true);
 
   const strong = plan("__a__\n", 6);
   assert.equal(strong.lines[0].runs[0].text, "a");
@@ -379,8 +437,17 @@ test("marks hide their markers", () => {
   assert.equal(codeLines[0].runs[0].text, "```js");
   assert.equal(codeLines[0].runs[0].start, 0);
   assert.equal(codeLines[0].runs[0].end, 5);
+  assert.equal(codeLines[0].collapsed, true);
+  assert.equal(codeLines[1].collapsed, undefined);
+  assert.equal(codeLines[1].runs.map((run) => run.text).join(""), "full");
   assert.equal(codeLines[1].runs[0].text, "full");
   assert.equal(codeLines[1].runs[0].text.length, codeLines[1].runs[0].end - codeLines[1].runs[0].start);
+  assert.equal(codeLines[2].collapsed, true);
+  const onFence = plan("```js\nfull\n```\n", 0);
+  assert.equal(onFence.lines[0].collapsed, false);
+  assert.equal(onFence.lines[0].raw, true);
+  assert.equal(onFence.lines[0].runs[0].text, "```js");
+  assert.equal(onFence.lines[2].collapsed, true);
 
   const h2 = plan("## Sub\n", 7);
   assert.equal(h2.lines[0].runs[0].text, "Sub");
@@ -674,6 +741,7 @@ test("sample focuses the wrapped line", () => {
   assert.match(doc, /\| --- \|/);
   assert.match(doc, /!\[[^\]]*\]\(sample\.svg\)/);
   assert.match(doc, /```mermaid[\s\S]*```/);
+  assert.ok(doc.indexOf("```python\nx = 1\n```") < doc.indexOf("```mermaid"));
   assert.match(doc, /^- two\n {2}- sub\n\t- tabbed\n/m);
   const first = doc.indexOf("\n1. first\n");
   const nested = doc.indexOf("\n   1. nested\n");
@@ -811,7 +879,9 @@ test("T-nested-lists", () => {
   assert.match(css, /\.md-line\.md-ol \{[^}]*margin-left: calc\(1\.3em \+ var\(--indent, 0\) \* 1ch\);/);
   assert.match(css, /\.md-raw\.md-li,\n\.md-raw\.md-ol \{[^}]*margin-left: 1\.3em;/);
   const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
-  assert.match(src, /The markdown this editor supports is CommonMark, https:\/\/commonmark\.org\//);
+  assert.match(src, /The markdown this editor supports is GitHub, GitLab, and Obsidian markdown\./);
+  assert.match(src, /A mermaid fence is a diagram\./);
+  assert.equal(src.includes("innerHTML"), false);
 });
 
 test("T-tab-key", () => {
@@ -980,5 +1050,357 @@ test("T-tab-key", () => {
     else globalThis.document = previousDocument;
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
+  }
+});
+
+test("prism keyword joins", () => {
+  const source = readFileSync(new URL("../vendor/prism.js", import.meta.url), "utf8");
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(source, context);
+  const Prism = context.Prism;
+  assert.ok(Prism);
+  assert.equal(Prism.languages.js, Prism.languages.javascript);
+  assert.equal(Prism.languages.ts, Prism.languages.typescript);
+  assert.equal(Prism.languages.py, Prism.languages.python);
+  assert.equal(Prism.languages.sh, Prism.languages.bash);
+  assert.equal(Prism.languages.shell, Prism.languages.bash);
+  assert.equal(Prism.languages.yml, Prism.languages.yaml);
+  assert.equal(Prism.languages.html, Prism.languages.markup);
+  assert.ok(Prism.languages.xml);
+  assert.ok(Prism.languages.mermaid);
+  const line = "def";
+  const tokens = Prism.tokenize(line, Prism.languages.python);
+  const textOf = (token) => {
+    if (typeof token === "string") return token;
+    if (Array.isArray(token)) return token.map(textOf).join("");
+    return textOf(token.content);
+  };
+  const hasKeyword = (token) => {
+    if (!token || typeof token === "string") return false;
+    if (Array.isArray(token)) return token.some(hasKeyword);
+    if (token.type === "keyword") return true;
+    return hasKeyword(token.content);
+  };
+  assert.equal(tokens.map(textOf).join(""), line);
+  assert.equal(hasKeyword(tokens), true);
+
+  const previous = globalThis.Prism;
+  globalThis.Prism = Prism;
+  try {
+    const bodyOf = (lang, text) => {
+      const doc = `\`\`\`${lang}\n${text}\n\`\`\`\n`;
+      const found = plan(doc, doc.length).lines.find((item) => item.text === text);
+      assert.ok(found);
+      assert.equal(found.runs.map((run) => run.text).join(""), text);
+      for (let i = 1; i < found.runs.length; i += 1) assert.equal(found.runs[i - 1].end, found.runs[i].start);
+      return found;
+    };
+    const keywordRun = (block, text) => block.runs.find((run) => run.text === text && run.classes.includes("keyword"));
+    assert.deepEqual(keywordRun(bodyOf("py", "def"), "def").classes, ["md-codeblock", "token", "keyword"]);
+    assert.ok(keywordRun(bodyOf("python", "def"), "def"));
+    assert.ok(keywordRun(bodyOf("js", "return"), "return"));
+    assert.ok(keywordRun(bodyOf("ts", "return"), "return"));
+    assert.ok(keywordRun(bodyOf("sh", "fi"), "fi"));
+    assert.ok(keywordRun(bodyOf("shell", "fi"), "fi"));
+    const yaml = bodyOf("yml", "a: true");
+    assert.ok(yaml.runs.some((run) => run.text === "true" && run.classes.includes("boolean") && run.classes.includes("token")));
+    const html = bodyOf("html", "<div>");
+    assert.ok(html.runs.some((run) => run.classes.includes("tag")));
+    const xml = bodyOf("xml", "<div>");
+    assert.equal(xml.runs.map((run) => run.text).join(""), "<div>");
+    const plain = bodyOf("diagram", "A");
+    assert.equal(plain.runs.length, 1);
+    assert.deepEqual(plain.runs[0].classes, ["md-codeblock"]);
+    const fences = plan("```js\nfull\n```\n", 100);
+    assert.equal(fences.lines[0].runs[0].text, "```js");
+    assert.deepEqual(fences.lines[0].runs[0].classes, ["md-codeblock"]);
+  } finally {
+    if (previous === undefined) delete globalThis.Prism;
+    else globalThis.Prism = previous;
+  }
+
+  const mermaid = readFileSync(new URL("../vendor/mermaid.min.js", import.meta.url), "utf8");
+  assert.match(mermaid, /globalThis\.mermaid\s*=/);
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const prismAt = html.indexOf('<script src="vendor/prism.js"></script>');
+  const mermaidAt = html.indexOf('<script src="vendor/mermaid.min.js"></script>');
+  const moduleAt = html.indexOf('<script type="module" src="src/editor.js"></script>');
+  assert.ok(prismAt >= 0 && prismAt < mermaidAt && mermaidAt < moduleAt);
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(css, /\.md-fence-collapsed\s*\{[^}]*height:\s*0;[^}]*overflow:\s*hidden;[^}]*margin:\s*0;[^}]*min-height:\s*0;/);
+  assert.match(css, /\.token\.keyword\s*\{[^}]*color:\s*#d73a49;/);
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  assert.match(readme, /The markdown is GitHub, GitLab, and Obsidian markdown\. A mermaid fence is a diagram\./);
+  assert.match(readme, /HTML is not allowed in the document\./);
+});
+
+function mountEditor() {
+  const listeners = {};
+  let root = null;
+  function makeElement(tag) {
+    const el = {
+      nodeType: 1,
+      tagName: String(tag).toUpperCase(),
+      nodeName: String(tag).toUpperCase(),
+      localName: String(tag).toLowerCase(),
+      className: "",
+      dataset: {},
+      childNodes: [],
+      parentElement: null,
+      styleProps: {},
+    };
+    el.style = {
+      setProperty(name, value) {
+        el.styleProps[name] = value;
+      },
+    };
+    el.classList = {
+      contains(name) {
+        return el.className.split(/\s+/).filter(Boolean).includes(name);
+      },
+      add(name) {
+        if (!el.classList.contains(name)) el.className = `${el.className} ${name}`.trim();
+      },
+      remove(name) {
+        el.className = el.className.split(/\s+/).filter((item) => item && item !== name).join(" ");
+      },
+    };
+    el.appendChild = (child) => {
+      child.parentElement = el;
+      el.childNodes.push(child);
+      return child;
+    };
+    el.append = (...children) => {
+      for (const child of children) el.appendChild(child);
+    };
+    el.replaceChildren = (...children) => {
+      for (const child of el.childNodes) child.parentElement = null;
+      el.childNodes = [];
+      for (const child of children) el.appendChild(child);
+    };
+    Object.defineProperty(el, "textContent", {
+      get() {
+        return el.childNodes.map((child) => (child.textContent == null ? "" : child.textContent)).join("");
+      },
+      set(value) {
+        const text = value == null ? "" : String(value);
+        el.replaceChildren({ nodeType: 3, textContent: text, length: text.length, parentElement: el, childNodes: [] });
+      },
+    });
+    Object.defineProperty(el, "isConnected", {
+      get() {
+        let node = el;
+        while (node) {
+          if (node === root) return true;
+          node = node.parentElement;
+        }
+        return false;
+      },
+    });
+    el.closest = (selector) => {
+      const parts = selector.split(",").map((part) => part.trim());
+      let node = el;
+      while (node) {
+        for (const part of parts) {
+          if (part.startsWith(".") && node.classList && node.classList.contains(part.slice(1))) return node;
+          if (node.tagName === part.toUpperCase()) return node;
+        }
+        node = node.parentElement;
+      }
+      return null;
+    };
+    return el;
+  }
+  root = makeElement("div");
+  root.setAttribute = () => {};
+  root.addEventListener = (type, fn) => {
+    listeners[type] = fn;
+  };
+  root.contains = (node) => {
+    let current = node;
+    while (current) {
+      if (current === root) return true;
+      current = current.parentElement;
+    }
+    return false;
+  };
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  globalThis.document = {
+    createElement: (tag) => makeElement(tag),
+    createTextNode: (text) => ({ nodeType: 3, textContent: text, length: String(text).length, parentElement: null, childNodes: [] }),
+    createTreeWalker: () => ({ nextNode: () => null }),
+    createRange: () => ({
+      setStart() {},
+      collapse() {},
+      selectNode() {},
+      setStartAfter() {},
+      setStartBefore() {},
+    }),
+  };
+  globalThis.window = { getSelection: () => null };
+  const findAll = (predicate) => {
+    const found = [];
+    const walk = (node) => {
+      if (predicate(node)) found.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    for (const child of root.childNodes) walk(child);
+    return found;
+  };
+  return {
+    root,
+    listeners,
+    findAll,
+    restore() {
+      if (previousDocument === undefined) delete globalThis.document;
+      else globalThis.document = previousDocument;
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+    },
+  };
+}
+
+test("fence clicks open source", () => {
+  const mounted = mountEditor();
+  try {
+    const table = createEditor(mounted.root, D, 33);
+    const header = mounted.findAll((node) => node.tagName === "TH" && node.textContent === "a")[0];
+    const body = mounted.findAll((node) => node.tagName === "TD" && node.textContent === "1")[0];
+    assert.equal(header.dataset.start, "2");
+    assert.equal(header.dataset.end, "3");
+    assert.equal(body.dataset.start, "26");
+    assert.equal(body.dataset.end, "27");
+    mounted.listeners.click({ target: body, clientX: 0, clientY: 0, preventDefault() {} });
+    assert.equal(table.getState().cursor, 26);
+    assert.equal(table.getState().anchor, 26);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-table")).length, 0);
+    assert.ok(mounted.findAll((node) => node.className && node.className.includes("|")).length > 0 || mounted.findAll((node) => (node.textContent || "").includes("|")).length > 0);
+    table.destroy();
+
+    const closed = createEditor(mounted.root, D, 33);
+    const atom = mounted.findAll((node) => node.classList && node.classList.contains("md-table"))[0];
+    mounted.listeners.click({ target: atom, clientX: 0, clientY: 0, preventDefault() {} });
+    assert.equal(closed.getState().cursor, 0);
+    assert.equal(closed.getState().anchor, 0);
+    closed.destroy();
+
+    const imageView = createEditor(mounted.root, F, 0);
+    const image = mounted.findAll((node) => node.classList && node.classList.contains("md-image"))[0];
+    mounted.listeners.click({ target: image, clientX: 1, clientY: 1, preventDefault() {} });
+    assert.equal(imageView.getState().cursor, 3);
+    assert.equal(imageView.getState().anchor, 3);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-image")).length, 0);
+    assert.ok(mounted.findAll((node) => (node.textContent || "").includes("![alt]")).length > 0);
+    imageView.destroy();
+
+    const diagram = createEditor(mounted.root, E, 20);
+    const box = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
+    const pre = mounted.findAll((node) => node.tagName === "PRE")[0];
+    assert.equal(box.dataset.bodyStart, "11");
+    assert.equal(pre.textContent, "A-->B");
+    mounted.listeners.click({ target: box, clientX: 0, clientY: 0, preventDefault() {} });
+    assert.equal(diagram.getState().cursor, 11);
+    assert.equal(diagram.getState().anchor, 11);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-diagram")).length, 0);
+    assert.ok(mounted.findAll((node) => node.className && node.className.includes("md-codeblock")).length >= 3);
+    diagram.destroy();
+
+    createEditor(mounted.root, "```js\nfull\n```\n", 20).destroy();
+    const brs = mounted.findAll((node) => node.tagName === "BR" && node.classList && node.classList.contains("md-fence-collapsed"));
+    assert.equal(brs.length, 2);
+    assert.equal(brs[0].dataset.start, "0");
+    assert.equal(brs[0].dataset.end, "5");
+    assert.equal(brs[1].dataset.start, "11");
+    assert.equal(brs[1].dataset.end, "14");
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("mermaid render replaces source", async () => {
+  const previousMermaid = globalThis.mermaid;
+  const previousParser = globalThis.DOMParser;
+  const options = [];
+  let renders = 0;
+  let parsed = 0;
+  const mounted = mountEditor();
+  globalThis.mermaid = {
+    initialize(value) {
+      options.push(value);
+    },
+    render(id, text) {
+      renders += 1;
+      return Promise.resolve({ svg: `<svg id="${id}">${text}</svg>` });
+    },
+  };
+  globalThis.DOMParser = class {
+    parseFromString(value, type) {
+      parsed += 1;
+      assert.equal(type, "image/svg+xml");
+      return {
+        documentElement: {
+          nodeType: 1,
+          tagName: "SVG",
+          nodeName: "svg",
+          localName: "svg",
+          className: "",
+          dataset: { value },
+          childNodes: [],
+          parentElement: null,
+          classList: { contains() { return false; }, add() {}, remove() {} },
+          textContent: "",
+        },
+      };
+    }
+  };
+  try {
+    const doc = "```mermaid\nA-->B\n```\n```mermaid\nC-->D\n```\n";
+    const view = createEditor(mounted.root, doc, doc.length);
+    const pres = mounted.findAll((node) => node.tagName === "PRE");
+    assert.deepEqual(pres.map((node) => node.textContent), ["A-->B", "C-->D"]);
+    assert.deepEqual(options, [{ startOnLoad: false, securityLevel: "strict", htmlLabels: false }]);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(renders, 2);
+    const boxes = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"));
+    assert.equal(parsed, 2);
+    assert.equal(boxes.length, 2);
+    assert.ok(boxes.every((box) => box.childNodes.some((child) => child.localName === "svg")));
+    assert.ok(boxes[0].childNodes.some((child) => child.dataset.value.includes("A-->B")));
+    view.destroy();
+
+    let release;
+    globalThis.mermaid.render = () => new Promise((resolve) => {
+      release = resolve;
+    });
+    const pending = createEditor(mounted.root, E, 20);
+    await Promise.resolve();
+    assert.equal(typeof release, "function");
+    const old = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
+    assert.equal(old.childNodes.some((child) => child.tagName === "PRE"), true);
+    mounted.listeners.click({ target: old, clientX: 0, clientY: 0, preventDefault() {} });
+    assert.equal(old.isConnected, false);
+    const parsedBefore = parsed;
+    release({ svg: "<svg></svg>" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(parsed, parsedBefore);
+    assert.equal(old.childNodes.some((child) => child.localName === "svg"), false);
+    pending.destroy();
+
+    globalThis.mermaid.render = () => Promise.reject(new Error("bad diagram"));
+    const failed = createEditor(mounted.root, E, 20);
+    const failedBox = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
+    assert.equal(failedBox.textContent, "A-->B");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(failedBox.textContent.includes("A-->B"));
+    assert.ok(failedBox.textContent.includes("bad diagram"));
+    failed.destroy();
+  } finally {
+    mounted.restore();
+    if (previousMermaid === undefined) delete globalThis.mermaid;
+    else globalThis.mermaid = previousMermaid;
+    if (previousParser === undefined) delete globalThis.DOMParser;
+    else globalThis.DOMParser = previousParser;
   }
 });
