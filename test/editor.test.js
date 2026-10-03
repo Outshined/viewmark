@@ -348,6 +348,8 @@ test("marks hide their markers", () => {
   const ordered = plan("12. num\n", 8);
   assert.equal(ordered.lines[0].runs[0].text, "num");
   assert.equal(ordered.lines[0].runs[0].start, 4);
+  assert.equal(ordered.lines[0].runs[0].end, 7);
+  assert.ok(ordered.lines[0].runs[0].classes.includes("md-ol"));
 
   for (const marker of ["---", "***", "___"]) {
     const hr = plan(`${marker}\n`, marker.length + 1);
@@ -373,6 +375,39 @@ test("marks hide their markers", () => {
   assert.ok(h2.lines[0].runs[0].classes.includes("md-h2"));
 });
 
+test("T-ordered-list", () => {
+  const p = plan("12. num\nnext\n", 8);
+  const line0 = p.lines[0];
+  assert.equal(line0.raw, false);
+  assert.equal(line0.runs.length, 1);
+  assert.equal(line0.runs[0].text, "num");
+  assert.equal(line0.runs[0].start, 4);
+  assert.equal(line0.runs[0].end, 7);
+  assert.ok(line0.runs[0].classes.includes("md-ol"));
+  assert.ok(line0.classes.includes("md-ol"));
+  assert.equal(line0.marker, "12. ");
+  assert.equal(p.lines[1].raw, true);
+  assert.equal(p.lines[1].text, "next");
+
+  const paren = plan("1) also\n", 8);
+  const run = paren.lines[0].runs[0];
+  assert.equal(paren.lines[0].runs.length, 1);
+  assert.equal(run.text, "also");
+  assert.equal(run.start, 3);
+  assert.equal(run.end, 7);
+  assert.ok(run.classes.includes("md-ol"));
+  assert.equal(paren.lines[0].marker, "1) ");
+
+  const raw = plan("12. num\n", 0);
+  assert.equal(raw.lines[0].raw, true);
+  assert.equal(raw.lines[0].runs.length, 1);
+  assert.equal(raw.lines[0].runs[0].text, "12. num");
+  assert.equal(raw.lines[0].runs[0].start, 0);
+  assert.equal(raw.lines[0].runs[0].end, 7);
+  assert.equal(raw.lines[0].classes.includes("md-ol"), false);
+  assert.equal(raw.lines[0].runs[0].classes.includes("md-ol"), false);
+});
+
 test("cursor line stays one text node around an image", () => {
   const p = plan(C, 0);
   assert.equal(p.lines[0].raw, true);
@@ -387,6 +422,8 @@ test("sample focuses the wrapped line", () => {
   assert.match(doc, /\*\*[^*]+\*\*/);
   assert.match(doc, /wrapped/);
   assert.match(doc, /^- /m);
+  assert.match(doc, /^1\. \S/m);
+  assert.match(doc, /^2\. \S/m);
   assert.match(doc, /\[[^\]]+\]\([^)]+\)/);
   assert.match(doc, /\| --- \|/);
   assert.match(doc, /!\[[^\]]*\]\(sample\.svg\)/);

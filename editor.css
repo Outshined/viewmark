@@ -11,7 +11,7 @@ body {
 body {
   background: #f6f5f2;
   color: #1d1c1a;
-  font: 17px/1.55 "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+  font: 17px/1.55 "URW Gothic", sans-serif;
 }
 
 .editor {
@@ -99,6 +99,16 @@ a.md-link {
   display: list-item;
   list-style: disc;
   margin-left: 1.3em;
+}
+
+.md-line.md-ol {
+  display: list-item;
+  list-style: none;
+  margin-left: 1.3em;
+}
+
+.md-line.md-ol::marker {
+  content: attr(data-marker);
 }
 
 .md-line.md-hr {

@@ -11,6 +11,9 @@ const SAMPLE = [
   "- one",
   "- two",
   "",
+  "1. first",
+  "2. second",
+  "",
   "Read the [notes](https://example.com) before editing.",
   "",
   "---",
@@ -84,8 +87,10 @@ function classify(text) {
     return { kind: "h", level, marker: level + 1, plain: `md-h${level}` };
   }
   if (text.startsWith("> ")) return { kind: "quote", marker: 2, plain: "md-quote" };
-  const item = /^((?:[-*+]|\d+\.) )(.*)$/.exec(text);
-  if (item) return { kind: "li", marker: item[1].length, plain: "md-li" };
+  const bullet = /^([-*+] )(.*)$/.exec(text);
+  if (bullet) return { kind: "li", marker: bullet[1].length, plain: "md-li" };
+  const ordered = /^(\d+[.)] )(.*)$/.exec(text);
+  if (ordered) return { kind: "ol", marker: ordered[1].length, plain: "md-ol" };
   return { kind: "p", marker: 0, plain: "md-p" };
 }
 
@@ -421,7 +426,7 @@ function renderedBlock(line, mode, parsed) {
       parts: [],
     };
   }
-  return {
+  const block = {
     type: "line",
     raw: false,
     empty: false,
@@ -432,6 +437,8 @@ function renderedBlock(line, mode, parsed) {
     runs: parsed.runs,
     parts: parsed.parts,
   };
+  if (mode.kind === "ol") block.marker = line.text.slice(0, mode.marker);
+  return block;
 }
 
 export function plan(doc, cursor) {
@@ -727,6 +734,7 @@ function renderBlock(block) {
   if (block.type === "diagram") return renderDiagram(block);
   const el = document.createElement("div");
   el.className = ["md-line", ...block.classes].join(" ");
+  if (block.marker) el.dataset.marker = block.marker;
   if (block.raw || block.empty || block.hr) {
     el.dataset.start = String(block.start);
     el.dataset.end = String(block.end);
