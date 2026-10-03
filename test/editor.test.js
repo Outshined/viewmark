@@ -51,24 +51,14 @@ test("T-raw-line", () => {
   assert.equal(line0.start, 0);
   assert.equal(line0.end, 9);
   assert.equal(line0.text.length, line0.end - line0.start);
-  assert.equal(line0.runs.length, 3);
-  assert.equal(line0.runs[0].text, "**");
+  assert.equal(line0.runs.length, 1);
+  assert.equal(line0.runs[0].text, "**hello**");
   assert.equal(line0.runs[0].start, 0);
-  assert.equal(line0.runs[0].end, 2);
-  assert.deepEqual(line0.runs[0].classes, ["md-syntax"]);
+  assert.equal(line0.runs[0].end, 9);
+  assert.deepEqual(line0.runs[0].classes, ["md-strong"]);
+  assert.equal(line0.runs[0].classes.includes("md-syntax"), false);
   assert.equal(line0.runs[0].text.length, line0.runs[0].end - line0.runs[0].start);
-  assert.equal(line0.runs[1].text, "hello");
-  assert.equal(line0.runs[1].start, 2);
-  assert.equal(line0.runs[1].end, 7);
-  assert.ok(line0.runs[1].classes.includes("md-strong"));
-  assert.equal(line0.runs[1].classes.includes("md-syntax"), false);
-  assert.equal(line0.runs[2].text, "**");
-  assert.equal(line0.runs[2].start, 7);
-  assert.equal(line0.runs[2].end, 9);
-  assert.deepEqual(line0.runs[2].classes, ["md-syntax"]);
   assert.equal(line0.runs.map((run) => run.text).join(""), line0.text);
-  assert.equal(line0.runs[0].end, line0.runs[1].start);
-  assert.equal(line0.runs[1].end, line0.runs[2].start);
   assert.ok(line0.classes.includes("md-raw"));
   assert.ok(line0.classes.includes("md-p"));
   assert.equal(line0.marker, undefined);
@@ -421,18 +411,13 @@ test("T-ordered-list", () => {
 
   const raw = plan("12. num\n", 0);
   assert.equal(raw.lines[0].raw, true);
-  assert.equal(raw.lines[0].runs.length, 2);
-  assert.equal(raw.lines[0].runs[0].text, "12. ");
+  assert.equal(raw.lines[0].runs.length, 1);
+  assert.equal(raw.lines[0].runs[0].text, "12. num");
   assert.equal(raw.lines[0].runs[0].start, 0);
-  assert.equal(raw.lines[0].runs[0].end, 4);
-  assert.deepEqual(raw.lines[0].runs[0].classes, ["md-syntax"]);
-  assert.equal(raw.lines[0].runs[0].text.length, 4);
-  assert.equal(raw.lines[0].runs[1].text, "num");
-  assert.equal(raw.lines[0].runs[1].start, 4);
-  assert.equal(raw.lines[0].runs[1].end, 7);
-  assert.ok(raw.lines[0].runs[1].classes.includes("md-ol"));
-  assert.equal(raw.lines[0].runs[1].classes.includes("md-syntax"), false);
-  assert.equal(raw.lines[0].runs[0].end, raw.lines[0].runs[1].start);
+  assert.equal(raw.lines[0].runs[0].end, 7);
+  assert.ok(raw.lines[0].runs[0].classes.includes("md-ol"));
+  assert.equal(raw.lines[0].runs[0].classes.includes("md-syntax"), false);
+  assert.equal(raw.lines[0].runs[0].text.length, raw.lines[0].runs[0].end - raw.lines[0].runs[0].start);
   assert.equal(raw.lines[0].runs.map((run) => run.text).join(""), "12. num");
   assert.ok(raw.lines[0].classes.includes("md-raw"));
   assert.ok(raw.lines[0].classes.includes("md-ol"));
@@ -442,24 +427,22 @@ test("T-ordered-list", () => {
 test("T-active-format", () => {
   const bold = plan("A **bold** x\n", 0).lines[0];
   const expected = [
-    ["A ", 0, 2, "md-p"],
-    ["**", 2, 4, "md-syntax"],
-    ["bold", 4, 8, "md-strong"],
-    ["**", 8, 10, "md-syntax"],
-    [" x", 10, 12, "md-p"],
+    ["A ", 0, 2, ["md-p"]],
+    ["**bold**", 2, 10, ["md-strong"]],
+    [" x", 10, 12, ["md-p"]],
   ];
   assert.equal(bold.raw, true);
   assert.equal(bold.runs.length, expected.length);
   let text = "";
   for (let i = 0; i < expected.length; i += 1) {
     const run = bold.runs[i];
-    const [wantText, start, end, cls] = expected[i];
+    const [wantText, start, end, classes] = expected[i];
     assert.equal(run.text, wantText);
     assert.equal(run.start, start);
     assert.equal(run.end, end);
     assert.equal(run.text.length, run.end - run.start);
-    assert.ok(run.classes.includes(cls));
-    if (cls === "md-syntax") assert.deepEqual(run.classes, ["md-syntax"]);
+    assert.deepEqual(run.classes, classes);
+    assert.equal(run.classes.includes("md-syntax"), false);
     if (i > 0) assert.equal(bold.runs[i - 1].end, run.start);
     text += run.text;
   }
@@ -469,42 +452,188 @@ test("T-active-format", () => {
   assert.ok(bold.classes.includes("md-p"));
 
   const heading = plan("# **T**\n", 0).lines[0];
-  assert.equal(heading.runs.length, 4);
+  assert.equal(heading.runs.length, 2);
   assert.equal(heading.runs[0].text, "# ");
   assert.equal(heading.runs[0].start, 0);
   assert.equal(heading.runs[0].end, 2);
-  assert.deepEqual(heading.runs[0].classes, ["md-syntax"]);
-  assert.equal(heading.runs[1].text, "**");
+  assert.ok(heading.runs[0].classes.includes("md-h1"));
+  assert.equal(heading.runs[0].classes.includes("md-syntax"), false);
+  assert.equal(heading.runs[1].text, "**T**");
   assert.equal(heading.runs[1].start, 2);
-  assert.equal(heading.runs[1].end, 4);
-  assert.deepEqual(heading.runs[1].classes, ["md-syntax"]);
-  assert.equal(heading.runs[2].text, "T");
-  assert.equal(heading.runs[2].start, 4);
-  assert.equal(heading.runs[2].end, 5);
-  assert.ok(heading.runs[2].classes.includes("md-strong"));
-  assert.equal(heading.runs[2].classes.includes("md-syntax"), false);
-  assert.equal(heading.runs[3].text, "**");
-  assert.equal(heading.runs[3].start, 5);
-  assert.equal(heading.runs[3].end, 7);
-  assert.deepEqual(heading.runs[3].classes, ["md-syntax"]);
+  assert.equal(heading.runs[1].end, 7);
+  assert.deepEqual(heading.runs[1].classes, ["md-strong"]);
+  assert.equal(heading.runs[1].classes.includes("md-syntax"), false);
   assert.equal(heading.runs.map((run) => run.text).join(""), "# **T**");
-  for (let i = 1; i < heading.runs.length; i += 1) {
-    assert.equal(heading.runs[i - 1].end, heading.runs[i].start);
-  }
+  assert.equal(heading.runs[0].end, heading.runs[1].start);
   assert.ok(heading.classes.includes("md-raw"));
   assert.ok(heading.classes.includes("md-h1"));
   assert.equal(heading.marker, undefined);
 
   const ordered = plan("12. num\n", 0).lines[0];
-  assert.equal(ordered.runs[0].text, "12. ");
+  assert.equal(ordered.runs.length, 1);
+  assert.equal(ordered.runs[0].text, "12. num");
   assert.equal(ordered.runs[0].start, 0);
-  assert.equal(ordered.runs[0].end, 4);
-  assert.deepEqual(ordered.runs[0].classes, ["md-syntax"]);
-  assert.equal(ordered.runs[1].text, "num");
-  assert.equal(ordered.runs[1].start, 4);
-  assert.equal(ordered.runs[1].end, 7);
-  assert.equal(ordered.runs[0].end, ordered.runs[1].start);
+  assert.equal(ordered.runs[0].end, 7);
+  assert.ok(ordered.runs[0].classes.includes("md-ol"));
+  assert.equal(ordered.runs[0].classes.includes("md-syntax"), false);
   assert.equal(ordered.marker, undefined);
+
+  const em = plan("*em*\n", 2).lines[0];
+  assert.equal(em.raw, true);
+  assert.equal(em.runs.length, 1);
+  assert.equal(em.runs[0].text, "*em*");
+  assert.equal(em.runs[0].start, 0);
+  assert.equal(em.runs[0].end, 4);
+  assert.ok(em.runs[0].classes.includes("md-em"));
+  assert.equal(em.runs[0].classes.includes("md-syntax"), false);
+
+  const under = plan("_em_\n", 2).lines[0];
+  assert.equal(under.runs.length, 1);
+  assert.equal(under.runs[0].text, "_em_");
+  assert.deepEqual(under.runs[0].classes, ["md-em"]);
+
+  const us = plan("__ab__\n", 0).lines[0];
+  assert.equal(us.runs.length, 1);
+  assert.equal(us.runs[0].text, "__ab__");
+  assert.deepEqual(us.runs[0].classes, ["md-strong"]);
+
+  const both = plan("***both***\n", 0).lines[0];
+  assert.equal(both.runs.length, 1);
+  assert.equal(both.runs[0].text, "***both***");
+  assert.deepEqual(both.runs[0].classes, ["md-strong", "md-em"]);
+  assert.equal(both.runs[0].classes.includes("md-syntax"), false);
+
+  const starUnder = plan("**_z_**\n", 0).lines[0];
+  assert.equal(starUnder.runs.length, 1);
+  assert.equal(starUnder.runs[0].text, "**_z_**");
+  assert.deepEqual(starUnder.runs[0].classes, ["md-strong", "md-em"]);
+
+  const underStar = plan("_**z**_\n", 0).lines[0];
+  assert.equal(underStar.runs.length, 1);
+  assert.equal(underStar.runs[0].text, "_**z**_");
+  assert.deepEqual(underStar.runs[0].classes, ["md-em", "md-strong"]);
+
+  const code = plan("`ab`\n", 2).lines[0];
+  assert.equal(code.raw, true);
+  assert.equal(code.runs.length, 1);
+  assert.equal(code.runs[0].text, "`ab`");
+  assert.equal(code.runs[0].start, 0);
+  assert.equal(code.runs[0].end, 4);
+  assert.ok(code.runs[0].classes.includes("md-code"));
+  assert.equal(code.runs[0].classes.includes("md-syntax"), false);
+
+  const codeMid = plan("x `ab` y\n", 0).lines[0];
+  const codeRun = codeMid.runs.find((run) => run.classes.includes("md-code"));
+  assert.equal(codeRun.text, "`ab`");
+  assert.equal(codeRun.start, 2);
+  assert.equal(codeRun.end, 6);
+  assert.deepEqual(codeRun.classes, ["md-code"]);
+  assert.equal(codeMid.runs.map((run) => run.text).join(""), "x `ab` y");
+
+  const link = plan("[bc](d)\n", 3).lines[0];
+  assert.equal(link.raw, true);
+  assert.equal(link.runs.length, 1);
+  assert.equal(link.runs[0].text, "[bc](d)");
+  assert.equal(link.runs[0].start, 0);
+  assert.equal(link.runs[0].end, 7);
+  assert.ok(link.runs[0].classes.includes("md-link"));
+  assert.equal(link.runs[0].classes.includes("md-syntax"), false);
+  assert.equal(link.runs[0].href, "d");
+
+  const linked = plan("a [bc](d) e\n", 0).lines[0];
+  const linkRun = linked.runs.find((run) => run.classes.includes("md-link"));
+  assert.equal(linkRun.text, "[bc](d)");
+  assert.equal(linkRun.start, 2);
+  assert.equal(linkRun.end, 9);
+  assert.equal(linkRun.href, "d");
+  assert.deepEqual(linkRun.classes, ["md-link"]);
+  assert.equal(linked.runs.map((run) => run.text).join(""), "a [bc](d) e");
+
+  const strongLink = plan("[**b**](u)\n", 0).lines[0];
+  assert.equal(strongLink.runs.length, 1);
+  assert.equal(strongLink.runs[0].text, "[**b**](u)");
+  assert.deepEqual(strongLink.runs[0].classes, ["md-strong", "md-link"]);
+  assert.equal(strongLink.runs[0].href, "u");
+
+  const neighbors = plan("**a** *b*\n", 0).lines[0];
+  assert.equal(neighbors.runs.length, 3);
+  assert.equal(neighbors.runs[0].text, "**a**");
+  assert.deepEqual(neighbors.runs[0].classes, ["md-strong"]);
+  assert.equal(neighbors.runs[1].text, " ");
+  assert.deepEqual(neighbors.runs[1].classes, ["md-p"]);
+  assert.equal(neighbors.runs[2].text, "*b*");
+  assert.deepEqual(neighbors.runs[2].classes, ["md-em"]);
+
+  const sideBySide = plan("*a***b**\n", 0).lines[0];
+  assert.equal(sideBySide.runs[0].text, "*a*");
+  assert.deepEqual(sideBySide.runs[0].classes, ["md-em"]);
+  assert.equal(sideBySide.runs[1].text, "**b**");
+  assert.deepEqual(sideBySide.runs[1].classes, ["md-strong"]);
+
+  const pair = plan("[a](u)[b](v)\n", 0).lines[0];
+  assert.equal(pair.runs.length, 2);
+  assert.equal(pair.runs[0].text, "[a](u)");
+  assert.equal(pair.runs[0].href, "u");
+  assert.equal(pair.runs[1].text, "[b](v)");
+  assert.equal(pair.runs[1].href, "v");
+  assert.deepEqual(pair.runs[0].classes, ["md-link"]);
+  assert.deepEqual(pair.runs[1].classes, ["md-link"]);
+
+  const emLink = plan("[*e*](u)\n", 0).lines[0];
+  assert.equal(emLink.runs.length, 1);
+  assert.equal(emLink.runs[0].text, "[*e*](u)");
+  assert.deepEqual(emLink.runs[0].classes, ["md-em", "md-link"]);
+  assert.equal(emLink.runs[0].href, "u");
+
+  const quote = plan("> hi\n", 0).lines[0];
+  assert.equal(quote.runs.length, 1);
+  assert.equal(quote.runs[0].text, "> hi");
+  assert.ok(quote.runs[0].classes.includes("md-quote"));
+  assert.equal(quote.runs[0].classes.includes("md-syntax"), false);
+
+  const quoteEm = plan("> *em*\n", 0).lines[0];
+  assert.equal(quoteEm.runs[0].text, "> ");
+  assert.ok(quoteEm.runs[0].classes.includes("md-quote"));
+  assert.equal(quoteEm.runs[0].classes.includes("md-syntax"), false);
+  assert.equal(quoteEm.runs[1].text, "*em*");
+  assert.deepEqual(quoteEm.runs[1].classes, ["md-em"]);
+
+  const item = plan("- item\n", 0).lines[0];
+  assert.equal(item.runs.length, 1);
+  assert.equal(item.runs[0].text, "- item");
+  assert.ok(item.runs[0].classes.includes("md-li"));
+  assert.equal(item.runs[0].classes.includes("md-syntax"), false);
+
+  const paren = plan("1) also\n", 0).lines[0];
+  assert.equal(paren.runs.length, 1);
+  assert.equal(paren.runs[0].text, "1) also");
+  assert.ok(paren.runs[0].classes.includes("md-ol"));
+  assert.equal(paren.runs[0].classes.includes("md-syntax"), false);
+
+  const listed = plan("12. **n**\n", 0).lines[0];
+  assert.equal(listed.runs[0].text, "12. ");
+  assert.equal(listed.runs[0].end, 4);
+  assert.ok(listed.runs[0].classes.includes("md-ol"));
+  assert.equal(listed.runs[0].classes.includes("md-syntax"), false);
+  assert.equal(listed.runs[1].text, "**n**");
+  assert.deepEqual(listed.runs[1].classes, ["md-strong"]);
+
+  const hidden = plan("**a**\n**b**\n", 0);
+  assert.equal(hidden.lines[0].runs[0].text, "**a**");
+  assert.deepEqual(hidden.lines[0].runs[0].classes, ["md-strong"]);
+  assert.equal(hidden.lines[1].raw, false);
+  assert.equal(hidden.lines[1].runs[0].text, "b");
+  assert.equal(hidden.lines[1].runs[0].start, 8);
+  assert.equal(hidden.lines[1].runs[0].end, 9);
+  assert.ok(hidden.lines[1].runs[0].classes.includes("md-strong"));
+
+  const shifted = plan("next\n**hello**\n", 6).lines[1];
+  assert.equal(shifted.raw, true);
+  assert.equal(shifted.runs.length, 1);
+  assert.equal(shifted.runs[0].text, "**hello**");
+  assert.equal(shifted.runs[0].start, 5);
+  assert.equal(shifted.runs[0].end, 14);
+  assert.deepEqual(shifted.runs[0].classes, ["md-strong"]);
 
   const image = plan("x![a](b)y", 0);
   assert.equal(image.atoms.some((atom) => atom.type === "image"), false);
@@ -513,7 +642,14 @@ test("T-active-format", () => {
   const token = image.lines[0].runs.find((run) => run.text.includes("!["));
   assert.ok(token);
   assert.deepEqual(token.classes, ["md-syntax"]);
+  assert.equal(token.text, "![a](b)");
+  assert.equal(token.start, 1);
+  assert.equal(token.end, 8);
   assert.equal(token.text.length, token.end - token.start);
+  assert.deepEqual(image.lines[0].runs[0].classes, ["md-p"]);
+  assert.equal(image.lines[0].runs[0].text, "x");
+  assert.deepEqual(image.lines[0].runs[2].classes, ["md-p"]);
+  assert.equal(image.lines[0].runs[2].text, "y");
 });
 
 test("cursor line stays one text node around an image", () => {

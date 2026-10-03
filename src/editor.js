@@ -384,6 +384,190 @@ function gapRun(line, start, end) {
   };
 }
 
+function cloneRun(run) {
+  const copy = {
+    type: "run",
+    text: run.text,
+    start: run.start,
+    end: run.end,
+    classes: run.classes.slice(),
+  };
+  if (run.href !== undefined) copy.href = run.href;
+  return copy;
+}
+
+function isSyntax(run) {
+  return run.classes.length === 1 && run.classes[0] === "md-syntax";
+}
+
+function styleOf(run) {
+  return run.classes.filter((name) => name !== "md-syntax");
+}
+
+function sameRunStyle(a, b) {
+  if (a.href !== b.href) return false;
+  if (a.classes.length !== b.classes.length) return false;
+  for (let i = 0; i < a.classes.length; i += 1) {
+    if (a.classes[i] !== b.classes[i]) return false;
+  }
+  return true;
+}
+
+function mergeRuns(runs) {
+  const out = [];
+  for (const run of runs) {
+    const prev = out[out.length - 1];
+    if (prev && prev.end === run.start && sameRunStyle(prev, run)) {
+      prev.end = run.end;
+      prev.text += run.text;
+      continue;
+    }
+    out.push(cloneRun(run));
+  }
+  return out;
+}
+
+// Inner mark first: classes list the outer mark first.
+function innerMarks(classes) {
+  const marks = [];
+  for (let i = classes.length - 1; i >= 0; i -= 1) {
+    const name = classes[i];
+    if (name === "md-strong" || name === "md-em" || name === "md-code") marks.push(name);
+  }
+  return marks;
+}
+
+function prefixSize(text, index, mark) {
+  if (mark === "md-code") return text[index] === "`" ? 1 : 0;
+  if (mark === "md-em") {
+    const ch = text[index];
+    return ch === "*" || ch === "_" ? 1 : 0;
+  }
+  if (mark === "md-strong") {
+    const two = text.slice(index, index + 2);
+    return two === "**" || two === "__" ? 2 : 0;
+  }
+  return 0;
+}
+
+function suffixSize(text, end, mark) {
+  if (end <= 0) return 0;
+  if (mark === "md-code") return text[end - 1] === "`" ? 1 : 0;
+  if (mark === "md-em") {
+    const ch = text[end - 1];
+    return ch === "*" || ch === "_" ? 1 : 0;
+  }
+  if (mark === "md-strong") {
+    const two = text.slice(end - 2, end);
+    return two === "**" || two === "__" ? 2 : 0;
+  }
+  return 0;
+}
+
+function attracts(classes) {
+  return classes.includes("md-strong")
+    || classes.includes("md-em")
+    || classes.includes("md-code")
+    || classes.includes("md-link");
+}
+
+function takePrefix(text, run) {
+  const classes = styleOf(run);
+  if (!attracts(classes)) return 0;
+  let index = 0;
+  for (const mark of innerMarks(classes)) {
+    const size = prefixSize(text, index, mark);
+    if (size === 0) return index;
+    index += size;
+  }
+  if (classes.includes("md-link")) {
+    const closer = `](${run.href ?? ""})`;
+    if (text.startsWith(closer, index)) index += closer.length;
+  }
+  return index;
+}
+
+function takeSuffix(text, run) {
+  const classes = styleOf(run);
+  if (!attracts(classes)) return 0;
+  let end = text.length;
+  for (const mark of innerMarks(classes)) {
+    const size = suffixSize(text, end, mark);
+    if (size === 0) return text.length - end;
+    end -= size;
+  }
+  if (classes.includes("md-link") && end > 0 && text[end - 1] === "[") end -= 1;
+  return text.length - end;
+}
+
+function styledPiece(line, start, end, run) {
+  const piece = {
+    type: "run",
+    text: line.text.slice(start - line.start, end - line.start),
+    start,
+    end,
+    classes: styleOf(run),
+  };
+  if (run.href !== undefined) piece.href = run.href;
+  return piece;
+}
+
+// A delimiter takes the classes of the run it belongs to. md-syntax stays only on
+// text that has no style, such as an image token.
+function restyleMarkers(line, mode, runs) {
+  const items = runs.map(cloneRun);
+  const markerEnd = Math.min(line.end, line.start + (mode.marker || 0));
+  if (
+    mode.plain !== "md-p"
+    && markerEnd > line.start
+    && items.length > 0
+    && items[0].start === line.start
+    && items[0].end === markerEnd
+    && isSyntax(items[0])
+  ) {
+    items[0].classes = [mode.plain];
+  }
+  const peeled = [];
+  for (let i = 0; i < items.length; i += 1) {
+    const run = items[i];
+    if (!isSyntax(run)) {
+      const style = styleOf(run);
+      if (style.length > 0 && style.length !== run.classes.length) run.classes = style;
+      peeled.push(run);
+      continue;
+    }
+    const left = i > 0 ? items[i - 1] : null;
+    const right = i + 1 < items.length ? items[i + 1] : null;
+    let text = run.text;
+    let start = run.start;
+    if (left && !isSyntax(left)) {
+      const size = takePrefix(text, left);
+      if (size > 0) {
+        peeled.push(styledPiece(line, start, start + size, left));
+        start += size;
+        text = text.slice(size);
+      }
+    }
+    let suffix = 0;
+    if (right && !isSyntax(right) && text.length > 0) suffix = takeSuffix(text, right);
+    const mid = text.length - suffix;
+    if (mid > 0) {
+      peeled.push({
+        type: "run",
+        text: text.slice(0, mid),
+        start,
+        end: start + mid,
+        classes: ["md-syntax"],
+      });
+    }
+    if (suffix > 0) {
+      const suf = start + mid;
+      peeled.push(styledPiece(line, suf, suf + suffix, right));
+    }
+  }
+  return peeled;
+}
+
 // The block marker is its own run so it does not merge with a following inline gap.
 function fillGaps(line, mode, parsed) {
   const runs = [];
@@ -403,7 +587,7 @@ function fillGaps(line, mode, parsed) {
     at = run.end;
   }
   if (at < line.end) runs.push(gapRun(line, at, line.end));
-  return runs;
+  return mergeRuns(restyleMarkers(line, mode, runs));
 }
 
 function rawBlock(line, mode, parsed) {
