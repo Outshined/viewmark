@@ -142,14 +142,19 @@ function fenceOpen(text) {
   if (!match) return null;
   const lang = match[1];
   let commentId = null;
+  let resolved = false;
   if (lang === "comment") {
-    const id = /^[ \t]*([A-Za-z][A-Za-z0-9_-]*)/.exec(match[2]);
-    if (id) commentId = id[1];
+    const id = /^[ \t]*([A-Za-z][A-Za-z0-9_-]*)(.*)$/.exec(match[2]);
+    if (id) {
+      commentId = id[1];
+      resolved = /^[ \t]*resolved[ \t]*$/.test(id[2]);
+    }
   }
   return {
     lang,
     diagram: lang === "mermaid",
     commentId,
+    resolved,
   };
 }
 
@@ -184,6 +189,7 @@ function fenceContentRanges(doc) {
       lang: opened.lang,
       diagram: opened.diagram === true,
       commentId: opened.commentId,
+      resolved: opened.resolved === true,
       closed,
       openIndex: index,
       lastIndex: last,
@@ -204,9 +210,32 @@ function commentThreads(doc) {
     const to = fence.closed ? lines[fence.lastIndex].start : doc.length;
     let body = doc.slice(from, to);
     if (body.endsWith("\n")) body = body.slice(0, -1);
-    threads.push({ id: fence.commentId, body, start: fence.start, end: fence.end });
+    threads.push({
+      id: fence.commentId,
+      body,
+      start: fence.start,
+      end: fence.end,
+      resolved: fence.resolved === true,
+    });
   }
   return threads;
+}
+
+// A note boundary is a line whose whole text is "::". A body with no such line
+// is one note, so markers inside the note stay text.
+function commentNotes(body) {
+  const notes = [];
+  let current = [];
+  for (const line of body.split("\n")) {
+    if (line === "::") {
+      notes.push(current.join("\n"));
+      current = [];
+    } else {
+      current.push(line);
+    }
+  }
+  notes.push(current.join("\n"));
+  return notes;
 }
 
 function hiddenFenceRanges(doc) {
@@ -369,6 +398,61 @@ function replaceCommentBody(state, id, body) {
     doc,
     cursor: shiftReplace(state.cursor, range.from, range.to, text.length),
     anchor: shiftReplace(state.anchor, range.from, range.to, text.length),
+    undo: state.undo.concat([{ doc: state.doc, cursor: state.cursor, anchor: state.anchor }]),
+    redo: [],
+  };
+}
+
+function removeCommentThread(state, id) {
+  const doc = state.doc;
+  const ranges = [];
+  const fence = fenceContentRanges(doc).find((item) => item.lang === "comment" && item.commentId === id);
+  if (fence) {
+    let from = fence.start;
+    const to = fence.end;
+    // addComment separates the fence with a blank line. Dropping that line puts
+    // the prose back the way it was before the thread existed.
+    if (from >= 2 && doc[from - 1] === "\n" && doc[from - 2] === "\n") from -= 1;
+    ranges.push([from, to]);
+  }
+  const hidden = hiddenFenceRanges(doc);
+  for (const token of commentTokens(doc)) {
+    if (token.id !== id || offsetHidden(token.start, hidden)) continue;
+    ranges.push([token.start, token.end]);
+  }
+  const merged = mergeRanges(ranges);
+  if (merged.length === 0) return state;
+  let next = doc;
+  let cursor = state.cursor;
+  let anchor = state.anchor;
+  for (let i = merged.length - 1; i >= 0; i -= 1) {
+    const [from, to] = merged[i];
+    next = next.slice(0, from) + next.slice(to);
+    cursor = shiftDelete(cursor, from, to);
+    anchor = shiftDelete(anchor, from, to);
+  }
+  return {
+    doc: next,
+    cursor,
+    anchor,
+    undo: state.undo.concat([{ doc: state.doc, cursor: state.cursor, anchor: state.anchor }]),
+    redo: [],
+  };
+}
+
+function setCommentResolved(state, id, resolved) {
+  const lines = lineSpans(state.doc);
+  const fence = fenceContentRanges(state.doc).find((item) => item.lang === "comment" && item.commentId === id);
+  if (!fence) return state;
+  const open = lines[fence.openIndex];
+  if (!open) return state;
+  const nextHead = resolved ? `\`\`\`comment ${id} resolved` : `\`\`\`comment ${id}`;
+  if (open.text === nextHead) return state;
+  const doc = state.doc.slice(0, open.start) + nextHead + state.doc.slice(open.end);
+  return {
+    doc,
+    cursor: shiftReplace(state.cursor, open.start, open.end, nextHead.length),
+    anchor: shiftReplace(state.anchor, open.start, open.end, nextHead.length),
     undo: state.undo.concat([{ doc: state.doc, cursor: state.cursor, anchor: state.anchor }]),
     redo: [],
   };
@@ -1728,6 +1812,11 @@ export function createEditor(root, doc, cursor = 0) {
   const commentsAside = commentsAsideOf(root);
   let addCommentButton = null;
   let commentFocus = null;
+  let showResolved = false;
+  const unsavedThreads = new Set();
+  const replyDrafts = new Map();
+  const noteDrafts = new Map();
+  const authorDrafts = new Map();
   root.contentEditable = "true";
   root.spellcheck = false;
   root.autocapitalize = "off";
@@ -1874,12 +1963,12 @@ export function createEditor(root, doc, cursor = 0) {
     state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
   }
 
-  function findCommentBox(id) {
+  function findCommentBox(id, note) {
     if (!commentsAside) return null;
     const walk = (node) => {
       if (!node) return null;
       if (node.classList && node.classList.contains("md-comment-body") && node.dataset && node.dataset.comment === id) {
-        return node;
+        if (note == null || String(node.dataset.note) === String(note)) return node;
       }
       for (const child of node.childNodes || []) {
         const found = walk(child);
@@ -1890,8 +1979,8 @@ export function createEditor(root, doc, cursor = 0) {
     return walk(commentsAside);
   }
 
-  function focusComment(id, start, end) {
-    const box = findCommentBox(id);
+  function focusComment(id, start, end, note) {
+    const box = findCommentBox(id, note);
     if (!box) {
       commentFocus = null;
       return;
@@ -1905,24 +1994,223 @@ export function createEditor(root, doc, cursor = 0) {
     box.selectionEnd = to;
   }
 
+  function draftKey(id, index) {
+    return `${id}\t${index}`;
+  }
+
+  function pruneCommentDrafts(comments) {
+    const live = new Set(comments.map((comment) => comment.id));
+    for (const id of [...unsavedThreads]) {
+      if (!live.has(id)) unsavedThreads.delete(id);
+    }
+    for (const id of [...replyDrafts.keys()]) {
+      if (!live.has(id)) replyDrafts.delete(id);
+    }
+    for (const key of [...noteDrafts.keys()]) {
+      if (!live.has(key.slice(0, key.indexOf("\t")))) noteDrafts.delete(key);
+    }
+    for (const key of [...authorDrafts.keys()]) {
+      if (!live.has(key.slice(0, key.indexOf("\t")))) authorDrafts.delete(key);
+    }
+  }
+
+  function ancestorWithClass(node, className) {
+    let current = node;
+    while (current) {
+      if (current.classList && current.classList.contains(className)) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function buttonLabeled(parent, label) {
+    if (!parent) return null;
+    for (const child of parent.childNodes || []) {
+      if (child.tagName === "BUTTON" && child.textContent === label) return child;
+    }
+    return null;
+  }
+
+  function makeCommentButton(label, onClick) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      onClick();
+    });
+    return button;
+  }
+
+  function threadById(id) {
+    return commentThreads(state.doc).find((item) => item.id === id) || null;
+  }
+
+  function onSave(box) {
+    const id = box.dataset.comment;
+    const index = Number(box.dataset.note);
+    const thread = threadById(id);
+    if (!thread) return;
+    const notes = commentNotes(thread.body);
+    if (box.dataset.reply === "true") notes.push(box.value);
+    else notes[index] = box.value;
+    const body = notes.join("\n::\n");
+    if (box.dataset.reply === "true") replyDrafts.delete(id);
+    unsavedThreads.delete(id);
+    noteDrafts.delete(draftKey(id, index));
+    const start = Number.isFinite(box.selectionStart) ? box.selectionStart : String(box.value || "").length;
+    const end = Number.isFinite(box.selectionEnd) ? box.selectionEnd : start;
+    commentFocus = { id, note: index, start, end };
+    const next = replaceCommentBody(state, id, body);
+    if (next === state) render();
+    else apply(next);
+  }
+
+  function onCancel(box) {
+    const id = box.dataset.comment;
+    const index = Number(box.dataset.note);
+    if (box.dataset.fresh === "true") {
+      unsavedThreads.delete(id);
+      replyDrafts.delete(id);
+      noteDrafts.delete(draftKey(id, index));
+      authorDrafts.delete(draftKey(id, index));
+      commentFocus = null;
+      apply(removeCommentThread(state, id));
+      return;
+    }
+    if (box.dataset.reply === "true") {
+      replyDrafts.delete(id);
+      authorDrafts.delete(draftKey(id, index));
+      commentFocus = null;
+      render();
+      return;
+    }
+    noteDrafts.delete(draftKey(id, index));
+    const thread = threadById(id);
+    const stored = thread ? (commentNotes(thread.body)[index] || "") : "";
+    commentFocus = { id, note: index, start: stored.length, end: stored.length };
+    render();
+  }
+
+  function onReply(id) {
+    if (!replyDrafts.has(id)) replyDrafts.set(id, "");
+    const thread = threadById(id);
+    const index = thread ? commentNotes(thread.body).length : 0;
+    commentFocus = { id, note: index, start: 0, end: 0 };
+    render();
+  }
+
+  function onDelete(id) {
+    unsavedThreads.delete(id);
+    replyDrafts.delete(id);
+    commentFocus = null;
+    apply(removeCommentThread(state, id));
+  }
+
+  function onResolve(id) {
+    const thread = threadById(id);
+    if (!thread) return;
+    commentFocus = null;
+    apply(setCommentResolved(state, id, !thread.resolved));
+  }
+
+  function syncNoteButtons(box) {
+    const parent = box.parentElement;
+    if (!parent) return;
+    const keep = box.dataset.fresh === "true" || box.dataset.reply === "true" || box.value !== box.storedText;
+    const save = buttonLabeled(parent, "Save");
+    const cancel = buttonLabeled(parent, "Cancel");
+    if (keep) {
+      if (!save) parent.appendChild(makeCommentButton("Save", () => onSave(box)));
+      if (!cancel) parent.appendChild(makeCommentButton("Cancel", () => onCancel(box)));
+      return;
+    }
+    if (save) parent.removeChild(save);
+    if (cancel) parent.removeChild(cancel);
+  }
+
+  function appendAuthor(parent, id, index) {
+    const author = document.createElement("input");
+    author.type = "text";
+    author.className = "md-comment-author";
+    author.placeholder = "Author";
+    author.value = authorDrafts.get(draftKey(id, index)) || "";
+    parent.appendChild(author);
+  }
+
+  function appendBody(parent, id, index, stored, mode) {
+    const box = document.createElement("textarea");
+    box.className = "md-comment-body";
+    box.dataset.comment = id;
+    box.dataset.note = String(index);
+    box.spellcheck = false;
+    box.storedText = stored;
+    if (mode === "fresh") box.dataset.fresh = "true";
+    if (mode === "reply") box.dataset.reply = "true";
+    let value = stored;
+    if (mode === "reply") value = replyDrafts.get(id) || "";
+    else if (noteDrafts.has(draftKey(id, index))) value = noteDrafts.get(draftKey(id, index));
+    box.value = value;
+    parent.appendChild(box);
+    if (mode !== "saved" || value !== stored) {
+      parent.appendChild(makeCommentButton("Save", () => onSave(box)));
+      parent.appendChild(makeCommentButton("Cancel", () => onCancel(box)));
+    }
+  }
+
+  function buildCommentCard(comment) {
+    const card = document.createElement("div");
+    card.className = "md-comment-card";
+    card.dataset.comment = comment.id;
+    if (comment.resolved) card.dataset.resolved = "true";
+    if (unsavedThreads.has(comment.id)) {
+      appendAuthor(card, comment.id, 0);
+      appendBody(card, comment.id, 0, commentNotes(comment.body)[0] || "", "fresh");
+      return card;
+    }
+    card.appendChild(makeCommentButton("Resolve", () => onResolve(comment.id)));
+    const notes = commentNotes(comment.body);
+    notes.forEach((text, index) => {
+      const note = document.createElement("div");
+      note.className = "md-comment-note";
+      appendBody(note, comment.id, index, text, "saved");
+      card.appendChild(note);
+    });
+    if (replyDrafts.has(comment.id)) {
+      const note = document.createElement("div");
+      note.className = "md-comment-note";
+      const index = notes.length;
+      appendAuthor(note, comment.id, index);
+      appendBody(note, comment.id, index, "", "reply");
+      card.appendChild(note);
+    }
+    card.appendChild(makeCommentButton("Reply", () => onReply(comment.id)));
+    card.appendChild(makeCommentButton("Delete", () => onDelete(comment.id)));
+    return card;
+  }
+
   function renderCommentAside(comments) {
     if (!commentsAside || typeof commentsAside.replaceChildren !== "function") return;
-    const cards = comments.map((comment) => {
-      const card = document.createElement("div");
-      card.className = "md-comment-card";
-      card.dataset.comment = comment.id;
-      const author = document.createElement("div");
-      author.className = "md-comment-author";
-      const box = document.createElement("textarea");
-      box.className = "md-comment-body";
-      box.dataset.comment = comment.id;
-      box.value = comment.body;
-      box.spellcheck = false;
-      card.appendChild(author);
-      card.appendChild(box);
-      return card;
+    const list = comments || [];
+    pruneCommentDrafts(list);
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = showResolved;
+    checkbox.disabled = false;
+    checkbox.id = "show-resolved";
+    const label = document.createElement("label");
+    label.htmlFor = "show-resolved";
+    label.textContent = "show resolved";
+    checkbox.addEventListener("change", () => {
+      showResolved = checkbox.checked === true;
+      render();
     });
-    commentsAside.replaceChildren(...cards);
+    const cards = [];
+    for (const comment of list) {
+      if (comment.resolved && !showResolved) continue;
+      cards.push(buildCommentCard(comment));
+    }
+    commentsAside.replaceChildren(checkbox, label, ...cards);
   }
 
   function elementRect(el) {
@@ -1958,6 +2246,33 @@ export function createEditor(root, doc, cursor = 0) {
     const narrow = typeof window !== "undefined"
       && typeof window.matchMedia === "function"
       && window.matchMedia("(max-width: 800px)").matches;
+    const placeShowResolved = (inFlow, floor) => {
+      const toggle = commentsAside.childNodes && commentsAside.childNodes[0];
+      const label = commentsAside.childNodes && commentsAside.childNodes[1];
+      if (!toggle || toggle.type !== "checkbox") return floor;
+      if (inFlow) {
+        setStyle(toggle, "position", "static");
+        setStyle(toggle, "top", "auto");
+        setStyle(toggle, "left", "auto");
+        if (label) {
+          setStyle(label, "position", "static");
+          setStyle(label, "top", "auto");
+          setStyle(label, "left", "auto");
+        }
+        return floor;
+      }
+      const top = `${floor}px`;
+      setStyle(toggle, "position", "absolute");
+      setStyle(toggle, "top", top);
+      setStyle(toggle, "left", "0px");
+      if (label) {
+        setStyle(label, "position", "absolute");
+        setStyle(label, "top", top);
+        setStyle(label, "left", "1.5rem");
+      }
+      const height = typeof toggle.offsetHeight === "number" ? toggle.offsetHeight : 0;
+      return floor + height + COMMENT_CARD_GAP;
+    };
     if (narrow || cards.length === 0) {
       for (const card of cards) {
         setStyle(card, "position", "static");
@@ -1966,6 +2281,7 @@ export function createEditor(root, doc, cursor = 0) {
         setStyle(card, "width", "100%");
         setStyle(card, "margin", "");
       }
+      placeShowResolved(true, 0);
       setStyle(commentsAside, "height", "");
       return;
     }
@@ -2008,6 +2324,7 @@ export function createEditor(root, doc, cursor = 0) {
       const height = typeof card.offsetHeight === "number" ? card.offsetHeight : (elementRect(card)?.height || 0);
       floor = top + height + COMMENT_CARD_GAP;
     }
+    floor = placeShowResolved(false, floor);
     setStyle(commentsAside, "height", `${floor}px`);
   }
 
@@ -2038,7 +2355,11 @@ export function createEditor(root, doc, cursor = 0) {
         event.preventDefault();
         const result = addComment(state.doc, state.anchor, state.cursor);
         if (!result) return;
-        commentFocus = { id: result.id, start: 0, end: 0 };
+        unsavedThreads.add(result.id);
+        replyDrafts.delete(result.id);
+        noteDrafts.delete(draftKey(result.id, 0));
+        authorDrafts.delete(draftKey(result.id, 0));
+        commentFocus = { id: result.id, note: 0, start: 0, end: 0 };
         apply(replaceDocument(state, result.doc, result.cursor));
       }, { signal: ac.signal });
     }
@@ -2063,7 +2384,7 @@ export function createEditor(root, doc, cursor = 0) {
     root.replaceChildren(...planned.blocks.map(renderBlock));
     renderCommentAside(planned.comments);
     layoutComments();
-    if (commentFocus) focusComment(commentFocus.id, commentFocus.start, commentFocus.end);
+    if (commentFocus) focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
     else placeCaret();
     updateCommentButton();
   }
@@ -2280,13 +2601,31 @@ export function createEditor(root, doc, cursor = 0) {
   if (commentsAside && typeof commentsAside.addEventListener === "function") {
     commentsAside.addEventListener("input", (event) => {
       const box = event.target;
-      if (!box || !box.classList || !box.classList.contains("md-comment-body")) return;
+      if (!box || !box.classList) return;
+      if (box.classList.contains("md-comment-author")) {
+        const card = ancestorWithClass(box, "md-comment-card");
+        if (!card) return;
+        const note = ancestorWithClass(box, "md-comment-note");
+        const host = note || card;
+        let index = 0;
+        for (const child of host.childNodes || []) {
+          if (child.classList && child.classList.contains("md-comment-body") && child.dataset) {
+            index = Number(child.dataset.note);
+          }
+        }
+        authorDrafts.set(draftKey(card.dataset.comment, index), box.value);
+        return;
+      }
+      if (!box.classList.contains("md-comment-body")) return;
       const id = box.dataset && box.dataset.comment;
       if (!id) return;
+      const index = Number(box.dataset.note || 0);
       const start = Number.isFinite(box.selectionStart) ? box.selectionStart : String(box.value || "").length;
       const end = Number.isFinite(box.selectionEnd) ? box.selectionEnd : start;
-      commentFocus = { id, start, end };
-      apply(replaceCommentBody(state, id, box.value));
+      if (box.dataset.reply === "true") replyDrafts.set(id, box.value);
+      else noteDrafts.set(draftKey(id, index), box.value);
+      commentFocus = { id, note: index, start, end };
+      syncNoteButtons(box);
     }, { signal: ac.signal });
     commentsAside.addEventListener("keydown", (event) => {
       const box = event.target;

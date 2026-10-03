@@ -1462,6 +1462,21 @@ test("comment spans hide markers off the cursor line", () => {
   assert.equal(fenced.lines.some((line) => line.runs.some((run) => run.classes.includes("md-comment"))), false);
 });
 
+test("a resolved fence keeps the span and a :: line splits notes", () => {
+  const plain = plan("Say {c1}fox{/c1} now.\n\n```comment c1\n**hi**\n```\n", 40);
+  assert.equal(plain.comments[0].resolved, false);
+  assert.equal(plain.comments[0].body, "**hi**");
+  const resolved = "Say {c1}fox{/c1} now.\n\n```comment c1 resolved\nhi\n::\nmore\n```\n";
+  const planned = plan(resolved, 40);
+  assert.equal(planned.comments.length, 1);
+  assert.equal(planned.comments[0].id, "c1");
+  assert.equal(planned.comments[0].resolved, true);
+  assert.equal(planned.comments[0].body, "hi\n::\nmore");
+  assert.equal(planned.lines.some((line) => line.text.includes("resolved") || line.text.includes("::")), false);
+  const fox = planned.lines[0].runs.find((run) => run.text === "fox");
+  assert.ok(fox.classes.includes("md-comment"));
+});
+
 test("comment threads stay out of the editor lines", () => {
   const doc = "Say {c1}fox{/c1} now.\n\n```comment c1\n**hi**\n```\n";
   const planned = plan(doc, 22);
@@ -1752,6 +1767,9 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.equal(box.focused, true);
     assert.equal(box.selectionStart, 0);
     const author = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-author"))[0];
+    assert.equal(author.tagName, "INPUT");
+    assert.equal(author.placeholder, "Author");
+    assert.equal(author.value, "");
     assert.equal(author.textContent, "");
     assert.equal(mounted.findAll((node) => (node.textContent || "").includes("```comment")).length, 0);
 
@@ -1776,10 +1794,18 @@ test("comment cards edit the thread and line up with the highlight", () => {
     box = mounted.findAll((node) => node.tagName === "TEXTAREA")[0];
     assert.equal(box.focused, true);
 
+    box.value = "h";
+    box.selectionStart = 1;
+    box.selectionEnd = 1;
+    mounted.aside.listeners.input({ target: box });
     box.value = "hi";
     box.selectionStart = 2;
     box.selectionEnd = 2;
     mounted.aside.listeners.input({ target: box });
+    assert.equal(view.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n");
+    assert.equal(view.getState().undo.length, 1);
+    const save = mounted.findAll((node) => node.tagName === "BUTTON" && node.textContent === "Save")[0];
+    save.listeners.click({ target: save });
     assert.equal(view.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
     box = mounted.findAll((node) => node.tagName === "TEXTAREA")[0];
     assert.equal(box.value, "hi");
@@ -1829,6 +1855,197 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.deepEqual(stacked.map((card) => card.dataset.comment), ["c1", "c2"]);
     assert.ok(stacked.every((card) => card.styleProps.position === "static"));
     narrow.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("comment cards save, reply, resolve, and discard without writing keystrokes", () => {
+  const mounted = mountSheet();
+  const buttons = (label) => mounted.findAll((node) => node.tagName === "BUTTON" && node.textContent === label);
+  const press = (label) => {
+    const button = buttons(label).at(-1);
+    assert.ok(button, label);
+    button.listeners.click({ target: button, preventDefault() {} });
+    return button;
+  };
+  const pressIn = (parent, label) => {
+    const button = (parent.childNodes || []).find((node) => node.tagName === "BUTTON" && node.textContent === label);
+    assert.ok(button, label);
+    button.listeners.click({ target: button, preventDefault() {} });
+    return button;
+  };
+  const areas = () => mounted.findAll((node) => node.tagName === "TEXTAREA");
+  const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+  const chooseFox = () => {
+    const text = mounted.root.childNodes[0].childNodes[0].childNodes[0];
+    mounted.listeners.mousedown({ clientX: 0, clientY: 0 });
+    mounted.setSelection({
+      rangeCount: 1,
+      anchorNode: text,
+      anchorOffset: 6,
+      focusNode: text,
+      focusOffset: 9,
+      getRangeAt() {
+        return {
+          collapsed: false,
+          commonAncestorContainer: text,
+          getClientRects() {
+            return [{ top: 12, left: 0, right: 40, bottom: 28, width: 40, height: 16 }];
+          },
+        };
+      },
+    });
+    mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
+  };
+  try {
+    const fresh = createEditor(mounted.root, "hello fox two deer\n", 0);
+    const checkbox = mounted.aside.childNodes[0];
+    const label = mounted.aside.childNodes[1];
+    assert.equal(checkbox.type, "checkbox");
+    assert.equal(checkbox.checked, false);
+    assert.equal(checkbox.disabled, false);
+    assert.equal(label.tagName, "LABEL");
+    assert.equal(label.textContent, "show resolved");
+    chooseFox();
+    const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    add.listeners.mousedown({ preventDefault() {} });
+    assert.equal(fresh.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n");
+    assert.equal(buttons("Resolve").length, 0);
+    assert.equal(buttons("Reply").length, 0);
+    assert.equal(buttons("Delete").length, 0);
+    assert.equal(buttons("Save").length, 1);
+    assert.equal(buttons("Cancel").length, 1);
+    const author = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-author"))[0];
+    author.value = "Ada";
+    mounted.aside.listeners.input({ target: author });
+    let box = areas()[0];
+    box.value = "hi";
+    mounted.aside.listeners.input({ target: box });
+    assert.equal(fresh.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n");
+    assert.equal(fresh.getState().doc.includes("Ada"), false);
+    press("Cancel");
+    assert.equal(fresh.getState().doc, "hello fox two deer\n");
+    assert.equal(fresh.getState().undo.length, 2);
+    fresh.destroy();
+    mounted.setSelection(null);
+
+    const opened = "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n";
+    const saved = createEditor(mounted.root, opened, 0);
+    let card = cards()[0];
+    assert.equal(card.childNodes[0].textContent, "Resolve");
+    assert.equal(card.childNodes.at(-2).textContent, "Reply");
+    assert.equal(card.childNodes.at(-1).textContent, "Delete");
+    assert.equal(buttons("Save").length, 0);
+    box = areas()[0];
+    assert.equal(box.value, "");
+    box.value = "yo";
+    mounted.aside.listeners.input({ target: box });
+    assert.equal(saved.getState().doc, opened);
+    pressIn(card.childNodes[1], "Cancel");
+    assert.equal(saved.getState().doc, opened);
+    box = areas()[0];
+    assert.equal(box.value, "");
+    assert.equal(buttons("Save").length, 0);
+    box.value = "hi";
+    box.selectionStart = 2;
+    box.selectionEnd = 2;
+    mounted.aside.listeners.input({ target: box });
+    const undoBefore = saved.getState().undo.length;
+    card = cards()[0];
+    pressIn(card.childNodes[1], "Save");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
+    assert.equal(saved.getState().doc.includes("Ada"), false);
+    assert.equal(saved.getState().undo.length, undoBefore + 1);
+    card = cards()[0];
+    pressIn(card, "Reply");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
+    card = cards()[0];
+    const reply = card.childNodes.at(-3);
+    assert.equal(reply.childNodes[0].tagName, "INPUT");
+    assert.equal(reply.childNodes[0].placeholder, "Author");
+    assert.equal(reply.childNodes[0].value, "");
+    assert.equal(reply.childNodes[1].tagName, "TEXTAREA");
+    assert.equal(reply.childNodes[1].value, "");
+    assert.equal(reply.childNodes[2].textContent, "Save");
+    assert.equal(reply.childNodes[3].textContent, "Cancel");
+    pressIn(reply, "Cancel");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
+    assert.equal(areas().length, 1);
+    card = cards()[0];
+    pressIn(card, "Reply");
+    card = cards()[0];
+    const replyAgain = card.childNodes.at(-3);
+    replyAgain.childNodes[0].value = "Ada";
+    mounted.aside.listeners.input({ target: replyAgain.childNodes[0] });
+    replyAgain.childNodes[1].value = "more";
+    mounted.aside.listeners.input({ target: replyAgain.childNodes[1] });
+    const undoReply = saved.getState().undo.length;
+    pressIn(replyAgain, "Save");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n::\nmore\n```\n");
+    assert.equal(saved.getState().doc.includes("Ada"), false);
+    assert.equal(saved.getState().undo.length, undoReply + 1);
+    assert.deepEqual(areas().map((item) => item.value), ["hi", "more"]);
+    const second = areas()[1];
+    second.value = "less";
+    mounted.aside.listeners.input({ target: second });
+    pressIn(second.parentElement, "Save");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n::\nless\n```\n");
+    assert.equal(areas()[0].value, "hi");
+    card = cards()[0];
+    const undoResolve = saved.getState().undo.length;
+    pressIn(card, "Resolve");
+    assert.equal(saved.getState().undo.length, undoResolve + 1);
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1 resolved\nhi\n::\nless\n```\n");
+    assert.equal(saved.getState().doc.includes("{c1}fox{/c1}"), true);
+    assert.equal(cards().length, 0);
+    assert.ok(mounted.findAll((node) => node.classList && node.classList.contains("md-comment")).length > 0);
+    let toggle = mounted.aside.childNodes[0];
+    assert.equal(toggle.checked, false);
+    assert.equal(toggle.disabled, false);
+    toggle.checked = true;
+    toggle.listeners.change();
+    assert.equal(cards().length, 1);
+    assert.equal(areas()[0].value, "hi");
+    assert.equal(areas()[1].value, "less");
+    pressIn(cards()[0], "Resolve");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n::\nless\n```\n");
+    assert.equal(cards().length, 1);
+    toggle = mounted.aside.childNodes[0];
+    toggle.checked = false;
+    toggle.listeners.change();
+    assert.equal(cards().length, 1);
+    pressIn(cards()[0], "Delete");
+    assert.equal(saved.getState().doc, "hello fox two deer\n");
+    saved.destroy();
+    mounted.setSelection(null);
+
+    const marked = "Say {c1}fox{/c1} now.\n\n```comment c1\n**hi**\n```\n";
+    const notes = createEditor(mounted.root, marked, 0);
+    assert.equal(areas().length, 1);
+    assert.equal(areas()[0].value, "**hi**");
+    pressIn(cards()[0], "Reply");
+    const added = cards()[0].childNodes.at(-3);
+    added.childNodes[1].value = "more";
+    mounted.aside.listeners.input({ target: added.childNodes[1] });
+    pressIn(added, "Save");
+    assert.equal(notes.getState().doc, "Say {c1}fox{/c1} now.\n\n```comment c1\n**hi**\n::\nmore\n```\n");
+    assert.deepEqual(areas().map((item) => item.value), ["**hi**", "more"]);
+    notes.destroy();
+    mounted.setSelection(null);
+
+    const hidden = createEditor(mounted.root, "hello {c1}fox{/c1} two deer\n\n```comment c1 resolved\nhi\n```\n", 0);
+    assert.equal(cards().length, 0);
+    assert.ok(mounted.findAll((node) => node.classList && node.classList.contains("md-comment")).length > 0);
+    const show = mounted.aside.childNodes[0];
+    assert.equal(show.checked, false);
+    assert.equal(show.disabled, false);
+    assert.equal(mounted.aside.childNodes[1].textContent, "show resolved");
+    show.checked = true;
+    show.listeners.change();
+    assert.equal(cards().length, 1);
+    assert.equal(areas()[0].value, "hi");
+    hidden.destroy();
   } finally {
     mounted.restore();
   }

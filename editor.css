@@ -297,7 +297,36 @@ a.md-link {
 }
 
 .md-comment-author {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
   min-height: 1.25em;
+  margin: 0 0 0.35rem;
+  font: inherit;
+  line-height: 1.45;
+  color: inherit;
+  background: #fff;
+  border: 1px solid #d0cbc2;
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+}
+
+aside.comments > label {
+  display: inline-block;
+  margin: 0 0 0.75rem 0.35rem;
+  font-size: 0.85rem;
+}
+
+.md-comment-card button {
+  font: inherit;
+  font-size: 0.85rem;
+  margin: 0.35rem 0.35rem 0 0;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid #c5bfb4;
+  background: #fffef8;
+  color: #1d1c1a;
+  border-radius: 4px;
+  cursor: pointer;
 }
 
 .md-comment-body {
