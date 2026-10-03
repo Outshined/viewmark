@@ -14,9 +14,27 @@ body {
   font: 17px/1.55 "URW Gothic", sans-serif;
 }
 
+.sheet {
+  display: grid;
+  grid-template-columns: minmax(0, 46rem) minmax(14rem, 20rem);
+  justify-content: center;
+  align-items: start;
+  column-gap: 1.5rem;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+aside.comments {
+  position: relative;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
 .editor {
   box-sizing: border-box;
   min-height: 100vh;
+  min-width: 0;
   max-width: 46rem;
   margin: 0 auto;
   padding: 1.5rem 1.4rem 4rem;
@@ -249,4 +267,80 @@ a.md-link {
 .token.important,
 .token.variable {
   color: #e36209;
+}
+
+.md-comment {
+  background: #f3e2a0;
+  border-radius: 2px;
+}
+
+.md-add-comment {
+  z-index: 4;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid #c5bfb4;
+  background: #fffef8;
+  color: #1d1c1a;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.md-comment-card {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 0.75rem;
+  background: #fffef8;
+  border: 1px solid #e2ddd4;
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem 0.6rem;
+}
+
+.md-comment-author {
+  min-height: 1.25em;
+}
+
+.md-comment-body {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-height: 4.5em;
+  margin: 0;
+  font: inherit;
+  line-height: 1.45;
+  color: inherit;
+  background: #fff;
+  border: 1px solid #d0cbc2;
+  border-radius: 4px;
+  padding: 0.35rem 0.45rem;
+  resize: vertical;
+}
+
+@media (max-width: 800px) {
+  .sheet {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .editor {
+    max-width: none;
+    width: 100%;
+    margin: 0;
+  }
+
+  aside.comments {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    padding: 0 1.4rem 2rem;
+  }
+
+  .md-comment-card {
+    position: static;
+    width: 100%;
+    top: auto;
+  }
 }

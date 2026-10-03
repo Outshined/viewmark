@@ -141,14 +141,264 @@ function fenceOpen(text) {
   const match = /^```[ \t]*([^`\s]*)(.*)$/.exec(text);
   if (!match) return null;
   const lang = match[1];
+  let commentId = null;
+  if (lang === "comment") {
+    const id = /^[ \t]*([A-Za-z][A-Za-z0-9_-]*)/.exec(match[2]);
+    if (id) commentId = id[1];
+  }
   return {
     lang,
     diagram: lang === "mermaid",
+    commentId,
   };
 }
 
 function isFenceClose(text) {
   return /^```\s*$/.test(text);
+}
+
+// contentEnd stops at the closing fence line. end includes that line's newline so
+// deleting a comment thread does not leave the fence row behind.
+function fenceContentRanges(doc) {
+  const lines = lineSpans(doc);
+  const ranges = [];
+  let index = 0;
+  while (index < lines.length) {
+    const opened = fenceOpen(lines[index].text);
+    if (!opened) {
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    while (end < lines.length && !isFenceClose(lines[end].text)) end += 1;
+    const closed = end < lines.length;
+    const last = closed ? end : lines.length - 1;
+    const start = lines[index].start;
+    const contentEnd = closed ? lines[last].end : doc.length;
+    let rangeEnd = contentEnd;
+    if (closed && contentEnd < doc.length && doc[contentEnd] === "\n") rangeEnd = contentEnd + 1;
+    ranges.push({
+      start,
+      contentEnd,
+      end: rangeEnd,
+      lang: opened.lang,
+      diagram: opened.diagram === true,
+      commentId: opened.commentId,
+      closed,
+      openIndex: index,
+      lastIndex: last,
+    });
+    index = last + 1;
+  }
+  return ranges;
+}
+
+function commentThreads(doc) {
+  const lines = lineSpans(doc);
+  const threads = [];
+  for (const fence of fenceContentRanges(doc)) {
+    if (fence.lang !== "comment" || !fence.commentId) continue;
+    const open = lines[fence.openIndex];
+    if (!open) continue;
+    const from = open.end < doc.length && doc[open.end] === "\n" ? open.end + 1 : open.end;
+    const to = fence.closed ? lines[fence.lastIndex].start : doc.length;
+    let body = doc.slice(from, to);
+    if (body.endsWith("\n")) body = body.slice(0, -1);
+    threads.push({ id: fence.commentId, body, start: fence.start, end: fence.end });
+  }
+  return threads;
+}
+
+function hiddenFenceRanges(doc) {
+  return fenceContentRanges(doc).map((fence) => ({ start: fence.start, end: fence.contentEnd }));
+}
+
+function offsetHidden(pos, ranges) {
+  return ranges.some((range) => pos >= range.start && pos < range.end);
+}
+
+// An opener pairs with the next closer of that same id. Braces inside a fence are
+// literal, so they never open or close a span.
+function commentTokens(doc) {
+  const hidden = hiddenFenceRanges(doc);
+  const tokens = [];
+  const re = /\{(\/?)([A-Za-z][A-Za-z0-9_-]*)\}/g;
+  let match = re.exec(doc);
+  while (match) {
+    const start = match.index;
+    if (!offsetHidden(start, hidden)) {
+      tokens.push({
+        id: match[2],
+        closing: match[1] === "/",
+        start,
+        end: start + match[0].length,
+      });
+    }
+    match = re.exec(doc);
+  }
+  return tokens;
+}
+
+function findSpans(doc) {
+  const openers = new Map();
+  const spans = [];
+  for (const token of commentTokens(doc)) {
+    if (!token.closing) {
+      if (!openers.has(token.id)) openers.set(token.id, []);
+      openers.get(token.id).push(token);
+      continue;
+    }
+    const queue = openers.get(token.id);
+    if (!queue || queue.length === 0) continue;
+    const open = queue.shift();
+    spans.push({
+      id: token.id,
+      openStart: open.start,
+      openEnd: open.end,
+      closeStart: token.start,
+      closeEnd: token.end,
+      interiorStart: open.end,
+      interiorEnd: token.start,
+    });
+  }
+  return spans;
+}
+
+function nextCommentId(doc) {
+  const used = new Set();
+  for (const token of commentTokens(doc)) used.add(token.id);
+  for (const fence of fenceContentRanges(doc)) {
+    if (fence.lang === "comment" && fence.commentId) used.add(fence.commentId);
+  }
+  let n = 1;
+  while (used.has(`c${n}`)) n += 1;
+  return `c${n}`;
+}
+
+function rangesOverlap(from, to, start, end) {
+  return from < end && to > start;
+}
+
+function mergeRanges(ranges) {
+  const sorted = ranges
+    .filter((range) => range[1] > range[0])
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out = [];
+  for (const range of sorted) {
+    const prev = out[out.length - 1];
+    if (prev && range[0] <= prev[1]) prev[1] = Math.max(prev[1], range[1]);
+    else out.push([range[0], range[1]]);
+  }
+  return out;
+}
+
+function shiftDelete(index, from, to) {
+  if (index <= from) return index;
+  if (index >= to) return index - (to - from);
+  return from;
+}
+
+function shiftReplace(index, from, to, inserted) {
+  if (index <= from) return index;
+  if (index >= to) return index + inserted - (to - from);
+  return from + inserted;
+}
+
+// Empty interiors and threads whose span is gone leave in the same edit, so one
+// undo restores the string from before the keystroke.
+function cleanupComments(doc, cursor) {
+  const spans = findSpans(doc);
+  const fences = commentThreads(doc);
+  const live = new Set();
+  for (const span of spans) {
+    if (span.interiorStart < span.interiorEnd) live.add(span.id);
+  }
+  const ranges = [];
+  const dropped = new Set();
+  for (const span of spans) {
+    if (span.interiorStart < span.interiorEnd) continue;
+    if (live.has(span.id)) {
+      ranges.push([span.openStart, span.openEnd], [span.closeStart, span.closeEnd]);
+    } else {
+      dropped.add(span.id);
+    }
+  }
+  for (const fence of fences) {
+    if (!live.has(fence.id)) dropped.add(fence.id);
+  }
+  if (dropped.size > 0) {
+    const hidden = hiddenFenceRanges(doc);
+    for (const token of commentTokens(doc)) {
+      if (!dropped.has(token.id) || offsetHidden(token.start, hidden)) continue;
+      ranges.push([token.start, token.end]);
+    }
+    for (const fence of fences) {
+      if (dropped.has(fence.id)) ranges.push([fence.start, fence.end]);
+    }
+  }
+  const merged = mergeRanges(ranges);
+  if (merged.length === 0) return { doc, cursor };
+  let next = doc;
+  let nextCursor = cursor;
+  for (let i = merged.length - 1; i >= 0; i -= 1) {
+    const [from, to] = merged[i];
+    next = next.slice(0, from) + next.slice(to);
+    nextCursor = shiftDelete(nextCursor, from, to);
+  }
+  return { doc: next, cursor: nextCursor };
+}
+
+function commentBodyRange(doc, fence) {
+  const lines = lineSpans(doc);
+  const open = lines[fence.openIndex];
+  if (!open) return null;
+  const from = open.end < doc.length && doc[open.end] === "\n" ? open.end + 1 : open.end;
+  const to = fence.closed ? lines[fence.lastIndex].start : doc.length;
+  return { from, to };
+}
+
+function replaceCommentBody(state, id, body) {
+  const fence = fenceContentRanges(state.doc).find((item) => item.lang === "comment" && item.commentId === id);
+  if (!fence) return state;
+  const range = commentBodyRange(state.doc, fence);
+  if (!range) return state;
+  const text = `${body}\n`;
+  if (state.doc.slice(range.from, range.to) === text) return state;
+  const doc = state.doc.slice(0, range.from) + text + state.doc.slice(range.to);
+  return {
+    doc,
+    cursor: shiftReplace(state.cursor, range.from, range.to, text.length),
+    anchor: shiftReplace(state.anchor, range.from, range.to, text.length),
+    undo: state.undo.concat([{ doc: state.doc, cursor: state.cursor, anchor: state.anchor }]),
+    redo: [],
+  };
+}
+
+export function addComment(doc, anchor, cursor) {
+  const text = typeof doc === "string" ? doc : "";
+  const left = Number.isFinite(anchor) ? anchor : 0;
+  const right = Number.isFinite(cursor) ? cursor : 0;
+  const from = Math.max(0, Math.min(left, right, text.length));
+  const to = Math.max(0, Math.min(text.length, Math.max(left, right)));
+  if (!(from < to)) return null;
+  for (const fence of fenceContentRanges(text)) {
+    if (rangesOverlap(from, to, fence.start, fence.contentEnd)) return null;
+  }
+  for (const atom of structures(text).atoms) {
+    if (atom.type === "table" && rangesOverlap(from, to, atom.start, atom.end)) return null;
+  }
+  for (const span of findSpans(text)) {
+    const inside = from >= span.interiorStart && to <= span.interiorEnd;
+    const outside = to <= span.openStart || from >= span.closeEnd;
+    if (!inside && !outside) return null;
+  }
+  const id = nextCommentId(text);
+  const open = `{${id}}`;
+  const close = `{/${id}}`;
+  let next = text.slice(0, from) + open + text.slice(from, to) + close + text.slice(to);
+  if (!next.endsWith("\n")) next += "\n";
+  next += `\n\`\`\`comment ${id}\n\n\`\`\`\n`;
+  return { doc: next, id, cursor: from + open.length };
 }
 
 function isDelimiterRow(text) {
@@ -470,6 +720,10 @@ function structures(doc) {
       while (end < lines.length && !isFenceClose(lines[end].text)) end += 1;
       const closed = end < lines.length;
       const last = closed ? end : lines.length - 1;
+      if (opened.lang === "comment") {
+        index = last + 1;
+        continue;
+      }
       if (opened.diagram) {
         const bodyLines = lines.slice(index + 1, closed ? last : last + 1);
         const atom = {
@@ -517,7 +771,7 @@ function structures(doc) {
     slots.push({ kind: "line", line: lines[index], mode, parsed });
     index += 1;
   }
-  return { atoms, slots };
+  return { atoms, slots, comments: commentThreads(doc) };
 }
 
 function gapRun(line, start, end) {
@@ -736,9 +990,101 @@ function fillGaps(line, mode, parsed) {
   return mergeRuns(restyleMarkers(line, mode, runs));
 }
 
-function rawBlock(line, mode, parsed) {
+function spansTouching(spans, start, end) {
+  return spans.filter((span) => start < span.closeEnd && end > span.openStart);
+}
+
+// Comment markers stay md-syntax on the cursor line and disappear off it, so they
+// never merge into the interior they wrap.
+function splitPainted(run, spans, keepMarkers) {
+  if (!run || run.type !== "run") return [run];
+  const relevant = spansTouching(spans, run.start, run.end);
+  if (relevant.length === 0) return [run];
+  const cuts = new Set([run.start, run.end]);
+  for (const span of relevant) {
+    for (const point of [span.openStart, span.openEnd, span.closeStart, span.closeEnd]) {
+      if (point > run.start && point < run.end) cuts.add(point);
+    }
+  }
+  const points = Array.from(cuts).sort((a, b) => a - b);
+  const pieces = [];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const piece = paintSlice(run, spans, points[i], points[i + 1], keepMarkers);
+    if (piece) pieces.push(piece);
+  }
+  return pieces;
+}
+
+function paintSlice(run, spans, start, end, keepMarkers) {
+  const text = run.text.slice(start - run.start, end - run.start);
+  if (!text) return null;
+  const marker = spans.find((span) =>
+    (start >= span.openStart && start < span.openEnd) || (start >= span.closeStart && start < span.closeEnd));
+  if (marker) {
+    if (!keepMarkers) return null;
+    return { type: "run", text, start, end, classes: ["md-syntax"] };
+  }
+  const containers = spans.filter((span) => start >= span.interiorStart && start < span.interiorEnd);
+  if (containers.length === 0) {
+    if (start === run.start && end === run.end) return run;
+    const copy = cloneRun(run);
+    copy.text = text;
+    copy.start = start;
+    copy.end = end;
+    return copy;
+  }
+  containers.sort((a, b) =>
+    (a.interiorEnd - a.interiorStart) - (b.interiorEnd - b.interiorStart) || a.interiorStart - b.interiorStart);
+  const copy = cloneRun(run);
+  copy.text = text;
+  copy.start = start;
+  copy.end = end;
+  if (!copy.classes.includes("md-comment")) copy.classes = copy.classes.concat("md-comment");
+  copy.comment = containers[0].id;
+  return copy;
+}
+
+function paintRuns(runs, spans, keepMarkers) {
+  if (!spans || spans.length === 0) return runs;
+  const out = [];
+  let changed = false;
+  for (const run of runs) {
+    const pieces = splitPainted(run, spans, keepMarkers);
+    if (pieces.length !== 1 || pieces[0] !== run) changed = true;
+    for (const piece of pieces) out.push(piece);
+  }
+  return changed ? out : runs;
+}
+
+function paintImage(image, spans) {
+  const containers = spans.filter((span) => image.start >= span.interiorStart && image.end <= span.interiorEnd);
+  if (containers.length === 0) return image;
+  containers.sort((a, b) =>
+    (a.interiorEnd - a.interiorStart) - (b.interiorEnd - b.interiorStart) || a.interiorStart - b.interiorStart);
+  return { ...image, comment: containers[0].id };
+}
+
+function paintParts(parts, spans) {
+  if (!spans || spans.length === 0) return parts;
+  const out = [];
+  let changed = false;
+  for (const part of parts) {
+    if (part.type === "image") {
+      const painted = paintImage(part, spans);
+      if (painted !== part) changed = true;
+      out.push(painted);
+      continue;
+    }
+    const pieces = splitPainted(part, spans, false);
+    if (pieces.length !== 1 || pieces[0] !== part) changed = true;
+    for (const piece of pieces) out.push(piece);
+  }
+  return changed ? out : parts;
+}
+
+function rawBlock(line, mode, parsed, spans) {
   const empty = line.start === line.end;
-  const runs = empty ? [] : fillGaps(line, mode, parsed);
+  const runs = empty ? [] : paintRuns(fillGaps(line, mode, parsed), spans, true);
   return {
     type: "line",
     raw: true,
@@ -753,7 +1099,7 @@ function rawBlock(line, mode, parsed) {
   };
 }
 
-function renderedBlock(line, mode, parsed) {
+function renderedBlock(line, mode, parsed, spans) {
   if (line.start === line.end) {
     return {
       type: "line",
@@ -783,6 +1129,7 @@ function renderedBlock(line, mode, parsed) {
       indent: mode.indent ?? 0,
     };
   }
+  const parts = paintParts(parsed.parts, spans);
   const block = {
     type: "line",
     raw: false,
@@ -791,8 +1138,8 @@ function renderedBlock(line, mode, parsed) {
     end: line.end,
     text: line.text,
     classes: [mode.plain],
-    runs: parsed.runs,
-    parts: parsed.parts,
+    runs: parts === parsed.parts ? parsed.runs : parts.filter((part) => part.type === "run"),
+    parts,
     indent: mode.indent ?? 0,
   };
   if (mode.kind === "ol") block.marker = line.text.slice(0, mode.marker).replace(/^[ \t]+/, "");
@@ -810,7 +1157,7 @@ function linesBetween(doc, start, end) {
 }
 
 // cursor === end stays closed so backspace still deletes the whole atom.
-function expandAtom(blocks, doc, atom, cursor) {
+function expandAtom(blocks, doc, atom, cursor, spans) {
   const lines = linesBetween(doc, atom.start, atom.end);
   const code = atom.type === "diagram";
   const mode = code
@@ -823,18 +1170,22 @@ function expandAtom(blocks, doc, atom, cursor) {
       ? (edge ? parseSlot(line, mode) : codeTokens(line, atom.info))
       : parseSlot(line, mode);
     const onLine = cursor >= line.start && cursor <= line.end;
-    blocks.push(onLine ? rawBlock(line, mode, parsed) : renderedBlock(line, mode, parsed));
+    blocks.push(onLine ? rawBlock(line, mode, parsed, spans) : renderedBlock(line, mode, parsed, spans));
   }
 }
 
 export function plan(doc, cursor) {
-  const { slots } = structures(doc);
+  const text = typeof doc === "string" ? doc : "";
+  const built = structures(text);
+  const { slots } = built;
+  const comments = built.comments || [];
+  const spans = findSpans(text);
   const blocks = [];
   for (const slot of slots) {
     if (slot.kind === "atom") {
       const atom = slot.atom;
       if ((atom.type === "table" || atom.type === "diagram") && cursor >= atom.start && cursor < atom.end) {
-        expandAtom(blocks, doc, atom, cursor);
+        expandAtom(blocks, doc, atom, cursor, spans);
       } else {
         blocks.push(atom);
       }
@@ -842,7 +1193,7 @@ export function plan(doc, cursor) {
     }
     const { line, mode, parsed } = slot;
     const onLine = cursor >= line.start && cursor <= line.end;
-    const block = onLine ? rawBlock(line, mode, parsed) : renderedBlock(line, mode, parsed);
+    const block = onLine ? rawBlock(line, mode, parsed, spans) : renderedBlock(line, mode, parsed, spans);
     if (slot.fenceEdge) block.collapsed = !onLine;
     blocks.push(block);
   }
@@ -856,7 +1207,7 @@ export function plan(doc, cursor) {
       }
     }
   }
-  return { blocks, lines, atoms };
+  return { blocks, lines, atoms, comments: comments || [] };
 }
 
 function sourceAtoms(doc) {
@@ -954,34 +1305,53 @@ function splice(state, from, to, text, cursor) {
   };
 }
 
+function applySplice(state, from, to, text, cursor) {
+  const next = splice(state, from, to, text, cursor);
+  if (next === state) return state;
+  const cleaned = cleanupComments(next.doc, next.cursor);
+  if (cleaned.doc === next.doc && cleaned.cursor === next.cursor) return next;
+  return { ...next, doc: cleaned.doc, cursor: cleaned.cursor, anchor: cleaned.cursor };
+}
+
+function replaceDocument(state, doc, cursor) {
+  if (doc === state.doc && cursor === state.cursor && state.anchor === cursor) return state;
+  return {
+    doc,
+    cursor,
+    anchor: cursor,
+    undo: state.undo.concat([{ doc: state.doc, cursor: state.cursor, anchor: state.anchor }]),
+    redo: [],
+  };
+}
+
 export function insert(state, text) {
   const value = typeof text === "string" ? text : "";
   const from = Math.min(state.anchor, state.cursor);
   const to = Math.max(state.anchor, state.cursor);
   if (value === "" && from === to) return state;
-  return splice(state, from, to, value, from + value.length);
+  return applySplice(state, from, to, value, from + value.length);
 }
 
 export function backspace(state) {
   if (state.anchor !== state.cursor) {
     const from = Math.min(state.anchor, state.cursor);
-    return splice(state, from, Math.max(state.anchor, state.cursor), "", from);
+    return applySplice(state, from, Math.max(state.anchor, state.cursor), "", from);
   }
   if (state.cursor <= 0) return state;
   const atom = renderedAtomAt(state.doc, state.cursor, (item) => state.cursor > item.start && state.cursor <= item.end);
-  if (atom) return splice(state, atom.start, atom.end, "", atom.start);
-  return splice(state, state.cursor - 1, state.cursor, "", state.cursor - 1);
+  if (atom) return applySplice(state, atom.start, atom.end, "", atom.start);
+  return applySplice(state, state.cursor - 1, state.cursor, "", state.cursor - 1);
 }
 
 export function deleteForward(state) {
   if (state.anchor !== state.cursor) {
     const from = Math.min(state.anchor, state.cursor);
-    return splice(state, from, Math.max(state.anchor, state.cursor), "", from);
+    return applySplice(state, from, Math.max(state.anchor, state.cursor), "", from);
   }
   if (state.cursor >= state.doc.length) return state;
   const atom = renderedAtomAt(state.doc, state.cursor, (item) => state.cursor >= item.start && state.cursor < item.end);
-  if (atom) return splice(state, atom.start, atom.end, "", atom.start);
-  return splice(state, state.cursor, state.cursor + 1, "", state.cursor);
+  if (atom) return applySplice(state, atom.start, atom.end, "", atom.start);
+  return applySplice(state, state.cursor, state.cursor + 1, "", state.cursor);
 }
 
 export function undo(state) {
@@ -1123,6 +1493,7 @@ function renderRun(part) {
     el.rel = "noreferrer noopener";
     el.draggable = false;
   }
+  if (part.comment) el.dataset.comment = part.comment;
   if (part.text.length === 0) el.appendChild(document.createElement("br"));
   else el.appendChild(document.createTextNode(part.text));
   return el;
@@ -1130,10 +1501,11 @@ function renderRun(part) {
 
 function renderImage(image) {
   const el = document.createElement("span");
-  el.className = "md-atom md-image";
+  el.className = image.comment ? "md-atom md-image md-comment" : "md-atom md-image";
   el.contentEditable = "false";
   el.dataset.start = String(image.start);
   el.dataset.end = String(image.end);
+  if (image.comment) el.dataset.comment = image.comment;
   const img = document.createElement("img");
   img.src = image.url;
   img.alt = image.alt;
@@ -1324,12 +1696,38 @@ function wordEdges(doc, cursor, direction) {
   return [cursor, index];
 }
 
+function setStyle(el, name, value) {
+  if (!el || !el.style) return;
+  if (typeof el.style.setProperty === "function") el.style.setProperty(name, value);
+  else el.style[name] = value;
+}
+
+function commentsAsideOf(root) {
+  const parent = root && root.parentElement;
+  if (!parent || !parent.childNodes) return null;
+  for (const child of parent.childNodes) {
+    if (child !== root && child.classList && child.classList.contains("comments")) return child;
+  }
+  return null;
+}
+
+function buttonHost() {
+  if (typeof document === "undefined" || !document.body) return null;
+  if (typeof document.body.appendChild !== "function") return null;
+  return document.body;
+}
+
+const COMMENT_CARD_GAP = 12;
+
 export function createEditor(root, doc, cursor = 0) {
   let state = createState(doc, cursor);
   const ac = new AbortController();
   const listen = (type, fn, options = {}) => {
     root.addEventListener(type, fn, { ...options, signal: ac.signal });
   };
+  const commentsAside = commentsAsideOf(root);
+  let addCommentButton = null;
+  let commentFocus = null;
   root.contentEditable = "true";
   root.spellcheck = false;
   root.autocapitalize = "off";
@@ -1476,10 +1874,198 @@ export function createEditor(root, doc, cursor = 0) {
     state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
   }
 
+  function findCommentBox(id) {
+    if (!commentsAside) return null;
+    const walk = (node) => {
+      if (!node) return null;
+      if (node.classList && node.classList.contains("md-comment-body") && node.dataset && node.dataset.comment === id) {
+        return node;
+      }
+      for (const child of node.childNodes || []) {
+        const found = walk(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    return walk(commentsAside);
+  }
+
+  function focusComment(id, start, end) {
+    const box = findCommentBox(id);
+    if (!box) {
+      commentFocus = null;
+      return;
+    }
+    const limit = typeof box.value === "string" ? box.value.length : 0;
+    const from = Math.max(0, Math.min(Number.isFinite(start) ? start : 0, limit));
+    const to = Math.max(0, Math.min(Number.isFinite(end) ? end : from, limit));
+    commentFocus = { id, start: from, end: to };
+    if (typeof box.focus === "function") box.focus();
+    box.selectionStart = from;
+    box.selectionEnd = to;
+  }
+
+  function renderCommentAside(comments) {
+    if (!commentsAside || typeof commentsAside.replaceChildren !== "function") return;
+    const cards = comments.map((comment) => {
+      const card = document.createElement("div");
+      card.className = "md-comment-card";
+      card.dataset.comment = comment.id;
+      const author = document.createElement("div");
+      author.className = "md-comment-author";
+      const box = document.createElement("textarea");
+      box.className = "md-comment-body";
+      box.dataset.comment = comment.id;
+      box.value = comment.body;
+      box.spellcheck = false;
+      card.appendChild(author);
+      card.appendChild(box);
+      return card;
+    });
+    commentsAside.replaceChildren(...cards);
+  }
+
+  function elementRect(el) {
+    if (!el || typeof el.getBoundingClientRect !== "function") return null;
+    return el.getBoundingClientRect();
+  }
+
+  function highlightRects(id) {
+    const found = [];
+    const walk = (node) => {
+      if (!node || node.nodeType !== 1) {
+        if (node && node.childNodes) {
+          for (const child of node.childNodes) walk(child);
+        }
+        return;
+      }
+      if (node.classList && node.classList.contains("md-comment") && node.dataset && node.dataset.comment === id) {
+        const rect = elementRect(node);
+        if (rect) found.push(rect);
+      }
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(root);
+    return found;
+  }
+
+  function layoutComments() {
+    if (!commentsAside) return;
+    const cards = [];
+    for (const child of commentsAside.childNodes || []) {
+      if (child.classList && child.classList.contains("md-comment-card")) cards.push(child);
+    }
+    const narrow = typeof window !== "undefined"
+      && typeof window.matchMedia === "function"
+      && window.matchMedia("(max-width: 800px)").matches;
+    if (narrow || cards.length === 0) {
+      for (const card of cards) {
+        setStyle(card, "position", "static");
+        setStyle(card, "top", "auto");
+        setStyle(card, "left", "auto");
+        setStyle(card, "width", "100%");
+        setStyle(card, "margin", "");
+      }
+      setStyle(commentsAside, "height", "");
+      return;
+    }
+    const asideRect = elementRect(commentsAside);
+    if (!asideRect || typeof cards[0].getBoundingClientRect !== "function") return;
+    const spans = findSpans(state.doc);
+    let floor = 0;
+    for (const card of cards) {
+      const id = card.dataset.comment;
+      let rects = highlightRects(id);
+      if (rects.length === 0) {
+        const span = spans.find((item) => item.id === id);
+        if (span) {
+          const walk = (node) => {
+            if (!node || node.nodeType !== 1) return;
+            if (node.classList && node.classList.contains("md-comment") && node.dataset && node.dataset.start != null) {
+              const start = Number(node.dataset.start);
+              const end = Number(node.dataset.end);
+              if (start >= span.interiorStart && end <= span.interiorEnd) {
+                const rect = elementRect(node);
+                if (rect) rects.push(rect);
+              }
+            }
+            for (const child of node.childNodes || []) walk(child);
+          };
+          walk(root);
+        }
+      }
+      let top = floor;
+      if (rects.length > 0) {
+        let markTop = rects[0].top;
+        for (const rect of rects) if (rect.top < markTop) markTop = rect.top;
+        top = Math.max(floor, markTop - asideRect.top);
+      }
+      setStyle(card, "position", "absolute");
+      setStyle(card, "top", `${top}px`);
+      setStyle(card, "left", "0px");
+      setStyle(card, "width", "100%");
+      setStyle(card, "margin", "0px");
+      const height = typeof card.offsetHeight === "number" ? card.offsetHeight : (elementRect(card)?.height || 0);
+      floor = top + height + COMMENT_CARD_GAP;
+    }
+    setStyle(commentsAside, "height", `${floor}px`);
+  }
+
+  function hideCommentButton() {
+    if (addCommentButton) addCommentButton.hidden = true;
+  }
+
+  function updateCommentButton() {
+    if (state.anchor === state.cursor) {
+      hideCommentButton();
+      return;
+    }
+    const accepted = addComment(state.doc, state.anchor, state.cursor);
+    if (!accepted) {
+      hideCommentButton();
+      return;
+    }
+    const host = buttonHost();
+    if (!host) return;
+    if (!addCommentButton) {
+      addCommentButton = document.createElement("button");
+      addCommentButton.type = "button";
+      addCommentButton.className = "md-add-comment";
+      addCommentButton.textContent = "Add comment";
+      addCommentButton.hidden = true;
+      host.appendChild(addCommentButton);
+      addCommentButton.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        const result = addComment(state.doc, state.anchor, state.cursor);
+        if (!result) return;
+        commentFocus = { id: result.id, start: 0, end: 0 };
+        apply(replaceDocument(state, result.doc, result.cursor));
+      }, { signal: ac.signal });
+    }
+    const sel = typeof window !== "undefined" && window.getSelection ? window.getSelection() : null;
+    let rect = null;
+    if (sel && sel.rangeCount > 0 && typeof sel.getRangeAt === "function") {
+      const range = sel.getRangeAt(0);
+      const rects = typeof range.getClientRects === "function" ? range.getClientRects() : [];
+      if (rects && rects.length > 0) rect = rects[rects.length - 1];
+      else if (typeof range.getBoundingClientRect === "function") rect = range.getBoundingClientRect();
+    }
+    addCommentButton.hidden = false;
+    setStyle(addCommentButton, "position", "fixed");
+    if (rect) {
+      setStyle(addCommentButton, "left", `${rect.right}px`);
+      setStyle(addCommentButton, "top", `${rect.top}px`);
+    }
+  }
+
   function render() {
-    const blocks = plan(state.doc, state.cursor).blocks;
-    root.replaceChildren(...blocks.map(renderBlock));
-    placeCaret();
+    const planned = plan(state.doc, state.cursor);
+    root.replaceChildren(...planned.blocks.map(renderBlock));
+    renderCommentAside(planned.comments);
+    layoutComments();
+    if (commentFocus) focusComment(commentFocus.id, commentFocus.start, commentFocus.end);
+    else placeCaret();
+    updateCommentButton();
   }
 
   function apply(next) {
@@ -1516,6 +2102,7 @@ export function createEditor(root, doc, cursor = 0) {
   }
 
   listen("beforeinput", (event) => {
+    commentFocus = null;
     event.preventDefault();
     if (composing) return;
     const type = event.inputType;
@@ -1596,6 +2183,7 @@ export function createEditor(root, doc, cursor = 0) {
   });
 
   listen("keydown", (event) => {
+    commentFocus = null;
     if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       adoptDomSelection();
@@ -1625,6 +2213,7 @@ export function createEditor(root, doc, cursor = 0) {
   });
 
   listen("mousedown", (event) => {
+    commentFocus = null;
     pointer = { x: event.clientX, y: event.clientY };
     didDrag = false;
   });
@@ -1645,6 +2234,7 @@ export function createEditor(root, doc, cursor = 0) {
     const after = lineIndexAt(state.doc, mapped.cursor);
     state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
     if (before !== after) render();
+    else updateCommentButton();
   });
 
   listen("click", (event) => {
@@ -1654,6 +2244,18 @@ export function createEditor(root, doc, cursor = 0) {
     if (didDrag) {
       didDrag = false;
       return;
+    }
+    const highlighted = target?.closest?.(".md-comment");
+    if (highlighted && highlighted.dataset && highlighted.dataset.comment) {
+      const inside = root.contains(highlighted);
+      const connected = highlighted.isConnected === true;
+      const box = findCommentBox(highlighted.dataset.comment);
+      if (box && (inside || !connected)) {
+        event.preventDefault();
+        const caret = typeof box.value === "string" ? box.value.length : 0;
+        focusComment(highlighted.dataset.comment, caret, caret);
+        return;
+      }
     }
     const atom = target?.closest?.(".md-atom");
     if (atom && root.contains(atom)) {
@@ -1675,6 +2277,36 @@ export function createEditor(root, doc, cursor = 0) {
     if (target?.closest?.("a")) event.preventDefault();
   });
 
+  if (commentsAside && typeof commentsAside.addEventListener === "function") {
+    commentsAside.addEventListener("input", (event) => {
+      const box = event.target;
+      if (!box || !box.classList || !box.classList.contains("md-comment-body")) return;
+      const id = box.dataset && box.dataset.comment;
+      if (!id) return;
+      const start = Number.isFinite(box.selectionStart) ? box.selectionStart : String(box.value || "").length;
+      const end = Number.isFinite(box.selectionEnd) ? box.selectionEnd : start;
+      commentFocus = { id, start, end };
+      apply(replaceCommentBody(state, id, box.value));
+    }, { signal: ac.signal });
+    commentsAside.addEventListener("keydown", (event) => {
+      const box = event.target;
+      if (!box || !box.classList || !box.classList.contains("md-comment-body")) return;
+      const mod = event.ctrlKey || event.metaKey;
+      if (!mod || event.altKey) return;
+      const key = event.key;
+      if (key !== "z" && key !== "Z" && key !== "y" && key !== "Y") return;
+      event.preventDefault();
+      const id = box.dataset && box.dataset.comment;
+      const redoKey = key === "y" || key === "Y" || event.shiftKey;
+      commentFocus = { id, start: Number.MAX_SAFE_INTEGER, end: Number.MAX_SAFE_INTEGER };
+      apply(redoKey ? redo(state) : undo(state));
+    }, { signal: ac.signal });
+  }
+
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("resize", () => layoutComments(), { signal: ac.signal });
+  }
+
   render();
 
   return {
@@ -1682,11 +2314,15 @@ export function createEditor(root, doc, cursor = 0) {
       return state;
     },
     focus() {
+      commentFocus = null;
       root.focus();
       placeCaret();
     },
     destroy() {
       ac.abort();
+      if (addCommentButton && addCommentButton.parentElement && typeof addCommentButton.parentElement.removeChild === "function") {
+        addCommentButton.parentElement.removeChild(addCommentButton);
+      }
     },
   };
 }

@@ -10,6 +10,7 @@ import {
   placeMove,
   createState,
   createEditor,
+  addComment,
   insert,
   backspace,
   deleteForward,
@@ -1406,5 +1407,429 @@ test("mermaid render replaces source", async () => {
     else globalThis.mermaid = previousMermaid;
     if (previousParser === undefined) delete globalThis.DOMParser;
     else globalThis.DOMParser = previousParser;
+  }
+});
+
+test("comment spans hide markers off the cursor line", () => {
+  const off = plan("Say {c1}fox{/c1} now.\n", 22).lines[0];
+  assert.equal(off.raw, false);
+  assert.deepEqual(off.runs.map((run) => [run.text, run.start, run.end]), [
+    ["Say ", 0, 4],
+    ["fox", 8, 11],
+    [" now.", 16, 21],
+  ]);
+  assert.ok(off.runs[0].classes.includes("md-p"));
+  assert.equal(off.runs[0].classes.includes("md-syntax"), false);
+  assert.ok(off.runs[1].classes.includes("md-comment"));
+  assert.equal(off.runs[1].classes.includes("md-syntax"), false);
+  assert.ok(off.runs[2].classes.includes("md-p"));
+
+  const raw = plan("Say {c1}fox{/c1} now.\n", 0).lines[0];
+  assert.equal(raw.raw, true);
+  assert.equal(raw.runs.map((run) => run.text).join(""), "Say {c1}fox{/c1} now.");
+  const marker = raw.runs.find((run) => run.text === "{c1}");
+  assert.deepEqual(marker.classes, ["md-syntax"]);
+  const fox = raw.runs.find((run) => run.text === "fox");
+  assert.ok(fox.classes.includes("md-comment"));
+  assert.equal(fox.classes.includes("md-syntax"), false);
+  assert.equal(marker.end, fox.start);
+
+  const bold = plan("**a {c1}fox{/c1} b**\n", 40).lines[0];
+  const boldFox = bold.runs.find((run) => run.text === "fox");
+  assert.ok(boldFox.classes.includes("md-strong"));
+  assert.ok(boldFox.classes.includes("md-comment"));
+  assert.equal(boldFox.classes.includes("md-syntax"), false);
+  const boldRaw = plan("**a {c1}fox{/c1} b**\n", 0).lines[0];
+  assert.equal(boldRaw.runs.map((run) => run.text).join(""), "**a {c1}fox{/c1} b**");
+  assert.deepEqual(boldRaw.runs.find((run) => run.text === "{c1}").classes, ["md-syntax"]);
+  const boldRawFox = boldRaw.runs.find((run) => run.text === "fox");
+  assert.ok(boldRawFox.classes.includes("md-strong"));
+  assert.ok(boldRawFox.classes.includes("md-comment"));
+  assert.equal(boldRawFox.classes.includes("md-syntax"), false);
+
+  const crossed = plan("{c1}ab\ncd{/c1}\n", 7);
+  assert.equal(crossed.lines[0].raw, false);
+  assert.equal(crossed.lines[0].runs[0].text, "ab");
+  assert.equal(crossed.lines[0].runs[0].start, 4);
+  assert.equal(crossed.lines[0].runs[0].end, 6);
+  assert.ok(crossed.lines[0].runs[0].classes.includes("md-comment"));
+  assert.equal(crossed.lines[1].raw, true);
+  assert.equal(crossed.lines[1].runs.map((run) => run.text).join(""), "cd{/c1}");
+
+  const fenced = plan("```python\n{c1}x{/c1}\n```\n", 30);
+  assert.equal(fenced.comments.length, 0);
+  assert.ok(fenced.lines.some((line) => line.text.includes("{c1}x{/c1}")));
+  assert.equal(fenced.lines.some((line) => line.runs.some((run) => run.classes.includes("md-comment"))), false);
+});
+
+test("comment threads stay out of the editor lines", () => {
+  const doc = "Say {c1}fox{/c1} now.\n\n```comment c1\n**hi**\n```\n";
+  const planned = plan(doc, 22);
+  assert.equal(planned.comments.length, 1);
+  assert.equal(planned.comments[0].id, "c1");
+  assert.equal(planned.comments[0].body, "**hi**");
+  assert.equal(planned.comments[0].start, doc.indexOf("```comment"));
+  assert.equal(planned.comments[0].end, doc.length);
+  for (const line of planned.lines) {
+    assert.equal(line.runs.some((run) => run.text.includes("**hi**")), false);
+    assert.equal(line.text.includes("```comment"), false);
+  }
+});
+
+test("addComment wraps a free range and appends an empty thread", () => {
+  const added = addComment("hello fox\n", 6, 9);
+  assert.deepEqual(added, {
+    id: "c1",
+    cursor: 10,
+    doc: "hello {c1}fox{/c1}\n\n```comment c1\n\n```\n",
+  });
+  assert.deepEqual(addComment("hello fox\n", 9, 6), added);
+  assert.equal(addComment("hello fox\n", 6, 6), null);
+  assert.equal(addComment("hello fox", 6, 9).doc, "hello {c1}fox{/c1}\n\n```comment c1\n\n```\n");
+
+  const nested = addComment(added.doc, 10, 12);
+  assert.equal(nested.id, "c2");
+  assert.ok(nested.doc.startsWith("hello {c1}{c2}fo"));
+  assert.equal(addComment(added.doc, 11, 20), null);
+  assert.equal(addComment(added.doc, 0, 4).id, "c2");
+
+  const hole = "a {c1}b{/c1} c {c3}d{/c3}\n";
+  assert.equal(addComment(hole, 0, 1).id, "c2");
+  assert.equal(addComment("hello {c1} there\n", 0, 5).id, "c2");
+  assert.equal(addComment("hello\n\n```comment c1\n\n```\n", 0, 5).id, "c2");
+  assert.equal(addComment("```python\nx\n```\n", 12, 13), null);
+  assert.equal(addComment(D, 2, 3), null);
+  assert.equal(addComment(E, 4, 8), null);
+});
+
+test("deleting an empty comment interior drops the span and the thread", () => {
+  const marked = "A {c1}x{/c1} B\n\n```comment c1\nhi\n```\n";
+  let emptied = backspace(createState(marked, 7));
+  assert.equal(emptied.doc, "A  B\n\n");
+  assert.equal(emptied.cursor, 2);
+  assert.equal(emptied.undo.length, 1);
+  emptied = undo(emptied);
+  assert.equal(emptied.doc, marked);
+  assert.equal(emptied.cursor, 7);
+
+  const partial = backspace(createState("A {c1}xy{/c1} B\n\n```comment c1\nhi\n```\n", 8));
+  assert.equal(partial.doc, "A {c1}x{/c1} B\n\n```comment c1\nhi\n```\n");
+  assert.equal(partial.cursor, 7);
+
+  const forward = deleteForward(createState(marked, 6));
+  assert.equal(forward.doc, "A  B\n\n");
+  assert.equal(forward.cursor, 2);
+
+  const kept = "A {c1}x{/c1} B\n\n```comment c1\nhi\n```\nafter\n";
+  const removed = backspace(createState(kept, 7));
+  assert.equal(removed.doc, "A  B\n\nafter\n");
+  assert.equal(removed.cursor, 2);
+
+  let replaced = createState("A {c1}xy{/c1} B\n\n```comment c1\nhi\n```\n", 8, 6);
+  replaced = insert(replaced, "");
+  assert.equal(replaced.doc, "A  B\n\n");
+  replaced = undo(replaced);
+  assert.equal(replaced.doc, "A {c1}xy{/c1} B\n\n```comment c1\nhi\n```\n");
+});
+
+function mountSheet() {
+  const listeners = {};
+  let root = null;
+  let selection = null;
+  function makeElement(tag) {
+    const el = {
+      nodeType: 1,
+      tagName: String(tag).toUpperCase(),
+      nodeName: String(tag).toUpperCase(),
+      localName: String(tag).toLowerCase(),
+      className: "",
+      dataset: {},
+      childNodes: [],
+      parentElement: null,
+      styleProps: {},
+      listeners: {},
+      value: "",
+      hidden: false,
+      selectionStart: 0,
+      selectionEnd: 0,
+      focused: false,
+    };
+    el.style = {
+      setProperty(name, value) {
+        el.styleProps[name] = value;
+      },
+    };
+    el.classList = {
+      contains(name) {
+        return el.className.split(/\s+/).filter(Boolean).includes(name);
+      },
+      add(name) {
+        if (!el.classList.contains(name)) el.className = `${el.className} ${name}`.trim();
+      },
+      remove(name) {
+        el.className = el.className.split(/\s+/).filter((item) => item && item !== name).join(" ");
+      },
+    };
+    el.appendChild = (child) => {
+      child.parentElement = el;
+      el.childNodes.push(child);
+      return child;
+    };
+    el.append = (...children) => {
+      for (const child of children) el.appendChild(child);
+    };
+    el.replaceChildren = (...children) => {
+      for (const child of el.childNodes) child.parentElement = null;
+      el.childNodes = [];
+      for (const child of children) el.appendChild(child);
+    };
+    el.removeChild = (child) => {
+      el.childNodes = el.childNodes.filter((item) => item !== child);
+      child.parentElement = null;
+      return child;
+    };
+    el.addEventListener = (type, fn) => {
+      el.listeners[type] = fn;
+    };
+    el.focus = () => {
+      el.focused = true;
+    };
+    Object.defineProperty(el, "offsetHeight", { get() { return 30; } });
+    el.getBoundingClientRect = () => {
+      const top = el.dataset && el.dataset.start != null && el.dataset.start !== "" ? Number(el.dataset.start) : 0;
+      return { top, left: 0, right: 20, bottom: top + 10, width: 20, height: 10 };
+    };
+    Object.defineProperty(el, "textContent", {
+      get() {
+        return el.childNodes.map((child) => (child.textContent == null ? "" : child.textContent)).join("");
+      },
+      set(value) {
+        const text = value == null ? "" : String(value);
+        el.replaceChildren({ nodeType: 3, textContent: text, length: text.length, parentElement: el, childNodes: [] });
+      },
+    });
+    Object.defineProperty(el, "isConnected", {
+      get() {
+        let node = el;
+        while (node) {
+          if (node === root) return true;
+          node = node.parentElement;
+        }
+        return false;
+      },
+    });
+    el.closest = (selector) => {
+      const parts = selector.split(",").map((part) => part.trim());
+      let node = el;
+      while (node) {
+        for (const part of parts) {
+          if (part.startsWith(".") && node.classList && node.classList.contains(part.slice(1))) return node;
+          if (node.tagName === part.toUpperCase()) return node;
+        }
+        node = node.parentElement;
+      }
+      return null;
+    };
+    return el;
+  }
+  const sheet = makeElement("div");
+  sheet.className = "sheet";
+  root = makeElement("div");
+  const aside = makeElement("aside");
+  aside.className = "comments";
+  sheet.append(root, aside);
+  const body = makeElement("body");
+  root.setAttribute = () => {};
+  root.querySelectorAll = () => [];
+  root.addEventListener = (type, fn) => {
+    listeners[type] = fn;
+  };
+  root.contains = (node) => {
+    let current = node;
+    while (current) {
+      if (current === root) return true;
+      current = current.parentElement;
+    }
+    return false;
+  };
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  globalThis.document = {
+    body,
+    createElement: (tag) => makeElement(tag),
+    createTextNode: (text) => ({ nodeType: 3, textContent: text, length: String(text).length, parentElement: null, childNodes: [] }),
+    createTreeWalker: () => ({ nextNode: () => null }),
+    createRange: () => ({
+      setStart() {},
+      collapse() {},
+      selectNode() {},
+      setStartAfter() {},
+      setStartBefore() {},
+    }),
+  };
+  globalThis.window = {
+    getSelection: () => selection,
+    matchMedia: () => ({ matches: false }),
+  };
+  const findAll = (predicate) => {
+    const found = [];
+    const walk = (node) => {
+      if (predicate(node)) found.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(sheet);
+    walk(body);
+    return found;
+  };
+  return {
+    root,
+    aside,
+    body,
+    listeners,
+    findAll,
+    setSelection(value) {
+      selection = value;
+    },
+    restore() {
+      if (previousDocument === undefined) delete globalThis.document;
+      else globalThis.document = previousDocument;
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+    },
+  };
+}
+
+test("comment cards edit the thread and line up with the highlight", () => {
+  const mounted = mountSheet();
+  try {
+    const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+    assert.match(html, /<div class="sheet">\s*<div id="editor"><\/div>\s*<aside class="comments"><\/aside>/);
+    const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    assert.match(css, /\.md-comment-author\s*\{[^}]*min-height:\s*1\.25em;/);
+    assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*aside\.comments\s*\{[^}]*width:\s*100%;/);
+    assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.sheet\s*\{[^}]*display:\s*block;/);
+    const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
+    assert.equal(src.includes("innerHTML"), false);
+
+    const view = createEditor(mounted.root, "hello fox two deer\n", 0);
+    const text = mounted.root.childNodes[0].childNodes[0].childNodes[0];
+    assert.equal(text.textContent, "hello fox two deer");
+    mounted.listeners.mousedown({ clientX: 0, clientY: 0 });
+    mounted.setSelection({
+      rangeCount: 1,
+      anchorNode: text,
+      anchorOffset: 6,
+      focusNode: text,
+      focusOffset: 9,
+      getRangeAt() {
+        return {
+          collapsed: false,
+          commonAncestorContainer: text,
+          getClientRects() {
+            return [{ top: 40, left: 8, right: 72, bottom: 58, width: 64, height: 18 }];
+          },
+        };
+      },
+    });
+    mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
+    const button = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    assert.equal(button.textContent, "Add comment");
+    assert.equal(button.hidden, false);
+    assert.equal(button.styleProps.left, "72px");
+    assert.equal(button.styleProps.top, "40px");
+    let prevented = false;
+    button.listeners.mousedown({
+      preventDefault() {
+        prevented = true;
+      },
+    });
+    assert.equal(prevented, true);
+    assert.equal(view.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n");
+    assert.equal(view.getState().cursor, 10);
+    let box = mounted.findAll((node) => node.tagName === "TEXTAREA")[0];
+    assert.equal(box.value, "");
+    assert.equal(box.className.includes("md-comment-body"), true);
+    assert.equal(box.focused, true);
+    assert.equal(box.selectionStart, 0);
+    const author = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-author"))[0];
+    assert.equal(author.textContent, "");
+    assert.equal(mounted.findAll((node) => (node.textContent || "").includes("```comment")).length, 0);
+
+    const mark = mounted.findAll((node) => node.classList && node.classList.contains("md-comment"))[0];
+    mounted.listeners.click({
+      target: mark,
+      clientX: 1,
+      clientY: 1,
+      preventDefault() {},
+    });
+    box.focused = false;
+    let clickPrevented = false;
+    mounted.listeners.click({
+      target: mark,
+      clientX: 1,
+      clientY: 1,
+      preventDefault() {
+        clickPrevented = true;
+      },
+    });
+    assert.equal(clickPrevented, true);
+    box = mounted.findAll((node) => node.tagName === "TEXTAREA")[0];
+    assert.equal(box.focused, true);
+
+    box.value = "hi";
+    box.selectionStart = 2;
+    box.selectionEnd = 2;
+    mounted.aside.listeners.input({ target: box });
+    assert.equal(view.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
+    box = mounted.findAll((node) => node.tagName === "TEXTAREA")[0];
+    assert.equal(box.value, "hi");
+    assert.equal(box.focused, true);
+    assert.equal(box.selectionStart, 2);
+    assert.equal(box.selectionEnd, 2);
+    assert.equal(view.getState().undo.length, 2);
+    let undoPrevented = false;
+    mounted.aside.listeners.keydown({
+      key: "z",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      target: box,
+      preventDefault() {
+        undoPrevented = true;
+      },
+    });
+    assert.equal(undoPrevented, true);
+    assert.equal(view.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n");
+    box = mounted.findAll((node) => node.tagName === "TEXTAREA")[0];
+    assert.equal(box.value, "");
+
+    view.destroy();
+    mounted.setSelection(null);
+
+    const first = addComment("one fox two deer\n", 4, 7);
+    const deerAt = first.doc.indexOf("deer");
+    const second = addComment(first.doc, deerAt, deerAt + 4);
+    globalThis.window.matchMedia = () => ({ matches: false });
+    const aligned = createEditor(mounted.root, second.doc, second.cursor);
+    const cards = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+    assert.equal(cards.length, 2);
+    assert.deepEqual(cards.map((card) => card.dataset.comment), ["c1", "c2"]);
+    const tops = cards.map((card) => Number.parseFloat(card.styleProps.top));
+    assert.equal(cards[0].styleProps.position, "absolute");
+    assert.ok(tops[1] >= tops[0] + 30);
+    const marks = mounted.findAll((node) => node.classList && node.classList.contains("md-comment") && node.dataset.comment === "c1");
+    assert.equal(tops[0], Number(marks[0].dataset.start));
+
+    globalThis.window.matchMedia = () => ({ matches: true });
+    mounted.listeners.resize = null;
+    aligned.destroy();
+    const narrow = createEditor(mounted.root, second.doc, second.cursor);
+    const stacked = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+    assert.deepEqual(stacked.map((card) => card.dataset.comment), ["c1", "c2"]);
+    assert.ok(stacked.every((card) => card.styleProps.position === "static"));
+    narrow.destroy();
+  } finally {
+    mounted.restore();
   }
 });
