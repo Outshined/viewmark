@@ -313,13 +313,17 @@ test("T-snap-rendered", () => {
   assert.equal(snapMove(E, 20, 12, "forward"), 20);
   assert.equal(placeMove(D, 33, 4, "forward", "line"), 0);
   assert.equal(placeMove(D, 33, 4, "forward", "character"), 0);
-  assert.equal(placeMove(D, 33, 4, "backward", "character"), 33);
+  assert.equal(placeMove(D, 33, 4, "backward", "character"), 32);
   assert.equal(placeMove(D, 0, 4, "forward", "character"), 4);
   assert.equal(placeMove(E, 20, 12, "forward", "line"), 20);
   assert.equal(placeMove(E, 20, 12, "backward", "line"), 0);
   assert.equal(placeMove(E, 20, 12, "forward", "character"), 0);
-  assert.equal(placeMove(E, 20, 12, "backward", "character"), 20);
+  assert.equal(placeMove(E, 20, 12, "backward", "character"), 19);
   assert.equal(placeMove(F, 0, 10, "forward", "character"), 21);
+  assert.equal(placeMove("x\n" + D, 0, 40, "forward", "line"), 2);
+  assert.equal(placeMove("x\n" + D, 40, 0, "backward", "line"), 34);
+  assert.equal(placeMove("x\n" + E, 0, 30, "forward", "line"), 30);
+  assert.equal(placeMove("x\n" + E, 0, 30, "forward", "character"), 2);
 
   const fenced = "a\n```js\ncode\n```\n";
   const openFence = fenced.indexOf("```js");
@@ -740,7 +744,7 @@ test("sample focuses the wrapped line", () => {
   assert.match(doc, /\[[^\]]+\]\([^)]+\)/);
   assert.match(doc, /\| --- \|/);
   assert.match(doc, /!\[[^\]]*\]\(sample\.svg\)/);
-  assert.match(doc, /```mermaid[\s\S]*```/);
+  assert.match(doc, /```mermaid\ngraph TD\nA-->B\n```/);
   assert.ok(doc.indexOf("```python\nx = 1\n```") < doc.indexOf("```mermaid"));
   assert.match(doc, /^- two\n {2}- sub\n\t- tabbed\n/m);
   const first = doc.indexOf("\n1. first\n");
@@ -1360,7 +1364,7 @@ test("mermaid render replaces source", async () => {
     const view = createEditor(mounted.root, doc, doc.length);
     const pres = mounted.findAll((node) => node.tagName === "PRE");
     assert.deepEqual(pres.map((node) => node.textContent), ["A-->B", "C-->D"]);
-    assert.deepEqual(options, [{ startOnLoad: false, securityLevel: "strict", htmlLabels: false }]);
+    assert.deepEqual(options, [{ startOnLoad: false, securityLevel: "strict", flowchart: { htmlLabels: false } }]);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(renders, 2);
     const boxes = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"));

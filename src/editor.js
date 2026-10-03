@@ -34,6 +34,7 @@ const SAMPLE = [
   "```",
   "",
   "```mermaid",
+  "graph TD",
   "A-->B",
   "```",
   "",
@@ -904,13 +905,34 @@ function skippedFence(doc, from, landed, forward) {
   return nearest;
 }
 
+// A closed table is not editable, so the caret can land past it. Line granularity
+// still steps over a diagram. end - 1 opens the atom; cursor === end stays closed.
+function opensInward(atom, granularity) {
+  return atom.type === "table" || (atom.type === "diagram" && granularity === "character");
+}
+
+function inwardOffset(atom, forward) {
+  return forward ? atom.start : atom.end - 1;
+}
+
+function crossedAtom(doc, cursor, landed, forward, granularity) {
+  const lesser = Math.min(cursor, landed);
+  const greater = Math.max(cursor, landed);
+  let nearest = null;
+  for (const atom of plan(doc, cursor).atoms) {
+    if (!opensInward(atom, granularity) || atom.start < lesser || atom.end > greater) continue;
+    if (!nearest || (forward ? atom.start < nearest.start : atom.end > nearest.end)) nearest = atom;
+  }
+  return nearest;
+}
+
 export function placeMove(doc, cursor, landed, direction, granularity) {
   const forward = direction === "forward" || direction === "right";
   const snapped = movementAtom(doc, cursor, landed, forward);
   let next = snapMove(doc, cursor, landed, direction);
-  if (snapped && (snapped.type === "table" || (snapped.type === "diagram" && granularity === "character"))) {
-    next = forward ? snapped.start : snapped.end;
-  }
+  if (snapped && opensInward(snapped, granularity)) next = inwardOffset(snapped, forward);
+  const crossed = crossedAtom(doc, cursor, landed, forward, granularity);
+  if (crossed) next = inwardOffset(crossed, forward);
   const fence = skippedFence(doc, cursor, landed, forward);
   if (fence) next = forward ? fence.start : fence.end;
   return next;
@@ -1157,7 +1179,7 @@ function mermaidApi() {
   const api = globalThis.mermaid;
   if (!api || typeof api.initialize !== "function" || typeof api.render !== "function") return null;
   if (!mermaidReady) {
-    api.initialize({ startOnLoad: false, securityLevel: "strict", htmlLabels: false });
+    api.initialize({ startOnLoad: false, securityLevel: "strict", flowchart: { htmlLabels: false } });
     mermaidReady = true;
   }
   return api;
