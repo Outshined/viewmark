@@ -1771,6 +1771,8 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.equal(author.placeholder, "Author");
     assert.equal(author.value, "");
     assert.equal(author.textContent, "");
+    author.value = "Ada";
+    mounted.aside.listeners.input({ target: author });
     assert.equal(mounted.findAll((node) => (node.textContent || "").includes("```comment")).length, 0);
 
     const mark = mounted.findAll((node) => node.classList && node.classList.contains("md-comment"))[0];
@@ -1807,6 +1809,14 @@ test("comment cards edit the thread and line up with the highlight", () => {
     const save = mounted.findAll((node) => node.tagName === "BUTTON" && node.textContent === "Save")[0];
     save.listeners.click({ target: save });
     assert.equal(view.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
+    assert.equal(view.getState().doc.includes("Ada"), false);
+    const savedCard = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"))[0];
+    assert.equal(savedCard.childNodes[0].textContent, "Resolve");
+    const savedNote = savedCard.childNodes[1];
+    assert.equal(savedNote.childNodes[0].tagName, "INPUT");
+    assert.equal(savedNote.childNodes[0].placeholder, "Author");
+    assert.equal(savedNote.childNodes[0].value, "Ada");
+    assert.equal(savedNote.childNodes[0].classList.contains("md-comment-author"), true);
     box = mounted.findAll((node) => node.tagName === "TEXTAREA")[0];
     assert.equal(box.value, "hi");
     assert.equal(box.focused, true);
@@ -1843,9 +1853,20 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.deepEqual(cards.map((card) => card.dataset.comment), ["c1", "c2"]);
     const tops = cards.map((card) => Number.parseFloat(card.styleProps.top));
     assert.equal(cards[0].styleProps.position, "absolute");
+    assert.equal(cards[0].styleProps.top, "42px");
     assert.ok(tops[1] >= tops[0] + 30);
-    const marks = mounted.findAll((node) => node.classList && node.classList.contains("md-comment") && node.dataset.comment === "c1");
-    assert.equal(tops[0], Number(marks[0].dataset.start));
+    const showResolved = mounted.aside.childNodes[0];
+    const showLabel = mounted.aside.childNodes[1];
+    assert.equal(showResolved.type, "checkbox");
+    assert.equal(showResolved.checked, false);
+    assert.equal(showResolved.disabled, false);
+    assert.equal(showResolved.styleProps.position, "absolute");
+    assert.equal(showResolved.styleProps.top, "0px");
+    assert.equal(showResolved.styleProps.left, "0px");
+    assert.equal(showLabel.textContent, "show resolved");
+    assert.equal(showLabel.styleProps.position, "absolute");
+    assert.equal(showLabel.styleProps.top, "0px");
+    assert.notEqual(showLabel.styleProps.left, "0px");
 
     globalThis.window.matchMedia = () => ({ matches: true });
     mounted.listeners.resize = null;
@@ -1854,6 +1875,9 @@ test("comment cards edit the thread and line up with the highlight", () => {
     const stacked = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
     assert.deepEqual(stacked.map((card) => card.dataset.comment), ["c1", "c2"]);
     assert.ok(stacked.every((card) => card.styleProps.position === "static"));
+    assert.equal(mounted.aside.childNodes[0].styleProps.position, "static");
+    assert.equal(mounted.aside.childNodes[1].styleProps.position, "static");
+    assert.equal(mounted.aside.childNodes[1].textContent, "show resolved");
     narrow.destroy();
   } finally {
     mounted.restore();
@@ -1905,8 +1929,10 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(checkbox.type, "checkbox");
     assert.equal(checkbox.checked, false);
     assert.equal(checkbox.disabled, false);
+    assert.equal(checkbox.styleProps.position, "static");
     assert.equal(label.tagName, "LABEL");
     assert.equal(label.textContent, "show resolved");
+    assert.equal(label.styleProps.position, "static");
     chooseFox();
     const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
     add.listeners.mousedown({ preventDefault() {} });
@@ -1934,6 +1960,9 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     const saved = createEditor(mounted.root, opened, 0);
     let card = cards()[0];
     assert.equal(card.childNodes[0].textContent, "Resolve");
+    assert.equal(card.childNodes[1].childNodes[0].tagName, "INPUT");
+    assert.equal(card.childNodes[1].childNodes[0].placeholder, "Author");
+    assert.equal(card.childNodes[1].childNodes[0].value, "");
     assert.equal(card.childNodes.at(-2).textContent, "Reply");
     assert.equal(card.childNodes.at(-1).textContent, "Delete");
     assert.equal(buttons("Save").length, 0);

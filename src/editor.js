@@ -2054,6 +2054,15 @@ export function createEditor(root, doc, cursor = 0) {
     const notes = commentNotes(thread.body);
     if (box.dataset.reply === "true") notes.push(box.value);
     else notes[index] = box.value;
+    const parent = box.parentElement;
+    if (parent) {
+      for (const child of parent.childNodes || []) {
+        if (child.classList && child.classList.contains("md-comment-author")) {
+          authorDrafts.set(draftKey(id, index), child.value || "");
+          break;
+        }
+      }
+    }
     const body = notes.join("\n::\n");
     if (box.dataset.reply === "true") replyDrafts.delete(id);
     unsavedThreads.delete(id);
@@ -2173,6 +2182,7 @@ export function createEditor(root, doc, cursor = 0) {
     notes.forEach((text, index) => {
       const note = document.createElement("div");
       note.className = "md-comment-note";
+      appendAuthor(note, comment.id, index);
       appendBody(note, comment.id, index, text, "saved");
       card.appendChild(note);
     });
@@ -2288,7 +2298,7 @@ export function createEditor(root, doc, cursor = 0) {
     const asideRect = elementRect(commentsAside);
     if (!asideRect || typeof cards[0].getBoundingClientRect !== "function") return;
     const spans = findSpans(state.doc);
-    let floor = 0;
+    let floor = placeShowResolved(false, 0);
     for (const card of cards) {
       const id = card.dataset.comment;
       let rects = highlightRects(id);
@@ -2324,7 +2334,6 @@ export function createEditor(root, doc, cursor = 0) {
       const height = typeof card.offsetHeight === "number" ? card.offsetHeight : (elementRect(card)?.height || 0);
       floor = top + height + COMMENT_CARD_GAP;
     }
-    floor = placeShowResolved(false, floor);
     setStyle(commentsAside, "height", `${floor}px`);
   }
 
