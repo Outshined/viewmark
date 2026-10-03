@@ -4,7 +4,7 @@
 const SAMPLE = [
   "# Viewmark",
   "",
-  "A **bold** claim and the word wrapped on this line.",
+  "A **bold** claim and the word wrapped on this line. The caret can travel to the end of this raw line while the pane wraps the text. The caret can travel to the end of this raw line while the pane wraps the text. The caret can travel to the end of this raw line while the pane wraps the text.",
   "",
   "> Quoted *emphasis* and `code`.",
   "",
@@ -474,6 +474,22 @@ export function stepOver(doc, cursor, direction) {
   return atom ? atom.start : cursor;
 }
 
+// A raw image line is one text node, so only atoms still rendered for that cursor snap.
+export function snapMove(doc, cursor, landed, direction) {
+  const forward = direction === "forward" || direction === "right";
+  const atoms = plan(doc, cursor).atoms;
+  if (forward) {
+    const atom = atoms.find((item) => landed >= item.start && landed < item.end);
+    return atom ? atom.end : landed;
+  }
+  const atom = atoms.find((item) => landed > item.start && landed <= item.end);
+  return atom ? atom.start : landed;
+}
+
+function renderedAtomAt(doc, cursor, hit) {
+  return plan(doc, cursor).atoms.find(hit) || null;
+}
+
 function splice(state, from, to, text, cursor) {
   const doc = state.doc.slice(0, from) + text + state.doc.slice(to);
   if (doc === state.doc && cursor === state.cursor && state.anchor === cursor) return state;
@@ -500,7 +516,7 @@ export function backspace(state) {
     return splice(state, from, Math.max(state.anchor, state.cursor), "", from);
   }
   if (state.cursor <= 0) return state;
-  const atom = sourceAtoms(state.doc).find((item) => state.cursor > item.start && state.cursor <= item.end);
+  const atom = renderedAtomAt(state.doc, state.cursor, (item) => state.cursor > item.start && state.cursor <= item.end);
   if (atom) return splice(state, atom.start, atom.end, "", atom.start);
   return splice(state, state.cursor - 1, state.cursor, "", state.cursor - 1);
 }
@@ -511,7 +527,7 @@ export function deleteForward(state) {
     return splice(state, from, Math.max(state.anchor, state.cursor), "", from);
   }
   if (state.cursor >= state.doc.length) return state;
-  const atom = sourceAtoms(state.doc).find((item) => state.cursor >= item.start && state.cursor < item.end);
+  const atom = renderedAtomAt(state.doc, state.cursor, (item) => state.cursor >= item.start && state.cursor < item.end);
   if (atom) return splice(state, atom.start, atom.end, "", atom.start);
   return splice(state, state.cursor, state.cursor + 1, "", state.cursor);
 }
@@ -735,11 +751,11 @@ function renderBlock(block) {
   return el;
 }
 
-function expandAtoms(doc, from, to) {
+function expandAtoms(doc, from, to, cursor) {
   let start = Math.min(from, to);
   let end = Math.max(from, to);
   let grew = true;
-  const atoms = sourceAtoms(doc);
+  const atoms = plan(doc, cursor).atoms;
   while (grew) {
     grew = false;
     for (const atom of atoms) {
@@ -791,6 +807,34 @@ export function createEditor(root, doc, cursor = 0) {
     for (const el of root.querySelectorAll(".md-atom-selected")) el.classList.remove("md-atom-selected");
   }
 
+  // Empty lines have no text node; the caret stays on the br.
+  function pointFor(offset) {
+    let atEnd = null;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.parentElement?.closest(".md-atom")) continue;
+      const tagged = nearestTagged(node);
+      if (!tagged) continue;
+      const start = Number(tagged.dataset.start);
+      const end = Number(tagged.dataset.end);
+      if (node.length !== end - start || offset < start || offset > end) continue;
+      if (offset < end) return { node, offset: offset - start };
+      atEnd = { node, offset: offset - start };
+    }
+    for (const br of root.querySelectorAll("br")) {
+      const tagged = nearestTagged(br);
+      if (!tagged) continue;
+      const start = Number(tagged.dataset.start);
+      if (start === Number(tagged.dataset.end) && start === offset) return { node: br, offset: 0 };
+    }
+    return atEnd;
+  }
+
+  function placePoint(range, point) {
+    range.setStart(point.node, point.offset);
+    range.collapse(true);
+  }
+
   function placeCaret() {
     const sel = window.getSelection();
     if (!sel) return;
@@ -809,29 +853,26 @@ export function createEditor(root, doc, cursor = 0) {
           return;
         }
       }
+      const from = pointFor(anchor);
+      const to = pointFor(caret);
+      if (from && to) {
+        sel.setBaseAndExtent(from.node, from.offset, to.node, to.offset);
+        const host = to.node.parentElement || root;
+        host.scrollIntoView({ block: "nearest", inline: "nearest" });
+        return;
+      }
+    }
+    const point = pointFor(caret);
+    if (point) {
+      const range = document.createRange();
+      placePoint(range, point);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      const host = point.node.parentElement || root;
+      host.scrollIntoView({ block: "nearest", inline: "nearest" });
+      return;
     }
     const range = document.createRange();
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    let node = walker.nextNode();
-    while (node) {
-      const host = node.parentElement;
-      if (!host || !host.closest(".md-atom")) {
-        const tagged = nearestTagged(node);
-        if (tagged) {
-          const start = Number(tagged.dataset.start);
-          const end = Number(tagged.dataset.end);
-          if (caret >= start && caret <= end && node.length === end - start) {
-            range.setStart(node, Math.max(0, Math.min(node.length, caret - start)));
-            range.collapse(true);
-            sel.removeAllRanges();
-            sel.addRange(range);
-            (node.parentElement || root).scrollIntoView({ block: "nearest", inline: "nearest" });
-            return;
-          }
-        }
-      }
-      node = walker.nextNode();
-    }
     for (const el of root.querySelectorAll(".md-atom")) {
       const start = Number(el.dataset.start);
       const end = Number(el.dataset.end);
@@ -859,17 +900,39 @@ export function createEditor(root, doc, cursor = 0) {
         return;
       }
     }
-    for (const el of root.querySelectorAll(".md-line")) {
-      if (el.dataset.start == null) continue;
-      if (Number(el.dataset.start) === caret && Number(el.dataset.end) === caret) {
-        range.setStart(el, 0);
-        range.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(range);
-        el.scrollIntoView({ block: "nearest", inline: "nearest" });
-        return;
+  }
+
+  function selectionFromDom(sel) {
+    if (!sel) return null;
+    if (sel.anchorNode && sel.focusNode && nearestTagged(sel.anchorNode) && nearestTagged(sel.focusNode)) {
+      return {
+        anchor: mapOffset(sel.anchorNode, sel.anchorOffset),
+        cursor: mapOffset(sel.focusNode, sel.focusOffset),
+      };
+    }
+    if (sel.rangeCount === 0) return null;
+    const range = sel.getRangeAt(0);
+    if (range.startContainer === range.endContainer && range.startContainer.nodeType === 1) {
+      const child = range.startContainer.childNodes[range.startOffset];
+      if (hasClass(child, "md-atom") && range.endOffset === range.startOffset + 1) {
+        return { anchor: Number(child.dataset.start), cursor: Number(child.dataset.end) };
       }
     }
+    if (!nearestTagged(range.startContainer) || !nearestTagged(range.endContainer)) return null;
+    return {
+      anchor: mapOffset(range.startContainer, range.startOffset),
+      cursor: mapOffset(range.endContainer, range.endOffset),
+    };
+  }
+
+  function adoptDomSelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const holder = sel.anchorNode || sel.getRangeAt(0).commonAncestorContainer;
+    if (!holder || !root.contains(holder)) return;
+    const mapped = selectionFromDom(sel);
+    if (!mapped) return;
+    state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
   }
 
   function render() {
@@ -887,6 +950,7 @@ export function createEditor(root, doc, cursor = 0) {
   function consumePaste(text) {
     if (pasteSeen) return;
     pasteSeen = true;
+    adoptDomSelection();
     if (text) apply(insert(state, text));
     queueMicrotask(() => {
       pasteSeen = false;
@@ -897,12 +961,13 @@ export function createEditor(root, doc, cursor = 0) {
     const sel = window.getSelection();
     if (!sel) return;
     if (sel.rangeCount === 0) placeCaret();
-    const before = lineIndexAt(state.doc, state.cursor);
+    const beforeCursor = state.cursor;
+    const before = lineIndexAt(state.doc, beforeCursor);
     sel.modify("move", direction, granularity);
     if (sel.rangeCount === 0) return;
     const range = sel.getRangeAt(0);
     const landed = mapOffset(range.startContainer, range.startOffset);
-    const next = stepOver(state.doc, landed, direction);
+    const next = snapMove(state.doc, beforeCursor, landed, direction);
     const after = lineIndexAt(state.doc, next);
     state = { ...state, cursor: next, anchor: next };
     if (before !== after) render();
@@ -913,6 +978,16 @@ export function createEditor(root, doc, cursor = 0) {
     event.preventDefault();
     if (composing) return;
     const type = event.inputType;
+    const edits = type === "insertText"
+      || type === "insertParagraph"
+      || type === "insertLineBreak"
+      || type === "deleteContentBackward"
+      || type === "deleteContentForward"
+      || type === "deleteWordBackward"
+      || type === "deleteWordForward"
+      || type === "insertFromPaste"
+      || type === "insertFromDrop";
+    if (edits) adoptDomSelection();
     if (type === "insertText") {
       if (event.data && event.data !== composed) apply(insert(state, event.data));
       return;
@@ -936,7 +1011,7 @@ export function createEditor(root, doc, cursor = 0) {
         return;
       }
       const edges = wordEdges(state.doc, state.cursor, type === "deleteWordBackward" ? -1 : 1);
-      const [from, to] = expandAtoms(state.doc, edges[0], edges[1]);
+      const [from, to] = expandAtoms(state.doc, edges[0], edges[1], state.cursor);
       if (from !== to) apply(deleteForward({ ...state, anchor: from, cursor: to }));
       return;
     }
@@ -958,6 +1033,7 @@ export function createEditor(root, doc, cursor = 0) {
 
   listen("cut", (event) => {
     event.preventDefault();
+    adoptDomSelection();
     const result = cut(state);
     event.clipboardData.setData("text/plain", result.text);
     apply(result.state);
@@ -970,6 +1046,7 @@ export function createEditor(root, doc, cursor = 0) {
   listen("compositionend", (event) => {
     composing = false;
     composed = event.data || "";
+    adoptDomSelection();
     if (composed) apply(insert(state, composed));
     queueMicrotask(() => {
       composed = "";
@@ -1013,9 +1090,13 @@ export function createEditor(root, doc, cursor = 0) {
     const range = sel.getRangeAt(0);
     if (range.collapsed) return;
     if (!root.contains(range.commonAncestorContainer)) return;
+    const mapped = selectionFromDom(sel);
+    if (!mapped) return;
     didDrag = true;
-    const mapped = mapRange(range);
+    const before = lineIndexAt(state.doc, state.cursor);
+    const after = lineIndexAt(state.doc, mapped.cursor);
     state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
+    if (before !== after) render();
   });
 
   listen("click", (event) => {

@@ -4,6 +4,7 @@ import {
   plan,
   mapOffset,
   stepOver,
+  snapMove,
   createState,
   insert,
   backspace,
@@ -175,19 +176,24 @@ test("T-delete", () => {
 });
 
 test("T-backspace-atom", () => {
-  // "![a](b)" is 7 characters, so the token in C occupies [1, 8).
-  assert.equal("![a](b)".length, 7);
-  const end = 1 + "![a](b)".length;
-  assert.equal(end, 8);
-  let s = createState(C, end);
+  let s = createState(D, 33);
+  s = backspace(s);
+  assert.equal(s.doc, "\n");
+  assert.equal(s.cursor, 0);
+
+  s = createState(C, 8, 1);
   s = backspace(s);
   assert.equal(s.doc, "xy");
   assert.equal(s.cursor, 1);
+});
 
-  s = createState(C, 1);
-  s = deleteForward(s);
-  assert.equal(s.doc, "xy");
-  assert.equal(s.cursor, 1);
+test("T-raw-image-backspace", () => {
+  const token = "![alt](sample.svg)";
+  assert.equal(token.length, 18);
+  let s = createState(token, 18);
+  s = backspace(s);
+  assert.equal(s.doc, "![alt](sample.svg");
+  assert.equal(s.cursor, 17);
 });
 
 test("T-table-atom", () => {
@@ -249,6 +255,12 @@ test("T-step-over", () => {
   assert.equal(stepOver(D, 33, "backward"), 0);
   assert.equal(stepOver(E, 4, "forward"), 20);
   assert.equal(stepOver(E, 20, "backward"), 0);
+});
+
+test("T-snap-rendered", () => {
+  assert.equal(snapMove("![alt](sample.svg)", 0, 1, "forward"), 1);
+  assert.equal(snapMove("Go\n![alt](sample.svg)\n", 0, 10, "forward"), 21);
+  assert.equal(snapMove("| a | b |\n| --- | --- |\n| 1 | 2 |\n", 0, 4, "forward"), 33);
 });
 
 test("selection replace and ends", () => {
@@ -384,6 +396,7 @@ test("sample focuses the wrapped line", () => {
   const raw = p.lines.find((line) => line.raw);
   assert.ok(raw);
   assert.ok(raw.text.includes("wrapped"));
+  assert.ok(raw.text.length >= 280);
   assert.ok(cursor >= raw.start && cursor <= raw.end);
   for (const line of p.lines) {
     if (line.raw && !line.empty) assert.equal(line.text.length, line.end - line.start);
