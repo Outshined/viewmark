@@ -30,9 +30,8 @@ body {
   min-height: 1.55em;
 }
 
-.md-raw {
-  background: #fff6df;
-  border-radius: 2px;
+.md-syntax {
+  color: #8a8478;
 }
 
 .md-strong {
@@ -57,6 +56,11 @@ body {
 
 .md-line.md-codeblock {
   background: #f0eee9;
+}
+
+.md-line.md-raw {
+  background: #fff6df;
+  border-radius: 2px;
 }
 
 a.md-link {
@@ -117,6 +121,23 @@ a.md-link {
   border-top: 1px solid #c8c2b8;
   height: 0;
   margin: 0.9em 0;
+}
+
+.md-raw.md-li,
+.md-raw.md-ol {
+  list-style: none;
+}
+
+.md-raw.md-li::marker,
+.md-raw.md-ol::marker {
+  content: none;
+}
+
+.md-raw.md-hr {
+  min-height: 1.55em;
+  height: auto;
+  margin: 0;
+  border: 0;
 }
 
 .md-atom {

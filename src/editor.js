@@ -1,5 +1,5 @@
-// Source string is the document. The view is a projection: the cursor line is raw,
-// and atoms stay source ranges even when that line is a single text node.
+// Source string is the document. The view is a projection: the cursor line keeps
+// the parsed runs and fills marker gaps so those characters stay editable text.
 
 const SAMPLE = [
   "# Viewmark",
@@ -374,17 +374,41 @@ function structures(doc) {
   return { atoms, slots };
 }
 
-function rawBlock(line) {
+function gapRun(line, start, end) {
+  return {
+    type: "run",
+    text: line.text.slice(start - line.start, end - line.start),
+    start,
+    end,
+    classes: ["md-syntax"],
+  };
+}
+
+// The block marker is its own run so it does not merge with a following inline gap.
+function fillGaps(line, mode, parsed) {
+  const runs = [];
+  let at = line.start;
+  const markerEnd = Math.min(line.end, line.start + (mode.marker || 0));
+  if (markerEnd > at) {
+    runs.push(gapRun(line, at, markerEnd));
+    at = markerEnd;
+  }
+  const content = parsed.runs
+    .filter((run) => run.start >= at && run.end <= line.end && run.end > run.start)
+    .slice()
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  for (const run of content) {
+    if (run.start > at) runs.push(gapRun(line, at, run.start));
+    runs.push(run);
+    at = run.end;
+  }
+  if (at < line.end) runs.push(gapRun(line, at, line.end));
+  return runs;
+}
+
+function rawBlock(line, mode, parsed) {
   const empty = line.start === line.end;
-  const run = empty
-    ? null
-    : {
-        type: "run",
-        text: line.text,
-        start: line.start,
-        end: line.end,
-        classes: ["md-raw"],
-      };
+  const runs = empty ? [] : fillGaps(line, mode, parsed);
   return {
     type: "line",
     raw: true,
@@ -392,9 +416,9 @@ function rawBlock(line) {
     start: line.start,
     end: line.end,
     text: line.text,
-    classes: ["md-raw"],
-    runs: run ? [run] : [],
-    parts: run ? [run] : [],
+    classes: ["md-raw", mode.plain],
+    runs,
+    parts: runs,
   };
 }
 
@@ -450,7 +474,7 @@ export function plan(doc, cursor) {
       continue;
     }
     const { line, mode, parsed } = slot;
-    if (cursor >= line.start && cursor <= line.end) blocks.push(rawBlock(line));
+    if (cursor >= line.start && cursor <= line.end) blocks.push(rawBlock(line, mode, parsed));
     else blocks.push(renderedBlock(line, mode, parsed));
   }
   const lines = blocks.filter((block) => block.type === "line");
@@ -481,7 +505,7 @@ export function stepOver(doc, cursor, direction) {
   return atom ? atom.start : cursor;
 }
 
-// A raw image line is one text node, so only atoms still rendered for that cursor snap.
+// A raw line renders no atoms, so only atoms still rendered for that cursor snap.
 export function snapMove(doc, cursor, landed, direction) {
   const forward = direction === "forward" || direction === "right";
   const atoms = plan(doc, cursor).atoms;
@@ -741,7 +765,7 @@ function renderBlock(block) {
   }
   if (block.raw) {
     if (block.empty) el.appendChild(document.createElement("br"));
-    else el.appendChild(document.createTextNode(block.text));
+    else for (const run of block.runs) el.appendChild(renderRun(run));
     return el;
   }
   if (block.empty || block.hr) {
