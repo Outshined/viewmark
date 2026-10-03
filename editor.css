@@ -1,0 +1,164 @@
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: #f6f5f2;
+  color: #1d1c1a;
+  font: 17px/1.55 "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+}
+
+.editor {
+  box-sizing: border-box;
+  min-height: 100vh;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.4rem 4rem;
+  outline: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  caret-color: #1d1c1a;
+}
+
+.md-line {
+  min-height: 1.55em;
+}
+
+.md-raw {
+  background: #fff6df;
+  border-radius: 2px;
+}
+
+.md-strong {
+  font-weight: 700;
+}
+
+.md-em {
+  font-style: italic;
+}
+
+.md-code,
+.md-codeblock,
+.md-diagram {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.md-code {
+  background: #efece6;
+  border-radius: 3px;
+  padding: 0 0.15em;
+}
+
+.md-line.md-codeblock {
+  background: #f0eee9;
+}
+
+a.md-link {
+  color: #0b57d0;
+  text-decoration: underline;
+  cursor: text;
+}
+
+.md-h1 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.md-h2 {
+  font-size: 1.45rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.md-h3 {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.md-h4,
+.md-h5,
+.md-h6 {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.md-line.md-quote {
+  border-left: 3px solid #c5bfb4;
+  padding-left: 0.7em;
+  color: #3f3d39;
+}
+
+.md-line.md-li {
+  display: list-item;
+  list-style: disc;
+  margin-left: 1.3em;
+}
+
+.md-line.md-hr {
+  min-height: 0;
+  border: 0;
+  border-top: 1px solid #c8c2b8;
+  height: 0;
+  margin: 0.9em 0;
+}
+
+.md-atom {
+  user-select: none;
+}
+
+.md-image img {
+  max-height: 6rem;
+  vertical-align: text-bottom;
+}
+
+.md-table {
+  margin: 0.45em 0;
+}
+
+.md-table table {
+  border-collapse: collapse;
+}
+
+.md-table th,
+.md-table td {
+  border: 1px solid #d0cbc2;
+  padding: 0.15em 0.55em;
+  text-align: left;
+}
+
+.md-table th {
+  background: #f3f1ec;
+}
+
+.md-diagram {
+  display: block;
+  margin: 0.45em 0;
+  padding: 0.45em 0.7em;
+  background: #f4f7fb;
+  border: 1px dashed #9bb;
+  white-space: pre-wrap;
+}
+
+.md-diagram pre {
+  margin: 0.25em 0 0;
+  white-space: pre-wrap;
+}
+
+.md-diagram-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #567;
+}
+
+.md-atom-selected {
+  outline: 2px solid #0b57d0;
+  outline-offset: 2px;
+}
