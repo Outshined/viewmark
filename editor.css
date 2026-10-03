@@ -24,6 +24,7 @@ body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   caret-color: #1d1c1a;
+  tab-size: 4;
 }
 
 .md-line {
@@ -102,13 +103,13 @@ a.md-link {
 .md-line.md-li {
   display: list-item;
   list-style: disc;
-  margin-left: 1.3em;
+  margin-left: calc(1.3em + var(--indent, 0) * 1ch);
 }
 
 .md-line.md-ol {
   display: list-item;
   list-style: none;
-  margin-left: 1.3em;
+  margin-left: calc(1.3em + var(--indent, 0) * 1ch);
 }
 
 .md-line.md-ol::marker {
@@ -126,6 +127,7 @@ a.md-link {
 .md-raw.md-li,
 .md-raw.md-ol {
   list-style: none;
+  margin-left: 1.3em;
 }
 
 .md-raw.md-li::marker,

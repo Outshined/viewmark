@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   plan,
   mapOffset,
   stepOver,
   snapMove,
   createState,
+  createEditor,
   insert,
   backspace,
   deleteForward,
@@ -672,6 +674,11 @@ test("sample focuses the wrapped line", () => {
   assert.match(doc, /\| --- \|/);
   assert.match(doc, /!\[[^\]]*\]\(sample\.svg\)/);
   assert.match(doc, /```mermaid[\s\S]*```/);
+  assert.match(doc, /^- two\n {2}- sub\n\t- tabbed\n/m);
+  const first = doc.indexOf("\n1. first\n");
+  const nested = doc.indexOf("\n   1. nested\n");
+  const second = doc.indexOf("\n2. second\n");
+  assert.ok(first >= 0 && first < nested && nested < second);
   const cursor = initialCursor(doc);
   const p = plan(doc, cursor);
   const raw = p.lines.find((line) => line.raw);
@@ -682,5 +689,296 @@ test("sample focuses the wrapped line", () => {
   for (const line of p.lines) {
     if (line.raw && !line.empty) assert.equal(line.text.length, line.end - line.start);
     for (const run of line.runs) assert.equal(run.text.length, run.end - run.start);
+  }
+});
+
+function assertPlainList(run, plain) {
+  assert.ok(run.classes.includes(plain));
+  assert.equal(run.classes.includes("md-syntax"), false);
+}
+
+test("T-nested-lists", () => {
+  const doc = "- a\n  - b\n\t- c\n1. d\n   2. e\n\t3.\tf\n";
+  const lines = plan(doc, 0).lines;
+  assert.equal(lines[0].raw, true);
+  assert.equal(lines[0].indent, 0);
+
+  const sub = lines[1];
+  assert.equal(sub.raw, false);
+  assert.equal(sub.indent, 2);
+  assert.equal(sub.runs.length, 1);
+  assert.equal(sub.runs[0].text, "b");
+  assert.equal(sub.runs[0].start, 8);
+  assertPlainList(sub.runs[0], "md-li");
+  assert.ok(sub.classes.includes("md-li"));
+  assert.equal(Object.hasOwn(sub, "marker"), false);
+
+  const tabbed = lines[2];
+  assert.equal(tabbed.indent, 4);
+  assert.equal(tabbed.runs[0].text, "c");
+  assert.equal(tabbed.runs[0].start, 13);
+  assertPlainList(tabbed.runs[0], "md-li");
+  assert.equal(Object.hasOwn(tabbed, "marker"), false);
+
+  const first = lines[3];
+  assert.equal(first.indent, 0);
+  assert.equal(first.runs[0].text, "d");
+  assert.equal(first.runs[0].start, 18);
+  assertPlainList(first.runs[0], "md-ol");
+  assert.equal(first.marker, "1. ");
+
+  const nested = lines[4];
+  assert.equal(nested.indent, 3);
+  assert.equal(nested.runs[0].text, "e");
+  assert.equal(nested.runs[0].start, 26);
+  assertPlainList(nested.runs[0], "md-ol");
+  assert.equal(nested.marker, "2. ");
+
+  const orderedTab = lines[5];
+  assert.equal(orderedTab.indent, 4);
+  assert.equal(orderedTab.runs[0].text, "f");
+  assert.equal(orderedTab.runs[0].start, 32);
+  assertPlainList(orderedTab.runs[0], "md-ol");
+  assert.equal(orderedTab.marker, "3.\t");
+
+  const rawBullet = plan("  - b\n", 0).lines[0];
+  assert.equal(rawBullet.raw, true);
+  assert.equal(rawBullet.text, "  - b");
+  assert.equal(rawBullet.indent, 2);
+  assert.equal(rawBullet.runs.map((run) => run.text).join(""), "  - b");
+  assert.ok(rawBullet.runs.every((run) => run.classes.includes("md-li")));
+  assert.equal(rawBullet.runs.some((run) => run.classes.includes("md-syntax")), false);
+  assert.equal(Object.hasOwn(rawBullet, "marker"), false);
+
+  const rawTab = plan("\t- c\n", 0).lines[0];
+  assert.equal(rawTab.raw, true);
+  assert.equal(rawTab.text, "\t- c");
+  assert.equal(rawTab.indent, 4);
+  assert.equal(rawTab.runs.map((run) => run.text).join(""), "\t- c");
+  assert.ok(rawTab.runs.every((run) => run.classes.includes("md-li")));
+  assert.equal(rawTab.runs.some((run) => run.classes.includes("md-syntax")), false);
+
+  const ten = plan("1234567890. x\n", 16).lines[0];
+  assert.equal(ten.text, "1234567890. x");
+  assert.equal(ten.classes.includes("md-ol"), false);
+  assert.equal(ten.runs.some((run) => run.classes.includes("md-ol")), false);
+  assert.equal(ten.indent, 0);
+
+  const nine = plan("123456789. x\n", 20).lines[0];
+  assert.ok(nine.classes.includes("md-ol"));
+  assert.equal(nine.marker, "123456789. ");
+  assert.equal(nine.runs[0].text, "x");
+  assert.equal(nine.indent, 0);
+
+  const same = plan("12. num\nnext\n", 8);
+  assert.equal(same.lines[0].raw, false);
+  assert.equal(same.lines[0].runs[0].text, "num");
+  assert.equal(same.lines[0].runs[0].start, 4);
+  assert.equal(same.lines[0].marker, "12. ");
+  assert.equal(same.lines[0].indent, 0);
+
+  const fifth = plan("-     x\n", 20).lines[0];
+  assert.equal(fifth.runs[0].text, " x");
+  assert.equal(fifth.runs[0].start, 5);
+  assert.equal(Object.hasOwn(fifth, "marker"), false);
+
+  const fourSpaces = plan("1.     x\n", 20).lines[0];
+  assert.equal(fourSpaces.marker, "1.    ");
+  assert.equal(fourSpaces.runs[0].text, " x");
+
+  const stopped = plan(" \t- z\n", 20).lines[0];
+  assert.equal(stopped.indent, 4);
+  assert.equal(stopped.runs[0].text, "z");
+  assert.equal(stopped.runs[0].start, 4);
+
+  const deep = plan("    - x\n", 20).lines[0];
+  assert.equal(deep.indent, 4);
+  assert.equal(deep.runs[0].text, "x");
+  assert.ok(deep.classes.includes("md-li"));
+
+  const twoTabs = plan("\t\t- x\n", 20).lines[0];
+  assert.equal(twoTabs.indent, 8);
+  assert.equal(twoTabs.runs[0].text, "x");
+
+  const paren = plan("\t1)\tq\n", 20).lines[0];
+  assert.equal(paren.indent, 4);
+  assert.equal(paren.marker, "1)\t");
+  assert.equal(paren.runs[0].text, "q");
+
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(css, /\.editor \{[^}]*tab-size: 4;/);
+  assert.match(css, /\.md-line\.md-li \{[^}]*margin-left: calc\(1\.3em \+ var\(--indent, 0\) \* 1ch\);/);
+  assert.match(css, /\.md-line\.md-ol \{[^}]*margin-left: calc\(1\.3em \+ var\(--indent, 0\) \* 1ch\);/);
+  assert.match(css, /\.md-raw\.md-li,\n\.md-raw\.md-ol \{[^}]*margin-left: 1\.3em;/);
+  const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
+  assert.match(src, /The markdown this editor supports is CommonMark, https:\/\/commonmark\.org\//);
+});
+
+test("T-tab-key", () => {
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  const listeners = {};
+  let shown = [];
+  let selection = null;
+
+  function makeElement() {
+    return {
+      nodeType: 1,
+      className: "",
+      dataset: {},
+      styleProps: {},
+      childNodes: [],
+      parentElement: null,
+      classList: { add() {}, remove() {}, contains() { return false; } },
+      style: {
+        setProperty(name, value) {
+          this.owner.styleProps[name] = value;
+        },
+      },
+      appendChild(child) {
+        child.parentElement = this;
+        this.childNodes.push(child);
+        return child;
+      },
+      setAttribute() {},
+      querySelectorAll() { return []; },
+    };
+  }
+
+  function wire(node) {
+    node.style.owner = node;
+    return node;
+  }
+
+  function contains(root, node) {
+    let current = node;
+    while (current) {
+      if (current === root) return true;
+      current = current.parentElement;
+    }
+    return false;
+  }
+
+  const root = wire(makeElement());
+  root.addEventListener = (type, fn) => {
+    listeners[type] = fn;
+  };
+  root.replaceChildren = (...nodes) => {
+    root.childNodes = nodes;
+    for (const node of nodes) node.parentElement = root;
+    shown = nodes;
+  };
+  root.contains = (node) => contains(root, node);
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  globalThis.document = {
+    createElement: () => wire(makeElement()),
+    createTextNode: (text) => ({ nodeType: 3, textContent: text, length: text.length, parentElement: null }),
+    createTreeWalker: () => ({ nextNode: () => null }),
+    createRange: () => ({
+      setStart() {},
+      collapse() {},
+      selectNode() {},
+      setStartAfter() {},
+      setStartBefore() {},
+    }),
+  };
+  globalThis.window = {
+    getSelection() {
+      const current = selection;
+      selection = null;
+      return current;
+    },
+  };
+
+  function key(extra = {}) {
+    const event = {
+      key: "Tab",
+      shiftKey: false,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      defaultPrevented: false,
+      ...extra,
+      preventDefault() {
+        event.defaultPrevented = true;
+      },
+    };
+    listeners.keydown(event);
+    return event;
+  }
+
+  try {
+    const nested = "- a\n  - b\n\t- c\n1. d\n   2. e\n\t3.\tf\n";
+    const view = createEditor(root, nested, 4);
+    assert.equal(shown[0].styleProps["--indent"], "0");
+    assert.equal(shown[0].dataset.marker, undefined);
+    assert.equal(shown[0].className.includes("md-li"), true);
+    assert.equal(shown[1].styleProps["--indent"], "2");
+    assert.equal(shown[1].className.includes("md-raw"), true);
+    assert.equal(shown[1].className.includes("md-li"), true);
+    assert.equal(shown[1].dataset.marker, undefined);
+    assert.equal(shown[3].styleProps["--indent"], "0");
+    assert.equal(shown[3].dataset.marker, "1. ");
+    assert.equal(shown[4].styleProps["--indent"], "3");
+    assert.equal(shown[4].dataset.marker, "2. ");
+    assert.equal(shown[5].styleProps["--indent"], "4");
+    assert.equal(shown[5].dataset.marker, "3.\t");
+    view.destroy();
+
+    const editor = createEditor(root, "ab", 1);
+    const text = shown[0].childNodes[0].childNodes[0];
+    assert.equal(text.textContent, "ab");
+    selection = {
+      rangeCount: 1,
+      anchorNode: text,
+      anchorOffset: 0,
+      focusNode: text,
+      focusOffset: 0,
+    };
+    let event = key();
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(editor.getState().doc, "\tab");
+    assert.equal(editor.getState().cursor, 1);
+    selection = null;
+
+    listeners.beforeinput({
+      inputType: "insertText",
+      data: "\t",
+      preventDefault() {},
+    });
+    assert.equal(editor.getState().doc, "\tab");
+    assert.equal(editor.getState().cursor, 1);
+
+    event = key();
+    assert.equal(editor.getState().doc, "\t\tab");
+    assert.equal(editor.getState().cursor, 2);
+
+    event = key({ shiftKey: true });
+    assert.equal(event.defaultPrevented, false);
+    assert.equal(editor.getState().doc, "\t\tab");
+    for (const flag of ["ctrlKey", "altKey", "metaKey"]) {
+      event = key({ [flag]: true });
+      assert.equal(event.defaultPrevented, false);
+      assert.equal(editor.getState().doc, "\t\tab");
+    }
+
+    listeners.beforeinput({
+      inputType: "insertText",
+      data: "Z",
+      preventDefault() {},
+    });
+    assert.equal(editor.getState().doc, "\t\tZab");
+
+    listeners.paste({
+      preventDefault() {},
+      clipboardData: { getData: () => "\t" },
+    });
+    assert.equal(editor.getState().doc, "\t\tZ\tab");
+    editor.destroy();
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
   }
 });

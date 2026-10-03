@@ -1,5 +1,6 @@
 // Source string is the document. The view is a projection: the cursor line keeps
 // the parsed runs and fills marker gaps so those characters stay editable text.
+// The markdown this editor supports is CommonMark, https://commonmark.org/
 
 const SAMPLE = [
   "# Viewmark",
@@ -10,8 +11,11 @@ const SAMPLE = [
   "",
   "- one",
   "- two",
+  "  - sub",
+  "\t- tabbed",
   "",
   "1. first",
+  "   1. nested",
   "2. second",
   "",
   "Read the [notes](https://example.com) before editing.",
@@ -77,21 +81,54 @@ function lineIndexAt(doc, cursor) {
   return Math.max(0, lines.length - 1);
 }
 
+// One to four spaces, or a single tab, belong to the marker. A fifth space stays text.
+function listSeparator(text, index) {
+  if (text[index] === "\t") return 1;
+  let count = 0;
+  while (count < 4 && text[index + count] === " ") count += 1;
+  return count;
+}
+
+// A space is one column. A tab advances to the next multiple of 4, even from a stop.
+function classifyList(text) {
+  let column = 0;
+  let index = 0;
+  while (index < text.length && (text[index] === " " || text[index] === "\t")) {
+    if (text[index] === " ") column += 1;
+    else column += 4 - (column % 4);
+    index += 1;
+  }
+  const bullet = text[index];
+  if (bullet === "-" || bullet === "+" || bullet === "*") {
+    const separator = listSeparator(text, index + 1);
+    if (separator === 0) return null;
+    return { kind: "li", marker: index + 1 + separator, indent: column, plain: "md-li" };
+  }
+  const ordered = /^(\d{1,9})[.)]/.exec(text.slice(index));
+  if (!ordered) return null;
+  const separator = listSeparator(text, index + ordered[0].length);
+  if (separator === 0) return null;
+  return {
+    kind: "ol",
+    marker: index + ordered[0].length + separator,
+    indent: column,
+    plain: "md-ol",
+  };
+}
+
 function classify(text) {
   if (text === "---" || text === "***" || text === "___") {
-    return { kind: "hr", marker: 0, plain: "md-hr" };
+    return { kind: "hr", marker: 0, indent: 0, plain: "md-hr" };
   }
   const heading = /^(#{1,6}) (.*)$/.exec(text);
   if (heading) {
     const level = heading[1].length;
-    return { kind: "h", level, marker: level + 1, plain: `md-h${level}` };
+    return { kind: "h", level, marker: level + 1, indent: 0, plain: `md-h${level}` };
   }
-  if (text.startsWith("> ")) return { kind: "quote", marker: 2, plain: "md-quote" };
-  const bullet = /^([-*+] )(.*)$/.exec(text);
-  if (bullet) return { kind: "li", marker: bullet[1].length, plain: "md-li" };
-  const ordered = /^(\d+[.)] )(.*)$/.exec(text);
-  if (ordered) return { kind: "ol", marker: ordered[1].length, plain: "md-ol" };
-  return { kind: "p", marker: 0, plain: "md-p" };
+  if (text.startsWith("> ")) return { kind: "quote", marker: 2, indent: 0, plain: "md-quote" };
+  const list = classifyList(text);
+  if (list) return list;
+  return { kind: "p", marker: 0, indent: 0, plain: "md-p" };
 }
 
 function fenceOpen(text) {
@@ -338,7 +375,7 @@ function structures(doc) {
         atoms.push(atom);
         slots.push({ kind: "atom", atom });
       } else {
-        const mode = { kind: "codeblock", marker: 0, plain: "md-codeblock" };
+        const mode = { kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" };
         for (let line = index; line <= last; line += 1) {
           const parsed = parseSlot(lines[line], mode);
           slots.push({ kind: "line", line: lines[line], mode, parsed });
@@ -603,6 +640,7 @@ function rawBlock(line, mode, parsed) {
     classes: ["md-raw", mode.plain],
     runs,
     parts: runs,
+    indent: mode.indent ?? 0,
   };
 }
 
@@ -618,6 +656,7 @@ function renderedBlock(line, mode, parsed) {
       classes: [mode.plain],
       runs: [],
       parts: [],
+      indent: mode.indent ?? 0,
     };
   }
   if (mode.kind === "hr") {
@@ -632,6 +671,7 @@ function renderedBlock(line, mode, parsed) {
       classes: ["md-hr"],
       runs: [],
       parts: [],
+      indent: mode.indent ?? 0,
     };
   }
   const block = {
@@ -644,8 +684,9 @@ function renderedBlock(line, mode, parsed) {
     classes: [mode.plain],
     runs: parsed.runs,
     parts: parsed.parts,
+    indent: mode.indent ?? 0,
   };
-  if (mode.kind === "ol") block.marker = line.text.slice(0, mode.marker);
+  if (mode.kind === "ol") block.marker = line.text.slice(0, mode.marker).replace(/^[ \t]+/, "");
   return block;
 }
 
@@ -942,6 +983,7 @@ function renderBlock(block) {
   if (block.type === "diagram") return renderDiagram(block);
   const el = document.createElement("div");
   el.className = ["md-line", ...block.classes].join(" ");
+  if (typeof block.indent === "number") el.style.setProperty("--indent", String(block.indent));
   if (block.marker) el.dataset.marker = block.marker;
   if (block.raw || block.empty || block.hr) {
     el.dataset.start = String(block.start);
@@ -1205,6 +1247,7 @@ export function createEditor(root, doc, cursor = 0) {
       || type === "insertFromDrop";
     if (edits) adoptDomSelection();
     if (type === "insertText") {
+      if (event.data === "\t") return;
       if (event.data && event.data !== composed) apply(insert(state, event.data));
       return;
     }
@@ -1270,6 +1313,12 @@ export function createEditor(root, doc, cursor = 0) {
   });
 
   listen("keydown", (event) => {
+    if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      adoptDomSelection();
+      apply(insert(state, "\t"));
+      return;
+    }
     const mod = event.ctrlKey || event.metaKey;
     if (mod && !event.altKey && (event.key === "z" || event.key === "Z")) {
       event.preventDefault();
