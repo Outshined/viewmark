@@ -1135,7 +1135,9 @@ test("prism keyword joins", () => {
   assert.ok(prismAt >= 0 && prismAt < mermaidAt && mermaidAt < moduleAt);
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
   assert.match(css, /\.md-fence-collapsed\s*\{[^}]*height:\s*0;[^}]*overflow:\s*hidden;[^}]*margin:\s*0;[^}]*min-height:\s*0;/);
-  assert.match(css, /\.token\.keyword\s*\{[^}]*color:\s*#d73a49;/);
+  assert.match(css, /\.token\.keyword\s*\{[^}]*color:\s*#ff7b72;/);
+  assert.match(css, /:root\s*\{[^}]*color-scheme:\s*dark;/);
+  assert.match(css, /body\s*\{[^}]*background:\s*#1c1b19;[^}]*color:\s*#e7e2d8;/);
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
   assert.match(readme, /The markdown is GitHub, GitLab, and Obsidian markdown\. A mermaid fence is a diagram\./);
   assert.match(readme, /HTML is not allowed in the document\./);
@@ -1391,7 +1393,7 @@ test("mermaid render replaces source", async () => {
     const view = createEditor(mounted.root, doc, doc.length);
     const pres = mounted.findAll((node) => node.tagName === "PRE");
     assert.deepEqual(pres.map((node) => node.textContent), ["A-->B", "C-->D"]);
-    assert.deepEqual(options, [{ startOnLoad: false, securityLevel: "strict", flowchart: { htmlLabels: false }, suppressErrorRendering: true }]);
+    assert.deepEqual(options, [{ startOnLoad: false, securityLevel: "strict", theme: "dark", flowchart: { htmlLabels: false }, suppressErrorRendering: true }]);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(renders, 2);
     const boxes = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"));
@@ -2244,10 +2246,10 @@ test("comment cards mark the thread being acted on", () => {
   };
   try {
     const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
-    assert.match(css, /\.md-comment\s*\{[^}]*background:\s*#f3e2a0;/);
-    assert.match(css, /\.md-comment\.md-comment-editing\s*\{[^}]*background:\s*#b7d4f6;/);
-    assert.match(css, /\.md-comment-card\s*\{[^}]*border:\s*1px solid #e2ddd4;/);
-    assert.match(css, /\.md-comment-card\.md-comment-current\s*\{[^}]*border:\s*2px solid #1d1c1a;/);
+    assert.match(css, /\.md-comment\s*\{[^}]*background:\s*#e6c36a;/);
+    assert.match(css, /\.md-comment\.md-comment-editing\s*\{[^}]*background:\s*#8eb4f0;/);
+    assert.match(css, /\.md-comment-card\s*\{[^}]*border:\s*1px solid #3f3c37;/);
+    assert.match(css, /\.md-comment-card\.md-comment-current\s*\{[^}]*border:\s*2px solid #e7e2d8;/);
     const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
     assert.equal(src.includes("innerHTML"), false);
 

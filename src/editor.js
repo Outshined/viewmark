@@ -291,7 +291,7 @@ function mermaidApi() {
   const api = globalThis.mermaid;
   if (!api || typeof api.initialize !== "function" || typeof api.render !== "function") return null;
   if (!mermaidReady) {
-    api.initialize({ startOnLoad: false, securityLevel: "strict", flowchart: { htmlLabels: false }, suppressErrorRendering: true });
+    api.initialize({ startOnLoad: false, securityLevel: "strict", theme: "dark", flowchart: { htmlLabels: false }, suppressErrorRendering: true });
     mermaidReady = true;
   }
   return api;
