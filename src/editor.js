@@ -608,6 +608,9 @@ export function createEditor(root, doc, cursor = 0, transport) {
   function placeCaret() {
     const sel = window.getSelection();
     if (!sel) return;
+    // Chromium focuses the editing host when a range is added.
+    const active = typeof document !== "undefined" && document ? document.activeElement : null;
+    if (active && active.nodeType === 1 && active !== root && !root.contains(active)) return;
     clearAtomMark();
     const { anchor, cursor: caret } = state;
     if (anchor !== caret) {

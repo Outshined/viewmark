@@ -3067,20 +3067,43 @@ test("username focus stays on the field through the first character", () => {
     });
     assert.equal(sockets.length, 0);
     document.activeElement = input;
-    Object.defineProperty(mounted.root, "contentEditable", {
-      configurable: true,
-      get() {
-        return this.editable;
+    globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+    const host = {
+      nodeType: 1,
+      dataset: { start: "0", end: "0" },
+      closest() {
+        return null;
       },
-      set(value) {
-        this.editable = value;
+      scrollIntoView() {},
+    };
+    const text = { nodeType: 3, length: 0, parentElement: host };
+    document.createTreeWalker = () => {
+      let pending = text;
+      return {
+        nextNode() {
+          const node = pending;
+          pending = null;
+          return node;
+        },
+      };
+    };
+    document.createRange = () => ({
+      setStart() {},
+      collapse() {},
+    });
+    let added = false;
+    globalThis.window.getSelection = () => ({
+      rangeCount: 0,
+      removeAllRanges() {},
+      addRange() {
         document.activeElement = mounted.root;
+        added = true;
       },
     });
     input.value = "Ada";
     input.listeners.input();
-    assert.equal(input.focused, true);
-    assert.equal(mounted.root.focused, false);
+    assert.equal(added, false);
+    assert.equal(document.activeElement, input);
     assert.equal(sockets.length, 1);
     sockets[0].emit("open");
     assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada" });
