@@ -121,11 +121,13 @@ export function createSocketTransport({ username, socketFactory, location } = {}
   const listeners = new Set();
   let buffer = [];
   let socketOpen = false;
+  let closed = false;
   const name = typeof username === "string" ? username : "";
   // Queued before open so the wire order is hello, then list, then anything else.
   const outbound = [JSON.stringify({ type: "list", username: name })];
 
   function transmit(message) {
+    if (closed) return;
     const data = JSON.stringify({ ...message, username: name });
     if (socketOpen) socket.send(data);
     else outbound.push(data);
@@ -140,6 +142,8 @@ export function createSocketTransport({ username, socketFactory, location } = {}
   }
 
   function onOpen() {
+    // A username keystroke can close this socket before the handshake finishes.
+    if (closed) return;
     socketOpen = true;
     // Hello is the first frame. Anything queued while connecting follows it.
     socket.send(JSON.stringify({ type: "hello", username: name }));
@@ -148,6 +152,7 @@ export function createSocketTransport({ username, socketFactory, location } = {}
   }
 
   function onMessage(event) {
+    if (closed) return;
     let message;
     try {
       message = JSON.parse(event && event.data);
@@ -183,8 +188,15 @@ export function createSocketTransport({ username, socketFactory, location } = {}
       return () => listeners.delete(fn);
     },
     close() {
+      closed = true;
       socketOpen = false;
       listeners.clear();
+      buffer = [];
+      outbound.length = 0;
+      if (socket && typeof socket.removeEventListener === "function") {
+        socket.removeEventListener("open", onOpen);
+        socket.removeEventListener("message", onMessage);
+      }
       if (socket && typeof socket.close === "function") socket.close();
     },
   };

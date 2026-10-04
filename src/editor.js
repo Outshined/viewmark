@@ -70,12 +70,17 @@ function offsetOfLine(doc, index) {
   return -1;
 }
 
+function isMarkdownPath(file) {
+  const lower = file.toLowerCase();
+  return lower.endsWith(".md") || lower.endsWith(".markdown");
+}
+
 // A directory exists only when some markdown file is stored under it.
 function buildFileTree(files) {
   const root = { dirs: new Map(), files: [] };
   const list = Array.isArray(files) ? files : [];
   for (const file of list) {
-    if (typeof file !== "string" || !file.toLowerCase().endsWith(".md")) continue;
+    if (typeof file !== "string" || !isMarkdownPath(file)) continue;
     const parts = file.split("/").filter(Boolean);
     if (parts.length === 0) continue;
     let node = root;

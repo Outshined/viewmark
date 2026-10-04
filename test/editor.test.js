@@ -2744,6 +2744,51 @@ test('files ["b.md","sub/a.md"] show b.md and a collapsed sub', () => {
   }
 });
 
+test('files ["sub/a.markdown"] show a collapsed sub', () => {
+  const mounted = mountEditor();
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const input = document.createElement("input");
+  input.placeholder = "Username";
+  nav.appendChild(input);
+  const sheet = document.createElement("div");
+  sheet.appendChild(nav);
+  sheet.appendChild(mounted.root);
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    transport.deliver({ type: "docs", files: ["sub/a.markdown"] });
+    const labeled = (text) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.textContent === text);
+    assert.equal(labeled("sub").length, 1);
+    assert.equal(labeled("a.markdown").length, 0);
+    const before = transport.sent.length;
+    labeled("sub")[0].listeners.click({ preventDefault() {} });
+    assert.equal(transport.sent.length, before);
+    assert.equal(labeled("a.markdown").length, 1);
+    labeled("a.markdown")[0].listeners.click({ preventDefault() {} });
+    const opened = transport.sent.filter((message) => message.type === "open");
+    assert.deepEqual(opened.map((message) => message.path), ["sub/a.markdown"]);
+    transport.deliver({ type: "docs", files: ["Dir/Readme.MD", "Dir/Notes.MarkDown", "Dir/skip.txt", "Dir/no.md.bak"] });
+    assert.equal(labeled("a.markdown").length, 0);
+    assert.equal(labeled("Dir").length, 1);
+    assert.equal(labeled("Readme.MD").length, 0);
+    assert.equal(labeled("Notes.MarkDown").length, 0);
+    labeled("Dir")[0].listeners.click({ preventDefault() {} });
+    assert.equal(labeled("Readme.MD").length, 1);
+    assert.equal(labeled("Notes.MarkDown").length, 1);
+    assert.equal(labeled("skip.txt").length, 0);
+    assert.equal(labeled("no.md.bak").length, 0);
+    labeled("Notes.MarkDown")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(
+      transport.sent.filter((message) => message.type === "open").map((message) => message.path),
+      ["sub/a.markdown", "Dir/Notes.MarkDown"],
+    );
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("a comment.add focuses the id the doc message added", () => {
   const mounted = mountSheet();
   const transport = holdingTransport();
@@ -2934,6 +2979,12 @@ test("username opens, closes, and reopens the socket", () => {
     input.value = "bob";
     input.listeners.input();
     assert.equal(sockets[0].closed, true);
+    const staleFrames = sockets[0].sent.length;
+    sockets[0].emit("open");
+    sockets[0].emit("message", { data: JSON.stringify({ type: "docs", files: ["stale.markdown"] }) });
+    sockets[0].emit("message", { data: JSON.stringify({ type: "ping" }) });
+    assert.equal(sockets[0].sent.length, staleFrames);
+    assert.equal(labeled("stale.markdown").length, 0);
     assert.equal(sockets.length, 2);
     assert.equal(sockets[1].url, "ws://viewmark.test/api/ws");
     assert.equal(sockets[1].closed, false);
@@ -2953,6 +3004,11 @@ test("username opens, closes, and reopens the socket", () => {
     assert.deepEqual(JSON.parse(sockets[2].sent[0]), { type: "hello", username: "ada" });
     page.close();
     assert.equal(sockets[2].closed, true);
+    const closedFrames = sockets[2].sent.length;
+    sockets[2].emit("open");
+    sockets[2].emit("message", { data: JSON.stringify({ type: "docs", files: ["late.md"] }) });
+    assert.equal(sockets[2].sent.length, closedFrames);
+    assert.equal(labeled("late.md").length, 0);
 
     const secure = startPage({
       document: globalThis.document,
