@@ -1145,10 +1145,35 @@ test("prism keyword joins", () => {
   assert.match(readme, /HTML is not allowed in the document\./);
 });
 
-function mountEditor() {
+function nodeListView(kids) {
+  const list = {
+    get length() {
+      return kids.length;
+    },
+    item(index) {
+      return index >= 0 && index < kids.length ? kids[index] : null;
+    },
+    [Symbol.iterator]() {
+      return kids[Symbol.iterator]();
+    },
+  };
+  return new Proxy(list, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && /^(0|[1-9]\d*)$/.test(prop)) {
+        const index = Number(prop);
+        return index < kids.length ? kids[index] : undefined;
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+}
+
+function mountEditor(options = {}) {
+  const nodeList = options.nodeList === true;
   const listeners = {};
   let root = null;
   function makeElement(tag) {
+    const kids = [];
     const el = {
       nodeType: 1,
       tagName: String(tag).toUpperCase(),
@@ -1156,7 +1181,7 @@ function mountEditor() {
       localName: String(tag).toLowerCase(),
       className: "",
       dataset: {},
-      childNodes: [],
+      childNodes: nodeList ? nodeListView(kids) : kids,
       parentElement: null,
       styleProps: {},
       listeners: {},
@@ -1165,6 +1190,7 @@ function mountEditor() {
       value: "",
       attrs: new Map(),
     };
+    if (nodeList) el._kids = kids;
     el.style = {
       setProperty(name, value) {
         el.styleProps[name] = value;
@@ -1181,17 +1207,59 @@ function mountEditor() {
         el.className = el.className.split(/\s+/).filter((item) => item && item !== name).join(" ");
       },
     };
-    el.appendChild = (child) => {
-      child.parentElement = el;
-      el.childNodes.push(child);
-      return child;
-    };
+    if (nodeList) {
+      Object.defineProperty(el, "nextSibling", {
+        get() {
+          const siblings = el.parentElement && el.parentElement._kids;
+          if (!siblings) return null;
+          const index = siblings.indexOf(el);
+          if (index < 0 || index + 1 >= siblings.length) return null;
+          return siblings[index + 1];
+        },
+      });
+      el.removeChild = (child) => {
+        const index = el._kids.indexOf(child);
+        if (index >= 0) el._kids.splice(index, 1);
+        if (child.parentElement === el) child.parentElement = null;
+        return child;
+      };
+      el.appendChild = (child) => {
+        if (child.parentElement && typeof child.parentElement.removeChild === "function") {
+          child.parentElement.removeChild(child);
+        }
+        child.parentElement = el;
+        el._kids.push(child);
+        return child;
+      };
+      el.insertBefore = (node, before) => {
+        if (node.parentElement && typeof node.parentElement.removeChild === "function") {
+          node.parentElement.removeChild(node);
+        }
+        if (before == null) return el.appendChild(node);
+        const index = el._kids.indexOf(before);
+        if (index < 0) return el.appendChild(node);
+        node.parentElement = el;
+        el._kids.splice(index, 0, node);
+        return node;
+      };
+      el.replaceChildren = (...children) => {
+        for (const child of [...el._kids]) child.parentElement = null;
+        el._kids.length = 0;
+        for (const child of children) el.appendChild(child);
+      };
+    } else {
+      el.appendChild = (child) => {
+        child.parentElement = el;
+        el.childNodes.push(child);
+        return child;
+      };
+      el.replaceChildren = (...children) => {
+        for (const child of el.childNodes) child.parentElement = null;
+        el.childNodes = [];
+        for (const child of children) el.appendChild(child);
+      };
+    }
     el.append = (...children) => {
-      for (const child of children) el.appendChild(child);
-    };
-    el.replaceChildren = (...children) => {
-      for (const child of el.childNodes) child.parentElement = null;
-      el.childNodes = [];
       for (const child of children) el.appendChild(child);
     };
     el.setAttribute = (name, value) => {
@@ -1215,7 +1283,8 @@ function mountEditor() {
     };
     Object.defineProperty(el, "textContent", {
       get() {
-        return el.childNodes.map((child) => (child.textContent == null ? "" : child.textContent)).join("");
+        const list = nodeList ? el._kids : el.childNodes;
+        return list.map((child) => (child.textContent == null ? "" : child.textContent)).join("");
       },
       set(value) {
         const text = value == null ? "" : String(value);
@@ -3833,6 +3902,32 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     assert.equal(nav.childNodes[1].hidden, true);
     assert.equal(nav.childNodes[2], buttons()[0]);
     again.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("NodeList childNodes places Commit as the next sibling of the repo select", () => {
+  const mounted = mountEditor({ nodeList: true });
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const sheet = document.createElement("div");
+  sheet.appendChild(nav);
+  sheet.appendChild(mounted.root);
+  const transport = holdingTransport();
+  try {
+    assert.equal(typeof nav.childNodes.indexOf, "undefined");
+    assert.equal(typeof nav.insertBefore, "function");
+    assert.equal(nav.nextSibling, mounted.root);
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const select = nav.childNodes[0];
+    assert.equal(select.classList.contains("md-repo"), true);
+    const commit = select.nextSibling;
+    assert.ok(commit);
+    assert.equal(commit.classList.contains("md-commit"), true);
+    assert.equal(commit.nextSibling.classList.contains("md-new-file"), true);
+    assert.equal(typeof nav.childNodes.indexOf, "undefined");
+    view.destroy();
   } finally {
     mounted.restore();
   }

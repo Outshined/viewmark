@@ -84,6 +84,12 @@ function createPath(raw) {
 }
 
 function insertAfter(parent, after, node) {
+  // A NodeList has no indexOf. appendChild would put Commit after the new-file button.
+  const follower = after ? after.nextSibling : undefined;
+  if (after && typeof parent.insertBefore === "function" && (follower === null || (follower && typeof follower === "object"))) {
+    parent.insertBefore(node, follower);
+    return;
+  }
   const children = parent.childNodes || [];
   const index = typeof children.indexOf === "function" ? children.indexOf(after) : -1;
   const next = index >= 0 ? children[index + 1] : null;
@@ -3018,8 +3024,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const select = findClassChild(nav, "md-repo");
     const children = nav.childNodes || [];
-    const selectAt = select ? children.indexOf(select) : -1;
-    if (!(selectAt >= 0 && children[selectAt + 1] === button)) {
+    const selectAt = select && typeof children.indexOf === "function" ? children.indexOf(select) : -1;
+    const followsSelect = selectAt >= 0 ? children[selectAt + 1] === button : !!(select && select.nextSibling === button);
+    if (!followsSelect) {
       detachNode(button);
       if (select) insertAfter(nav, select, button);
       else placeNodeBefore(nav, button, findClassChild(nav, "md-new-file") || (nav.childNodes && nav.childNodes[0]));
