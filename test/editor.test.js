@@ -2153,3 +2153,233 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     mounted.restore();
   }
 });
+
+test("comment cards follow highlight order", () => {
+  const mounted = mountSheet();
+  const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+  try {
+    const first = addComment("alpha beta\n", 6, 10);
+    assert.equal(first.doc.slice(0, 5), "alpha");
+    const second = addComment(first.doc, 0, 5);
+    assert.equal(second.id, "c2");
+    assert.ok(second.doc.startsWith("{c2}alpha{/c2}"));
+    assert.deepEqual(plan(second.doc, 0).comments.map((comment) => comment.id), ["c1", "c2"]);
+
+    globalThis.window.matchMedia = () => ({ matches: false });
+    const wide = createEditor(mounted.root, second.doc, 0);
+    assert.equal(wide.getState().doc, second.doc);
+    assert.deepEqual(plan(wide.getState().doc, 0).comments.map((comment) => comment.id), ["c1", "c2"]);
+    assert.deepEqual(cards().map((card) => card.dataset.comment), ["c2", "c1"]);
+    assert.equal(cards()[0].styleProps.position, "absolute");
+    assert.ok(Number.parseFloat(cards()[0].styleProps.top) < Number.parseFloat(cards()[1].styleProps.top));
+    wide.destroy();
+
+    globalThis.window.matchMedia = () => ({ matches: true });
+    const narrow = createEditor(mounted.root, second.doc, 0);
+    const stacked = cards();
+    assert.deepEqual(stacked.map((card) => card.dataset.comment), ["c2", "c1"]);
+    assert.ok(stacked.every((card) => card.styleProps.position === "static"));
+    narrow.destroy();
+
+    globalThis.window.matchMedia = () => ({ matches: false });
+    const base = "hello\n\n```comment c1\nhi\n```\n\n```comment c3\nthere\n```\n";
+    const added = addComment(base, 0, 5);
+    assert.equal(added.id, "c2");
+    assert.deepEqual(plan(added.doc, 0).comments.map((comment) => comment.id), ["c1", "c3", "c2"]);
+    const spanless = createEditor(mounted.root, added.doc, 0);
+    assert.equal(spanless.getState().doc, added.doc);
+    assert.deepEqual(cards().map((card) => card.dataset.comment), ["c2", "c1", "c3"]);
+    const tops = cards().map((card) => Number.parseFloat(card.styleProps.top));
+    assert.ok(tops[0] < tops[1] && tops[1] < tops[2]);
+    spanless.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("comment cards mark the thread being acted on", () => {
+  const mounted = mountSheet();
+  const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+  const marks = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment") && node.dataset && node.dataset.comment);
+  const texts = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-text"));
+  const areas = () => mounted.findAll((node) => node.tagName === "TEXTAREA");
+  const currentCards = () => cards().filter((card) => card.classList.contains("md-comment-current"));
+  const editing = (id) => marks().filter((mark) => mark.dataset.comment === id && mark.classList.contains("md-comment-editing"));
+  const pressIn = (parent, label) => {
+    const button = (parent.childNodes || []).find((node) => node.tagName === "BUTTON" && node.textContent === label);
+    assert.ok(button, label);
+    button.listeners.click({ target: button, preventDefault() {} });
+  };
+  const clickEditor = (target, preventDefault) => {
+    const event = { target, clientX: 1, clientY: 1 };
+    if (preventDefault) event.preventDefault = preventDefault;
+    else event.preventDefault = () => {};
+    mounted.listeners.click(event);
+  };
+  try {
+    const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    assert.match(css, /\.md-comment\s*\{[^}]*background:\s*#f3e2a0;/);
+    assert.match(css, /\.md-comment\.md-comment-editing\s*\{[^}]*background:\s*#b7d4f6;/);
+    assert.match(css, /\.md-comment-card\s*\{[^}]*border:\s*1px solid #e2ddd4;/);
+    assert.match(css, /\.md-comment-card\.md-comment-current\s*\{[^}]*border:\s*2px solid #1d1c1a;/);
+    const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
+    assert.equal(src.includes("innerHTML"), false);
+
+    const knownDoc = "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n";
+    const byCard = createEditor(mounted.root, knownDoc, 0);
+    assert.equal(currentCards().length, 0);
+    assert.equal(marks().some((mark) => mark.classList.contains("md-comment-editing")), false);
+    mounted.aside.listeners.click({ target: cards()[0], preventDefault() {} });
+    assert.equal(currentCards().length, 1);
+    assert.equal(currentCards()[0].dataset.comment, "c1");
+    assert.equal(editing("c1").length, 0);
+    assert.equal(areas().length, 0);
+    byCard.destroy();
+
+    const known = createEditor(mounted.root, knownDoc, 0);
+    assert.equal(currentCards().length, 0);
+    assert.equal(texts()[0].textContent, "hi");
+    clickEditor(marks()[0]);
+    assert.equal(currentCards().length, 1);
+    assert.equal(currentCards()[0].dataset.comment, "c1");
+    assert.equal(editing("c1").length, 0);
+    assert.equal(areas().length, 0);
+    mounted.aside.listeners.click({ target: texts()[0], preventDefault() {} });
+    assert.equal(currentCards().length, 1);
+    assert.equal(editing("c1").length, marks().filter((mark) => mark.dataset.comment === "c1").length);
+    assert.ok(editing("c1").length > 0);
+    assert.equal(areas().length, 1);
+    const note = areas()[0].parentElement;
+    pressIn(note, "Cancel");
+    assert.equal(known.getState().doc, knownDoc);
+    assert.equal(currentCards().length, 1);
+    assert.equal(currentCards()[0].dataset.comment, "c1");
+    assert.equal(editing("c1").length, 0);
+    assert.equal(areas().length, 0);
+    assert.equal(texts()[0].textContent, "hi");
+    const held = currentCards()[0];
+    assert.equal(typeof globalThis.document.caretPositionFromPoint, "undefined");
+    let queries = 0;
+    mounted.root.querySelectorAll = () => {
+      queries += 1;
+      return [];
+    };
+    const plain = mounted.root.childNodes[0];
+    assert.equal(plain.classList.contains("md-comment"), false);
+    assert.doesNotThrow(() => clickEditor(plain, null));
+    assert.equal(queries, 0);
+    assert.equal(held.classList.contains("md-comment-current"), false);
+    assert.equal(currentCards().length, 0);
+    known.destroy();
+
+    const fresh = createEditor(mounted.root, "hello fox two deer\n", 0);
+    const text = mounted.root.childNodes[0].childNodes[0].childNodes[0];
+    mounted.listeners.mousedown({ clientX: 0, clientY: 0 });
+    mounted.setSelection({
+      rangeCount: 1,
+      anchorNode: text,
+      anchorOffset: 6,
+      focusNode: text,
+      focusOffset: 9,
+      getRangeAt() {
+        return {
+          collapsed: false,
+          commonAncestorContainer: text,
+          getClientRects() {
+            return [{ top: 12, left: 0, right: 40, bottom: 28, width: 40, height: 16 }];
+          },
+        };
+      },
+    });
+    mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
+    const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    add.listeners.mousedown({ preventDefault() {} });
+    assert.equal(fresh.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n");
+    assert.equal(currentCards().length, 1);
+    assert.equal(currentCards()[0].dataset.comment, "c1");
+    assert.equal(editing("c1").length, marks().length);
+    assert.ok(editing("c1").length > 0);
+    const freshMark = marks()[0];
+    clickEditor(freshMark);
+    let prevented = false;
+    clickEditor(freshMark, () => {
+      prevented = true;
+    });
+    const box = areas()[0];
+    assert.equal(prevented, true);
+    assert.equal(box.focused, true);
+    assert.equal(currentCards().length, 1);
+    assert.equal(editing("c1").length, marks().filter((mark) => mark.dataset.comment === "c1").length);
+    pressIn(areas()[0].parentElement, "Cancel");
+    assert.equal(fresh.getState().doc, "hello fox two deer\n");
+    assert.equal(currentCards().length, 0);
+    fresh.destroy();
+    mounted.setSelection(null);
+
+    const first = addComment("alpha beta\n", 6, 10);
+    const second = addComment(first.doc, 0, 5);
+    const paired = createEditor(mounted.root, second.doc, 0);
+    assert.deepEqual(cards().map((card) => card.dataset.comment), ["c2", "c1"]);
+    mounted.aside.listeners.click({ target: cards()[1], preventDefault() {} });
+    assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c1"]);
+    mounted.aside.listeners.click({ target: texts().find((node) => node.dataset.comment === "c1"), preventDefault() {} });
+    assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c1"]);
+    assert.ok(editing("c1").length > 0);
+    assert.equal(editing("c2").length, 0);
+    assert.ok(marks().some((mark) => mark.dataset.comment === "c2" && !mark.classList.contains("md-comment-editing")));
+    pressIn(areas()[0].parentElement, "Cancel");
+    assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c1"]);
+    assert.equal(editing("c1").length, 0);
+    assert.equal(editing("c2").length, 0);
+    pressIn(cards().find((card) => card.dataset.comment === "c2"), "Reply");
+    assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c2"]);
+    assert.ok(editing("c2").length > 0);
+    assert.equal(editing("c1").length, 0);
+    const reply = cards().find((card) => card.dataset.comment === "c2").childNodes.at(-3);
+    pressIn(reply, "Cancel");
+    assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c2"]);
+    assert.equal(editing("c2").length, 0);
+    assert.equal(areas().length, 0);
+    pressIn(cards().find((card) => card.dataset.comment === "c2"), "Reply");
+    const replyAgain = cards().find((card) => card.dataset.comment === "c2").childNodes.at(-3);
+    replyAgain.childNodes[1].value = "more";
+    mounted.aside.listeners.input({ target: replyAgain.childNodes[1] });
+    pressIn(replyAgain, "Save");
+    assert.ok(paired.getState().doc.includes("more"));
+    assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c2"]);
+    assert.equal(editing("c2").length, 0);
+    assert.equal(areas().length, 0);
+    pressIn(cards().find((card) => card.dataset.comment === "c1"), "Delete");
+    assert.equal(cards().some((card) => card.dataset.comment === "c1"), false);
+    assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c2"]);
+    pressIn(cards()[0], "Delete");
+    assert.equal(cards().length, 0);
+    assert.equal(currentCards().length, 0);
+    paired.destroy();
+
+    const resolved = createEditor(mounted.root, knownDoc, 0);
+    pressIn(cards()[0], "Resolve");
+    assert.equal(cards().length, 0);
+    assert.equal(resolved.getState().doc.includes("```comment c1 resolved"), true);
+    const toggle = mounted.aside.childNodes[0];
+    toggle.checked = true;
+    toggle.listeners.change();
+    assert.equal(cards().length, 1);
+    assert.equal(cards()[0].dataset.resolved, "true");
+    assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c1"]);
+    pressIn(cards()[0], "Resolve");
+    assert.equal(resolved.getState().doc, knownDoc);
+    assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c1"]);
+    mounted.aside.listeners.click({ target: texts()[0], preventDefault() {} });
+    areas()[0].value = "yo";
+    mounted.aside.listeners.input({ target: areas()[0] });
+    pressIn(areas()[0].parentElement, "Save");
+    assert.equal(resolved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nyo\n```\n");
+    assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c1"]);
+    assert.equal(editing("c1").length, 0);
+    assert.equal(areas().length, 0);
+    resolved.destroy();
+  } finally {
+    mounted.restore();
+  }
+});

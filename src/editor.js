@@ -293,6 +293,27 @@ function findSpans(doc) {
   return spans;
 }
 
+// A span earlier in the prose is listed first. Threads with no span stay behind, in their previous order.
+function orderVisibleComments(comments, doc) {
+  const earliest = new Map();
+  for (const span of findSpans(doc)) {
+    const prev = earliest.get(span.id);
+    if (prev == null || span.interiorStart < prev) earliest.set(span.id, span.interiorStart);
+  }
+  const ranked = comments.map((comment, index) => ({
+    comment,
+    index,
+    at: earliest.has(comment.id) ? earliest.get(comment.id) : null,
+  }));
+  ranked.sort((a, b) => {
+    if (a.at != null && b.at != null && a.at !== b.at) return a.at - b.at;
+    if (a.at != null && b.at == null) return -1;
+    if (a.at == null && b.at != null) return 1;
+    return a.index - b.index;
+  });
+  return ranked.map((item) => item.comment);
+}
+
 function nextCommentId(doc) {
   const used = new Set();
   for (const token of commentTokens(doc)) used.add(token.id);
@@ -1812,6 +1833,7 @@ export function createEditor(root, doc, cursor = 0) {
   const commentsAside = commentsAsideOf(root);
   let addCommentButton = null;
   let commentFocus = null;
+  let currentCommentId = null;
   let showResolved = false;
   const unsavedThreads = new Set();
   const replyDrafts = new Map();
@@ -2040,6 +2062,7 @@ export function createEditor(root, doc, cursor = 0) {
     const stored = thread ? (commentNotes(thread.body)[index] || "") : "";
     noteDrafts.delete(draftKey(id, index));
     editingNotes.add(draftKey(id, index));
+    currentCommentId = id;
     commentFocus = { id, note: index, start: stored.length, end: stored.length };
     render();
   }
@@ -2089,6 +2112,7 @@ export function createEditor(root, doc, cursor = 0) {
     unsavedThreads.delete(id);
     noteDrafts.delete(draftKey(id, index));
     editingNotes.delete(draftKey(id, index));
+    currentCommentId = id;
     commentFocus = null;
     const next = replaceCommentBody(state, id, body);
     if (next === state) render();
@@ -2103,6 +2127,7 @@ export function createEditor(root, doc, cursor = 0) {
       replyDrafts.delete(id);
       noteDrafts.delete(draftKey(id, index));
       authorDrafts.delete(draftKey(id, index));
+      if (currentCommentId === id) currentCommentId = null;
       commentFocus = null;
       apply(removeCommentThread(state, id));
       return;
@@ -2110,12 +2135,14 @@ export function createEditor(root, doc, cursor = 0) {
     if (box.dataset.reply === "true") {
       replyDrafts.delete(id);
       authorDrafts.delete(draftKey(id, index));
+      currentCommentId = id;
       commentFocus = null;
       render();
       return;
     }
     noteDrafts.delete(draftKey(id, index));
     editingNotes.delete(draftKey(id, index));
+    currentCommentId = id;
     commentFocus = null;
     render();
   }
@@ -2124,6 +2151,7 @@ export function createEditor(root, doc, cursor = 0) {
     if (!replyDrafts.has(id)) replyDrafts.set(id, "");
     const thread = threadById(id);
     const index = thread ? commentNotes(thread.body).length : 0;
+    currentCommentId = id;
     commentFocus = { id, note: index, start: 0, end: 0 };
     render();
   }
@@ -2131,6 +2159,7 @@ export function createEditor(root, doc, cursor = 0) {
   function onDelete(id) {
     unsavedThreads.delete(id);
     replyDrafts.delete(id);
+    if (currentCommentId === id) currentCommentId = null;
     commentFocus = null;
     apply(removeCommentThread(state, id));
   }
@@ -2138,6 +2167,7 @@ export function createEditor(root, doc, cursor = 0) {
   function onResolve(id) {
     const thread = threadById(id);
     if (!thread) return;
+    currentCommentId = id;
     commentFocus = null;
     apply(setCommentResolved(state, id, !thread.resolved));
   }
@@ -2206,6 +2236,7 @@ export function createEditor(root, doc, cursor = 0) {
     const card = document.createElement("div");
     card.className = "md-comment-card";
     card.dataset.comment = comment.id;
+    if (comment.id === currentCommentId) card.classList.add("md-comment-current");
     if (comment.resolved) card.dataset.resolved = "true";
     if (unsavedThreads.has(comment.id)) {
       appendAuthor(card, comment.id, 0);
@@ -2251,11 +2282,12 @@ export function createEditor(root, doc, cursor = 0) {
       showResolved = checkbox.checked === true;
       render();
     });
-    const cards = [];
+    const visible = [];
     for (const comment of list) {
       if (comment.resolved && !showResolved) continue;
-      cards.push(buildCommentCard(comment));
+      visible.push(comment);
     }
+    const cards = orderVisibleComments(visible, state.doc).map((comment) => buildCommentCard(comment));
     commentsAside.replaceChildren(checkbox, label, ...cards);
   }
 
@@ -2404,6 +2436,7 @@ export function createEditor(root, doc, cursor = 0) {
         replyDrafts.delete(result.id);
         noteDrafts.delete(draftKey(result.id, 0));
         authorDrafts.delete(draftKey(result.id, 0));
+        currentCommentId = result.id;
         commentFocus = { id: result.id, note: 0, start: 0, end: 0 };
         apply(replaceDocument(state, result.doc, result.cursor));
       }, { signal: ac.signal });
@@ -2424,9 +2457,44 @@ export function createEditor(root, doc, cursor = 0) {
     }
   }
 
+  function editingCommentIds() {
+    const ids = new Set(unsavedThreads);
+    for (const id of replyDrafts.keys()) ids.add(id);
+    for (const key of editingNotes) {
+      const tab = key.indexOf("\t");
+      if (tab >= 0) ids.add(key.slice(0, tab));
+    }
+    return ids;
+  }
+
+  function markEditingHighlights() {
+    const ids = editingCommentIds();
+    if (ids.size === 0) return;
+    const walk = (node) => {
+      if (!node) return;
+      if (node.nodeType === 1 && node.classList && node.classList.contains("md-comment") && node.dataset && ids.has(node.dataset.comment)) {
+        node.classList.add("md-comment-editing");
+      }
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(root);
+  }
+
+  function clearCurrentComment() {
+    currentCommentId = null;
+    if (!commentsAside) return;
+    const walk = (node) => {
+      if (!node) return;
+      if (node.classList && node.classList.contains("md-comment-current")) node.classList.remove("md-comment-current");
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(commentsAside);
+  }
+
   function render() {
     const planned = plan(state.doc, state.cursor);
     root.replaceChildren(...planned.blocks.map(renderBlock));
+    markEditingHighlights();
     renderCommentAside(planned.comments);
     layoutComments();
     if (commentFocus) focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
@@ -2613,24 +2681,43 @@ export function createEditor(root, doc, cursor = 0) {
     }
     const highlighted = target?.closest?.(".md-comment");
     if (highlighted && highlighted.dataset && highlighted.dataset.comment) {
+      const id = highlighted.dataset.comment;
       const inside = root.contains(highlighted);
       const connected = highlighted.isConnected === true;
-      const box = findCommentBox(highlighted.dataset.comment);
+      const box = findCommentBox(id);
       if (box && (inside || !connected)) {
         event.preventDefault();
+        currentCommentId = id;
         const caret = typeof box.value === "string" ? box.value.length : 0;
-        focusComment(highlighted.dataset.comment, caret, caret);
+        commentFocus = { id, start: caret, end: caret };
+        render();
+        return;
+      }
+      if (inside) {
+        currentCommentId = id;
+        const markedAtom = target?.closest?.(".md-atom");
+        if (markedAtom && root.contains(markedAtom)) {
+          event.preventDefault();
+          const next = atomClickOffset(markedAtom, target);
+          state = { ...state, anchor: next, cursor: next };
+          render();
+          return;
+        }
+        render();
         return;
       }
     }
     const atom = target?.closest?.(".md-atom");
     if (atom && root.contains(atom)) {
       event.preventDefault();
+      currentCommentId = null;
       const next = atomClickOffset(atom, target);
       state = { ...state, anchor: next, cursor: next };
       render();
       return;
     }
+    clearCurrentComment();
+    if (typeof document.caretPositionFromPoint !== "function") return;
     const pos = document.caretPositionFromPoint(event.clientX, event.clientY);
     if (!pos) return;
     const offset = mapOffset(pos.offsetNode, pos.offset);
@@ -2645,10 +2732,25 @@ export function createEditor(root, doc, cursor = 0) {
 
   if (commentsAside && typeof commentsAside.addEventListener === "function") {
     commentsAside.addEventListener("click", (event) => {
-      const text = commentTextFromTarget(event && event.target);
-      if (!text) return;
-      if (event && typeof event.preventDefault === "function") event.preventDefault();
-      openSavedNote(text);
+      const target = event && event.target;
+      const text = commentTextFromTarget(target);
+      if (text) {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        openSavedNote(text);
+        return;
+      }
+      let button = target && target.nodeType === 1 ? target : target && target.parentElement;
+      while (button) {
+        if (button.tagName === "BUTTON") return;
+        button = button.parentElement;
+      }
+      const card = ancestorWithClass(target && target.nodeType === 1 ? target : target && target.parentElement, "md-comment-card");
+      if (!card || !card.dataset || !card.dataset.comment) return;
+      const id = card.dataset.comment;
+      if (!threadById(id)) return;
+      const already = currentCommentId === id && card.classList.contains("md-comment-current");
+      currentCommentId = id;
+      if (!already) render();
     }, { signal: ac.signal });
     commentsAside.addEventListener("input", (event) => {
       const box = event.target;
