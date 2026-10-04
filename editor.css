@@ -21,8 +21,7 @@ body {
 
 .sheet {
   display: grid;
-  grid-template-columns: minmax(10rem, 16rem) minmax(0, 46rem) minmax(14rem, 20rem);
-  justify-content: center;
+  grid-template-columns: 16rem minmax(0, 1fr) 20rem;
   align-items: start;
   column-gap: 1.5rem;
   width: 100%;
@@ -93,8 +92,6 @@ aside.comments {
   box-sizing: border-box;
   min-height: 100vh;
   min-width: 0;
-  max-width: 46rem;
-  margin: 0 auto;
   padding: 1.5rem 1.4rem 4rem;
   outline: none;
   white-space: pre-wrap;

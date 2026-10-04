@@ -2911,7 +2911,12 @@ test("locks name another user and a rejected lock does not take the caret", () =
 test('files ["b.md","sub/a.md"] show b.md and a collapsed sub', () => {
   const mounted = mountEditor();
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
-  assert.match(css, /grid-template-columns:\s*minmax\(10rem,\s*16rem\)\s+minmax\(0,\s*46rem\)\s+minmax\(14rem,\s*20rem\)/);
+  const sheetRule = css.match(/\.sheet\s*\{[^}]*\}/g).find((block) => block.includes("grid-template-columns"));
+  assert.match(sheetRule, /grid-template-columns:\s*16rem\s+minmax\(0,\s*1fr\)\s+20rem/);
+  assert.equal(/justify-content:\s*center/.test(sheetRule), false);
+  for (const block of css.match(/\.editor\s*\{[^}]*\}/g)) {
+    assert.equal(/max-width:\s*46rem/.test(block), false);
+  }
   const nav = document.createElement("nav");
   nav.className = "files";
   const input = document.createElement("input");
