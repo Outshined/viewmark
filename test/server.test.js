@@ -573,6 +573,39 @@ test("T-comment", async () => {
   });
 });
 
+test("T-shrink", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), ALPHA);
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    const opened = await openDoc(a, "A", "a.md");
+    await openDoc(b, "B", "a.md");
+    const locked = await syncLock(a, [b], "A", "a.md", 0, opened.rev, ALPHA.length);
+    assert.ok(locked.lines.some((line) => line.index === 1 && line.username === "A"));
+    assert.ok(locked.lines.some((line) => line.index === 2 && line.username === "A"));
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev: opened.rev,
+      op: "comment.add",
+      anchor: 0,
+      cursor: 5,
+    });
+    const doc = await a.next((msg) => msg.type === "doc");
+    const locks = await a.next((msg) => msg.type === "locks" && msg.rev === doc.rev && msg.path === doc.path);
+    await b.next((msg) => msg.type === "doc" && msg.rev === doc.rev);
+    const seen = await b.next((msg) => msg.type === "locks" && msg.rev === doc.rev && msg.path === doc.path);
+    assert.match(doc.text, /^\{c1\}alpha\{\/c1\}\nbeta\ngamma\n/);
+    assert.equal(doc.actor, "A");
+    assert.deepEqual(locks.lines, [{ index: 0, username: "A" }]);
+    assert.deepEqual(seen.lines, [{ index: 0, username: "A" }]);
+    assert.equal(locks.lines.some((line) => line.index === 1 || line.index === 2), false);
+    a.ws.close();
+    b.ws.close();
+  });
+});
+
 test("T-commit", async () => {
   const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" });
   await withDocs(async ({ port, dir }) => {

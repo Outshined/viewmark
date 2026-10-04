@@ -393,6 +393,10 @@ export function createHub(docsDir) {
     socket.session.cursor = caret.cursor;
     socket.session.anchor = caret.anchor;
     socket.session.dirtyPath = file.rel;
+    // The preparatory lock covers the splice, including a fence through EOF.
+    // Keep the caret line so the rest can be taken. Do not commit for that.
+    socket.session.lines = new Set(touchedLines(file.text, caret.cursor, caret.cursor));
+    syncLocks(file);
     broadcast(file, {
       type: "doc",
       path: file.rel,
@@ -547,6 +551,12 @@ export function createHub(docsDir) {
       anchorAfter: produced.anchor,
       poison: false,
     };
+    // comment.add must already hold every spliced line. A later fence edit
+    // runs after publish shrinks that hold to the caret, so free lines stay
+    // editable and another owner's lines do not.
+    const mode = msg.op === "comment.save" || msg.op === "comment.resolve" || msg.op === "comment.delete"
+      ? "comment"
+      : "edit";
     const wrote = await publish(
       socket,
       file,
@@ -554,7 +564,7 @@ export function createHub(docsDir) {
       splice,
       { cursor: produced.cursor, anchor: produced.anchor },
       null,
-      "edit",
+      mode,
     );
     if (!wrote) {
       session.cursor = savedCursor;
