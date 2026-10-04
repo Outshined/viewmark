@@ -2782,13 +2782,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function clearRepoSelection(select) {
-    for (const option of select.childNodes || []) {
-      if (!option || option.nodeType !== 1) continue;
-      option.selected = false;
-      if (typeof option.removeAttribute === "function") option.removeAttribute("selected");
-    }
-    select.value = "";
-    select.selectedIndex = -1;
+    // selectedIndex -1 still paints the first option, so the blank option has to be chosen.
+    markRepoSelected(select, "");
   }
 
   // A stored name is requested once. A later catalog that still lists it does not ask again.
@@ -2796,7 +2791,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const select = repoSelect || findClassChild(filesNav(), "md-repo");
     if (!select || typeof document === "undefined" || typeof document.createElement !== "function") return;
     const incoming = Array.isArray(message.repos) ? message.repos : [];
-    const options = [];
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "";
+    const options = [blank];
     const names = new Set();
     for (const repo of incoming) {
       if (!repo || typeof repo.name !== "string" || repo.name === "") continue;

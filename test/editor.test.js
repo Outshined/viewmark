@@ -3361,6 +3361,7 @@ test("T-repo-select", () => {
   assert.match(rule[0], /border:\s*1px solid #4a463f/);
   assert.match(rule[0], /font:\s*inherit/);
   assert.match(rule[0], /color:\s*inherit/);
+  assert.match(rule[0], /box-sizing:\s*border-box/);
   const nav = document.createElement("nav");
   nav.className = "files";
   const button = document.createElement("button");
@@ -3387,8 +3388,11 @@ test("T-repo-select", () => {
       ],
     });
     assert.equal(nav.childNodes[0], select);
-    assert.deepEqual(select.childNodes.map((option) => option.value), ["alpha", "beta"]);
-    assert.deepEqual(select.childNodes.map((option) => option.textContent), ["Alpha notes", "Beta notes"]);
+    assert.deepEqual(select.childNodes.map((option) => option.value), ["", "alpha", "beta"]);
+    assert.deepEqual(select.childNodes.map((option) => option.textContent), ["", "Alpha notes", "Beta notes"]);
+    assert.equal(select.value, "");
+    assert.equal(select.selectedIndex, 0);
+    assert.equal(select.childNodes[0].selected, true);
     assert.deepEqual(transport.sent.filter((message) => message.type === "repo" || message.type === "list" || message.type === "tickets"), []);
     transport.deliver({ type: "docs", files: ["b.md", "sub/a.md"] });
     const labeled = (text) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.textContent === text);
@@ -3400,8 +3404,11 @@ test("T-repo-select", () => {
       type: "repos",
       repos: [{ name: "beta", description: "Second shelf", path: "/b" }],
     });
-    assert.deepEqual(select.childNodes.map((option) => option.value), ["beta"]);
-    assert.deepEqual(select.childNodes.map((option) => option.textContent), ["Second shelf"]);
+    assert.deepEqual(select.childNodes.map((option) => option.value), ["", "beta"]);
+    assert.deepEqual(select.childNodes.map((option) => option.textContent), ["", "Second shelf"]);
+    assert.equal(select.value, "");
+    assert.equal(select.selectedIndex, 0);
+    assert.equal(select.childNodes[0].selected, true);
     assert.equal(labeled("b.md").length, 1);
     assert.equal(view.getState().doc, "kept");
     view.destroy();
@@ -3441,6 +3448,11 @@ test("T-repo-switch", () => {
       ],
     });
     assert.equal(transport.sent.length, 0);
+    assert.deepEqual(select.childNodes.map((option) => option.value), ["", "alpha", "beta"]);
+    assert.deepEqual(select.childNodes.map((option) => option.textContent), ["", "Alpha notes", "Beta notes"]);
+    assert.equal(select.value, "");
+    assert.equal(select.selectedIndex, 0);
+    assert.equal(select.childNodes[0].selected, true);
     select.value = "alpha";
     select.listeners.change();
     assert.equal(storage.data["viewmark.repo"], "alpha");
@@ -3491,7 +3503,10 @@ test("T-repo-switch", () => {
       ],
     });
     assert.equal(transport.sent.length, afterFile);
+    assert.deepEqual(select.childNodes.map((option) => option.value), ["", "alpha", "beta"]);
     assert.equal(select.value, "beta");
+    assert.equal(select.childNodes[0].selected, false);
+    assert.equal(select.childNodes.find((option) => option.value === "beta").selected, true);
     assert.equal(view.getState().doc, "new file");
     select.value = "beta";
     select.listeners.change();
@@ -3504,7 +3519,10 @@ test("T-repo-switch", () => {
     assert.equal(view.getState().doc, "");
     assert.equal(mounted.root.textContent.includes("new file"), false);
     assert.equal(Object.prototype.hasOwnProperty.call(storage.data, "viewmark.repo"), false);
+    assert.deepEqual(select.childNodes.map((option) => option.value), ["", "alpha"]);
     assert.equal(select.value, "");
+    assert.equal(select.selectedIndex, 0);
+    assert.equal(select.childNodes[0].selected, true);
     view.destroy();
 
     storage.data["viewmark.repo"] = "alpha";
@@ -3518,7 +3536,10 @@ test("T-repo-switch", () => {
         { name: "alpha", description: "Alpha notes", path: "/a" },
       ],
     });
+    assert.deepEqual(storedSelect.childNodes.map((option) => option.value), ["", "beta", "alpha"]);
     assert.equal(storedSelect.value, "alpha");
+    assert.equal(storedSelect.childNodes[0].selected, false);
+    assert.equal(storedSelect.childNodes.find((option) => option.value === "alpha").selected, true);
     assert.equal(storedSelect.childNodes.find((option) => option.value === "alpha").textContent, "Alpha notes");
     assert.deepEqual(storedTransport.sent.map((message) => message.type), ["repo", "list", "tickets"]);
     assert.equal(storedTransport.sent[0].name, "alpha");
@@ -3589,7 +3610,9 @@ test("T-repo-switch", () => {
     assert.deepEqual(JSON.parse(sockets[0].sent[3]), { type: "list", username: "Ada" });
     assert.deepEqual(JSON.parse(sockets[0].sent[4]), { type: "tickets", username: "Ada" });
     const pageSelect = walkNodes(nav, (node) => node.classList && node.classList.contains("md-repo"))[0];
+    assert.deepEqual(pageSelect.childNodes.map((option) => option.value), ["", "beta", "alpha"]);
     assert.equal(pageSelect.value, "alpha");
+    assert.equal(pageSelect.childNodes.find((option) => option.value === "alpha").selected, true);
     sockets[0].emit("message", {
       data: JSON.stringify({ type: "file", rev: 1, text: "page file", path: "a.md", cursor: 0, anchor: 0 }),
     });
@@ -3624,6 +3647,10 @@ test("T-repo-switch", () => {
     assert.equal(sockets[0].sent.length, stayed);
     assert.equal(mounted.root.textContent.includes("beta file"), false);
     assert.equal(Object.prototype.hasOwnProperty.call(storage.data, "viewmark.repo"), false);
+    assert.deepEqual(pageSelect.childNodes.map((option) => option.value), ["", "alpha"]);
+    assert.equal(pageSelect.value, "");
+    assert.equal(pageSelect.selectedIndex, 0);
+    assert.equal(pageSelect.childNodes[0].selected, true);
     page.close();
     assert.equal(sockets[0].closed, true);
   } finally {
