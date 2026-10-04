@@ -96,6 +96,28 @@ dialog.md-login::backdrop {
   cursor: pointer;
 }
 
+.file-tree button.md-file::before {
+  content: "";
+  display: inline-block;
+  width: 0.68em;
+  height: 0.88em;
+  margin-right: 0.4rem;
+  vertical-align: -0.12em;
+  background: currentColor;
+  clip-path: polygon(0 0, 68% 0, 100% 28%, 100% 100%, 0 100%);
+}
+
+.file-tree button.md-dir-toggle::before {
+  content: "";
+  display: inline-block;
+  width: 0.95em;
+  height: 0.75em;
+  margin-right: 0.4rem;
+  vertical-align: -0.05em;
+  background: currentColor;
+  clip-path: polygon(0 28%, 36% 28%, 46% 0, 100% 0, 100% 100%, 0 100%);
+}
+
 .md-dir-children {
   margin-left: 0.8rem;
 }

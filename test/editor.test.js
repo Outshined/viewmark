@@ -2933,6 +2933,12 @@ test('files ["b.md","sub/a.md"] show b.md and a collapsed sub', () => {
   for (const block of css.match(/\.editor\s*\{[^}]*\}/g)) {
     assert.equal(/max-width:\s*46rem/.test(block), false);
   }
+  const fileMark = css.match(/\.file-tree button\.md-file::before\s*\{[^}]*\}/);
+  const dirMark = css.match(/\.file-tree button\.md-dir-toggle::before\s*\{[^}]*\}/);
+  assert.ok(fileMark);
+  assert.ok(dirMark);
+  assert.match(fileMark[0], /clip-path:\s*polygon\(0 0, 68% 0, 100% 28%, 100% 100%, 0 100%\)/);
+  assert.match(dirMark[0], /clip-path:\s*polygon\(0 28%, 36% 28%, 46% 0, 100% 0, 100% 100%, 0 100%\)/);
   const nav = document.createElement("nav");
   nav.className = "files";
   const input = document.createElement("input");
