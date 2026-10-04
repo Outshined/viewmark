@@ -17,6 +17,7 @@ import {
   TICKET_ALPHABET,
   TICKET_STATES,
   TICKET_TYPES,
+  TICKET_PRIORITIES,
   composeTicket,
   generateId,
   parseTicket,
@@ -312,6 +313,7 @@ function ticketView(ticket) {
     title: ticket.title,
     state: ticket.state,
     type: ticket.type,
+    priority: ticket.priority,
     parent: ticket.parent,
     depends: [...ticket.depends],
     reporter: ticket.reporter,
@@ -329,6 +331,7 @@ function ticketNotice(file) {
     state: ticket.state,
     // Frame `type` is the command, so the ticket type travels as ticketType.
     ticketType: ticket.type,
+    priority: ticket.priority,
     parent: ticket.parent,
     depends: [...ticket.depends],
     reporter: ticket.reporter,
@@ -855,6 +858,11 @@ export async function createHub(stateDir, sourceRoot) {
       if (typeof msg.body !== "string") return fail(socket, 400);
       body = msg.body;
     }
+    let priority = "medium";
+    if (Object.prototype.hasOwnProperty.call(msg, "priority")) {
+      if (typeof msg.priority !== "string" || !TICKET_PRIORITIES.includes(msg.priority)) return fail(socket, 400);
+      priority = msg.priority;
+    }
     const reporter = socket.session.username;
     const created = new Date().toISOString();
     let allocated = null;
@@ -874,6 +882,7 @@ export async function createHub(stateDir, sourceRoot) {
       title,
       state,
       type,
+      priority,
       parent: "",
       depends: [],
       reporter,
@@ -910,6 +919,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (Object.prototype.hasOwnProperty.call(msg, "title")) next.title = msg.title;
     if (Object.prototype.hasOwnProperty.call(msg, "state")) next.state = msg.state;
     if (Object.prototype.hasOwnProperty.call(msg, "ticketType")) next.type = msg.ticketType;
+    if (Object.prototype.hasOwnProperty.call(msg, "priority")) next.priority = msg.priority;
     if (Object.prototype.hasOwnProperty.call(msg, "parent")) next.parent = msg.parent;
     if (Object.prototype.hasOwnProperty.call(msg, "depends")) next.depends = msg.depends;
     const composed = composeTicket({ ...next, id: file.ticket.id, body: file.text });

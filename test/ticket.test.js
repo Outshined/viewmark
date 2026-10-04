@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   TICKET_ALPHABET,
+  TICKET_PRIORITIES,
   TICKET_STATES,
   TICKET_TYPES,
   generateId,
@@ -22,6 +23,7 @@ const HEADER = [
   "title: Fix the login redirect",
   "state: new",
   "type: task",
+  "priority: medium",
   "parent:",
   "depends:",
   "reporter: indexer",
@@ -43,6 +45,7 @@ function ticket(overrides = {}) {
     title: "Fix the login redirect",
     state: "new",
     type: "task",
+    priority: "medium",
     parent: "",
     depends: [],
     reporter: "indexer",
@@ -60,6 +63,7 @@ test("T-ticket-roundtrip", () => {
     "title",
     "state",
     "type",
+    "priority",
     "parent",
     "depends",
     "reporter",
@@ -105,6 +109,7 @@ test("T-ticket-roundtrip", () => {
       "title: Fix: the login redirect",
       "state: triaged",
       "type: task",
+      "priority: medium",
       `parent: ${B}`,
       `depends: ${B} ${C}`,
       "reporter: Ada Lovelace",
@@ -236,6 +241,43 @@ test("T-ticket-type", () => {
   assert.equal(parseTicket(ID, SIMPLE.replace("type: task", "type:   bug  ")).type, "bug");
   assert.equal(parseTicket(ID, SIMPLE.replace("type: task", "type: enhancement ")).type, "enhancement");
   assert.equal(composeTicket(ticket({ type: "  task  " })).includes("type: task\n"), true);
+});
+
+test("T-ticket-priority", () => {
+  assert.deepEqual(TICKET_PRIORITIES, ["low", "medium", "high"]);
+  assert.equal(Object.isFrozen(TICKET_PRIORITIES), true);
+  assert.throws(() => TICKET_PRIORITIES.push("urgent"));
+  for (const priority of TICKET_PRIORITIES) {
+    const text = SIMPLE.replace("priority: medium", `priority: ${priority}`);
+    const parsed = parseTicket(ID, text);
+    assert.equal(parsed.priority, priority);
+    assert.equal(Object.keys(parsed).indexOf("priority"), Object.keys(parsed).indexOf("type") + 1);
+    assert.equal(composeTicket(parsed), text);
+    assert.equal(composeTicket(ticket({ priority })), text);
+    const header = text.slice(0, text.indexOf("\n\n")).split("\n");
+    assert.equal(header[2], `type: ${parsed.type}`);
+    assert.equal(header[3], `priority: ${priority}`);
+  }
+
+  const highText = SIMPLE.replace("priority: medium", "priority: high");
+  const high = parseTicket(ID, highText);
+  assert.equal(high.priority, "high");
+  assert.equal(composeTicket(high), highText);
+  assert.equal(highText.split("\n")[2], "type: task");
+  assert.equal(highText.split("\n")[3], "priority: high");
+
+  assert.equal(parseTicket(ID, SIMPLE.replace("priority: medium", "priority: urgent")), null);
+  assert.equal(parseTicket(ID, SIMPLE.replace("priority: medium\n", "")), null);
+  assert.equal(composeTicket(ticket({ priority: "urgent" })), null);
+  assert.equal(composeTicket(ticket({ priority: undefined })), null);
+  for (const priority of ["", "nope", "High", "MEDIUM", "critical"]) {
+    assert.equal(parseTicket(ID, SIMPLE.replace("priority: medium", priority === "" ? "priority:" : `priority: ${priority}`)), null);
+    assert.equal(composeTicket(ticket({ priority })), null);
+  }
+  assert.equal(parseTicket(ID, SIMPLE.replace("priority: medium", "priority:high")), null);
+  assert.equal(parseTicket(ID, SIMPLE.replace("priority: medium", "priority:   high  ")).priority, "high");
+  assert.equal(parseTicket(ID, SIMPLE.replace("priority: medium", "priority: low ")).priority, "low");
+  assert.equal(composeTicket(ticket({ priority: "  high  " })).includes("priority: high\n"), true);
 });
 
 test("T-ticket-self", () => {

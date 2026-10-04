@@ -26,7 +26,7 @@ import {
   lineIndexAt,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
-import { TICKET_STATES, TICKET_TYPES } from "./ticket.js";
+import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./ticket.js";
 
 export {
   sampleDocument,
@@ -175,6 +175,7 @@ function normalizeTicket(ticket) {
     title: typeof ticket.title === "string" ? ticket.title : "",
     state: typeof ticket.state === "string" ? ticket.state : "",
     type: TICKET_TYPES.includes(ticket.type) ? ticket.type : "task",
+    priority: TICKET_PRIORITIES.includes(ticket.priority) ? ticket.priority : "medium",
     parent: typeof ticket.parent === "string" ? ticket.parent : "",
     depends,
     reporter: typeof ticket.reporter === "string" ? ticket.reporter : "",
@@ -2205,6 +2206,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (sameSet(fields.depends, openTicket.depends)) return;
     } else if (Object.prototype.hasOwnProperty.call(fields, "type")) {
       if (fields.type === openTicket.type) return;
+    } else if (Object.prototype.hasOwnProperty.call(fields, "priority")) {
+      if (fields.priority === openTicket.priority) return;
     } else {
       return;
     }
@@ -2322,6 +2325,22 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
     typeLabel.appendChild(typeSelect);
 
+    const priorityLabel = document.createElement("label");
+    priorityLabel.appendChild(document.createTextNode("Priority"));
+    const prioritySelect = document.createElement("select");
+    prioritySelect.className = "md-ticket-priority";
+    for (const priority of TICKET_PRIORITIES) {
+      const option = document.createElement("option");
+      option.value = priority;
+      option.textContent = priority;
+      prioritySelect.appendChild(option);
+    }
+    prioritySelect.value = ticket.priority;
+    prioritySelect.addEventListener("change", () => {
+      sendTicketSet({ priority: prioritySelect.value });
+    });
+    priorityLabel.appendChild(prioritySelect);
+
     const parentLabel = document.createElement("label");
     parentLabel.appendChild(document.createTextNode("Parent"));
     const parentSelect = document.createElement("select");
@@ -2380,6 +2399,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       titleInput,
       stateLabel,
       typeLabel,
+      priorityLabel,
       parentLabel,
       depends,
       reporterName,
@@ -2448,6 +2468,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       title: message.title,
       state: message.state,
       type: Object.prototype.hasOwnProperty.call(message, "ticketType") ? message.ticketType : openTicket.type,
+      priority: message.priority,
       parent: message.parent,
       depends: message.depends,
       reporter: message.reporter,

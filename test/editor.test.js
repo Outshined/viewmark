@@ -4018,8 +4018,8 @@ const T1 = "2026-10-02T00:00:00.000Z";
 const T2 = "2026-10-03T00:00:00.000Z";
 const T3 = "2026-10-04T00:00:00.000Z";
 
-function ticketFixture(id, title, state, created, parent = "", depends = [], reporter = "Ada", type = "task") {
-  return { id, title, state, type, parent, depends: depends.slice(), reporter, created };
+function ticketFixture(id, title, state, created, parent = "", depends = [], reporter = "Ada", type = "task", priority = "medium") {
+  return { id, title, state, type, priority, parent, depends: depends.slice(), reporter, created };
 }
 
 function mountTicketPage() {
@@ -4131,6 +4131,9 @@ test("T-ticket-rows", () => {
       assert.equal(row.textContent.includes(ticket.state), true);
       assert.equal(row.textContent.includes(ticket.id), false);
       assert.equal(row.textContent.includes(ticket.type), false);
+      assert.equal(row.textContent.includes("low"), false);
+      assert.equal(row.textContent.includes("medium"), false);
+      assert.equal(row.textContent.includes("high"), false);
     }
     const alpha = ticketNode(mounted.nav, "aaaaaaaa");
     const expand = byClass(alpha, "md-ticket-expand")[0];
@@ -4258,6 +4261,7 @@ test("T-ticket-create", () => {
     const created = transport.sent.at(-1);
     assert.equal(created.type, "ticket.create");
     assert.equal(created.title, "File the bug");
+    assert.equal(Object.hasOwn(created, "priority"), false);
     assert.equal("path" in created, false);
     assert.equal(created.rev, undefined);
     assert.equal(field.hidden, true);
@@ -4449,6 +4453,32 @@ test("T-ticket-fields", () => {
     assert.equal(view.getState().cursor, 7);
     assert.equal(state().value, "new");
     assert.equal(typeSelect().value, "task");
+    const prioritySelect = () => byClass(form, "md-ticket-priority")[0];
+    assert.deepEqual(prioritySelect().childNodes.map((option) => option.textContent), ["low", "medium", "high"]);
+    assert.deepEqual(prioritySelect().childNodes.map((option) => option.value), ["low", "medium", "high"]);
+    assert.equal(prioritySelect().value, "medium");
+    assert.equal(prioritySelect().parentElement.childNodes[0].textContent, "Priority");
+    assert.equal(
+      form.childNodes.indexOf(prioritySelect().parentElement),
+      form.childNodes.indexOf(typeSelect().parentElement) + 1,
+    );
+    assert.ok(form.childNodes.indexOf(prioritySelect().parentElement) < form.childNodes.indexOf(parent().parentElement));
+    const beforePriority = sets().length;
+    prioritySelect().value = "medium";
+    prioritySelect().listeners.change();
+    assert.equal(sets().length, beforePriority);
+    prioritySelect().value = "high";
+    prioritySelect().listeners.change();
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      priority: "high",
+      username: "",
+    });
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("high"), false);
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("Alpha"), true);
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("new"), true);
     view.destroy();
   } finally {
     mounted.restore();
@@ -4470,9 +4500,10 @@ test("T-ticket-notice", () => {
       cursor: 0,
       anchor: 0,
       locks: [],
-      ticket: alpha,
+      ticket: { ...alpha, priority: "high" },
     });
     const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    assert.equal(byClass(form, "md-ticket-priority")[0].value, "high");
     transport.deliver({ type: "doc", rev: 4, text: "Body line!\n", actor: "Bea" });
     assert.equal(view.getState().doc, "Body line!\n");
     assert.equal(byClass(form, "md-ticket-heading")[0].textContent, "Alpha");
@@ -4497,16 +4528,35 @@ test("T-ticket-notice", () => {
     assert.equal(byClass(form, "md-ticket-created")[0].textContent, T2);
     assert.equal(byClass(form, "md-ticket-state")[0].value, "triaged");
     assert.equal(byClass(form, "md-ticket-type")[0].value, "enhancement");
+    assert.equal(byClass(form, "md-ticket-priority")[0].value, "medium");
     assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("Alpha two"), true);
     assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("triaged"), true);
     assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("enhancement"), false);
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("medium"), false);
+    transport.deliver({
+      type: "ticket",
+      path: "tickets/aaaaaaaa.md",
+      rev: 9,
+      title: "Alpha two",
+      state: "triaged",
+      ticketType: "enhancement",
+      priority: "low",
+      parent: "",
+      depends: [],
+      reporter: "Bea",
+      created: T2,
+    });
+    assert.equal(byClass(form, "md-ticket-priority")[0].value, "low");
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("low"), false);
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("Alpha two"), true);
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("triaged"), true);
     const state = byClass(form, "md-ticket-state")[0];
     state.value = "closed";
     state.listeners.change();
     assert.deepEqual(transport.sent.filter((message) => message.type === "ticket.set").at(-1), {
       type: "ticket.set",
       path: "tickets/aaaaaaaa.md",
-      rev: 8,
+      rev: 9,
       state: "closed",
       username: "",
     });

@@ -4,7 +4,7 @@ import { realpathSync, writeSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { start } from "./server.js";
-import { TICKET_ALPHABET, TICKET_STATES, TICKET_TYPES } from "./src/ticket.js";
+import { TICKET_ALPHABET, TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./src/ticket.js";
 
 const HELP = `viewmark talks to the document hub, one command, then exit.
 
@@ -15,8 +15,8 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME edit <path> --rev N --find TEXT --replace TEXT
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket list [--closed]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket show <id>
-  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket create --title TEXT [--state STATE] [--type TYPE]
-  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket set <id> --rev N [--title TEXT] [--state STATE] [--type TYPE] [--parent ID] [--depends IDS]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket set <id> --rev N [--title TEXT] [--state STATE] [--type TYPE] [--priority PRIORITY] [--parent ID] [--depends IDS]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket purge
   viewmark [--port PORT] [--user NAME] [--json] repo list
   viewmark [--port PORT] [--user NAME] [--json] repo register --name NAME --description TEXT --path PATH
@@ -51,15 +51,16 @@ Example of one copy-paste edit:
   viewmark --user alice --repo docs edit hello.md --rev 0 --find "hello" --replace "hi"
 
 ticket:
-  list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE], set <id> --rev N, purge.
-  --rev, --title, --state, --type, --parent, --depends, --closed.
+  list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY], set <id> --rev N, purge.
+  --rev, --title, --state, --type, --priority, --parent, --depends, --closed.
   --parent none clears. --depends none clears. --state is new, triaged, in progress, or closed.
   --type is bug, enhancement, or task. An omitted type is task.
+  --priority is low, medium, or high. An omitted create stores medium.
   reporter is --user. A stale rev exits 409 and does not write.
-  list prints id, created, state, type, and title. show prints the body.
+  list prints id, created, state, type, priority, and title. show prints the body.
   create reads the body from stdin when stdin is not a terminal.
-  --json: list {tickets:[{id,title,state,type,parent,depends,reporter,created}]};
-    show and set {id,path,rev,title,state,type,parent,depends,reporter,created,text};
+  --json: list {tickets:[{id,title,state,type,priority,parent,depends,reporter,created}]};
+    show and set {id,path,rev,title,state,type,priority,parent,depends,reporter,created,text};
     create {id,path,rev:0,reporter,created}; purge {purged:[...]};
     conflict adds "error":"conflict".
 
@@ -80,6 +81,7 @@ const VALUE_FLAGS = new Set([
   "title",
   "state",
   "type",
+  "priority",
   "parent",
   "depends",
   "repo",
@@ -142,6 +144,8 @@ function parseArgs(argv) {
     state: "",
     typeSet: false,
     type: "",
+    prioritySet: false,
+    priority: "",
     parentSet: false,
     parent: "",
     dependsSet: false,
@@ -213,6 +217,9 @@ function parseArgs(argv) {
       } else if (name === "type") {
         args.typeSet = true;
         args.type = value;
+      } else if (name === "priority") {
+        args.prioritySet = true;
+        args.priority = value;
       } else if (name === "parent") {
         args.parentSet = true;
         args.parent = value;
@@ -604,6 +611,10 @@ function prepareTicket(args, rest) {
       if (!TICKET_TYPES.includes(args.type)) return { error: "invalid type" };
       command.type = args.type;
     }
+    if (args.prioritySet) {
+      if (!TICKET_PRIORITIES.includes(args.priority)) return { error: "invalid priority" };
+      command.priority = args.priority;
+    }
     return command;
   }
   if (sub === "set") {
@@ -627,6 +638,10 @@ function prepareTicket(args, rest) {
       if (!TICKET_TYPES.includes(args.type)) return { error: "invalid type" };
       fields.type = args.type;
     }
+    if (args.prioritySet) {
+      if (!TICKET_PRIORITIES.includes(args.priority)) return { error: "invalid priority" };
+      fields.priority = args.priority;
+    }
     if (args.parentSet) {
       const parent = normalizeParent(args.parent);
       if (parent === null) return { error: "invalid id" };
@@ -637,7 +652,7 @@ function prepareTicket(args, rest) {
       if (depends === null) return { error: "invalid id" };
       fields.depends = depends;
     }
-    if (Object.keys(fields).length === 0) return { error: "set requires --title, --state, --type, --parent, or --depends" };
+    if (Object.keys(fields).length === 0) return { error: "set requires --title, --state, --type, --priority, --parent, or --depends" };
     return { sub, id: more[0], rev, fields };
   }
   if (sub === "purge") {
@@ -652,6 +667,7 @@ function asTicket(raw) {
   if (!validTicketId(raw.id)) return null;
   if (typeof raw.title !== "string" || typeof raw.state !== "string") return null;
   if (!TICKET_TYPES.includes(raw.type)) return null;
+  if (!TICKET_PRIORITIES.includes(raw.priority)) return null;
   if (typeof raw.parent !== "string" || (raw.parent !== "" && !validTicketId(raw.parent))) return null;
   if (!Array.isArray(raw.depends) || raw.depends.some((id) => !validTicketId(id))) return null;
   if (typeof raw.reporter !== "string" || typeof raw.created !== "string") return null;
@@ -660,6 +676,7 @@ function asTicket(raw) {
     title: raw.title,
     state: raw.state,
     type: raw.type,
+    priority: raw.priority,
     parent: raw.parent,
     depends: raw.depends.slice(),
     reporter: raw.reporter,
@@ -682,6 +699,7 @@ function asTicketNotice(msg, id) {
   if (!msg || typeof msg !== "object") return null;
   if (typeof msg.title !== "string" || typeof msg.state !== "string") return null;
   if (!TICKET_TYPES.includes(msg.ticketType)) return null;
+  if (!TICKET_PRIORITIES.includes(msg.priority)) return null;
   if (typeof msg.parent !== "string" || (msg.parent !== "" && !validTicketId(msg.parent))) return null;
   if (!Array.isArray(msg.depends) || msg.depends.some((dep) => !validTicketId(dep))) return null;
   if (typeof msg.reporter !== "string" || typeof msg.created !== "string") return null;
@@ -691,6 +709,7 @@ function asTicketNotice(msg, id) {
     title: msg.title,
     state: msg.state,
     type: msg.ticketType,
+    priority: msg.priority,
     parent: msg.parent,
     depends: msg.depends.slice(),
     reporter: msg.reporter,
@@ -717,6 +736,7 @@ function ticketMeta(view) {
     metaLine("title", view.title),
     metaLine("state", view.state),
     metaLine("type", view.type),
+    metaLine("priority", view.priority),
     metaLine("parent", view.parent),
     metaLine("depends", view.depends.join(",")),
     metaLine("reporter", view.reporter),
@@ -734,6 +754,7 @@ function printTicket(view, json, conflict) {
       title: view.title,
       state: view.state,
       type: view.type,
+      priority: view.priority,
       parent: view.parent,
       depends: view.depends,
       reporter: view.reporter,
@@ -762,6 +783,7 @@ function requestedMatches(opened, fields) {
   if (Object.prototype.hasOwnProperty.call(fields, "title") && fields.title !== opened.title) return false;
   if (Object.prototype.hasOwnProperty.call(fields, "state") && fields.state !== opened.state) return false;
   if (Object.prototype.hasOwnProperty.call(fields, "type") && fields.type !== opened.type) return false;
+  if (Object.prototype.hasOwnProperty.call(fields, "priority") && fields.priority !== opened.priority) return false;
   if (Object.prototype.hasOwnProperty.call(fields, "parent") && fields.parent !== opened.parent) return false;
   if (Object.prototype.hasOwnProperty.call(fields, "depends") && !sameDepends(opened.depends, fields.depends)) return false;
   return true;
@@ -775,6 +797,7 @@ function printTicketList(tickets, json) {
         title: ticket.title,
         state: ticket.state,
         type: ticket.type,
+        priority: ticket.priority,
         parent: ticket.parent,
         depends: ticket.depends,
         reporter: ticket.reporter,
@@ -785,7 +808,7 @@ function printTicketList(tickets, json) {
   }
   if (tickets.length === 0) return;
   process.stdout.write(tickets.map((ticket) => (
-    `${ticket.id}\t${ticket.created}\t${ticket.state}\t${ticket.type}\t${ticket.title}\n`
+    `${ticket.id}\t${ticket.created}\t${ticket.state}\t${ticket.type}\t${ticket.priority}\t${ticket.title}\n`
   )).join(""));
 }
 
@@ -814,6 +837,7 @@ async function runTicketCreate(hub, username, command, json) {
   const payload = { type: "ticket.create", username, title: command.title, body: command.body };
   if (command.state !== undefined) payload.state = command.state;
   if (command.type !== undefined) payload.ticketType = command.type;
+  if (command.priority !== undefined) payload.priority = command.priority;
   hub.send(payload);
   const msg = await hub.next((item) => item.type === "file" || item.type === "error");
   if (msg.type === "error") return serverError(msg);
@@ -859,6 +883,7 @@ async function runTicketSet(hub, username, command, json) {
   if (Object.prototype.hasOwnProperty.call(fields, "parent")) payload.parent = fields.parent;
   if (Object.prototype.hasOwnProperty.call(fields, "depends")) payload.depends = fields.depends;
   if (Object.prototype.hasOwnProperty.call(fields, "type")) payload.ticketType = fields.type;
+  if (Object.prototype.hasOwnProperty.call(fields, "priority")) payload.priority = fields.priority;
   hub.send(payload);
   const msg = await hub.next((item) => item.type === "error" || (item.type === "ticket" && item.path === opened.path));
   if (msg.type === "error") {
@@ -956,7 +981,7 @@ async function runRepoDeregister(hub, username, name, json) {
 function serveFlagRejected(args) {
   if (args.json || args.closed) return true;
   return args.revSet || args.findSet || args.replaceSet || args.titleSet
-    || args.stateSet || args.typeSet || args.parentSet || args.dependsSet
+    || args.stateSet || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet
     || args.repoSet || args.nameSet || args.descriptionSet || args.pathSet;
 }
 

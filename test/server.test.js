@@ -898,7 +898,7 @@ test("T-create", async () => {
   }
 });
 
-const TICKET_KEYS = ["created", "depends", "id", "parent", "reporter", "state", "title", "type"];
+const TICKET_KEYS = ["created", "depends", "id", "parent", "priority", "reporter", "state", "title", "type"];
 
 function assertTicketEntry(ticket) {
   assert.deepEqual(Object.keys(ticket).sort(), TICKET_KEYS);
@@ -921,6 +921,7 @@ function ticketText(fields) {
     body: "",
     reporter: "indexer",
     type: "task",
+    priority: "medium",
     ...fields,
   });
   assert.ok(text);
@@ -962,11 +963,12 @@ async function assertNoHead(server, dir) {
   await close(server);
 }
 
-async function createTicket(client, username, title, state, type, body) {
+async function createTicket(client, username, title, state, type, body, priority) {
   const payload = { type: "ticket.create", username, title };
   if (state !== undefined) payload.state = state;
   if (type !== undefined) payload.ticketType = type;
   if (body !== undefined) payload.body = body;
+  if (priority !== undefined) payload.priority = priority;
   const before = Date.now();
   client.send(payload);
   const listed = await client.next((msg) => msg.type === "tickets");
@@ -1050,6 +1052,7 @@ test("T-ticket-hide", async () => {
       title: "Older",
       state: "new",
       type: "task",
+      priority: "medium",
       parent: "",
       depends: [],
       reporter: "indexer",
@@ -1212,6 +1215,62 @@ test("T-ticket-create", async () => {
   });
 });
 
+test("T-priority", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const a = await hello(port, "A");
+    const before = await snapshotTree(dir);
+    a.send({ type: "ticket.create", username: "A", title: "Bad", priority: "nope" });
+    assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    assert.deepEqual(await snapshotTree(dir), before);
+
+    const plain = await createTicket(a, "A", "Plain");
+    assert.equal(plain.file.ticket.priority, "medium");
+    assert.deepEqual(Object.keys(plain.file.ticket), [
+      "id", "title", "state", "type", "priority", "parent", "depends", "reporter", "created",
+    ]);
+    const plainPath = plain.file.path;
+    const plainDisk = await readDoc(dir, plainPath);
+    assert.equal(parseTicket(plain.file.ticket.id, plainDisk).priority, "medium");
+    const plainHeader = plainDisk.split("\n");
+    assert.equal(plainHeader[2], "type: task");
+    assert.equal(plainHeader[3], "priority: medium");
+    assert.equal(plain.listed.tickets.find((ticket) => ticket.id === plain.file.ticket.id).priority, "medium");
+    assertTicketEntry(plain.file.ticket);
+
+    const high = await createTicket(a, "A", "High", undefined, undefined, undefined, "high");
+    assert.equal(high.file.ticket.priority, "high");
+    assert.equal(high.file.ticket.state, "new");
+    assert.equal(high.file.ticket.type, "task");
+    const highPath = high.file.path;
+    const highDisk = await readDoc(dir, highPath);
+    assert.equal(parseTicket(high.file.ticket.id, highDisk).priority, "high");
+    assert.equal(highDisk.split("\n")[3], "priority: high");
+    assert.equal(high.listed.tickets.find((ticket) => ticket.id === high.file.ticket.id).priority, "high");
+    assert.equal(high.listed.tickets.find((ticket) => ticket.id === plain.file.ticket.id).priority, "medium");
+
+    a.send({ type: "ticket.set", username: "A", path: highPath, rev: 0, priority: "low" });
+    const listed = await a.next((msg) => msg.type === "tickets");
+    const meta = await a.next((msg) => msg.type === "ticket");
+    assert.deepEqual(Object.keys(meta), [
+      "type", "path", "rev", "title", "state", "ticketType", "priority", "parent", "depends", "reporter", "created",
+    ]);
+    assert.equal(meta.priority, "low");
+    assert.equal(meta.rev, 1);
+    assert.equal(parseTicket(high.file.ticket.id, await readDoc(dir, highPath)).priority, "low");
+    assert.equal(listed.tickets.find((ticket) => ticket.id === high.file.ticket.id).priority, "low");
+    for (const ticket of listed.tickets) assertTicketEntry(ticket);
+
+    a.send({ type: "ticket.set", username: "A", path: plainPath, rev: 0, priority: "nope" });
+    assert.deepEqual(
+      await a.next((msg) => msg.type === "error" || msg.type === "ticket" || msg.type === "tickets"),
+      { type: "error", status: 400 },
+    );
+    assert.equal(await readDoc(dir, plainPath), plainDisk);
+    assert.equal(parseTicket(plain.file.ticket.id, await readDoc(dir, plainPath)).priority, "medium");
+    a.ws.close();
+  });
+});
+
 test("T-ticket-set", async () => {
   await withDocs(async ({ server, port, dir }) => {
     const a = await hello(port, "A");
@@ -1262,6 +1321,7 @@ test("T-ticket-set", async () => {
       title: "Renamed",
       state: "new",
       ticketType: "task",
+      priority: "medium",
       parent: "",
       depends: [],
       reporter: "A",
@@ -1632,6 +1692,7 @@ test("T-ticket-purge", async () => {
       title: "Alpha",
       state: "new",
       ticketType: "task",
+      priority: "medium",
       parent: "",
       depends: ["bbbbbbbb"],
       reporter: "indexer",
