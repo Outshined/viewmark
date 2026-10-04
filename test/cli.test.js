@@ -50,6 +50,10 @@ const HELP_NEEDLES = [
   "--depends",
   "--closed",
   "reporter",
+  "serve",
+  "keeps running",
+  "beside the program",
+  "--user is not required",
 ];
 
 function run(args, extraEnv = {}) {
@@ -1704,5 +1708,228 @@ test("T-cli-repo", async () => {
     await closeServer(server);
     await fs.rm(docs, { recursive: true, force: true });
     await fs.rm(state, { recursive: true, force: true });
+  }
+});
+
+function getPage(port, requestPath) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: requestPath,
+        method: "GET",
+        headers: { Connection: "close" },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString("utf8") });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function openCli(args, extraEnv = {}, cwd) {
+  const env = { ...process.env };
+  delete env.VIEWMARK_USER;
+  delete env.VIEWMARK_PORT;
+  for (const [key, value] of Object.entries(extraEnv)) {
+    if (value === undefined) delete env[key];
+    else env[key] = value;
+  }
+  const child = spawn(process.execPath, [cli, ...args], { env, cwd, stdio: ["ignore", "pipe", "pipe"] });
+  const out = [];
+  const err = [];
+  child.stdout.on("data", (chunk) => out.push(chunk));
+  child.stderr.on("data", (chunk) => err.push(chunk));
+  const closed = new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code, signal) => resolve({ code, signal }));
+  });
+  return {
+    child,
+    closed,
+    stdout: () => Buffer.concat(out).toString("utf8"),
+    stderr: () => Buffer.concat(err).toString("utf8"),
+  };
+}
+
+async function readServeLine(proc, timeout = 5000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const text = proc.stdout();
+    const nl = text.indexOf("\n");
+    if (nl >= 0) return text.slice(0, nl + 1);
+    if (proc.child.exitCode !== null || proc.child.signalCode !== null) {
+      throw new Error(`serve exited code=${proc.child.exitCode} stdout=${JSON.stringify(text)} stderr=${JSON.stringify(proc.stderr())}`);
+    }
+    await delay(10);
+  }
+  throw new Error(`timeout stdout=${JSON.stringify(proc.stdout())} stderr=${JSON.stringify(proc.stderr())}`);
+}
+
+async function stopCli(proc) {
+  if (proc.child.exitCode === null && proc.child.signalCode === null) {
+    proc.child.kill("SIGTERM");
+    const finished = await Promise.race([proc.closed, delay(1000).then(() => null)]);
+    if (!finished && proc.child.exitCode === null && proc.child.signalCode === null) {
+      proc.child.kill("SIGKILL");
+      await proc.closed;
+    }
+  }
+  return proc.closed;
+}
+
+test("T-cli-serve", async () => {
+  const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
+  assert.equal(pkg.scripts.start, "node cli.js serve");
+
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-cli-serve-"));
+  const proc = openCli(["serve", temp, "--port", "0"]);
+  try {
+    const line = await readServeLine(proc);
+    const match = /^127\.0\.0\.1:(\d+)\t(.+)\n$/.exec(line);
+    assert.ok(match, JSON.stringify(line));
+    const bound = Number(match[1]);
+    assert.equal(match[2], await fs.realpath(temp));
+    const page = await getPage(bound, "/");
+    assert.equal(page.status, 200);
+    assert.ok(page.body.includes('id="editor"'));
+    assert.equal(proc.child.exitCode, null);
+    assert.equal(proc.stderr(), "");
+    await stopCli(proc);
+    assert.equal(proc.stdout(), line);
+  } finally {
+    await stopCli(proc);
+    await fs.rm(temp, { recursive: true, force: true });
+  }
+
+  const ignored = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-cli-serve-user-"));
+  const ignoreProc = openCli(
+    ["--user", "a<b", "serve", ignored, "--port", "0"],
+    { VIEWMARK_USER: "x<y", VIEWMARK_PORT: "1" },
+  );
+  try {
+    const line = await readServeLine(ignoreProc);
+    const match = /^127\.0\.0\.1:(\d+)\t(.+)\n$/.exec(line);
+    assert.ok(match, JSON.stringify(line));
+    assert.notEqual(Number(match[1]), 1);
+    assert.equal(match[2], await fs.realpath(ignored));
+    const page = await getPage(Number(match[1]), "/");
+    assert.equal(page.status, 200);
+    assert.ok(page.body.includes('id="editor"'));
+    assert.equal(ignoreProc.stderr(), "");
+  } finally {
+    await stopCli(ignoreProc);
+    await fs.rm(ignored, { recursive: true, force: true });
+  }
+
+  const fromEnv = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-cli-serve-env-"));
+  const envProc = openCli(["serve", fromEnv], { VIEWMARK_PORT: "0" });
+  try {
+    const line = await readServeLine(envProc);
+    assert.match(line, /^127\.0\.0\.1:\d+\t.+\n$/);
+    assert.equal(line.slice(line.indexOf("\t") + 1, -1), await fs.realpath(fromEnv));
+  } finally {
+    await stopCli(envProc);
+    await fs.rm(fromEnv, { recursive: true, force: true });
+  }
+
+  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-cli-serve-cwd-"));
+  const relative = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-cli-serve-rel-"));
+  const relName = path.basename(relative);
+  const relParent = path.dirname(relative);
+  const relProc = openCli(["serve", relName, "--port", "0"], {}, relParent);
+  const defaultState = path.join(root, "state");
+  let defaultExisted = true;
+  try {
+    await fs.lstat(defaultState);
+  } catch {
+    defaultExisted = false;
+  }
+  const defaultProc = openCli(["serve", "--port", "0"], {}, scratch);
+  try {
+    const relLine = await readServeLine(relProc);
+    const relDir = relLine.slice(relLine.indexOf("\t") + 1, -1);
+    assert.equal(relDir, await fs.realpath(relative));
+
+    const line = await readServeLine(defaultProc);
+    const match = /^127\.0\.0\.1:(\d+)\t(.+)\n$/.exec(line);
+    assert.ok(match, JSON.stringify(line));
+    assert.equal(match[2], await fs.realpath(defaultState));
+    assert.notEqual(match[2], await fs.realpath(scratch));
+    const page = await getPage(Number(match[1]), "/");
+    assert.equal(page.status, 200);
+    assert.ok(page.body.includes('id="editor"'));
+  } finally {
+    await stopCli(relProc);
+    await stopCli(defaultProc);
+    await fs.rm(scratch, { recursive: true, force: true });
+    await fs.rm(relative, { recursive: true, force: true });
+    if (!defaultExisted) await fs.rm(defaultState, { recursive: true, force: true });
+  }
+
+  const gate = await trap();
+  try {
+    for (const args of [
+      ["serve", "--repo", "x"],
+      ["serve", "--json"],
+      ["serve", "--closed"],
+      ["serve", "--rev", "1"],
+      ["serve", "--find", "a"],
+      ["serve", "--replace", "b"],
+      ["serve", "--title", "t"],
+      ["serve", "--state", "new"],
+      ["serve", "--type", "bug"],
+      ["serve", "--parent", "none"],
+      ["serve", "--depends", "none"],
+      ["serve", "--name", "n"],
+      ["serve", "--description", "d"],
+      ["serve", "--path", "p"],
+      ["serve", "one", "two"],
+      ["serve", "--port", "nope"],
+      ["serve", "--port", "65536"],
+    ]) {
+      const res = await run(args, { VIEWMARK_PORT: String(gate.port), VIEWMARK_USER: "alice" });
+      assert.equal(res.code, 2, args.join(" "));
+      assert.equal(res.stdout, "", args.join(" "));
+    }
+    assert.equal(gate.hits.length, 0);
+    const plainRepo = await run(["serve", "--repo", "x"]);
+    assert.equal(plainRepo.code, 2);
+    assert.equal(plainRepo.stdout, "");
+    const plainJson = await run(["serve", "--json"]);
+    assert.equal(plainJson.code, 2);
+    assert.equal(plainJson.stdout, "");
+    assert.equal(gate.hits.length, 0);
+
+    const blocked = path.join(os.tmpdir(), `viewmark-cli-serve-file-${gate.port}`);
+    await fs.writeFile(blocked, "x");
+    try {
+      const failed = await run(["serve", blocked, "--port", "0"]);
+      assert.equal(failed.code, 1);
+      assert.equal(failed.stdout, "");
+      assert.notEqual(failed.stderr, "");
+    } finally {
+      await fs.rm(blocked, { force: true });
+    }
+
+    const busyDir = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-cli-serve-busy-"));
+    try {
+      const busy = await run(["serve", busyDir, "--port", String(gate.port)]);
+      assert.equal(busy.code, 1);
+      assert.equal(busy.stdout, "");
+      assert.match(busy.stderr, /EADDRINUSE/);
+      assert.equal(gate.hits.length, 0);
+    } finally {
+      await fs.rm(busyDir, { recursive: true, force: true });
+    }
+  } finally {
+    await gate.close();
   }
 });

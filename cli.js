@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
-import { realpathSync } from "node:fs";
+import { realpathSync, writeSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { start } from "./server.js";
 import { TICKET_ALPHABET, TICKET_STATES, TICKET_TYPES } from "./src/ticket.js";
 
 const HELP = `viewmark talks to the document hub, one command, then exit.
@@ -19,6 +21,7 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] repo list
   viewmark [--port PORT] [--user NAME] [--json] repo register --name NAME --description TEXT --path PATH
   viewmark [--port PORT] [--user NAME] [--json] repo deregister <name>
+  viewmark [--port PORT] serve [DIR]
   viewmark help [cmd]
   viewmark --help
 
@@ -26,6 +29,7 @@ Usage:
 Missing, empty, NUL, CR, LF, <, or > is rejected. There is no default name.
 --json is global. --help, help, or no args exits 0.
 --repo is required on list, show, create, edit, and ticket.
+serve keeps running. The default directory is \`state\` beside the program, and --user is not required.
 
 stdout and stderr:
   list: one path per line on stdout
@@ -936,6 +940,49 @@ async function runRepoDeregister(hub, username, name, json) {
   return 0;
 }
 
+function serveFlagRejected(args) {
+  if (args.json || args.closed) return true;
+  return args.revSet || args.findSet || args.replaceSet || args.titleSet
+    || args.stateSet || args.typeSet || args.parentSet || args.dependsSet
+    || args.repoSet || args.nameSet || args.descriptionSet || args.pathSet;
+}
+
+function defaultStateDir() {
+  // Omitted DIR is beside this program, not the caller's cwd.
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "state");
+}
+
+function errorText(err) {
+  const text = err instanceof Error && err.stack ? err.stack : String(err);
+  return text.endsWith("\n") ? text : `${text}\n`;
+}
+
+async function runServe(args, rest) {
+  if (serveFlagRejected(args)) {
+    usage("unexpected flag");
+    return;
+  }
+  if (rest.length > 1) {
+    usage("unexpected argument");
+    return;
+  }
+  const port = parsePort(args.portSet ? args.port : (process.env.VIEWMARK_PORT ?? "8765"));
+  if (port === null) {
+    usage("invalid port");
+    return;
+  }
+  const dir = rest.length === 1 ? rest[0] : defaultStateDir();
+  let server;
+  try {
+    server = await start(port, dir);
+  } catch (err) {
+    writeSync(2, errorText(err));
+    process.exit(1);
+  }
+  const bound = server.address().port;
+  process.stdout.write(`127.0.0.1:${bound}\t${server.stateDir}\n`);
+}
+
 async function withHub(port, username, fn, repo) {
   const hub = connectHub(port, username);
   try {
@@ -961,6 +1008,11 @@ async function main() {
       return;
     }
     help();
+    return;
+  }
+
+  if (cmd === "serve") {
+    await runServe(args, rest);
     return;
   }
 
