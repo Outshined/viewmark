@@ -84,18 +84,30 @@ function closeServer(server) {
   });
 }
 
+async function registerRepo(port, name, description, repoPath) {
+  const client = await hello(port, "fixture", null);
+  client.send({ type: "repo.register", username: "fixture", name, description, path: repoPath });
+  const msg = await client.next((item) => item.type === "repos" || item.type === "error");
+  client.ws.close();
+  if (msg.type !== "repos") throw new Error(`register ${name} failed ${msg.status}`);
+  return msg;
+}
+
 async function withDocs(fn) {
+  const state = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-cli-state-"));
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-cli-"));
   await fs.mkdir(path.join(dir, "notes"));
   await fs.writeFile(path.join(dir, "hello.md"), HELLO);
   await fs.writeFile(path.join(dir, "notes", "draft.md"), DRAFT);
   await fs.writeFile(path.join(dir, "skip.txt"), "nope\n");
-  const server = await start(0, dir);
+  const server = await start(0, state);
   try {
+    await registerRepo(server.address().port, "docs", "Docs", dir);
     await fn({ dir, port: server.address().port });
   } finally {
     await closeServer(server);
     await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(state, { recursive: true, force: true });
   }
 }
 
@@ -196,10 +208,11 @@ function connect(port, username) {
   };
 }
 
-async function hello(port, username) {
+async function hello(port, username, repo = "docs") {
   const client = connect(port, username);
   await client.ready;
   client.send({ type: "hello", username });
+  if (repo) client.send({ type: "repo", username, name: repo });
   return client;
 }
 
@@ -271,10 +284,10 @@ test("T-cli-help", async () => {
     }
     assert.equal(gate.hits.length, 0);
 
-    const unknown = await run(["nope", "--user", "user", "--port", String(gate.port)]);
+    const unknown = await run(["nope", "--user", "user", "--repo", "docs", "--port", String(gate.port)]);
     assert.equal(unknown.code, 2);
     assert.equal(gate.hits.length, 0);
-    const extra = await run(["list", "extra", "--user", "user", "--port", String(gate.port)]);
+    const extra = await run(["list", "extra", "--user", "user", "--repo", "docs", "--port", String(gate.port)]);
     assert.equal(extra.code, 2);
     assert.equal(gate.hits.length, 0);
   } finally {
@@ -284,17 +297,17 @@ test("T-cli-help", async () => {
 
 test("T-cli-list", async () => {
   await withDocs(async ({ port }) => {
-    const res = await run(["--port", String(port), "--user", "user", "list"]);
+    const res = await run(["--port", String(port), "--user", "user", "--repo", "docs", "list"]);
     assert.equal(res.code, 0);
     assert.equal(res.stderr, "");
     assert.equal(res.stdout, "hello.md\nnotes/draft.md\n");
 
-    const json = await run(["--json", "list"], { VIEWMARK_PORT: String(port), VIEWMARK_USER: "user" });
+    const json = await run(["--json", "--repo", "docs", "list"], { VIEWMARK_PORT: String(port), VIEWMARK_USER: "user" });
     assert.equal(json.code, 0);
     assert.equal(json.stderr, "");
     assert.equal(json.stdout, `${JSON.stringify({ files: ["hello.md", "notes/draft.md"] })}\n`);
 
-    const flagged = await run(["--port", String(port), "--user", "user", "list"], { VIEWMARK_PORT: "1" });
+    const flagged = await run(["--port", String(port), "--user", "user", "--repo", "docs", "list"], { VIEWMARK_PORT: "1" });
     assert.equal(flagged.code, 0);
     assert.equal(flagged.stdout, "hello.md\nnotes/draft.md\n");
   });
@@ -304,27 +317,27 @@ test("T-cli-show", async () => {
   await withDocs(async ({ dir, port }) => {
     const watcher = await hello(port, "watch");
     await openDoc(watcher, "watch", "hello.md");
-    const shown = await run(["--port", String(port), "--user", "user", "show", "hello.md"]);
+    const shown = await run(["--port", String(port), "--user", "user", "--repo", "docs", "show", "hello.md"]);
     assert.equal(shown.code, 0);
     assert.equal(shown.stdout, HELLO);
     assert.equal(shown.stderr, "rev 0\n");
-    const nested = await run(["--port", String(port), "--user", "user", "show", "notes/draft.md"]);
+    const nested = await run(["--port", String(port), "--user", "user", "--repo", "docs", "show", "notes/draft.md"]);
     assert.equal(nested.code, 0);
     assert.equal(nested.stdout, DRAFT);
     assert.equal(nested.stderr, "rev 0\n");
     await delay(100);
     assert.equal(sawOwnEdit(watcher.queue, "user"), false);
 
-    const json = await run(["show", "hello.md", "--json", "--port", String(port), "--user", "user"]);
+    const json = await run(["show", "hello.md", "--json", "--port", String(port), "--user", "user", "--repo", "docs"]);
     assert.equal(json.code, 0);
     assert.equal(json.stderr, "");
     assert.equal(json.stdout, `${JSON.stringify({ path: "hello.md", rev: 0, text: HELLO })}\n`);
 
-    const slash = await run(["--port", String(port), "--user", "user", "show", "/hello.md"]);
+    const slash = await run(["--port", String(port), "--user", "user", "--repo", "docs", "show", "/hello.md"]);
     assert.equal(slash.code, shellStatus(404));
     assert.equal(slash.stdout, "");
     assert.equal(slash.stderr, "error 404\n");
-    const missing = await run(["--json", "--port", String(port), "--user", "user", "show", "missing.md"]);
+    const missing = await run(["--json", "--port", String(port), "--user", "user", "--repo", "docs", "show", "missing.md"]);
     assert.equal(missing.code, shellStatus(404));
     assert.equal(missing.stdout, "");
     assert.equal(missing.stderr, "error 404\n");
@@ -337,7 +350,7 @@ test("T-cli-create", async () => {
   const gate = await trap();
   try {
     for (const pathArg of ["", "   ", "/", "///"]) {
-      const empty = await run(["--port", String(gate.port), "--user", "user", "create", pathArg]);
+      const empty = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "create", pathArg]);
       assert.equal(empty.code, 2, JSON.stringify(pathArg));
     }
     assert.equal(gate.hits.length, 0);
@@ -346,32 +359,32 @@ test("T-cli-create", async () => {
   }
 
   await withDocs(async ({ dir, port }) => {
-    const created = await run(["--port", String(port), "--user", "user", "create", "notes/idea"]);
+    const created = await run(["--port", String(port), "--user", "user", "--repo", "docs", "create", "notes/idea"]);
     assert.equal(created.code, 0);
     assert.equal(created.stdout, "notes/idea.md\n");
     assert.equal(created.stderr, "rev 0\n");
     assert.equal(await fs.readFile(path.join(dir, "notes", "idea.md"), "utf8"), "");
 
-    const again = await run(["--port", String(port), "--user", "user", "create", "notes/idea"]);
+    const again = await run(["--port", String(port), "--user", "user", "--repo", "docs", "create", "notes/idea"]);
     assert.equal(again.code, shellStatus(409));
     assert.equal(again.stdout, "");
     assert.equal(again.stderr, "error 409\n");
     assert.equal(await fs.readFile(path.join(dir, "notes", "idea.md"), "utf8"), "");
 
-    const nope = await run(["--port", String(port), "--user", "user", "create", "../nope"]);
+    const nope = await run(["--port", String(port), "--user", "user", "--repo", "docs", "create", "../nope"]);
     assert.equal(nope.code, shellStatus(404));
     assert.equal(nope.stdout, "");
     assert.equal(nope.stderr, "error 404\n");
     await assert.rejects(() => fs.lstat(path.join(dir, "nope.md")));
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
 
-    const trimmed = await run(["--port", String(port), "--user", "user", "create", "  /notes/next  "]);
+    const trimmed = await run(["--port", String(port), "--user", "user", "--repo", "docs", "create", "  /notes/next  "]);
     assert.equal(trimmed.code, 0);
     assert.equal(trimmed.stdout, "notes/next.md\n");
     assert.equal(trimmed.stderr, "rev 0\n");
     assert.equal(await fs.readFile(path.join(dir, "notes", "next.md"), "utf8"), "");
 
-    const markdown = await run(["--json", "--port", String(port), "--user", "user", "create", "notes/keep.markdown"]);
+    const markdown = await run(["--json", "--port", String(port), "--user", "user", "--repo", "docs", "create", "notes/keep.markdown"]);
     assert.equal(markdown.code, 0);
     assert.equal(markdown.stderr, "");
     assert.equal(markdown.stdout, `${JSON.stringify({ path: "notes/keep.markdown", rev: 0 })}\n`);
@@ -385,7 +398,7 @@ test("T-cli-edit", async () => {
   try {
     const missing = await run([
       "--port", String(gate.port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "hello.md",
       "--find", "hello",
@@ -394,7 +407,7 @@ test("T-cli-edit", async () => {
     assert.equal(missing.code, 2);
     const emptyFind = await run([
       "--port", String(gate.port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "hello.md",
       "--rev", "0",
@@ -404,7 +417,7 @@ test("T-cli-edit", async () => {
     assert.equal(emptyFind.code, 2);
     const badRev = await run([
       "--port", String(gate.port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "hello.md",
       "--rev", "1.5",
@@ -420,7 +433,7 @@ test("T-cli-edit", async () => {
   await withDocs(async ({ dir, port }) => {
     const edited = await run([
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "notes/draft.md",
       "--rev", "0",
@@ -439,7 +452,7 @@ test("T-cli-edit", async () => {
 
     const cleared = await run([
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "hello.md",
       "--rev", "0",
@@ -455,7 +468,7 @@ test("T-cli-edit", async () => {
     const once = await run([
       "--json",
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "overlap.md",
       "--rev", "0",
@@ -469,7 +482,7 @@ test("T-cli-edit", async () => {
 
     const absent = await run([
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "missing.md",
       "--rev", "0",
@@ -486,7 +499,7 @@ test("T-cli-stale", async () => {
   await withDocs(async ({ dir, port }) => {
     const stale = await run([
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "hello.md",
       "--rev", "4",
@@ -501,7 +514,7 @@ test("T-cli-stale", async () => {
     const json = await run([
       "--json",
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "hello.md",
       "--rev", "4",
@@ -529,6 +542,7 @@ test("T-cli-stale", async () => {
     const later = await run([
       "--port", String(port),
       "--user", "other",
+      "--repo", "docs",
       "edit",
       "notes/draft.md",
       "--rev", "0",
@@ -544,6 +558,7 @@ test("T-cli-stale", async () => {
       "--json",
       "--port", String(port),
       "--user", "other",
+      "--repo", "docs",
       "edit",
       "notes/draft.md",
       "--rev", "0",
@@ -568,7 +583,7 @@ test("T-cli-matches", async () => {
     await openDoc(watcher, "watch", "hello.md");
     const none = await run([
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "hello.md",
       "--rev", "0",
@@ -580,7 +595,7 @@ test("T-cli-matches", async () => {
     assert.equal(none.stderr, "matches 0\n");
     const many = await run([
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "hello.md",
       "--rev", "0",
@@ -597,7 +612,7 @@ test("T-cli-matches", async () => {
     await fs.writeFile(path.join(dir, "quad.md"), "aaaa\n");
     const overlap = await run([
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "quad.md",
       "--rev", "0",
@@ -618,7 +633,7 @@ test("T-cli-noop", async () => {
     await openDoc(watcher, "watch", "hello.md");
     const same = await run([
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "hello.md",
       "--rev", "0",
@@ -631,7 +646,7 @@ test("T-cli-noop", async () => {
     const json = await run([
       "--json",
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "hello.md",
       "--rev", "0",
@@ -648,7 +663,7 @@ test("T-cli-noop", async () => {
 
     const many = await run([
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "hello.md",
       "--rev", "0",
@@ -659,7 +674,7 @@ test("T-cli-noop", async () => {
     assert.equal(many.stderr, "matches 2\n");
     const absent = await run([
       "--port", String(port),
-      "--user", "user",
+      "--user", "user", "--repo", "docs",
       "edit",
       "hello.md",
       "--rev", "0",
@@ -707,7 +722,7 @@ test("T-cli-user", async () => {
     const closed = gate.port;
     await gate.close();
     const deadStarted = Date.now();
-    const dead = await run(["--port", String(closed), "--user", "user", "list"]);
+    const dead = await run(["--port", String(closed), "--user", "user", "--repo", "docs", "list"]);
     assert.equal(dead.code, 1);
     assert.equal(dead.stderr, "");
     assert.ok(Date.now() - deadStarted < 4000);
@@ -718,7 +733,7 @@ test("T-cli-user", async () => {
 
   await withDocs(async ({ dir, port }) => {
     const fromEnv = await run(
-      ["--port", String(port), "edit", "hello.md", "--rev", "0", "--find", "hello", "--replace", "howdy"],
+      ["--port", String(port), "--repo", "docs", "edit", "hello.md", "--rev", "0", "--find", "hello", "--replace", "howdy"],
       { VIEWMARK_USER: "envuser" },
     );
     assert.equal(fromEnv.code, 0);
@@ -729,6 +744,7 @@ test("T-cli-user", async () => {
       [
         "--user", "flaguser",
         "--port", String(port),
+        "--repo", "docs",
         "edit", "notes/draft.md",
         "--rev", "0",
         "--find", "a draft",
@@ -749,7 +765,7 @@ test("T-cli-user", async () => {
 
     const shown = await run(["--port", String(port), "show", "notes/draft.md"], { VIEWMARK_USER: "a<b" });
     assert.equal(shown.code, 2);
-    const override = await run(["--user", "user", "--port", String(port), "show", "notes/draft.md"], {
+    const override = await run(["--user", "user", "--repo", "docs", "--port", String(port), "show", "notes/draft.md"], {
       VIEWMARK_USER: "a<b",
     });
     assert.equal(override.code, 0);
@@ -799,13 +815,14 @@ test("T-cli-user silence", { timeout: 20000 }, async () => {
   await listen(server);
   try {
     const started = Date.now();
-    const res = await run(["--port", String(server.address().port), "--user", "user", "list"]);
+    const res = await run(["--port", String(server.address().port), "--user", "user", "--repo", "docs", "list"]);
     const elapsed = Date.now() - started;
     assert.equal(res.code, 1);
     assert.equal(res.stdout, "");
     assert.ok(elapsed >= 4500 && elapsed < 9000, String(elapsed));
-    assert.deepEqual(messages.map((msg) => msg.type), ["hello", "list", "pong"]);
-    assert.equal(messages[2].username, "user");
+    assert.deepEqual(messages.map((msg) => msg.type), ["hello", "repo", "list", "pong"]);
+    assert.equal(messages[1].name, "docs");
+    assert.equal(messages[3].username, "user");
   } finally {
     peer?.destroy();
     await new Promise((resolve) => {
@@ -869,11 +886,16 @@ async function runFast(args, extraEnv) {
 }
 
 async function withHub(fn) {
-  const server = await start(0);
+  const state = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-cli-state-"));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-cli-docs-"));
+  const server = await start(0, state);
   try {
-    await fn({ dir: server.docsDir, port: server.address().port });
+    await registerRepo(server.address().port, "docs", "Docs", dir);
+    await fn({ dir, port: server.address().port });
   } finally {
     await closeServer(server);
+    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(state, { recursive: true, force: true });
   }
 }
 
@@ -894,7 +916,7 @@ async function writeTicket(dir, fields) {
 }
 
 function ticketArgs(port, args, user = "user") {
-  return ["--port", String(port), "--user", user, ...args];
+  return ["--port", String(port), "--user", user, "--repo", "docs", ...args];
 }
 
 async function assertNoTicketBroadcast(watcher) {
@@ -908,10 +930,10 @@ test("T-cli-ticket-list", async () => {
   try {
     const cases = [
       ["--port", String(gate.port), "ticket", "list"],
-      ["--port", String(gate.port), "--user", "user", "ticket"],
-      ["--port", String(gate.port), "--user", "user", "ticket", "nope"],
-      ["--port", String(gate.port), "--user", "user", "ticket", "list", "extra"],
-      ["--port", String(gate.port), "--user", "user", "ticket", "list", "--closed=yes"],
+      ["--port", String(gate.port), "--user", "user", "--repo", "docs", "ticket"],
+      ["--port", String(gate.port), "--user", "user", "--repo", "docs", "ticket", "nope"],
+      ["--port", String(gate.port), "--user", "user", "--repo", "docs", "ticket", "list", "extra"],
+      ["--port", String(gate.port), "--user", "user", "--repo", "docs", "ticket", "list", "--closed=yes"],
     ];
     for (const args of cases) {
       const res = await runFast(args);
@@ -1026,7 +1048,7 @@ test("T-cli-ticket-show", async () => {
       ["ticket", "show", A, "extra"],
     ];
     for (const args of cases) {
-      const res = await runFast(["--port", String(gate.port), "--user", "user", ...args]);
+      const res = await runFast(["--port", String(gate.port), "--user", "user", "--repo", "docs", ...args]);
       assert.equal(res.code, 2, args.join(" "));
       assert.equal(res.stdout, "");
     }
@@ -1127,7 +1149,7 @@ test("T-cli-ticket-create", async () => {
       ["ticket", "create", "--state", "new"],
     ];
     for (const args of cases) {
-      const res = await runFast(["--port", String(gate.port), "--user", "user", ...args]);
+      const res = await runFast(["--port", String(gate.port), "--user", "user", "--repo", "docs", ...args]);
       assert.equal(res.code, 2, args.join(" "));
       assert.equal(res.stdout, "");
     }
@@ -1238,14 +1260,14 @@ test("T-cli-ticket-create", async () => {
     assert.equal(json.stdout, `${JSON.stringify(parsed)}\n`);
 
     const flagged = await runFast(
-      ["--user", "flaguser", "--port", String(port), "ticket", "create", "--title", "Flagged"],
+      ["--user", "flaguser", "--port", String(port), "--repo", "docs", "ticket", "create", "--title", "Flagged"],
       { VIEWMARK_USER: "envuser" },
     );
     assert.equal(flagged.code, 0);
     assert.match(flagged.stderr, /^rev 0\nreporter flaguser\ncreated /);
 
     const fromEnv = await runFast(
-      ["--port", String(port), "ticket", "create", "--title", "From env"],
+      ["--port", String(port), "--repo", "docs", "ticket", "create", "--title", "From env"],
       { VIEWMARK_USER: "envuser" },
     );
     assert.equal(fromEnv.code, 0);
@@ -1290,7 +1312,7 @@ test("T-cli-ticket-set", async () => {
       ["ticket", "set", A, "extra", "--rev", "0", "--title", "Hello"],
     ];
     for (const args of cases) {
-      const res = await runFast(["--port", String(gate.port), "--user", "user", ...args]);
+      const res = await runFast(["--port", String(gate.port), "--user", "user", "--repo", "docs", ...args]);
       assert.equal(res.code, 2, args.join(" "));
       assert.equal(res.stdout, "");
     }
@@ -1498,7 +1520,7 @@ test("T-cli-ticket-set", async () => {
 test("T-cli-ticket-purge", async () => {
   const gate = await trap();
   try {
-    const extra = await runFast(["--port", String(gate.port), "--user", "user", "ticket", "purge", "extra"]);
+    const extra = await runFast(["--port", String(gate.port), "--user", "user", "--repo", "docs", "ticket", "purge", "extra"]);
     assert.equal(extra.code, 2);
     assert.equal(extra.stdout, "");
     const missingUser = await runFast(["--port", String(gate.port), "ticket", "purge"]);
@@ -1587,4 +1609,100 @@ test("T-cli-ticket-purge", async () => {
     assert.equal(left.stdout, `${B}\t${T0}\tnew\ttask\tBeta\n${E}\t${T2}\tnew\ttask\tEe\n`);
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
   });
+});
+
+test("T-cli-repo", async () => {
+  const gate = await trap();
+  try {
+    const noDesc = await run([
+      "--port", String(gate.port),
+      "--user", "user",
+      "repo", "register",
+      "--name", "one",
+      "--path", os.tmpdir(),
+    ]);
+    assert.equal(noDesc.code, 2);
+    assert.equal(noDesc.stdout, "");
+    const noRepo = await run(["--port", String(gate.port), "--user", "user", "list"]);
+    assert.equal(noRepo.code, 2);
+    const flagged = await run(["--port", String(gate.port), "--user", "user", "--repo", "one", "repo", "list"]);
+    assert.equal(flagged.code, 2);
+    assert.equal(gate.hits.length, 0);
+    const closed = gate.port;
+    await gate.close();
+    const dead = await run(["--port", String(closed), "--user", "user", "list"]);
+    assert.equal(dead.code, 2);
+  } catch (err) {
+    await gate.close().catch(() => {});
+    throw err;
+  }
+
+  const state = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-cli-repo-state-"));
+  const docs = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-cli-repo-"));
+  await fs.writeFile(path.join(docs, "a.md"), "file\n");
+  const server = await start(0, state);
+  try {
+    const port = server.address().port;
+    const registered = await run([
+      "--port", String(port),
+      "--user", "user",
+      "repo", "register",
+      "--name", "one",
+      "--description", "One",
+      "--path", docs,
+    ]);
+    assert.equal(registered.code, 0);
+    assert.equal(registered.stderr, "");
+    assert.equal(registered.stdout, "one\n");
+
+    const real = await fs.realpath(docs);
+    const listed = await run(["--port", String(port), "--user", "user", "repo", "list"]);
+    assert.equal(listed.code, 0);
+    assert.equal(listed.stderr, "");
+    assert.equal(listed.stdout, `one\tOne\t${real}\n`);
+
+    const json = await run(["--json", "--port", String(port), "--user", "user", "repo", "list"]);
+    assert.equal(json.code, 0);
+    assert.equal(json.stderr, "");
+    assert.equal(json.stdout, `${JSON.stringify({ repos: [{ name: "one", description: "One", path: real }] })}\n`);
+
+    const files = await run(["--port", String(port), "--user", "user", "--repo", "one", "list"]);
+    assert.equal(files.code, 0);
+    assert.equal(files.stderr, "");
+    assert.equal(files.stdout, "a.md\n");
+
+    const nope = await run(["--port", String(port), "--user", "user", "--repo", "nope", "list"]);
+    assert.equal(nope.code, shellStatus(404));
+    assert.equal(nope.stdout, "");
+    assert.equal(nope.stderr, "error 404\n");
+
+    const removed = await run(["--port", String(port), "--user", "user", "repo", "deregister", "one"]);
+    assert.equal(removed.code, 0);
+    assert.equal(removed.stdout, "");
+    assert.equal(removed.stderr, "");
+    assert.equal(await fs.readFile(path.join(docs, "a.md"), "utf8"), "file\n");
+
+    const again = await run([
+      "--json",
+      "--port", String(port),
+      "--user", "user",
+      "repo", "register",
+      "--name", "one",
+      "--description", "One",
+      "--path", docs,
+    ]);
+    assert.equal(again.code, 0);
+    assert.equal(again.stderr, "");
+    assert.equal(again.stdout, `${JSON.stringify({ name: "one", description: "One", path: real })}\n`);
+
+    const gone = await run(["--json", "--port", String(port), "--user", "user", "repo", "deregister", "one"]);
+    assert.equal(gone.code, 0);
+    assert.equal(gone.stderr, "");
+    assert.equal(gone.stdout, `${JSON.stringify({ name: "one" })}\n`);
+    assert.equal(await fs.readFile(path.join(docs, "a.md"), "utf8"), "file\n");
+  } finally {
+    await closeServer(server);
+    await fs.rm(docs, { recursive: true, force: true });
+    await fs.rm(state, { recursive: true, force: true });
+  }
 });

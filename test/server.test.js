@@ -159,11 +159,21 @@ function connect(port) {
   };
 }
 
-async function hello(port, username) {
+async function hello(port, username, repo = "docs") {
   const client = connect(port);
   await client.ready;
   client.send({ type: "hello", username });
+  if (repo) client.send({ type: "repo", username, name: repo });
   return client;
+}
+
+async function registerRepo(port, name, description, repoPath) {
+  const client = await hello(port, "fixture", null);
+  client.send({ type: "repo.register", username: "fixture", name, description, path: repoPath });
+  const msg = await client.next((item) => item.type === "repos" || item.type === "error");
+  client.ws.close();
+  if (msg.type !== "repos") throw new Error(`register ${name} failed ${msg.status}`);
+  return msg;
 }
 
 async function openDoc(client, username, rel) {
@@ -185,13 +195,16 @@ async function takeDoc(client) {
 }
 
 async function withDocs(fn) {
+  const state = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-state-"));
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-hub-"));
-  const server = await start(0, dir);
+  const server = await start(0, state);
   try {
-    await fn({ server, dir, port: server.address().port });
+    await registerRepo(server.address().port, "docs", "Docs", dir);
+    await fn({ server, dir, state, port: server.address().port });
   } finally {
     await close(server);
     await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(state, { recursive: true, force: true });
   }
 }
 
@@ -239,13 +252,17 @@ test("T-traversal", async () => {
 
 test("T-init", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-parent-"));
-  const dir = path.join(parent, "nested", "docs");
-  const server = await start(0, dir);
+  const state = path.join(parent, "nested", "state");
+  const docs = path.join(parent, "repo");
+  const server = await start(0, state);
   try {
-    const info = await fs.stat(path.join(dir, ".git"));
+    await assert.rejects(() => fs.stat(path.join(state, ".git")));
+    await registerRepo(server.address().port, "docs", "Docs", docs);
+    const info = await fs.stat(path.join(docs, ".git"));
     assert.equal(info.isDirectory(), true);
-    const top = (await git(dir, ["rev-parse", "--show-toplevel"])).trim();
-    assert.equal(await fs.realpath(top), await fs.realpath(dir));
+    const top = (await git(docs, ["rev-parse", "--show-toplevel"])).trim();
+    assert.equal(await fs.realpath(top), await fs.realpath(docs));
+    await assert.rejects(() => fs.stat(path.join(state, ".git")));
   } finally {
     await close(server);
     await fs.rm(parent, { recursive: true, force: true });
@@ -265,10 +282,10 @@ test("T-list", async () => {
       type: "docs",
       files: ["a.md", "sub/b.markdown"],
     });
-    const raw = await get(port, "/raw/a.md");
+    const raw = await get(port, "/raw/docs/a.md");
     assert.equal(raw.status, 200);
     assert.equal(raw.body, "a\n");
-    const nested = await get(port, "/raw/sub/b.markdown");
+    const nested = await get(port, "/raw/docs/sub/b.markdown");
     assert.equal(nested.status, 200);
     assert.equal(nested.body, "b\n");
     const escaped = await get(port, "/raw/..%2F..%2Fetc/passwd");
@@ -730,6 +747,7 @@ test("T-frame", async () => {
     const helloBody = Buffer.from('{"type":"hello","username":"A"}');
     parts.write(encodeFrame(0x1, helloBody.subarray(0, 12), { mask: true, fin: false }));
     parts.write(encodeFrame(0x0, helloBody.subarray(12), { mask: true, fin: true }));
+    parts.write(encodeFrame(0x1, Buffer.from('{"type":"repo","username":"A","name":"docs"}'), { mask: true }));
     parts.write(encodeFrame(0x1, Buffer.from('{"type":"list","username":"A"}'), { mask: true }));
     const deadline = Date.now() + 2000;
     while (!messages.some((msg) => msg.type === "docs") && Date.now() < deadline) await delay(20);
@@ -1617,4 +1635,216 @@ test("T-ticket-purge", async () => {
 
     await assertNoHead(server, dir);
   });
+});
+
+test("T-repo-isolate", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-iso-"));
+  const state = path.join(parent, "state");
+  const one = path.join(parent, "one");
+  const two = path.join(parent, "two");
+  const server = await start(0, state);
+  try {
+    const port = server.address().port;
+    const bare = await hello(port, "A", null);
+    for (const payload of [
+      { type: "list", username: "A" },
+      { type: "open", username: "A", path: "a.md" },
+      { type: "create", username: "A", path: "n.md" },
+      { type: "edit", username: "A", path: "a.md", rev: 0, op: "insert", text: "Z" },
+      { type: "lock", username: "A", path: "a.md", anchor: 0, cursor: 0, rev: 0 },
+      { type: "undo", username: "A", path: "a.md", rev: 0 },
+      { type: "redo", username: "A", path: "a.md", rev: 0 },
+      { type: "tickets", username: "A" },
+      { type: "ticket.create", username: "A", title: "X" },
+      { type: "ticket.set", username: "A", path: "tickets/aaaaaaaa.md", rev: 0, title: "N" },
+      { type: "ticket.purge", username: "A" },
+    ]) {
+      bare.send(payload);
+      assert.deepEqual(await bare.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    }
+    bare.ws.close();
+
+    await registerRepo(port, "one", "One", one);
+    await registerRepo(port, "two", "Two", two);
+    await fs.writeFile(path.join(one, "a.md"), "alpha\n");
+    await fs.writeFile(path.join(two, "a.md"), "beta\n");
+
+    const client = await hello(port, "A", null);
+    client.send({ type: "repo", username: "A", name: "one" });
+    client.send({ type: "open", username: "A", path: "a.md" });
+    const opened = await client.next((msg) => msg.type === "file" || msg.type === "docs" || msg.type === "error");
+    assert.equal(opened.type, "file");
+    assert.equal(opened.text, "alpha\n");
+    client.send({ type: "ticket.create", username: "A", title: "Only one" });
+    const created = await client.next((msg) => msg.type === "tickets");
+    assert.equal(created.tickets.length, 1);
+    await client.next((msg) => msg.type === "file");
+
+    client.send({ type: "repo", username: "A", name: "two" });
+    client.send({ type: "open", username: "A", path: "a.md" });
+    const other = await client.next((msg) => msg.type === "file" || msg.type === "docs" || msg.type === "error");
+    assert.equal(other.type, "file");
+    assert.equal(other.text, "beta\n");
+    client.send({ type: "tickets", username: "A" });
+    const listed = await client.next((msg) => msg.type === "tickets");
+    assert.deepEqual(listed.tickets, []);
+    client.ws.close();
+  } finally {
+    await close(server);
+    await fs.rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("T-repo-registry", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-reg-"));
+  const state = path.join(parent, "state");
+  const docs = path.join(parent, "docs");
+  const nested = path.join(docs, "child");
+  const other = path.join(parent, "other");
+  const outer = path.join(parent, "outer");
+  const inner = path.join(outer, "inner");
+  const ghost = path.join(parent, "ghost");
+  const server = await start(0, state);
+  try {
+    const port = server.address().port;
+    await assert.rejects(() => fs.stat(path.join(state, ".git")));
+    const client = await hello(port, "A", null);
+    client.send({ type: "repos", username: "A" });
+    assert.deepEqual(await client.next((msg) => msg.type === "repos"), { type: "repos", repos: [] });
+
+    client.send({ type: "repo.register", username: "A", name: "docs", description: "  Docs  ", path: docs });
+    const registered = await client.next((msg) => msg.type === "repos" || msg.type === "error");
+    assert.equal(registered.type, "repos");
+    const docsReal = await fs.realpath(docs);
+    assert.deepEqual(registered.repos, [{ name: "docs", description: "Docs", path: docsReal }]);
+    await fs.writeFile(path.join(docs, "keep.md"), "keep\n");
+    const saved = await fs.readFile(path.join(state, "repos.json"), "utf8");
+
+    client.send({ type: "repo.register", username: "A", name: "docs", description: "Again", path: other });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+    client.send({ type: "repo.register", username: "A", name: "alias", description: "Alias", path: `${docs}${path.sep}.` });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+    client.send({ type: "repo.register", username: "A", name: "Bad Name", description: "Nope", path: other });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    client.send({ type: "repo.register", username: "A", name: "child", description: "Child", path: nested });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    client.send({ type: "repo.register", username: "A", name: "src", description: "Package", path: repoRoot });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    client.send({ type: "repo.register", username: "A", name: "broken", description: "has\nline", path: other });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    client.send({ type: "repo.register", username: "A", name: "tabbed", description: "has\ttab", path: other });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    client.send({ type: "repo.register", username: "A", name: "blank", description: "   ", path: other });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    assert.equal(await fs.readFile(path.join(state, "repos.json"), "utf8"), saved);
+    await assert.rejects(() => fs.lstat(other));
+    await assert.rejects(() => fs.lstat(nested));
+    await assert.rejects(() => fs.stat(path.join(state, ".git")));
+
+    client.send({ type: "repo.register", username: "A", name: "inner", description: "Inner", path: inner });
+    const innerMsg = await client.next((msg) => msg.type === "repos" || msg.type === "error");
+    assert.equal(innerMsg.type, "repos");
+    client.send({ type: "repo.register", username: "A", name: "outer", description: "Outer", path: outer });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    await assert.rejects(() => fs.stat(path.join(outer, ".git")));
+    assert.equal((await fs.stat(path.join(inner, ".git"))).isDirectory(), true);
+
+    client.send({ type: "repo.register", username: "A", name: "ghost", description: "Ghost", path: ghost });
+    assert.equal((await client.next((msg) => msg.type === "repos" || msg.type === "error")).type, "repos");
+    client.send({ type: "repo.deregister", username: "A", name: "missing" });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+    client.ws.close();
+  } finally {
+    await close(server);
+  }
+
+  await fs.rm(ghost, { recursive: true, force: true });
+  const again = await start(0, state);
+  try {
+    const port = again.address().port;
+    await assert.rejects(() => fs.lstat(ghost));
+    const client = await hello(port, "B", null);
+    client.send({ type: "repos", username: "B" });
+    const listed = await client.next((msg) => msg.type === "repos");
+    const names = listed.repos.map((repo) => repo.name);
+    assert.deepEqual(names, ["docs", "ghost", "inner"]);
+    assert.equal(listed.repos.find((repo) => repo.name === "docs").path, await fs.realpath(docs));
+    assert.equal(await fs.readFile(path.join(docs, "keep.md"), "utf8"), "keep\n");
+
+    client.send({ type: "repo.deregister", username: "B", name: "docs" });
+    const after = await client.next((msg) => msg.type === "repos" || msg.type === "error");
+    assert.equal(after.type, "repos");
+    assert.equal(after.repos.some((repo) => repo.name === "docs"), false);
+    assert.equal(await fs.readFile(path.join(docs, "keep.md"), "utf8"), "keep\n");
+    assert.equal((await fs.stat(path.join(docs, ".git"))).isDirectory(), true);
+
+    client.send({ type: "repo", username: "B", name: "docs" });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+    client.send({ type: "list", username: "B" });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    await assert.rejects(() => fs.stat(path.join(state, ".git")));
+    client.ws.close();
+  } finally {
+    await close(again);
+    await fs.rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("T-repo-raw", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), "a\n");
+    const ok = await get(port, "/raw/docs/a.md");
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body, "a\n");
+    const bare = await get(port, "/raw/a.md");
+    assert.equal(bare.status, 404);
+    const rootOnly = await get(port, "/raw/");
+    assert.equal(rootOnly.status, 404);
+    const named = await get(port, "/raw/docs");
+    assert.equal(named.status, 404);
+    const trav = await get(port, "/raw/docs/..%2F..%2Fetc/passwd");
+    assert.equal(trav.status, 404);
+  });
+});
+
+test("T-repo-switch", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-switch-"));
+  const state = path.join(parent, "state");
+  const one = path.join(parent, "one");
+  const two = path.join(parent, "two");
+  const server = await start(0, state);
+  try {
+    const port = server.address().port;
+    await registerRepo(port, "one", "One", one);
+    await registerRepo(port, "two", "Two", two);
+    await fs.writeFile(path.join(one, "a.md"), "alpha\n");
+    await fs.writeFile(path.join(two, "a.md"), "alpha\n");
+    const client = await hello(port, "A", null);
+    client.send({ type: "repo", username: "A", name: "one" });
+    client.send({ type: "open", username: "A", path: "a.md" });
+    const opened = await client.next((msg) => msg.type === "file" && msg.path === "a.md");
+    client.send({ type: "lock", username: "A", path: "a.md", anchor: 0, cursor: 0, rev: opened.rev });
+    await client.next((msg) => msg.type === "locks" && msg.path === "a.md");
+    client.send({ type: "edit", username: "A", path: "a.md", rev: opened.rev, op: "insert", text: "X" });
+    const doc = await client.next((msg) => msg.type === "doc");
+    assert.equal(doc.text, "Xalpha\n");
+    await client.next((msg) => msg.type === "locks");
+    await assert.rejects(() => git(one, ["rev-parse", "HEAD"]));
+
+    client.send({ type: "repo", username: "A", name: "two" });
+    client.send({ type: "open", username: "A", path: "a.md" });
+    const next = await client.next((msg) => msg.type === "file" || msg.type === "docs" || msg.type === "error");
+    assert.equal(next.type, "file");
+    assert.equal(next.text, "alpha\n");
+    assert.equal(await git(one, ["log", "-1", "--format=%an%n%ae%n%s"]), "A\nA@viewmark.local\nEdit a.md\n");
+    assert.equal(await fs.readFile(path.join(one, "a.md"), "utf8"), "Xalpha\n");
+    await assert.rejects(() => git(two, ["rev-parse", "HEAD"]));
+    client.send({ type: "undo", username: "A", path: "a.md", rev: next.rev });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+    assert.equal(await fs.readFile(path.join(two, "a.md"), "utf8"), "alpha\n");
+    client.ws.close();
+  } finally {
+    await close(server);
+    await fs.rm(parent, { recursive: true, force: true });
+  }
 });

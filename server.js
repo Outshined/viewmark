@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHub, ensureDocsRepo } from "./src/hub.js";
+import { createHub } from "./src/hub.js";
 
 const root = realpathSync(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -17,17 +17,19 @@ const types = {
   ".markdown": "text/markdown",
 };
 
-export async function start(port, docsDir) {
+export async function start(port, stateDir) {
   let ownsTemp = false;
-  let dir = docsDir ? path.resolve(docsDir) : "";
+  let dir = stateDir ? path.resolve(stateDir) : "";
   if (!dir) {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-docs-"));
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-state-"));
     ownsTemp = true;
+  } else {
+    await fs.mkdir(dir, { recursive: true });
   }
-  dir = await ensureDocsRepo(dir, root);
-  const hub = createHub(dir);
+  dir = await fs.realpath(dir);
+  const hub = await createHub(dir, root);
   const server = http.createServer((req, res) => {
-    handleRequest(req, res, dir).catch((err) => {
+    handleRequest(req, res, hub).catch((err) => {
       console.error(err);
       if (res.writableEnded) return;
       if (!res.headersSent) res.writeHead(500);
@@ -35,7 +37,7 @@ export async function start(port, docsDir) {
     });
   });
   server.on("upgrade", (req, socket, head) => hub.handleUpgrade(req, socket, head));
-  server.docsDir = dir;
+  server.stateDir = dir;
   const closeServer = server.close.bind(server);
   let closing = null;
   server.close = (callback) => {
@@ -71,7 +73,7 @@ function pathnameOf(url) {
   return url.slice(0, end);
 }
 
-async function handleRequest(req, res, docsDir) {
+async function handleRequest(req, res, hub) {
   const pathname = pathnameOf(req.url ?? "");
   if (pathname === "/api/ws") {
     res.writeHead(400);
@@ -79,8 +81,28 @@ async function handleRequest(req, res, docsDir) {
     return;
   }
   if (pathname === "/raw" || pathname.startsWith("/raw/")) {
-    const rest = pathname.slice("/raw".length) || "/";
-    await serveStatic(req, res, docsDir, rest, false);
+    const rest = pathname.startsWith("/raw/") ? pathname.slice("/raw/".length) : "";
+    const slash = rest.indexOf("/");
+    if (!rest || slash <= 0) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    let name;
+    try {
+      name = decodeURIComponent(rest.slice(0, slash));
+    } catch {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    const repoPath = hub.repoPath(name);
+    if (!repoPath) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    await serveStatic(req, res, repoPath, rest.slice(slash), false);
     return;
   }
   await serveStatic(req, res, root, req.url ?? "", true);
@@ -163,13 +185,13 @@ function insideRoot(rootDir, candidate) {
 
 const entry = process.argv[1];
 if (entry && path.resolve(entry) === fileURLToPath(import.meta.url)) {
-  const docsArg = process.argv[2];
-  if (!docsArg) {
-    console.error("usage: node server.js <docs-dir>");
+  const stateArg = process.argv[2];
+  if (!stateArg) {
+    console.error("usage: node server.js <state-dir>");
     process.exitCode = 1;
   } else {
     const port = process.env.PORT ? Number(process.env.PORT) : 8765;
-    start(port, docsArg).catch((err) => {
+    start(port, stateArg).catch((err) => {
       console.error(err);
       process.exitCode = 1;
     });

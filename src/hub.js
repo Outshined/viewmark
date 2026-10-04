@@ -110,6 +110,49 @@ function inside(rootDir, candidate) {
   return rel === "" || (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel));
 }
 
+function containsPath(rootDir, candidate) {
+  const rel = path.relative(rootDir, candidate);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
+const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+function validRepoName(name) {
+  return typeof name === "string" && REPO_NAME.test(name);
+}
+
+function pathConflict(existing, candidate) {
+  if (existing === candidate) return "same";
+  if (containsPath(existing, candidate) || containsPath(candidate, existing)) return "nest";
+  return null;
+}
+
+async function loadRepos(stateDir) {
+  let text;
+  try {
+    text = await fs.readFile(path.join(stateDir, "repos.json"), "utf8");
+  } catch (err) {
+    if (err && err.code === "ENOENT") return new Map();
+    throw err;
+  }
+  const parsed = JSON.parse(text);
+  if (!parsed || !Array.isArray(parsed.repos)) throw new Error("invalid repos.json");
+  const map = new Map();
+  for (const entry of parsed.repos) {
+    if (!entry || typeof entry.name !== "string" || typeof entry.description !== "string" || typeof entry.path !== "string") {
+      throw new Error("invalid repos.json");
+    }
+    // Stored paths are already real. Do not mkdir them: a missing tree stays missing.
+    map.set(entry.name, {
+      name: entry.name,
+      description: entry.description,
+      path: entry.path,
+      files: new Map(),
+    });
+  }
+  return map;
+}
+
 async function existsPath(full) {
   try {
     await fs.lstat(full);
@@ -298,8 +341,8 @@ function closeCode(reason) {
   return 1002;
 }
 
-export function createHub(docsDir) {
-  const files = new Map();
+export async function createHub(stateDir, sourceRoot) {
+  const repos = await loadRepos(stateDir);
   const sockets = new Set();
   let queue = Promise.resolve();
   let stopped = false;
@@ -381,7 +424,8 @@ export function createHub(docsDir) {
 
   async function commitIfDirty(socket) {
     const session = socket.session;
-    if (!session || !session.dirtyPath || session.committing) return;
+    const docsDir = session?.repo?.path;
+    if (!session || !docsDir || !session.dirtyPath || session.committing) return;
     const rel = session.dirtyPath;
     const username = session.username;
     session.committing = true;
@@ -497,6 +541,8 @@ export function createHub(docsDir) {
 
   async function releaseFile(socket) {
     const session = socket.session;
+    const files = session?.repo?.files;
+    if (!session || !files) return;
     const rel = session.docPath;
     if (!rel) return;
     const file = files.get(rel);
@@ -516,7 +562,9 @@ export function createHub(docsDir) {
     if (session.dirtyPath === rel) await commitIfDirty(socket);
   }
 
-  async function loadFile(rel) {
+  async function loadFile(repo, rel) {
+    const files = repo.files;
+    const docsDir = repo.path;
     const cached = files.get(rel);
     if (cached) return cached;
     const full = path.resolve(docsDir, rel);
@@ -556,7 +604,9 @@ export function createHub(docsDir) {
     return file;
   }
 
-  async function collectTickets() {
+  async function collectTickets(repo) {
+    const docsDir = repo.path;
+    const files = repo.files;
     const dir = path.join(docsDir, "tickets");
     let entries;
     try {
@@ -596,12 +646,15 @@ export function createHub(docsDir) {
     return tickets;
   }
 
-  async function broadcastTickets() {
-    const msg = { type: "tickets", tickets: await collectTickets() };
-    for (const sock of sockets) send(sock, msg);
+  async function broadcastTickets(repo) {
+    const msg = { type: "tickets", tickets: await collectTickets(repo) };
+    for (const sock of sockets) {
+      if (sock.session?.repo === repo) send(sock, msg);
+    }
   }
 
-  async function prepareTicketDest(id) {
+  async function prepareTicketDest(repo, id) {
+    const docsDir = repo.path;
     const parent = path.resolve(docsDir, "tickets");
     try {
       await fs.mkdir(parent, { recursive: true });
@@ -621,15 +674,19 @@ export function createHub(docsDir) {
   }
 
   async function onList(socket) {
-    const listed = await listMarkdown(docsDir, "");
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const listed = await listMarkdown(repo.path, "");
     send(socket, { type: "docs", files: listed });
   }
 
   async function onOpen(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
     const rel = safeRel(msg.path);
     if (!rel) return fail(socket, 404);
     if (rel === "tickets" || (rel.startsWith("tickets/") && !ticketIdFromRel(rel))) return fail(socket, 404);
-    const file = await loadFile(rel);
+    const file = await loadFile(repo, rel);
     if (!file) return fail(socket, 404);
     const session = socket.session;
     if (session.docPath !== rel) {
@@ -654,6 +711,10 @@ export function createHub(docsDir) {
   }
 
   async function onCreate(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const files = repo.files;
+    const docsDir = repo.path;
     const rel = safeRel(msg.path);
     if (!rel) return fail(socket, 404);
     if (rel === "tickets" || rel.startsWith("tickets/")) return fail(socket, 400);
@@ -682,15 +743,22 @@ export function createHub(docsDir) {
     files.set(rel, { rel, full: dest, rev: 0, text: "", subscribers: new Set(), locks: new Map() });
     const listed = await listMarkdown(docsDir, "");
     const docs = { type: "docs", files: listed };
-    for (const sock of sockets) send(sock, docs);
+    for (const sock of sockets) {
+      if (sock.session?.repo === repo) send(sock, docs);
+    }
     await onOpen(socket, { path: rel });
   }
 
   async function onTickets(socket) {
-    send(socket, { type: "tickets", tickets: await collectTickets() });
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    send(socket, { type: "tickets", tickets: await collectTickets(repo) });
   }
 
   async function onTicketCreate(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const files = repo.files;
     const title = validTitle(msg.title);
     if (!title) return fail(socket, 400);
     let state = "new";
@@ -710,7 +778,7 @@ export function createHub(docsDir) {
       const id = generateId();
       const rel = `tickets/${id}.md`;
       if (files.has(rel)) continue;
-      const dest = await prepareTicketDest(id);
+      const dest = await prepareTicketDest(repo, id);
       if (!dest) return fail(socket, 500);
       if (await existsPath(dest)) continue;
       allocated = { id, rel, dest };
@@ -739,17 +807,19 @@ export function createHub(docsDir) {
       subscribers: new Set(),
       locks: new Map(),
     });
-    await broadcastTickets();
+    await broadcastTickets(repo);
     await onOpen(socket, { path: allocated.rel });
   }
 
   async function onTicketSet(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
     if (Object.prototype.hasOwnProperty.call(msg, "reporter") || Object.prototype.hasOwnProperty.call(msg, "created")) {
       return fail(socket, 400);
     }
     const rel = safeRel(msg.path);
     if (!rel || !ticketIdFromRel(rel)) return fail(socket, 404);
-    const file = await loadFile(rel);
+    const file = await loadFile(repo, rel);
     if (!file || !file.ticket) return fail(socket, 404);
     const next = { ...file.ticket, depends: [...file.ticket.depends] };
     if (Object.prototype.hasOwnProperty.call(msg, "title")) next.title = msg.title;
@@ -762,18 +832,20 @@ export function createHub(docsDir) {
     if (typeof msg.rev !== "number" || msg.rev !== file.rev) return fail(socket, 409);
     const parsed = parseTicket(file.ticket.id, composed);
     if (!parsed) return fail(socket, 400);
-    const reason = rejectLink(await collectTickets(), parsed.id, parsed.parent, parsed.depends);
+    const reason = rejectLink(await collectTickets(repo), parsed.id, parsed.parent, parsed.depends);
     if (reason) return fail(socket, 409);
     const current = composeTicket({ ...file.ticket, body: file.text });
     if (composed === current) return;
     await writeAtomic(file.full, composed);
     file.ticket = ticketView(parsed);
     file.rev += 1;
-    await broadcastTickets();
+    await broadcastTickets(repo);
     broadcast(file, ticketNotice(file));
   }
 
-  async function rewriteTicketLinks(id, parent, depends) {
+  async function rewriteTicketLinks(repo, id, parent, depends) {
+    const files = repo.files;
+    const docsDir = repo.path;
     const rel = `tickets/${id}.md`;
     const cached = files.get(rel);
     if (cached && cached.ticket) {
@@ -801,8 +873,12 @@ export function createHub(docsDir) {
     await writeAtomic(full, composed);
   }
 
-  async function onTicketPurge() {
-    const all = await collectTickets();
+  async function onTicketPurge(socket) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const files = repo.files;
+    const docsDir = repo.path;
+    const all = await collectTickets(repo);
     const closedIds = new Set(all.filter((ticket) => ticket.state === "closed").map((ticket) => ticket.id));
     for (const id of closedIds) {
       const rel = `tickets/${id}.md`;
@@ -815,14 +891,16 @@ export function createHub(docsDir) {
       const parent = closedIds.has(ticket.parent) ? "" : ticket.parent;
       const depends = ticket.depends.filter((dep) => !closedIds.has(dep));
       if (parent === ticket.parent && depends.length === ticket.depends.length) continue;
-      await rewriteTicketLinks(ticket.id, parent, depends);
+      await rewriteTicketLinks(repo, ticket.id, parent, depends);
     }
-    await broadcastTickets();
+    await broadcastTickets(repo);
   }
 
   async function onLock(socket, msg) {
     touch(socket);
     const session = socket.session;
+    const files = session.repo?.files;
+    if (!files) return fail(socket, 400);
     const file = files.get(session.docPath);
     if (!file || msg.path !== file.rel) return fail(socket, 409);
     if (typeof msg.rev !== "number" || msg.rev !== file.rev) return fail(socket, 409);
@@ -847,6 +925,8 @@ export function createHub(docsDir) {
   async function onEdit(socket, msg) {
     touch(socket);
     const session = socket.session;
+    const files = session.repo?.files;
+    if (!files) return fail(socket, 400);
     const file = files.get(session.docPath);
     if (!file || msg.path !== file.rel) return fail(socket, 409);
     if (typeof msg.rev !== "number" || msg.rev !== file.rev) return fail(socket, 409);
@@ -904,6 +984,8 @@ export function createHub(docsDir) {
 
   async function onHistory(socket, msg, direction) {
     const session = socket.session;
+    const files = session.repo?.files;
+    if (!files) return fail(socket, 400);
     const file = files.get(session.docPath);
     if (!file || msg.path !== file.rel) return fail(socket, 409);
     if (typeof msg.rev !== "number" || msg.rev !== file.rev) return fail(socket, 409);
@@ -941,6 +1023,148 @@ export function createHub(docsDir) {
     if (session.dirtyPath) await commitIfDirty(socket);
   }
 
+  function reposPayload() {
+    const list = [...repos.values()].map(({ name, description, path }) => ({ name, description, path }));
+    list.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return { type: "repos", repos: list };
+  }
+
+  function broadcastRepos() {
+    const msg = reposPayload();
+    for (const sock of sockets) send(sock, msg);
+  }
+
+  async function saveRegistry() {
+    const body = reposPayload();
+    await writeAtomic(path.join(stateDir, "repos.json"), `${JSON.stringify({ repos: body.repos })}\n`);
+  }
+
+  function clearDocState(session) {
+    session.docPath = null;
+    session.lines = new Set();
+    session.undo = [];
+    session.redo = [];
+    session.anchor = 0;
+    session.cursor = 0;
+  }
+
+  async function dropRepoSelection(repo) {
+    for (const sock of [...sockets]) {
+      if (sock.session?.repo !== repo) continue;
+      if (sock.session.idle) {
+        clearTimeout(sock.session.idle);
+        sock.session.idle = null;
+      }
+      await releaseFile(sock);
+      if (sock.session.dirtyPath) await commitIfDirty(sock);
+      sock.session.repo = null;
+      clearDocState(sock.session);
+    }
+  }
+
+  function onRepos(socket) {
+    send(socket, reposPayload());
+  }
+
+  async function onRegister(socket, msg) {
+    if (!validRepoName(msg.name)) return fail(socket, 400);
+    const description = validTitle(msg.description);
+    if (!description) return fail(socket, 400);
+    if (typeof msg.path !== "string" || msg.path.length === 0 || msg.path.includes("\0")) return fail(socket, 400);
+    if (repos.has(msg.name)) return fail(socket, 409);
+
+    const resolved = path.resolve(msg.path);
+    let real = null;
+    try {
+      real = await fs.realpath(resolved);
+    } catch (err) {
+      if (!err || err.code !== "ENOENT") return fail(socket, 400);
+    }
+    if (real === sourceRoot) return fail(socket, 400);
+    const candidates = real ? [real] : [resolved];
+    for (const other of repos.values()) {
+      for (const candidate of candidates) {
+        const hit = pathConflict(other.path, candidate);
+        if (hit === "same") return fail(socket, 409);
+        if (hit === "nest") return fail(socket, 400);
+      }
+    }
+    if (!real) {
+      try {
+        await fs.mkdir(resolved, { recursive: true });
+        real = await fs.realpath(resolved);
+      } catch {
+        return fail(socket, 400);
+      }
+      // A symlink parent can land inside a registered root after mkdir.
+      if (real === sourceRoot) return fail(socket, 400);
+      for (const other of repos.values()) {
+        const hit = pathConflict(other.path, real);
+        if (hit === "same") return fail(socket, 409);
+        if (hit === "nest") return fail(socket, 400);
+      }
+    } else {
+      let info;
+      try {
+        info = await fs.stat(real);
+      } catch {
+        return fail(socket, 400);
+      }
+      if (!info.isDirectory()) return fail(socket, 400);
+    }
+
+    try {
+      real = await ensureDocsRepo(real, sourceRoot);
+    } catch (err) {
+      if (err && err.message === "docs directory must not be the Viewmark source repo") return fail(socket, 400);
+      console.error(err);
+      return fail(socket, 500);
+    }
+    for (const other of repos.values()) {
+      const hit = pathConflict(other.path, real);
+      if (hit === "same") return fail(socket, 409);
+      if (hit === "nest") return fail(socket, 400);
+    }
+
+    const repo = { name: msg.name, description, path: real, files: new Map() };
+    repos.set(repo.name, repo);
+    try {
+      await saveRegistry();
+    } catch (err) {
+      repos.delete(repo.name);
+      throw err;
+    }
+    broadcastRepos();
+  }
+
+  async function onDeregister(socket, msg) {
+    if (typeof msg.name !== "string") return fail(socket, 404);
+    const repo = repos.get(msg.name);
+    if (!repo) return fail(socket, 404);
+    await dropRepoSelection(repo);
+    repos.delete(repo.name);
+    repo.files.clear();
+    try {
+      await saveRegistry();
+    } catch (err) {
+      repos.set(repo.name, repo);
+      throw err;
+    }
+    broadcastRepos();
+  }
+
+  async function onSelect(socket, msg) {
+    if (typeof msg.name !== "string") return fail(socket, 404);
+    const repo = repos.get(msg.name);
+    if (!repo) return fail(socket, 404);
+    const session = socket.session;
+    if (session.repo === repo) return;
+    await releaseFile(socket);
+    if (session.dirtyPath) await commitIfDirty(socket);
+    session.repo = repo;
+    clearDocState(session);
+  }
+
   async function handleText(socket, payload) {
     if (socket.session?.gone || socket.session?.ending) return;
     let msg;
@@ -970,13 +1194,17 @@ export function createHub(docsDir) {
       return;
     }
     if (msg.username !== session.username) return fail(socket, 403);
+    if (msg.type === "repos") return onRepos(socket);
+    if (msg.type === "repo.register") return onRegister(socket, msg);
+    if (msg.type === "repo.deregister") return onDeregister(socket, msg);
+    if (msg.type === "repo") return onSelect(socket, msg);
     if (msg.type === "list") return onList(socket);
     if (msg.type === "open") return onOpen(socket, msg);
     if (msg.type === "create") return onCreate(socket, msg);
     if (msg.type === "tickets") return onTickets(socket);
     if (msg.type === "ticket.create") return onTicketCreate(socket, msg);
     if (msg.type === "ticket.set") return onTicketSet(socket, msg);
-    if (msg.type === "ticket.purge") return onTicketPurge();
+    if (msg.type === "ticket.purge") return onTicketPurge(socket);
     if (msg.type === "lock") return onLock(socket, msg);
     if (msg.type === "edit") return onEdit(socket, msg);
     if (msg.type === "undo") return onHistory(socket, msg, "undo");
@@ -987,6 +1215,7 @@ export function createHub(docsDir) {
   function attach(socket) {
     const session = {
       username: null,
+      repo: null,
       docPath: null,
       anchor: 0,
       cursor: 0,
@@ -1035,7 +1264,11 @@ export function createHub(docsDir) {
   pingTimer.unref();
 
   return {
-    docsDir,
+    stateDir,
+    repoPath(name) {
+      const repo = repos.get(name);
+      return repo ? repo.path : null;
+    },
     handleUpgrade(req, socket, head) {
       if (stopped) {
         socket.destroy();

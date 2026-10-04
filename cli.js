@@ -7,21 +7,25 @@ import { TICKET_ALPHABET, TICKET_STATES, TICKET_TYPES } from "./src/ticket.js";
 const HELP = `viewmark talks to the document hub, one command, then exit.
 
 Usage:
-  viewmark [--port PORT] [--user NAME] [--json] list
-  viewmark [--port PORT] [--user NAME] [--json] show <path>
-  viewmark [--port PORT] [--user NAME] [--json] create <path>
-  viewmark [--port PORT] [--user NAME] [--json] edit <path> --rev N --find TEXT --replace TEXT
-  viewmark [--port PORT] [--user NAME] [--json] ticket list [--closed]
-  viewmark [--port PORT] [--user NAME] [--json] ticket show <id>
-  viewmark [--port PORT] [--user NAME] [--json] ticket create --title TEXT [--state STATE] [--type TYPE]
-  viewmark [--port PORT] [--user NAME] [--json] ticket set <id> --rev N [--title TEXT] [--state STATE] [--type TYPE] [--parent ID] [--depends IDS]
-  viewmark [--port PORT] [--user NAME] [--json] ticket purge
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME list
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME show <path>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME create <path>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME edit <path> --rev N --find TEXT --replace TEXT
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket list [--closed]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket show <id>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket create --title TEXT [--state STATE] [--type TYPE]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket set <id> --rev N [--title TEXT] [--state STATE] [--type TYPE] [--parent ID] [--depends IDS]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket purge
+  viewmark [--port PORT] [--user NAME] [--json] repo list
+  viewmark [--port PORT] [--user NAME] [--json] repo register --name NAME --description TEXT --path PATH
+  viewmark [--port PORT] [--user NAME] [--json] repo deregister <name>
   viewmark help [cmd]
   viewmark --help
 
 --port or VIEWMARK_PORT, default 8765. --user or VIEWMARK_USER; the flag wins.
 Missing, empty, NUL, CR, LF, <, or > is rejected. There is no default name.
 --json is global. --help, help, or no args exits 0.
+--repo is required on list, show, create, edit, and ticket.
 
 stdout and stderr:
   list: one path per line on stdout
@@ -34,9 +38,13 @@ stdout and stderr:
   --json: one object plus a newline and empty stderr:
     list {files}; show and edit {path,rev,text}; create {path,rev:0};
     conflict {path,rev,text,error:"conflict"}
+  repo list: name, description, and path, tab-separated, in name order
+  repo register: the name
+  repo deregister: nothing
+  --json repo list {repos}; register {name,description,path}; deregister {name}
 
 Example of one copy-paste edit:
-  viewmark --user alice edit hello.md --rev 0 --find "hello" --replace "hi"
+  viewmark --user alice --repo docs edit hello.md --rev 0 --find "hello" --replace "hi"
 
 ticket:
   list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE], set <id> --rev N, purge.
@@ -58,7 +66,22 @@ Exit codes: 0, 1, 2, 400, 404, 409.
 A stale rev exits 409 and does not write. The shell status is that number modulo 256, so 400 is 144, 404 is 148, and 409 is 153. stderr \`conflict\` or \`error N\` is the hub status.
 `;
 
-const VALUE_FLAGS = new Set(["port", "user", "rev", "find", "replace", "title", "state", "type", "parent", "depends"]);
+const VALUE_FLAGS = new Set([
+  "port",
+  "user",
+  "rev",
+  "find",
+  "replace",
+  "title",
+  "state",
+  "type",
+  "parent",
+  "depends",
+  "repo",
+  "name",
+  "description",
+  "path",
+]);
 
 // Same rejection the hub uses, so a bad name never opens a socket.
 export function validUsername(name) {
@@ -106,6 +129,14 @@ function parseArgs(argv) {
     parent: "",
     dependsSet: false,
     depends: "",
+    repoSet: false,
+    repo: "",
+    nameSet: false,
+    name: "",
+    descriptionSet: false,
+    description: "",
+    pathSet: false,
+    path: "",
     closed: false,
     positionals: [],
   };
@@ -171,6 +202,18 @@ function parseArgs(argv) {
       } else if (name === "depends") {
         args.dependsSet = true;
         args.depends = value;
+      } else if (name === "repo") {
+        args.repoSet = true;
+        args.repo = value;
+      } else if (name === "name") {
+        args.nameSet = true;
+        args.name = value;
+      } else if (name === "description") {
+        args.descriptionSet = true;
+        args.description = value;
+      } else if (name === "path") {
+        args.pathSet = true;
+        args.path = value;
       }
       continue;
     }
@@ -843,10 +886,61 @@ async function runTicket(hub, username, args, command) {
   return 2;
 }
 
-async function withHub(port, username, fn) {
+async function runRepoList(hub, username, json) {
+  hub.send({ type: "repos", username });
+  const msg = await hub.next((item) => item.type === "repos" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  if (!Array.isArray(msg.repos)) return 1;
+  const repos = [];
+  for (const repo of msg.repos) {
+    if (!repo || typeof repo.name !== "string" || typeof repo.description !== "string" || typeof repo.path !== "string") {
+      return 1;
+    }
+    repos.push({ name: repo.name, description: repo.description, path: repo.path });
+  }
+  if (json) {
+    writeJson({ repos });
+    return 0;
+  }
+  if (repos.length > 0) {
+    process.stdout.write(repos.map((repo) => `${repo.name}\t${repo.description}\t${repo.path}\n`).join(""));
+  }
+  return 0;
+}
+
+async function runRepoRegister(hub, username, args) {
+  hub.send({
+    type: "repo.register",
+    username,
+    name: args.name,
+    description: args.description,
+    path: args.path,
+  });
+  const msg = await hub.next((item) => item.type === "repos" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  const repo = Array.isArray(msg.repos) ? msg.repos.find((item) => item && item.name === args.name) : null;
+  if (!repo || typeof repo.description !== "string" || typeof repo.path !== "string") return 1;
+  if (args.json) {
+    writeJson({ name: repo.name, description: repo.description, path: repo.path });
+    return 0;
+  }
+  process.stdout.write(`${repo.name}\n`);
+  return 0;
+}
+
+async function runRepoDeregister(hub, username, name, json) {
+  hub.send({ type: "repo.deregister", username, name });
+  const msg = await hub.next((item) => item.type === "repos" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  if (json) writeJson({ name });
+  return 0;
+}
+
+async function withHub(port, username, fn, repo) {
   const hub = connectHub(port, username);
   try {
     await hub.ready;
+    if (repo !== undefined) hub.send({ type: "repo", username, name: repo });
     const code = await fn(hub);
     hub.finish(code);
   } catch (err) {
@@ -886,12 +980,63 @@ async function main() {
     return;
   }
 
+  if (cmd === "repo") {
+    if (args.repoSet) {
+      usage("--repo is not used with repo");
+      return;
+    }
+    const [sub, ...more] = rest;
+    if (sub === "list") {
+      if (more.length !== 0) {
+        usage("unexpected argument");
+        return;
+      }
+      await withHub(port, user, (hub) => runRepoList(hub, user, args.json));
+      return;
+    }
+    if (sub === "register") {
+      if (more.length !== 0) {
+        usage("unexpected argument");
+        return;
+      }
+      if (!args.nameSet || !args.descriptionSet || !args.pathSet) {
+        usage("register requires --name, --description, and --path");
+        return;
+      }
+      await withHub(port, user, (hub) => runRepoRegister(hub, user, args));
+      return;
+    }
+    if (sub === "deregister") {
+      if (more.length === 0) {
+        usage("name required");
+        return;
+      }
+      if (more.length !== 1) {
+        usage("unexpected argument");
+        return;
+      }
+      await withHub(port, user, (hub) => runRepoDeregister(hub, user, more[0], args.json));
+      return;
+    }
+    usage("unknown command");
+    return;
+  }
+
+  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "ticket") {
+    usage("unknown command");
+    return;
+  }
+  if (!args.repoSet) {
+    usage("--repo is required");
+    return;
+  }
+
   if (cmd === "list") {
     if (rest.length !== 0) {
       usage("unexpected argument");
       return;
     }
-    await withHub(port, user, (hub) => runList(hub, user, args.json));
+    await withHub(port, user, (hub) => runList(hub, user, args.json), args.repo);
     return;
   }
   if (cmd === "ticket") {
@@ -900,11 +1045,7 @@ async function main() {
       usage(command.error);
       return;
     }
-    await withHub(port, user, (hub) => runTicket(hub, user, args, command));
-    return;
-  }
-  if (cmd !== "show" && cmd !== "create" && cmd !== "edit") {
-    usage("unknown command");
+    await withHub(port, user, (hub) => runTicket(hub, user, args, command), args.repo);
     return;
   }
   if (rest.length === 0) {
@@ -917,7 +1058,7 @@ async function main() {
   }
 
   if (cmd === "show") {
-    await withHub(port, user, (hub) => runShow(hub, user, rest[0], args.json));
+    await withHub(port, user, (hub) => runShow(hub, user, rest[0], args.json), args.repo);
     return;
   }
   if (cmd === "create") {
@@ -926,7 +1067,7 @@ async function main() {
       usage("empty path");
       return;
     }
-    await withHub(port, user, (hub) => runCreate(hub, user, path, args.json));
+    await withHub(port, user, (hub) => runCreate(hub, user, path, args.json), args.repo);
     return;
   }
 
@@ -939,7 +1080,7 @@ async function main() {
     usage("edit requires integer --rev, non-empty --find, and --replace");
     return;
   }
-  await withHub(port, user, (hub) => runEdit(hub, user, rest[0], rev, args.find, args.replace, args.json));
+  await withHub(port, user, (hub) => runEdit(hub, user, rest[0], rev, args.find, args.replace, args.json), args.repo);
 }
 
 const entry = process.argv[1];

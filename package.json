@@ -7,7 +7,7 @@
     "viewmark": "./cli.js"
   },
   "scripts": {
-    "start": "node server.js docs",
+    "start": "node server.js state",
     "test": "node --test"
   }
 }
