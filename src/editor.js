@@ -1623,9 +1623,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
   }
 
-  function bindFileDrop(target) {
+  function bindFileDrop(target, path) {
+    const value = typeof path === "string" ? path : "";
+    const slash = value.lastIndexOf("/");
+    const dir = slash < 0 ? "" : value.slice(0, slash);
     target.addEventListener("dragover", acceptDrop);
-    target.addEventListener("drop", acceptDrop);
+    target.addEventListener("drop", (event) => {
+      acceptDrop(event);
+      sendMove(dir);
+    });
   }
 
   function bindDirDrop(target, dirPath) {
@@ -1643,7 +1649,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     button.dataset.path = file.path;
     button.textContent = fileLabel(file);
     bindDragSource(button, file.path, false);
-    bindFileDrop(button);
+    bindFileDrop(button, file.path);
     button.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       openPath = file.path;

@@ -4772,9 +4772,34 @@ test("file titles and move drops", () => {
     buttonDir("notes").listeners.dragstart({});
     buttonDir("notes/sub").listeners.drop({ preventDefault() {}, stopPropagation() {} });
     assert.equal(transport.sent.length, beforeSelf);
+    let fileDropStopped = false;
+    const fileDrop = () => ({
+      preventDefault() {},
+      stopPropagation() { fileDropStopped = true; },
+    });
     buttonPath("notes/idea.md").listeners.dragstart({});
-    buttonPath("archive/keep.md").listeners.drop({ preventDefault() {}, stopPropagation() {} });
-    assert.equal(transport.sent.length, beforeSelf);
+    fileDropStopped = false;
+    buttonPath("archive/keep.md").listeners.drop(fileDrop());
+    assert.equal(fileDropStopped, true);
+    assert.deepEqual(transport.sent.at(-1), { type: "move", path: "notes/idea.md", dir: "archive", username: "" });
+    assert.equal(transport.sent.at(-1).rev, undefined);
+    buttonPath("notes/idea.md").listeners.dragstart({});
+    fileDropStopped = false;
+    buttonPath("plain.md").listeners.drop(fileDrop());
+    assert.equal(fileDropStopped, true);
+    assert.deepEqual(transport.sent.at(-1), { type: "move", path: "notes/idea.md", dir: "", username: "" });
+    assert.equal(transport.sent.at(-1).rev, undefined);
+    buttonDir("notes/sub").listeners.click({ preventDefault() {} });
+    buttonPath("notes/idea.md").listeners.dragstart({});
+    fileDropStopped = false;
+    buttonPath("notes/sub/deep.md").listeners.drop(fileDrop());
+    assert.equal(fileDropStopped, true);
+    assert.deepEqual(transport.sent.at(-1), { type: "move", path: "notes/idea.md", dir: "notes/sub", username: "" });
+    assert.equal(transport.sent.at(-1).rev, undefined);
+    buttonDir("notes").listeners.dragstart({});
+    const beforeDescendantFile = transport.sent.length;
+    buttonPath("notes/sub/deep.md").listeners.drop(fileDrop());
+    assert.equal(transport.sent.length, beforeDescendantFile);
     buttonPath("notes/idea.md").listeners.dragstart({});
     buttonDir("notes").listeners.drop({ preventDefault() {}, stopPropagation() {} });
     assert.deepEqual(transport.sent.at(-1), { type: "move", path: "notes/idea.md", dir: "notes", username: "" });
