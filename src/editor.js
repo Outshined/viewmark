@@ -1613,10 +1613,125 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
+  function parentDir(path) {
+    const value = typeof path === "string" ? path : "";
+    const slash = value.lastIndexOf("/");
+    return slash < 0 ? "" : value.slice(0, slash);
+  }
+
+  function pathBase(path) {
+    const value = typeof path === "string" ? path : "";
+    const slash = value.lastIndexOf("/");
+    return slash < 0 ? value : value.slice(slash + 1);
+  }
+
+  function moveBlocked(dir) {
+    if (!draggedMove || typeof draggedMove.path !== "string" || draggedMove.path === "") return true;
+    if (draggedMove.directory && dir !== "" && (dir === draggedMove.path || dir.startsWith(`${draggedMove.path}/`))) return true;
+    return false;
+  }
+
   function sendMove(dir) {
-    if (!draggedMove || typeof draggedMove.path !== "string" || draggedMove.path === "") return;
-    if (draggedMove.directory && dir !== "" && (dir === draggedMove.path || dir.startsWith(`${draggedMove.path}/`))) return;
+    if (moveBlocked(dir)) return;
     emit({ type: "move", path: draggedMove.path, dir });
+  }
+
+  function fileTreeNode() {
+    return findClassChild(filesNav(), "file-tree");
+  }
+
+  function clearDropMark() {
+    const tree = fileTreeNode();
+    if (!tree) return;
+    const walk = (node) => {
+      if (!node) return;
+      if (node.classList && node.classList.contains("md-drop-target")) node.classList.remove("md-drop-target");
+      const children = [...(node.childNodes || [])];
+      for (const child of children) {
+        if (child && child.classList && child.classList.contains("md-drop-line")) detachNode(child);
+        else walk(child);
+      }
+    };
+    walk(tree);
+  }
+
+  // The sort key is the path segment renderEntries uses, not the visible title.
+  function rowSortName(row) {
+    if (!row || !row.classList) return null;
+    if (row.classList.contains("md-file")) return pathBase(row.dataset && row.dataset.path);
+    if (!row.classList.contains("md-dir")) return null;
+    for (const child of row.childNodes || []) {
+      if (child && child.classList && child.classList.contains("md-dir-toggle") && child.dataset && typeof child.dataset.dir === "string") {
+        return pathBase(child.dataset.dir);
+      }
+    }
+    return null;
+  }
+
+  function isDraggedRow(row) {
+    if (!draggedMove || !row || !row.classList) return false;
+    if (draggedMove.directory) {
+      if (!row.classList.contains("md-dir")) return false;
+      for (const child of row.childNodes || []) {
+        if (child && child.dataset && child.dataset.dir === draggedMove.path) return true;
+      }
+      return false;
+    }
+    return !!(row.classList.contains("md-file") && row.dataset && row.dataset.path === draggedMove.path);
+  }
+
+  function placeDropLine(container) {
+    if (!container || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    const line = document.createElement("div");
+    line.className = "md-drop-line";
+    const basename = pathBase(draggedMove.path);
+    let before = null;
+    for (const row of container.childNodes || []) {
+      if (isDraggedRow(row)) continue;
+      const name = rowSortName(row);
+      if (name == null) continue;
+      if (basename.localeCompare(name) < 0) {
+        before = row;
+        break;
+      }
+    }
+    placeNodeBefore(container, line, before);
+  }
+
+  function findDirWrap(path) {
+    const tree = fileTreeNode();
+    if (!tree) return null;
+    let found = null;
+    const walk = (node) => {
+      if (!node || found) return;
+      if (node.classList && node.classList.contains("md-dir")) {
+        for (const child of node.childNodes || []) {
+          if (child && child.classList && child.classList.contains("md-dir-toggle") && child.dataset && child.dataset.dir === path) {
+            found = node;
+            return;
+          }
+        }
+      }
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(tree);
+    return found;
+  }
+
+  function showDropMark(dir) {
+    clearDropMark();
+    if (moveBlocked(dir)) return;
+    if (dir === "") {
+      placeDropLine(fileTreeNode());
+      return;
+    }
+    const wrap = findDirWrap(dir);
+    if (!wrap) return;
+    if (wrap.classList.contains("md-dir-collapsed")) {
+      wrap.classList.add("md-drop-target");
+      return;
+    }
+    placeDropLine(findClassChild(wrap, "md-dir-children"));
   }
 
   function bindDragSource(target, path, directory) {
@@ -1627,23 +1742,32 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       stopEvent(event);
       rememberDrag(event, path, directory);
     });
+    target.addEventListener("dragend", () => {
+      clearDropMark();
+    });
   }
 
   function bindFileDrop(target, path) {
-    const value = typeof path === "string" ? path : "";
-    const slash = value.lastIndexOf("/");
-    const dir = slash < 0 ? "" : value.slice(0, slash);
-    target.addEventListener("dragover", acceptDrop);
+    const dir = parentDir(path);
+    target.addEventListener("dragover", (event) => {
+      acceptDrop(event);
+      showDropMark(dir);
+    });
     target.addEventListener("drop", (event) => {
       acceptDrop(event);
+      showDropMark(dir);
       sendMove(dir);
     });
   }
 
   function bindDirDrop(target, dirPath) {
-    target.addEventListener("dragover", acceptDrop);
+    target.addEventListener("dragover", (event) => {
+      acceptDrop(event);
+      showDropMark(dirPath);
+    });
     target.addEventListener("drop", (event) => {
       acceptDrop(event);
+      showDropMark(dirPath);
       sendMove(dirPath);
     });
   }
@@ -1701,11 +1825,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (treeDrop) unbindTreeDrop();
     const onOver = (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
+      const target = event && event.target;
+      if (target && target !== tree) return;
+      showDropMark("");
     };
     const onDrop = (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       const target = event && event.target;
       if (target && target !== tree) return;
+      showDropMark("");
       sendMove("");
     };
     tree.addEventListener("dragover", onOver);

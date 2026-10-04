@@ -321,6 +321,16 @@ dialog.md-login::backdrop {
   margin-left: 0.8rem;
 }
 
+.md-drop-line {
+  height: 2px;
+  background: #e7e2d8;
+  pointer-events: none;
+}
+
+.md-dir.md-drop-target > .md-dir-toggle {
+  background: #3d5a80;
+}
+
 .md-lock {
   float: right;
   margin-left: 0.6rem;
