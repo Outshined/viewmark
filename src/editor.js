@@ -477,6 +477,9 @@ export function createEditor(root, doc, cursor = 0, transport) {
   // A 409 for that create is not a rejected caret grant.
   const conflictWaiters = [];
   const fileWaiters = [];
+  // The hub rejects an edit that repeats the mirror rev. Remember the op and
+  // send it after this actor's doc advances rev and the caret.
+  const pendingEdits = [];
   let lockTable = [];
   let expectNewComment = false;
   let unsubscribe = () => {};
@@ -554,8 +557,21 @@ export function createEditor(root, doc, cursor = 0, transport) {
     });
   }
 
-  function emitEdit(partial) {
-    if (!live) return;
+  function editHeld() {
+    return conflictWaiters.includes("edit");
+  }
+
+  function dropPendingEdits() {
+    pendingEdits.length = 0;
+  }
+
+  function dropEditWaiters() {
+    for (let i = conflictWaiters.length - 1; i >= 0; i -= 1) {
+      if (conflictWaiters[i] === "edit") conflictWaiters.splice(i, 1);
+    }
+  }
+
+  function sendEdit(partial) {
     if (partial.op === "comment.add" || partial.op === "comment.save" || partial.op === "comment.delete" || partial.op === "comment.resolve") {
       lockThroughEnd();
     }
@@ -565,6 +581,31 @@ export function createEditor(root, doc, cursor = 0, transport) {
       cursor: state.cursor,
       ...partial,
     });
+  }
+
+  function emitEdit(partial) {
+    if (!live) return;
+    if (editHeld()) {
+      pendingEdits.push({ edit: partial });
+      return;
+    }
+    sendEdit(partial);
+  }
+
+  function emitHistory(type) {
+    if (!live) return;
+    if (editHeld()) {
+      pendingEdits.push({ history: type });
+      return;
+    }
+    emit({ type });
+  }
+
+  function flushPendingEdit() {
+    if (editHeld() || pendingEdits.length === 0) return;
+    const next = pendingEdits.shift();
+    if (next.history) emit({ type: next.history });
+    else sendEdit(next.edit);
   }
 
   function restoreGrantedCaret() {
@@ -1526,7 +1567,8 @@ export function createEditor(root, doc, cursor = 0, transport) {
         return;
       }
       if (isConflict(message)) {
-        if (conflictWaiters.length > 0) conflictWaiters.shift();
+        const waiter = conflictWaiters.shift();
+        if (waiter === "edit") dropPendingEdits();
         expectNewComment = false;
         restoreGrantedCaret();
       }
@@ -1545,21 +1587,28 @@ export function createEditor(root, doc, cursor = 0, transport) {
         renderFileTree(fileList, false);
       }
     }
+    let ownEdit = false;
     if (message.type === "doc") {
       if (waitingForFile) return;
       const nextRev = Number(message.rev);
       if (!Number.isFinite(nextRev) || nextRev !== rev + 1) {
         waitingForFile = true;
         expectNewComment = false;
+        dropPendingEdits();
+        dropEditWaiters();
         emit({ type: "open", path: openPath });
         return;
       }
       if (message.actor === selfName()) {
         const index = conflictWaiters.indexOf("edit");
-        if (index >= 0) conflictWaiters.splice(index, 1);
+        if (index >= 0) {
+          conflictWaiters.splice(index, 1);
+          ownEdit = true;
+        }
       }
     }
     if (message.type === "doc" || message.type === "file") applySnapshot(message);
+    if (ownEdit) flushPendingEdit();
   }
 
   function consumePaste(text) {
@@ -1686,12 +1735,12 @@ export function createEditor(root, doc, cursor = 0, transport) {
     const mod = event.ctrlKey || event.metaKey;
     if (mod && !event.altKey && (event.key === "z" || event.key === "Z")) {
       event.preventDefault();
-      if (live) emit(event.shiftKey ? { type: "redo" } : { type: "undo" });
+      emitHistory(event.shiftKey ? "redo" : "undo");
       return;
     }
     if (mod && !event.altKey && (event.key === "y" || event.key === "Y")) {
       event.preventDefault();
-      if (live) emit({ type: "redo" });
+      emitHistory("redo");
       return;
     }
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
@@ -1846,7 +1895,7 @@ export function createEditor(root, doc, cursor = 0, transport) {
       const note = Number(box.dataset && box.dataset.note || 0);
       const redoKey = key === "y" || key === "Y" || event.shiftKey;
       commentFocus = { id, note, start: Number.MAX_SAFE_INTEGER, end: Number.MAX_SAFE_INTEGER };
-      if (live) emit(redoKey ? { type: "redo" } : { type: "undo" });
+      emitHistory(redoKey ? "redo" : "undo");
     }, { signal: ac.signal });
   }
 

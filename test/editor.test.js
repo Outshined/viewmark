@@ -2549,6 +2549,190 @@ test("an insert renders only from the doc message", () => {
   }
 });
 
+function insertText(mounted, data) {
+  mounted.listeners.beforeinput({
+    inputType: "insertText",
+    data,
+    preventDefault() {},
+  });
+}
+
+function docMessage(rev, text, cursor, inserted) {
+  return {
+    type: "doc",
+    rev,
+    text,
+    from: cursor - inserted.length,
+    to: cursor - inserted.length,
+    inserted,
+    actor: "",
+    cursor,
+    anchor: cursor,
+  };
+}
+
+test("a second insert waits until this actor's doc", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "ab", 1, transport);
+    insertText(mounted, "X");
+    insertText(mounted, "Y");
+    const edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].text, "X");
+    assert.equal(edits[0].rev, 0);
+    transport.deliver(docMessage(1, "aXb", 2, "X"));
+    const held = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(held.length, 2);
+    assert.equal(held[1].text, "Y");
+    assert.equal(held[1].rev, 1);
+    assert.equal(held[1].cursor, 2);
+    assert.equal(held[1].anchor, 2);
+    transport.deliver(docMessage(2, "aXbY", 3, "Y"));
+    assert.equal(view.getState().doc, "aXbY");
+    assert.equal(view.getState().cursor, 3);
+    assert.equal(transport.sent.filter((message) => message.type === "edit").length, 2);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a 409 on an edit drops held keystrokes", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "ab", 1, transport);
+    insertText(mounted, "X");
+    insertText(mounted, "Y");
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(transport.sent.some((message) => message.type === "edit" && message.text === "Y"), false);
+    assert.equal(view.getState().cursor, 1);
+    assert.equal(view.getState().anchor, 1);
+    insertText(mounted, "Z");
+    const edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 2);
+    assert.equal(edits[1].text, "Z");
+    assert.equal(edits[1].rev, 0);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("undo waits until the in-flight edit's doc", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "ab", 1, transport);
+    insertText(mounted, "X");
+    mounted.listeners.keydown({
+      key: "z",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+    });
+    assert.equal(transport.sent.some((message) => message.type === "undo"), false);
+    const at = transport.sent.length;
+    transport.deliver(docMessage(1, "aXb", 2, "X"));
+    assert.equal(transport.sent.length, at + 1);
+    assert.equal(transport.sent[at].type, "undo");
+    assert.equal(transport.sent[at].rev, 1);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("redo waits until the in-flight edit's doc", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "ab", 1, transport);
+    insertText(mounted, "X");
+    mounted.listeners.keydown({
+      key: "y",
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+    });
+    assert.equal(transport.sent.some((message) => message.type === "redo"), false);
+    const at = transport.sent.length;
+    transport.deliver(docMessage(1, "aXb", 2, "X"));
+    assert.equal(transport.sent.length, at + 1);
+    assert.equal(transport.sent[at].type, "redo");
+    assert.equal(transport.sent[at].rev, 1);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("only the oldest held edit is sent and a skipped rev drops the rest", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "ab", 1, transport);
+    insertText(mounted, "X");
+    insertText(mounted, "Y");
+    insertText(mounted, "Z");
+    assert.equal(transport.sent.filter((message) => message.type === "edit").length, 1);
+    transport.deliver({ type: "ping" });
+    assert.equal(transport.sent.some((message) => message.type === "pong"), true);
+    assert.equal(transport.sent.filter((message) => message.type === "edit").length, 1);
+    transport.deliver(docMessage(1, "aXb", 2, "X"));
+    let edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 2);
+    assert.equal(edits[1].text, "Y");
+    assert.equal(edits[1].rev, 1);
+    assert.equal(edits[1].cursor, 2);
+    transport.deliver(docMessage(2, "aXbY", 3, "Y"));
+    edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 3);
+    assert.equal(edits[2].text, "Z");
+    assert.equal(edits[2].rev, 2);
+    assert.equal(edits[2].cursor, 3);
+    view.destroy();
+
+    const skipped = holdingTransport();
+    const again = createEditor(mounted.root, "ab", 1, skipped);
+    insertText(mounted, "X");
+    insertText(mounted, "Y");
+    skipped.deliver({
+      type: "doc",
+      rev: 5,
+      text: "NO",
+      from: 0,
+      to: 0,
+      inserted: "NO",
+      actor: "",
+      cursor: 2,
+      anchor: 2,
+    });
+    assert.equal(again.getState().doc, "ab");
+    assert.equal(skipped.sent.some((message) => message.type === "open" && message.rev === 0), true);
+    assert.equal(skipped.sent.some((message) => message.type === "edit" && message.text === "Y"), false);
+    insertText(mounted, "Z");
+    edits = skipped.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 2);
+    assert.equal(edits[1].text, "Z");
+    assert.equal(edits[1].rev, 0);
+    skipped.deliver({ type: "file", rev: 8, text: "ab", cursor: 1, anchor: 1 });
+    skipped.deliver(docMessage(9, "aZb", 2, "Z"));
+    assert.equal(skipped.sent.some((message) => message.type === "edit" && message.text === "Y"), false);
+    assert.equal(again.getState().doc, "aZb");
+    assert.equal(again.getState().cursor, 2);
+    again.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("a skipped doc rev sends open and waits for file", () => {
   const mounted = mountEditor();
   const transport = holdingTransport();
