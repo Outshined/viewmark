@@ -491,11 +491,30 @@ export function createEditor(root, doc, cursor = 0, transport) {
   }
 
   function emit(message) {
-    active.send({ ...message, username: selfName() });
+    const framed = { ...message, username: selfName() };
+    const type = framed.type;
+    if (type === "lock" || type === "edit" || type === "undo" || type === "redo" || type === "open") {
+      if (framed.path == null) framed.path = openPath;
+      framed.rev = rev;
+    }
+    active.send(framed);
+  }
+
+  // Comment edits rewrite the trailing fence, so the lock runs through the
+  // end of the mirror. The local caret stays where the user left it.
+  function lockThroughEnd() {
+    emit({
+      type: "lock",
+      anchor: Math.min(state.anchor, state.cursor),
+      cursor: state.doc.length,
+    });
   }
 
   function emitEdit(partial) {
     if (!live) return;
+    if (partial.op === "comment.add" || partial.op === "comment.save" || partial.op === "comment.delete" || partial.op === "comment.resolve") {
+      lockThroughEnd();
+    }
     emit({
       type: "edit",
       anchor: state.anchor,
@@ -531,7 +550,7 @@ export function createEditor(root, doc, cursor = 0, transport) {
     if (sameLines(lines, sentLines)) return true;
     outstandingLock = { restore: { anchor: granted.anchor, cursor: granted.cursor }, lines };
     lockRejected = false;
-    emit({ type: "lock", lines });
+    emit({ type: "lock", anchor, cursor });
     if (lockRejected) {
       lockRejected = false;
       return false;
@@ -1400,6 +1419,7 @@ export function createEditor(root, doc, cursor = 0, transport) {
       live = true;
       if (typeof message.path === "string") openPath = message.path;
       expectNewComment = false;
+      lockTable = Array.isArray(message.locks) ? message.locks : [];
     } else {
       rev = Number(message.rev);
     }
@@ -1409,7 +1429,10 @@ export function createEditor(root, doc, cursor = 0, transport) {
     sentLines = lines;
     noteFreshComment(previousDoc, message);
     render();
-    if (live && !sameLines(lines, previousLines)) emit({ type: "lock", lines });
+    if (!live) return;
+    if (message.type === "file" || !sameLines(lines, previousLines)) {
+      emit({ type: "lock", anchor: state.anchor, cursor: state.cursor });
+    }
   }
 
   function isConflict(message) {

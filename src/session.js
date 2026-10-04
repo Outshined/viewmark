@@ -121,8 +121,9 @@ export function createSocketTransport({ username, socketFactory, location } = {}
   const listeners = new Set();
   let buffer = [];
   let socketOpen = false;
-  const outbound = [];
   const name = typeof username === "string" ? username : "";
+  // Queued before open so the wire order is hello, then list, then anything else.
+  const outbound = [JSON.stringify({ type: "list", username: name })];
 
   function transmit(message) {
     const data = JSON.stringify({ ...message, username: name });

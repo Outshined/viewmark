@@ -2472,7 +2472,7 @@ test("an insert renders only from the doc message", () => {
     });
     assert.equal(mounted.root.textContent, "ab");
     assert.equal(view.getState().doc, "ab");
-    assert.equal(transport.sent.some((message) => message.type === "edit" && message.op === "insert" && message.text === "X"), true);
+    assert.equal(transport.sent.some((message) => message.type === "edit" && message.op === "insert" && message.text === "X" && message.path === "" && message.rev === 0), true);
     transport.deliver({
       type: "doc",
       rev: 1,
@@ -2498,7 +2498,7 @@ test("an insert renders only from the doc message", () => {
       preventDefault() {},
     });
     assert.equal(mounted.root.textContent, "aXb");
-    assert.equal(transport.sent.some((message) => message.type === "undo"), true);
+    assert.equal(transport.sent.some((message) => message.type === "undo" && message.path === "" && message.rev === 1), true);
     transport.deliver({
       type: "doc",
       rev: 2,
@@ -2522,7 +2522,7 @@ test("an insert renders only from the doc message", () => {
       preventDefault() {},
     });
     assert.equal(mounted.root.textContent, "ab");
-    assert.equal(transport.sent.some((message) => message.type === "redo"), true);
+    assert.equal(transport.sent.some((message) => message.type === "redo" && message.path === "" && message.rev === 2), true);
     transport.deliver({ type: "error", status: 409 });
     assert.equal(view.getState().doc, "ab");
     assert.equal(view.getState().cursor, 1);
@@ -2550,7 +2550,7 @@ test("a skipped doc rev sends open and waits for file", () => {
       anchor: 2,
     });
     assert.equal(view.getState().doc, "hello");
-    assert.equal(transport.sent.some((message) => message.type === "open" && message.path === ""), true);
+    assert.equal(transport.sent.some((message) => message.type === "open" && message.path === "" && message.rev === 0), true);
     transport.deliver({
       type: "doc",
       rev: 3,
@@ -2646,6 +2646,20 @@ test("locks name another user and a rejected lock does not take the caret", () =
     assert.deepEqual(marks.map((mark) => mark.textContent), ["ada"]);
     const firstLine = mounted.root.childNodes[0];
     assert.equal(walkNodes(firstLine, (node) => node.classList && node.classList.contains("md-lock")).length, 0);
+    transport.sent.length = 0;
+    transport.deliver({
+      type: "file",
+      rev: 2,
+      path: "p.md",
+      text: "one\ntwo\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [{ index: 0, username: "ada" }],
+    });
+    const remarked = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-lock"));
+    assert.deepEqual(remarked.map((mark) => mark.textContent), ["ada"]);
+    assert.equal(walkNodes(mounted.root.childNodes[0], (node) => node.classList && node.classList.contains("md-lock")).length, 1);
+    assert.equal(transport.sent.some((message) => message.type === "lock" && message.anchor === 0 && message.cursor === 0 && message.path === "p.md" && message.rev === 2 && message.lines === undefined), true);
 
     const lines = mounted.root.childNodes;
     const origin = lines[0].childNodes[0].childNodes[0];
@@ -2683,7 +2697,7 @@ test("locks name another user and a rejected lock does not take the caret", () =
     };
     globalThis.window.getSelection = () => selection;
     mounted.listeners.mouseup({ clientX: 20, clientY: 20 });
-    assert.equal(rejecting.sent.some((message) => message.type === "lock" && message.lines.join(",") === "0,1"), true);
+    assert.equal(rejecting.sent.some((message) => message.type === "lock" && message.anchor === 0 && message.cursor === 3 && message.path === "" && message.rev === 0 && message.lines === undefined), true);
     assert.equal(blocked.getState().cursor, 0);
     assert.equal(blocked.getState().anchor, 0);
     blocked.destroy();
@@ -2723,6 +2737,7 @@ test('files ["b.md","sub/a.md"] show b.md and a collapsed sub', () => {
     labeled("a.md")[0].listeners.click({ preventDefault() {} });
     const opened = transport.sent.filter((message) => message.type === "open");
     assert.deepEqual(opened.map((message) => message.path), ["sub/a.md"]);
+    assert.equal(opened[0].rev, 0);
     view.destroy();
   } finally {
     mounted.restore();
@@ -2756,8 +2771,24 @@ test("a comment.add focuses the id the doc message added", () => {
     const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
     add.listeners.mousedown({ preventDefault() {} });
     assert.equal(view.getState().doc, "hello fox two deer\n");
+    assert.equal(view.getState().anchor, 6);
+    assert.equal(view.getState().cursor, 9);
     assert.equal(mounted.findAll((node) => node.tagName === "TEXTAREA").length, 0);
-    assert.equal(transport.sent.some((message) => message.type === "edit" && message.op === "comment.add" && message.anchor === 6 && message.cursor === 9 && message.id == null), true);
+    const fence = transport.sent.filter((message) => message.type === "lock");
+    const added = transport.sent.filter((message) => message.type === "edit" && message.op === "comment.add");
+    assert.equal(fence.length, 1);
+    assert.equal(fence[0].anchor, 6);
+    assert.equal(fence[0].cursor, "hello fox two deer\n".length);
+    assert.equal(fence[0].path, "");
+    assert.equal(fence[0].rev, 0);
+    assert.equal(fence[0].lines, undefined);
+    assert.equal(added.length, 1);
+    assert.equal(added[0].anchor, 6);
+    assert.equal(added[0].cursor, 9);
+    assert.equal(added[0].id, undefined);
+    assert.equal(added[0].path, "");
+    assert.equal(added[0].rev, 0);
+    assert.ok(transport.sent.indexOf(fence[0]) < transport.sent.indexOf(added[0]));
     const next = "hello {c9}fox{/c9} two deer\n\n```comment c9\n\n```\n";
     transport.deliver({
       type: "doc",
@@ -2851,8 +2882,9 @@ test("username opens, closes, and reopens the socket", () => {
     assert.equal(mounted.root.textContent.includes("Viewmark"), false);
     sockets[0].emit("open");
     assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[1]), { type: "list", username: "ada" });
     sockets[0].emit("message", { data: JSON.stringify({ type: "ping" }) });
-    assert.deepEqual(JSON.parse(sockets[0].sent[1]), { type: "pong", username: "ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[2]), { type: "pong", username: "ada" });
     sockets[0].emit("message", { data: JSON.stringify({ type: "docs", files: ["b.md", "sub/a.md"] }) });
     const labeled = (text) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.textContent === text);
     assert.equal(labeled("b.md").length, 1);
@@ -2874,6 +2906,10 @@ test("username opens, closes, and reopens the socket", () => {
     assert.equal(edit.op, "insert");
     assert.equal(edit.text, "Q");
     assert.equal(edit.username, "ada");
+    assert.equal(edit.path, "b.md");
+    assert.equal(edit.rev, 4);
+    assert.equal(edit.anchor, 1);
+    assert.equal(edit.cursor, 1);
     sockets[0].emit("message", {
       data: JSON.stringify({
         type: "doc",
