@@ -3377,7 +3377,9 @@ test("T-repo-select", () => {
     const select = nav.childNodes[0];
     assert.equal(select.tagName, "SELECT");
     assert.equal(select.classList.contains("md-repo"), true);
-    assert.equal(nav.childNodes[1], button);
+    assert.equal(nav.childNodes[1].classList.contains("md-commit"), true);
+    assert.equal(nav.childNodes[1].hidden, true);
+    assert.equal(nav.childNodes[2], button);
     assert.equal(select.childNodes.length, 0);
     assert.deepEqual(transport.sent.filter((message) => message.type === "repo" || message.type === "list" || message.type === "tickets"), []);
     transport.deliver({
@@ -3779,7 +3781,9 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     const buttons = () => walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"));
     assert.equal(buttons().length, 1);
     assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
-    assert.equal(nav.childNodes[1], buttons()[0]);
+    assert.equal(nav.childNodes[1].classList.contains("md-commit"), true);
+    assert.equal(nav.childNodes[1].hidden, true);
+    assert.equal(nav.childNodes[2], buttons()[0]);
     const button = buttons()[0];
     assert.equal(button.textContent, "+");
     assert.equal(button.type, "button");
@@ -3825,8 +3829,138 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     assert.equal(buttons().length, 1);
     assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
     assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
-    assert.equal(nav.childNodes[1], buttons()[0]);
+    assert.equal(nav.childNodes[1].classList.contains("md-commit"), true);
+    assert.equal(nav.childNodes[1].hidden, true);
+    assert.equal(nav.childNodes[2], buttons()[0]);
     again.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("commit button checkpoints the active repo", () => {
+  const mounted = mountEditor();
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const rule = css.match(/button\.md-commit\s*\{[^}]*\}/);
+  assert.ok(rule);
+  assert.match(rule[0], /font:\s*inherit/);
+  assert.match(rule[0], /color:\s*inherit/);
+  assert.match(rule[0], /background:\s*#1c1b19/);
+  assert.match(rule[0], /border:\s*1px solid #4a463f/);
+  assert.match(rule[0], /box-sizing:\s*border-box/);
+  assert.match(rule[0], /width:\s*100%/);
+  assert.match(rule[0], /margin:\s*0 0 0\.8rem/);
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const sheet = document.createElement("div");
+  sheet.append(nav, mounted.root);
+  const storage = {
+    data: {},
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
+    },
+    setItem(key, value) {
+      this.data[key] = String(value);
+    },
+    removeItem(key) {
+      delete this.data[key];
+    },
+  };
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "ab\ncd\n", 0, transport, storage);
+    const commits = () => walkNodes(nav, (node) => node.classList && node.classList.contains("md-commit"));
+    const plus = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"))[0];
+    const tree = walkNodes(nav, (node) => node.classList && node.classList.contains("file-tree"))[0];
+    assert.equal(commits().length, 1);
+    const button = commits()[0];
+    assert.equal(button.tagName, "BUTTON");
+    assert.equal(button.type, "button");
+    assert.equal(button.textContent, "Commit");
+    assert.equal(button.hidden, true);
+    assert.equal(button.hasAttribute("hidden"), true);
+    assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
+    assert.equal(nav.childNodes[1], button);
+    assert.equal(nav.childNodes[2], plus);
+    assert.ok(nav.childNodes.indexOf(plus) < nav.childNodes.indexOf(tree));
+    const select = nav.childNodes[0];
+    transport.deliver({
+      type: "repos",
+      repos: [
+        { name: "alpha", description: "Alpha notes", path: "/a" },
+        { name: "beta", description: "Beta notes", path: "/b" },
+      ],
+    });
+    assert.equal(button.hidden, true);
+    assert.equal(transport.sent.length, 0);
+    select.value = "alpha";
+    select.listeners.change();
+    assert.equal(button.hidden, false);
+    assert.equal(button.hasAttribute("hidden"), false);
+    transport.deliver({ type: "file", rev: 1, text: "ab\ncd\n", path: "a.md", cursor: 0, anchor: 0 });
+    const before = transport.sent.length;
+    button.listeners.click({ preventDefault() {} });
+    assert.equal(transport.sent.length, before + 1);
+    const frame = transport.sent.at(-1);
+    assert.deepEqual(frame, { type: "commit", username: "" });
+    assert.equal(frame.rev, undefined);
+    assert.equal(frame.message, undefined);
+    const field = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name"))[0];
+    plus.listeners.click({ preventDefault() {} });
+    field.value = "notes/idea";
+    field.listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.equal(transport.sent.at(-1).type, "create");
+    const line = mounted.root.childNodes[1];
+    const text = line.childNodes[0].childNodes[0];
+    assert.equal(text.textContent, "cd");
+    document.caretPositionFromPoint = () => ({ offsetNode: text, offset: 0 });
+    mounted.listeners.click({ target: text, clientX: 1, clientY: 1, preventDefault() {} });
+    assert.equal(view.getState().cursor, 3);
+    assert.equal(view.getState().anchor, 3);
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(view.getState().cursor, 3);
+    assert.equal(view.getState().anchor, 3);
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(view.getState().anchor, 0);
+    select.value = "beta";
+    select.listeners.change();
+    assert.equal(button.hidden, false);
+    transport.deliver({ type: "repos", repos: [{ name: "alpha", description: "Alpha notes", path: "/a" }] });
+    assert.equal(button.hidden, true);
+    assert.equal(button.hasAttribute("hidden"), true);
+    const quiet = transport.sent.length;
+    button.listeners.click({ preventDefault() {} });
+    assert.equal(transport.sent.length, quiet + 1);
+    assert.deepEqual(transport.sent.at(-1), { type: "commit", username: "" });
+    view.destroy();
+    assert.equal(button.listeners.click, undefined);
+    assert.equal(commits().length, 1);
+
+    storage.data["viewmark.repo"] = "alpha";
+    const storedTransport = holdingTransport();
+    const again = createEditor(mounted.root, "stale", 0, storedTransport, storage);
+    const storedButton = commits()[0];
+    assert.equal(commits().length, 1);
+    assert.equal(storedButton.hidden, true);
+    assert.equal(storedButton.textContent, "Commit");
+    storedTransport.deliver({
+      type: "repos",
+      repos: [
+        { name: "beta", description: "Beta notes", path: "/b" },
+        { name: "alpha", description: "Alpha notes", path: "/a" },
+      ],
+    });
+    assert.equal(storedButton.hidden, false);
+    assert.equal(storedButton.hasAttribute("hidden"), false);
+    const marked = storedTransport.sent.length;
+    storedButton.listeners.click({ preventDefault() {} });
+    assert.equal(storedTransport.sent.length, marked + 1);
+    assert.deepEqual(storedTransport.sent[marked], { type: "commit", username: "" });
+    assert.equal(storedTransport.sent[marked].rev, undefined);
+    assert.equal(storedTransport.sent[marked].message, undefined);
+    again.destroy();
+    assert.equal(storedButton.listeners.click, undefined);
   } finally {
     mounted.restore();
   }

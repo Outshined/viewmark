@@ -61,6 +61,16 @@ select.md-repo {
   color: inherit;
 }
 
+button.md-commit {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 0.8rem;
+  background: #1c1b19;
+  border: 1px solid #4a463f;
+  font: inherit;
+  color: inherit;
+}
+
 dialog.md-login {
   background: #242320;
   color: #e7e2d8;

@@ -251,6 +251,7 @@ function checkedDepends(container) {
 const newFileBindings = new WeakMap();
 const ticketBindings = new WeakMap();
 const repoBindings = new WeakMap();
+const commitBindings = new WeakMap();
 const REPO_KEY = "viewmark.repo";
 
 // A directory exists only when some markdown file is stored under it.
@@ -635,6 +636,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let activeRepo = "";
   let repoSelect = null;
   let repoOnChange = null;
+  let commitButton = null;
+  let commitOnClick = null;
   const repoStorage = storage || null;
   // Create is answered by its own error or by the file from onOpen.
   // A 409 for that create is not a rejected caret grant.
@@ -2759,6 +2762,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     writeStoredRepo(name);
     activeRepo = name;
     blankEditor();
+    syncCommitButton();
     sendRepoFrames(name);
   }
 
@@ -2810,21 +2814,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       deleteStoredRepo();
       activeRepo = "";
       clearRepoSelection(select);
+      syncCommitButton();
       return;
     }
     if (activeRepo) {
       markRepoSelected(select, activeRepo);
+      syncCommitButton();
       return;
     }
     const stored = readStoredRepo();
     if (stored && names.has(stored)) {
       markRepoSelected(select, stored);
       activeRepo = stored;
+      syncCommitButton();
       sendRepoFrames(stored);
       return;
     }
     if (stored) deleteStoredRepo();
     clearRepoSelection(select);
+    syncCommitButton();
   }
 
   function unbindRepoSelect() {
@@ -2837,6 +2845,58 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     repoBindings.delete(repoSelect);
     repoSelect = null;
     repoOnChange = null;
+  }
+
+  function syncCommitButton() {
+    if (!commitButton) return;
+    if (activeRepo) showElement(commitButton);
+    else hideElement(commitButton);
+  }
+
+  function unbindCommit() {
+    if (!commitButton || !commitOnClick) return;
+    const binding = commitBindings.get(commitButton);
+    if (!binding || binding.onClick !== commitOnClick) return;
+    if (typeof commitButton.removeEventListener === "function") {
+      commitButton.removeEventListener("click", commitOnClick);
+    }
+    commitBindings.delete(commitButton);
+    commitButton = null;
+    commitOnClick = null;
+  }
+
+  function bindCommit(nav) {
+    if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    let button = findClassChild(nav, "md-commit");
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = "md-commit";
+      button.textContent = "Commit";
+      if (typeof button.setAttribute === "function") button.setAttribute("type", "button");
+    }
+    const select = findClassChild(nav, "md-repo");
+    const children = nav.childNodes || [];
+    const selectAt = select ? children.indexOf(select) : -1;
+    if (!(selectAt >= 0 && children[selectAt + 1] === button)) {
+      detachNode(button);
+      if (select) insertAfter(nav, select, button);
+      else placeNodeBefore(nav, button, findClassChild(nav, "md-new-file") || (nav.childNodes && nav.childNodes[0]));
+    }
+    const previous = commitBindings.get(button);
+    if (previous && typeof button.removeEventListener === "function") {
+      button.removeEventListener("click", previous.onClick);
+    }
+    const onClick = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      // A checkpoint is not a conflict waiter and carries no rev.
+      emit({ type: "commit" });
+    };
+    if (typeof button.addEventListener === "function") button.addEventListener("click", onClick);
+    commitBindings.set(button, { onClick });
+    commitButton = button;
+    commitOnClick = onClick;
+    syncCommitButton();
   }
 
   function bindRepoSelect(nav) {
@@ -2864,6 +2924,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   bindRepoSelect(filesNav());
   bindNewFile(filesNav());
+  bindCommit(filesNav());
   renderFileTree(fileList, false);
   bindTicketChrome(filesNav());
   ensureTicketForm();
@@ -2886,6 +2947,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     destroy() {
       unsubscribe();
       unbindRepoSelect();
+      unbindCommit();
       unbindNewFile();
       unbindTickets();
       ac.abort();
