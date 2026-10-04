@@ -119,6 +119,21 @@ function placeNodeBefore(parent, node, before) {
   parent.appendChild(node);
 }
 
+function detachNode(node) {
+  const parent = node && node.parentElement;
+  if (!parent) return;
+  if (typeof parent.removeChild === "function") {
+    parent.removeChild(node);
+    return;
+  }
+  const children = parent.childNodes;
+  if (children && typeof children.indexOf === "function" && typeof children.splice === "function") {
+    const index = children.indexOf(node);
+    if (index >= 0) children.splice(index, 1);
+  }
+  node.parentElement = null;
+}
+
 function findClassChild(parent, className) {
   if (!parent || !parent.childNodes) return null;
   for (const child of parent.childNodes) {
@@ -235,6 +250,8 @@ function checkedDepends(container) {
 
 const newFileBindings = new WeakMap();
 const ticketBindings = new WeakMap();
+const repoBindings = new WeakMap();
+const REPO_KEY = "viewmark.repo";
 
 // A directory exists only when some markdown file is stored under it.
 function buildFileTree(files) {
@@ -595,7 +612,7 @@ function buttonHost() {
 
 const COMMENT_CARD_GAP = 12;
 
-export function createEditor(root, doc, cursor = 0, transport) {
+export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const external = arguments.length >= 4 && transport != null;
   const active = external ? transport : createMemoryTransport(doc, cursor);
   let state = createState(doc, cursor);
@@ -615,6 +632,10 @@ export function createEditor(root, doc, cursor = 0, transport) {
   const expandedTickets = new Set();
   let ticketForm = null;
   let ticketChrome = null;
+  let activeRepo = "";
+  let repoSelect = null;
+  let repoOnChange = null;
+  const repoStorage = storage || null;
   // Create is answered by its own error or by the file from onOpen.
   // A 409 for that create is not a rejected caret grant.
   const conflictWaiters = [];
@@ -1679,6 +1700,10 @@ export function createEditor(root, doc, cursor = 0, transport) {
       emit({ type: "pong" });
       return;
     }
+    if (message.type === "repos") {
+      applyRepos(message);
+      return;
+    }
     if (message.type === "docs") {
       renderFileTree(message.files, true);
       return;
@@ -2672,6 +2697,174 @@ export function createEditor(root, doc, cursor = 0, transport) {
     newFileOnClick = onClick;
   }
 
+  function readStoredRepo() {
+    if (!repoStorage || typeof repoStorage.getItem !== "function") return "";
+    const raw = repoStorage.getItem(REPO_KEY);
+    return typeof raw === "string" ? raw : "";
+  }
+
+  function writeStoredRepo(name) {
+    if (!repoStorage || typeof repoStorage.setItem !== "function") return;
+    repoStorage.setItem(REPO_KEY, name);
+  }
+
+  function deleteStoredRepo() {
+    if (!repoStorage || typeof repoStorage.removeItem !== "function") return;
+    repoStorage.removeItem(REPO_KEY);
+  }
+
+  function blankEditor() {
+    // The next file has not arrived. Drop the previous mirror before asking.
+    dropPendingEdits();
+    conflictWaiters.length = 0;
+    fileWaiters.length = 0;
+    expectNewComment = false;
+    commentFocus = null;
+    currentCommentId = null;
+    unsavedThreads.clear();
+    replyDrafts.clear();
+    noteDrafts.clear();
+    authorDrafts.clear();
+    editingNotes.clear();
+    live = false;
+    waitingForFile = false;
+    openPath = "";
+    rev = 0;
+    lockTable = [];
+    openDirs.clear();
+    expandedTickets.clear();
+    fileList = [];
+    ticketList = [];
+    state = createState("");
+    sentLines = lineSet(state.anchor, state.cursor);
+    outstandingLock = null;
+    granted = { anchor: state.anchor, cursor: state.cursor };
+    dismissTicketForm();
+    const nav = filesNav();
+    const files = findClassChild(nav, "file-tree");
+    if (files && typeof files.replaceChildren === "function") files.replaceChildren();
+    const tickets = findClassChild(nav, "ticket-tree");
+    if (tickets && typeof tickets.replaceChildren === "function") tickets.replaceChildren();
+    render();
+  }
+
+  function sendRepoFrames(name) {
+    emit({ type: "repo", name });
+    emit({ type: "list" });
+    emit({ type: "tickets" });
+  }
+
+  function chooseRepo(name) {
+    if (typeof name !== "string" || name === "" || name === activeRepo) return;
+    writeStoredRepo(name);
+    activeRepo = name;
+    blankEditor();
+    sendRepoFrames(name);
+  }
+
+  function markRepoSelected(select, name) {
+    let index = -1;
+    let at = 0;
+    for (const option of select.childNodes || []) {
+      if (!option || option.nodeType !== 1) continue;
+      const on = option.value === name;
+      option.selected = on;
+      if (on) {
+        index = at;
+        if (typeof option.setAttribute === "function") option.setAttribute("selected", "");
+      } else if (typeof option.removeAttribute === "function") {
+        option.removeAttribute("selected");
+      }
+      at += 1;
+    }
+    select.value = name;
+    if (index >= 0) select.selectedIndex = index;
+  }
+
+  function clearRepoSelection(select) {
+    for (const option of select.childNodes || []) {
+      if (!option || option.nodeType !== 1) continue;
+      option.selected = false;
+      if (typeof option.removeAttribute === "function") option.removeAttribute("selected");
+    }
+    select.value = "";
+    select.selectedIndex = -1;
+  }
+
+  // A stored name is requested once. A later catalog that still lists it does not ask again.
+  function applyRepos(message) {
+    const select = repoSelect || findClassChild(filesNav(), "md-repo");
+    if (!select || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    const incoming = Array.isArray(message.repos) ? message.repos : [];
+    const options = [];
+    const names = new Set();
+    for (const repo of incoming) {
+      if (!repo || typeof repo.name !== "string" || repo.name === "") continue;
+      const option = document.createElement("option");
+      option.value = repo.name;
+      option.textContent = typeof repo.description === "string" ? repo.description : "";
+      options.push(option);
+      names.add(repo.name);
+    }
+    if (typeof select.replaceChildren === "function") select.replaceChildren(...options);
+    if (activeRepo && !names.has(activeRepo)) {
+      blankEditor();
+      deleteStoredRepo();
+      activeRepo = "";
+      clearRepoSelection(select);
+      return;
+    }
+    if (activeRepo) {
+      markRepoSelected(select, activeRepo);
+      return;
+    }
+    const stored = readStoredRepo();
+    if (stored && names.has(stored)) {
+      markRepoSelected(select, stored);
+      activeRepo = stored;
+      sendRepoFrames(stored);
+      return;
+    }
+    if (stored) deleteStoredRepo();
+    clearRepoSelection(select);
+  }
+
+  function unbindRepoSelect() {
+    if (!repoSelect || !repoOnChange) return;
+    const binding = repoBindings.get(repoSelect);
+    if (!binding || binding.onChange !== repoOnChange) return;
+    if (typeof repoSelect.removeEventListener === "function") {
+      repoSelect.removeEventListener("change", repoOnChange);
+    }
+    repoBindings.delete(repoSelect);
+    repoSelect = null;
+    repoOnChange = null;
+  }
+
+  function bindRepoSelect(nav) {
+    if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    let select = findClassChild(nav, "md-repo");
+    if (!select) {
+      select = document.createElement("select");
+      select.className = "md-repo";
+    }
+    const first = nav.childNodes && nav.childNodes[0];
+    if (first !== select) {
+      detachNode(select);
+      placeNodeBefore(nav, select, nav.childNodes && nav.childNodes[0]);
+    }
+    const previous = repoBindings.get(select);
+    if (previous && typeof select.removeEventListener === "function") {
+      select.removeEventListener("change", previous.onChange);
+    }
+    const onChange = () => chooseRepo(select.value);
+    if (typeof select.addEventListener === "function") select.addEventListener("change", onChange);
+    repoBindings.set(select, { onChange });
+    repoSelect = select;
+    repoOnChange = onChange;
+  }
+
+  bindRepoSelect(filesNav());
   bindNewFile(filesNav());
   renderFileTree(fileList, false);
   bindTicketChrome(filesNav());
@@ -2682,7 +2875,6 @@ export function createEditor(root, doc, cursor = 0, transport) {
   }
 
   render();
-  emit({ type: "tickets" });
 
   return {
     getState() {
@@ -2695,6 +2887,7 @@ export function createEditor(root, doc, cursor = 0, transport) {
     },
     destroy() {
       unsubscribe();
+      unbindRepoSelect();
       unbindNewFile();
       unbindTickets();
       ac.abort();
@@ -2856,7 +3049,7 @@ export function startPage(env = {}) {
       socketFactory: env.socketFactory,
       location: env.location || globalThis.location,
     });
-    const editor = createEditor(root, "", 0, transport);
+    const editor = createEditor(root, "", 0, transport, storage);
     current = { transport, editor, username };
   }
 

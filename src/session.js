@@ -123,8 +123,8 @@ export function createSocketTransport({ username, socketFactory, location } = {}
   let socketOpen = false;
   let closed = false;
   const name = typeof username === "string" ? username : "";
-  // Queued before open so the wire order is hello, then list, then anything else.
-  const outbound = [JSON.stringify({ type: "list", username: name })];
+  // Queued before open so the wire order is hello, then repos, then anything else.
+  const outbound = [JSON.stringify({ type: "repos", username: name })];
 
   function transmit(message) {
     if (closed) return;

@@ -2985,7 +2985,8 @@ test('files ["b.md","sub/a.md"] show b.md and a collapsed sub', () => {
     assert.equal(labeled("a.md").length, 0);
     assert.equal(labeled("empty").length, 0);
     assert.equal(labeled("notes.txt").length, 0);
-    assert.equal(nav.childNodes[0], input);
+    assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
+    assert.ok(nav.childNodes.indexOf(input) > 0);
     const before = transport.sent.length;
     labeled("sub")[0].listeners.click({ preventDefault() {} });
     assert.equal(transport.sent.length, before);
@@ -3262,11 +3263,14 @@ test("username opens, closes, and reopens the socket", () => {
     assert.equal(mounted.root.textContent.includes("Viewmark"), false);
     sockets[0].emit("open");
     assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada" });
-    assert.deepEqual(JSON.parse(sockets[0].sent[1]), { type: "list", username: "Ada" });
-    assert.equal(sockets[0].sent.length, 3);
-    assert.deepEqual(JSON.parse(sockets[0].sent[2]), { type: "tickets", username: "Ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[1]), { type: "repos", username: "Ada" });
+    assert.equal(sockets[0].sent.length, 2);
+    assert.equal(sockets[0].sent.some((frame) => {
+      const message = JSON.parse(frame);
+      return message.type === "list" || message.type === "tickets";
+    }), false);
     sockets[0].emit("message", { data: JSON.stringify({ type: "ping" }) });
-    assert.deepEqual(JSON.parse(sockets[0].sent[3]), { type: "pong", username: "Ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[2]), { type: "pong", username: "Ada" });
     sockets[0].emit("message", { data: JSON.stringify({ type: "docs", files: ["b.md", "sub/a.md"] }) });
     const labeled = (text) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.textContent === text);
     assert.equal(labeled("b.md").length, 1);
@@ -3325,7 +3329,8 @@ test("username opens, closes, and reopens the socket", () => {
     assert.equal(sockets.length, 2);
     sockets[1].emit("open");
     assert.deepEqual(JSON.parse(sockets[1].sent[0]), { type: "hello", username: "ada" });
-    assert.deepEqual(JSON.parse(sockets[1].sent[1]), { type: "list", username: "ada" });
+    assert.deepEqual(JSON.parse(sockets[1].sent[1]), { type: "repos", username: "ada" });
+    assert.equal(sockets[1].sent.length, 2);
     again.close();
     assert.equal(sockets[1].closed, true);
 
@@ -3340,6 +3345,287 @@ test("username opens, closes, and reopens the socket", () => {
     assert.equal(dialog.open, false);
     secure.close();
     assert.equal(sockets[2].closed, true);
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("T-repo-select", () => {
+  const mounted = mountEditor();
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const rule = css.match(/select\.md-repo\s*\{[^}]*\}/);
+  assert.ok(rule);
+  assert.match(rule[0], /width:\s*100%/);
+  assert.match(rule[0], /margin:\s*0 0 0\.8rem/);
+  assert.match(rule[0], /background:\s*#1c1b19/);
+  assert.match(rule[0], /border:\s*1px solid #4a463f/);
+  assert.match(rule[0], /font:\s*inherit/);
+  assert.match(rule[0], /color:\s*inherit/);
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "md-new-file";
+  button.textContent = "+";
+  nav.appendChild(button);
+  const sheet = document.createElement("div");
+  sheet.append(nav, mounted.root);
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "kept", 0, transport);
+    const select = nav.childNodes[0];
+    assert.equal(select.tagName, "SELECT");
+    assert.equal(select.classList.contains("md-repo"), true);
+    assert.equal(nav.childNodes[1], button);
+    assert.equal(select.childNodes.length, 0);
+    assert.deepEqual(transport.sent.filter((message) => message.type === "repo" || message.type === "list" || message.type === "tickets"), []);
+    transport.deliver({
+      type: "repos",
+      repos: [
+        { name: "alpha", description: "Alpha notes", path: "/a" },
+        { name: "beta", description: "Beta notes", path: "/b" },
+      ],
+    });
+    assert.equal(nav.childNodes[0], select);
+    assert.deepEqual(select.childNodes.map((option) => option.value), ["alpha", "beta"]);
+    assert.deepEqual(select.childNodes.map((option) => option.textContent), ["Alpha notes", "Beta notes"]);
+    assert.deepEqual(transport.sent.filter((message) => message.type === "repo" || message.type === "list" || message.type === "tickets"), []);
+    transport.deliver({ type: "docs", files: ["b.md", "sub/a.md"] });
+    const labeled = (text) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.textContent === text);
+    assert.equal(labeled("b.md").length, 1);
+    assert.equal(labeled("sub").length, 1);
+    assert.equal(labeled("a.md").length, 0);
+    assert.equal(view.getState().doc, "kept");
+    transport.deliver({
+      type: "repos",
+      repos: [{ name: "beta", description: "Second shelf", path: "/b" }],
+    });
+    assert.deepEqual(select.childNodes.map((option) => option.value), ["beta"]);
+    assert.deepEqual(select.childNodes.map((option) => option.textContent), ["Second shelf"]);
+    assert.equal(labeled("b.md").length, 1);
+    assert.equal(view.getState().doc, "kept");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("T-repo-switch", () => {
+  const mounted = mountEditor();
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const sheet = document.createElement("div");
+  sheet.append(nav, mounted.root);
+  const storage = {
+    data: {},
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
+    },
+    setItem(key, value) {
+      this.data[key] = String(value);
+    },
+    removeItem(key) {
+      delete this.data[key];
+    },
+  };
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "", 0, transport, storage);
+    const select = nav.childNodes[0];
+    assert.equal(select.classList.contains("md-repo"), true);
+    transport.deliver({
+      type: "repos",
+      repos: [
+        { name: "alpha", description: "Alpha notes", path: "/a" },
+        { name: "beta", description: "Beta notes", path: "/b" },
+      ],
+    });
+    assert.equal(transport.sent.length, 0);
+    select.value = "alpha";
+    select.listeners.change();
+    assert.equal(storage.data["viewmark.repo"], "alpha");
+    assert.deepEqual(transport.sent.map((message) => message.type), ["repo", "list", "tickets"]);
+    assert.equal(transport.sent[0].name, "alpha");
+    assert.equal(transport.sent[0].username, "");
+    transport.deliver({ type: "docs", files: ["a.md", "sub/b.md"] });
+    transport.deliver({ type: "tickets", tickets: [ticketFixture("aaaaaaaa", "Alpha", "new", T0)] });
+    transport.deliver({
+      type: "file",
+      rev: 3,
+      text: "old file",
+      path: "tickets/aaaaaaaa.md",
+      cursor: 0,
+      anchor: 0,
+      ticket: ticketFixture("aaaaaaaa", "Alpha", "new", T0),
+    });
+    const labeled = (text) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.textContent === text);
+    const form = walkNodes(sheet, (node) => node.classList && node.classList.contains("ticket-form"))[0];
+    assert.equal(mounted.root.textContent.includes("old file"), true);
+    assert.equal(labeled("a.md").length, 1);
+    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-ticket-node")).length, 1);
+    assert.equal(form.hidden, false);
+    const before = transport.sent.length;
+    select.value = "beta";
+    select.listeners.change();
+    assert.equal(storage.data["viewmark.repo"], "beta");
+    assert.equal(view.getState().doc, "");
+    assert.equal(mounted.root.textContent.includes("old file"), false);
+    assert.equal(labeled("a.md").length, 0);
+    assert.equal(labeled("sub").length, 0);
+    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-ticket-node")).length, 0);
+    assert.equal(form.hidden, true);
+    const frames = transport.sent.slice(before);
+    assert.deepEqual(frames.map((message) => message.type), ["repo", "list", "tickets"]);
+    assert.equal(frames[0].name, "beta");
+    assert.equal(frames[0].username, "");
+    assert.equal(mounted.root.textContent.includes("old file"), false);
+    transport.deliver({ type: "file", rev: 1, text: "new file", path: "b.md", cursor: 0, anchor: 0 });
+    assert.equal(view.getState().doc, "new file");
+    assert.equal(mounted.root.textContent.includes("new file"), true);
+    const afterFile = transport.sent.length;
+    transport.deliver({
+      type: "repos",
+      repos: [
+        { name: "alpha", description: "Alpha notes", path: "/a" },
+        { name: "beta", description: "Beta notes", path: "/b" },
+      ],
+    });
+    assert.equal(transport.sent.length, afterFile);
+    assert.equal(select.value, "beta");
+    assert.equal(view.getState().doc, "new file");
+    select.value = "beta";
+    select.listeners.change();
+    assert.equal(transport.sent.length, afterFile);
+    transport.deliver({
+      type: "repos",
+      repos: [{ name: "alpha", description: "Alpha notes", path: "/a" }],
+    });
+    assert.equal(transport.sent.length, afterFile);
+    assert.equal(view.getState().doc, "");
+    assert.equal(mounted.root.textContent.includes("new file"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(storage.data, "viewmark.repo"), false);
+    assert.equal(select.value, "");
+    view.destroy();
+
+    storage.data["viewmark.repo"] = "alpha";
+    const storedTransport = holdingTransport();
+    const again = createEditor(mounted.root, "stale", 0, storedTransport, storage);
+    const storedSelect = nav.childNodes[0];
+    storedTransport.deliver({
+      type: "repos",
+      repos: [
+        { name: "beta", description: "Beta notes", path: "/b" },
+        { name: "alpha", description: "Alpha notes", path: "/a" },
+      ],
+    });
+    assert.equal(storedSelect.value, "alpha");
+    assert.equal(storedSelect.childNodes.find((option) => option.value === "alpha").textContent, "Alpha notes");
+    assert.deepEqual(storedTransport.sent.map((message) => message.type), ["repo", "list", "tickets"]);
+    assert.equal(storedTransport.sent[0].name, "alpha");
+    const once = storedTransport.sent.length;
+    storedTransport.deliver({
+      type: "repos",
+      repos: [
+        { name: "alpha", description: "Alpha notes", path: "/a" },
+        { name: "beta", description: "Beta notes", path: "/b" },
+      ],
+    });
+    assert.equal(storedTransport.sent.length, once);
+    assert.equal(storedSelect.value, "alpha");
+    storedSelect.value = "alpha";
+    storedSelect.listeners.change();
+    assert.equal(storedTransport.sent.length, once);
+    again.destroy();
+
+    const sockets = [];
+    function factory(url) {
+      const handlers = {};
+      const socket = {
+        url,
+        sent: [],
+        closed: false,
+        addEventListener(type, fn) {
+          handlers[type] = fn;
+        },
+        send(data) {
+          this.sent.push(data);
+        },
+        close() {
+          this.closed = true;
+        },
+        emit(type, event) {
+          if (handlers[type]) handlers[type](event);
+        },
+      };
+      sockets.push(socket);
+      return socket;
+    }
+    storage.data["viewmark.username"] = "Ada";
+    storage.data["viewmark.repo"] = "alpha";
+    document.body = document.createElement("body");
+    document.getElementById = (id) => (id === "editor" ? mounted.root : null);
+    const page = startPage({
+      document: globalThis.document,
+      sessionStorage: storage,
+      socketFactory: factory,
+      location: { protocol: "http:", host: "viewmark.test" },
+    });
+    assert.equal(sockets.length, 1);
+    sockets[0].emit("open");
+    assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[1]), { type: "repos", username: "Ada" });
+    assert.equal(sockets[0].sent.length, 2);
+    sockets[0].emit("message", {
+      data: JSON.stringify({
+        type: "repos",
+        repos: [
+          { name: "beta", description: "Beta notes", path: "/b" },
+          { name: "alpha", description: "Alpha notes", path: "/a" },
+        ],
+      }),
+    });
+    assert.equal(sockets[0].sent.length, 5);
+    assert.deepEqual(JSON.parse(sockets[0].sent[2]), { type: "repo", name: "alpha", username: "Ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[3]), { type: "list", username: "Ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[4]), { type: "tickets", username: "Ada" });
+    const pageSelect = walkNodes(nav, (node) => node.classList && node.classList.contains("md-repo"))[0];
+    assert.equal(pageSelect.value, "alpha");
+    sockets[0].emit("message", {
+      data: JSON.stringify({ type: "file", rev: 1, text: "page file", path: "a.md", cursor: 0, anchor: 0 }),
+    });
+    assert.equal(mounted.root.textContent.includes("page file"), true);
+    const chosen = sockets[0].sent.length;
+    pageSelect.value = "beta";
+    pageSelect.listeners.change();
+    assert.equal(mounted.root.textContent.includes("page file"), false);
+    assert.deepEqual(JSON.parse(sockets[0].sent[chosen]), { type: "repo", name: "beta", username: "Ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[chosen + 1]), { type: "list", username: "Ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[chosen + 2]), { type: "tickets", username: "Ada" });
+    assert.equal(sockets[0].sent.length, chosen + 3);
+    sockets[0].emit("message", {
+      data: JSON.stringify({ type: "file", rev: 1, text: "beta file", path: "b.md", cursor: 0, anchor: 0 }),
+    });
+    assert.equal(mounted.root.textContent.includes("beta file"), true);
+    const stayed = sockets[0].sent.length;
+    sockets[0].emit("message", {
+      data: JSON.stringify({
+        type: "repos",
+        repos: [
+          { name: "alpha", description: "Alpha notes", path: "/a" },
+          { name: "beta", description: "Beta notes", path: "/b" },
+        ],
+      }),
+    });
+    assert.equal(sockets[0].sent.length, stayed);
+    assert.equal(mounted.root.textContent.includes("beta file"), true);
+    sockets[0].emit("message", {
+      data: JSON.stringify({ type: "repos", repos: [{ name: "alpha", description: "Alpha notes", path: "/a" }] }),
+    });
+    assert.equal(sockets[0].sent.length, stayed);
+    assert.equal(mounted.root.textContent.includes("beta file"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(storage.data, "viewmark.repo"), false);
+    page.close();
+    assert.equal(sockets[0].closed, true);
   } finally {
     mounted.restore();
   }
@@ -3465,7 +3751,8 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     const view = createEditor(mounted.root, "x", 0, transport);
     const buttons = () => walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"));
     assert.equal(buttons().length, 1);
-    assert.equal(nav.childNodes[0], buttons()[0]);
+    assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
+    assert.equal(nav.childNodes[1], buttons()[0]);
     const button = buttons()[0];
     assert.equal(button.textContent, "+");
     assert.equal(button.type, "button");
@@ -3510,7 +3797,8 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     const again = createEditor(mounted.root, "x", 0, transport);
     assert.equal(buttons().length, 1);
     assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
-    assert.equal(nav.childNodes[0], buttons()[0]);
+    assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
+    assert.equal(nav.childNodes[1], buttons()[0]);
     again.destroy();
   } finally {
     mounted.restore();
@@ -3641,7 +3929,7 @@ test("T-ticket-rows", () => {
   const transport = holdingTransport();
   try {
     const view = createEditor(mounted.root, "notes", 0, transport);
-    assert.deepEqual(transport.sent.filter((message) => message.type === "tickets"), [{ type: "tickets", username: "" }]);
+    assert.deepEqual(transport.sent.filter((message) => message.type === "tickets"), []);
     assert.equal(view.getState().doc, "notes");
     const sheet = mounted.root.parentElement;
     const form = byClass(sheet, "ticket-form")[0];
@@ -3670,7 +3958,7 @@ test("T-ticket-rows", () => {
       ticketFixture("eeeeeeee", "Echo", "new", T3, "aaaaaaaa"),
     ];
     transport.deliver({ type: "tickets", tickets: list });
-    assert.equal(transport.sent.filter((message) => message.type === "tickets").length, 1);
+    assert.equal(transport.sent.filter((message) => message.type === "tickets").length, 0);
     assert.equal(view.getState().doc, "notes");
     assert.deepEqual(rootTicketIds(mounted.nav), ["aaaaaaaa", "dddddddd", "cccccccc"]);
     for (const ticket of list) {
