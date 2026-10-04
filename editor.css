@@ -198,7 +198,20 @@ h2.md-pane-heading {
   color: inherit;
 }
 
-button.md-ticket-filter,
+button.md-ticket-filter {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 0.45rem;
+  padding: 0.15rem 0.35rem;
+  background: #1c1b19;
+  border: 1px solid #4a463f;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 button.md-ticket-filter-all {
   display: inline;
   width: auto;
@@ -311,6 +324,10 @@ nav.files .md-ticket-filter-menu input {
   border: 1px solid #4a463f;
   padding: 0.4rem;
   margin: 0 0 0.8rem;
+}
+
+.file-tree {
+  padding: 0.4rem 0;
 }
 
 .file-tree button {

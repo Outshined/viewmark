@@ -4447,9 +4447,15 @@ test("T-pane-head", () => {
   const headRule = css.match(/\.md-pane-head\s*\{[^}]*\}/);
   const headingRule = css.match(/h2\.md-pane-heading\s*\{[^}]*\}/);
   const blockRule = css.match(/\.file-block\s*\{[^}]*\}/);
+  const filterRule = css.match(/button\.md-ticket-filter\s*\{[^}]*\}/);
+  const allRule = css.match(/button\.md-ticket-filter-all\s*\{[^}]*\}/);
+  const treeRule = css.match(/\.file-tree\s*\{[^}]*\}/);
   assert.ok(headRule);
   assert.ok(headingRule);
   assert.ok(blockRule);
+  assert.ok(filterRule);
+  assert.ok(allRule);
+  assert.ok(treeRule);
   assert.match(headRule[0], /display:\s*flex/);
   assert.match(headRule[0], /align-items:\s*center/);
   assert.match(headRule[0], /justify-content:\s*space-between/);
@@ -4459,6 +4465,22 @@ test("T-pane-head", () => {
   assert.match(blockRule[0], /border:\s*1px solid #4a463f/);
   assert.match(blockRule[0], /padding:\s*0\.4rem/);
   assert.match(blockRule[0], /margin:\s*0 0 0\.8rem/);
+  assert.match(filterRule[0], /display:\s*block/);
+  assert.match(filterRule[0], /width:\s*100%/);
+  assert.match(filterRule[0], /box-sizing:\s*border-box/);
+  assert.match(filterRule[0], /background:\s*#1c1b19/);
+  assert.match(filterRule[0], /border:\s*1px solid #4a463f/);
+  assert.match(filterRule[0], /color:\s*inherit/);
+  assert.match(filterRule[0], /font:\s*inherit/);
+  assert.match(filterRule[0], /text-align:\s*left/);
+  assert.match(filterRule[0], /padding:\s*0\.15rem 0\.35rem/);
+  assert.match(filterRule[0], /margin:\s*0 0 0\.45rem/);
+  assert.match(allRule[0], /border:\s*0/);
+  assert.match(allRule[0], /background:\s*none/);
+  assert.match(allRule[0], /font:\s*inherit/);
+  assert.equal(/button\.md-ticket-filter-all\s*\{[^}]*width:\s*100%/.test(css), false);
+  assert.match(treeRule[0], /padding:\s*0\.4rem 0/);
+  assert.equal(/border:/.test(treeRule[0]), false);
   const transport = holdingTransport();
   try {
     const view = createEditor(mounted.root, "x", 0, transport);
