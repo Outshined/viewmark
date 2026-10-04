@@ -110,12 +110,12 @@ dialog.md-login::backdrop {
 .file-tree button.md-dir-toggle::before {
   content: "";
   display: inline-block;
-  width: 0.95em;
-  height: 0.75em;
+  width: 1.05em;
+  height: 0.78em;
   margin-right: 0.4rem;
-  vertical-align: -0.05em;
+  vertical-align: -0.02em;
   background: currentColor;
-  clip-path: polygon(0 28%, 36% 28%, 46% 0, 100% 0, 100% 100%, 0 100%);
+  clip-path: polygon(0 22%, 8% 22%, 14% 0, 48% 0, 54% 22%, 100% 22%, 100% 100%, 0 100%);
 }
 
 .md-dir-children {

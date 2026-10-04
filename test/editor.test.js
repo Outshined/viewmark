@@ -2938,7 +2938,7 @@ test('files ["b.md","sub/a.md"] show b.md and a collapsed sub', () => {
   assert.ok(fileMark);
   assert.ok(dirMark);
   assert.match(fileMark[0], /clip-path:\s*polygon\(0 0, 68% 0, 100% 28%, 100% 100%, 0 100%\)/);
-  assert.match(dirMark[0], /clip-path:\s*polygon\(0 28%, 36% 28%, 46% 0, 100% 0, 100% 100%, 0 100%\)/);
+  assert.match(dirMark[0], /clip-path:\s*polygon\(0 22%, 8% 22%, 14% 0, 48% 0, 54% 22%, 100% 22%, 100% 100%, 0 100%\)/);
   const nav = document.createElement("nav");
   nav.className = "files";
   const input = document.createElement("input");
