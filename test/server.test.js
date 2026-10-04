@@ -2317,10 +2317,10 @@ test("T-move", async () => {
       "archive/plain.md": "Taken",
       "cached.md": "Disk",
       "elsewhere/plain.md": "Elsewhere",
-      "notes/idea.md": "Idea Title",
       "notes/sub/deep.md": "Deep",
-      "second.md": "Later",
     });
+    assert.equal(listed.titles["notes/idea.md"], undefined);
+    assert.equal(listed.titles["second.md"], undefined);
 
     const beforeRejects = await snapshotTree(dir);
     for (const payload of [
@@ -2372,7 +2372,7 @@ test("T-move", async () => {
     assert.deepEqual(docsA.files, docsB.files);
     assert.equal(docsA.files.includes("archive/idea.md"), true);
     assert.equal(docsA.files.includes("notes/idea.md"), false);
-    assert.equal(docsA.titles["archive/idea.md"], "Idea Title");
+    assert.equal(docsA.titles["archive/idea.md"], undefined);
     assert.equal(docsA.titles["notes/idea.md"], undefined);
     assert.equal(a.all.length, 0);
     assert.equal(b.all.length, 0);
@@ -2382,7 +2382,7 @@ test("T-move", async () => {
     await fs.writeFile(path.join(dir, "archive", "idea.md"), "# Sneaky\n");
     a.send({ type: "list", username: "A" });
     const cachedTitle = await a.next((msg) => msg.type === "docs");
-    assert.equal(cachedTitle.titles["archive/idea.md"], "Idea Title");
+    assert.equal(cachedTitle.titles["archive/idea.md"], undefined);
     await fs.writeFile(path.join(dir, "archive", "idea.md"), "Qintro\n# Idea Title\n");
 
     a.send({ type: "commit", username: "A" });
@@ -2413,7 +2413,7 @@ test("T-move", async () => {
     assert.equal(topDocsA.type, "docs");
     assert.equal(topDocsA.files.includes("idea.md"), true);
     assert.equal(topDocsA.files.includes("archive/idea.md"), false);
-    assert.equal(topDocsB.titles["idea.md"], "Idea Title");
+    assert.equal(topDocsB.titles["idea.md"], undefined);
     assert.equal(await readDoc(dir, "idea.md"), "QZintro\n# Idea Title\n");
     await assert.rejects(() => fs.lstat(path.join(dir, "archive", "idea.md")));
     assert.equal(a.all.length, 0);

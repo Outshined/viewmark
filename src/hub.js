@@ -318,14 +318,11 @@ async function listMarkdown(dir, prefix) {
 
 function headingTitle(text) {
   if (typeof text !== "string") return "";
-  for (const raw of text.split("\n")) {
-    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-    const match = /^#\s+(\S.*)$/.exec(line);
-    if (!match) continue;
-    const title = match[1].trim();
-    if (title) return title;
-  }
-  return "";
+  const raw = text.split("\n", 1)[0];
+  const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+  const match = /^#\s+(\S.*)$/.exec(line);
+  if (!match) return "";
+  return match[1].trim();
 }
 
 async function titlesFor(repo, listed) {
