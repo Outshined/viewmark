@@ -50,13 +50,14 @@ const HELP_NEEDLES = [
   "--depends",
   "--closed",
   "reporter",
+  "create reads the body from stdin when stdin is not a terminal.",
   "serve",
   "keeps running",
   "beside the program",
   "--user is not required",
 ];
 
-function run(args, extraEnv = {}) {
+function run(args, extraEnv = {}, input = "") {
   const env = { ...process.env };
   delete env.VIEWMARK_USER;
   delete env.VIEWMARK_PORT;
@@ -71,6 +72,9 @@ function run(args, extraEnv = {}) {
     child.stdout.on("data", (chunk) => out.push(chunk));
     child.stderr.on("data", (chunk) => err.push(chunk));
     child.on("error", reject);
+    child.stdin.on("error", () => {});
+    child.stdin.write(input);
+    child.stdin.end();
     child.on("close", (code) => {
       resolve({
         code,
@@ -882,9 +886,9 @@ function ticketJson(fields) {
   };
 }
 
-async function runFast(args, extraEnv) {
+async function runFast(args, extraEnv, input) {
   const started = Date.now();
-  const res = await run(args, extraEnv);
+  const res = await run(args, extraEnv, input);
   assert.ok(Date.now() - started < 4000, `${args.join(" ")} took ${Date.now() - started}ms`);
   return res;
 }
@@ -1289,6 +1293,52 @@ test("T-cli-ticket-create", async () => {
     assert.equal(tabbed.stderr, "error 400\n");
     assert.equal(await count(), beforeCount);
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
+  });
+});
+
+test("T-cli-ticket-body", async () => {
+  const body = "See the log.\n\nNext.\n";
+  await withHub(async ({ dir, port }) => {
+    const created = await runFast(ticketArgs(port, ["ticket", "create", "--title", "Logged"]), {}, body);
+    assert.equal(created.code, 0);
+    assert.match(created.stdout, /^[23456789abcdefghjkmnpqrstuvwxyz]{8}\n$/);
+    const id = created.stdout.trim();
+    const shown = await runFast(ticketArgs(port, ["ticket", "show", id]));
+    assert.equal(shown.code, 0);
+    assert.equal(shown.stdout, body);
+    const raw = await fs.readFile(path.join(dir, "tickets", `${id}.md`), "utf8");
+    const splitAt = raw.indexOf("\n\n");
+    assert.ok(splitAt >= 0);
+    assert.equal(raw.slice(splitAt + 2), body);
+    assert.equal(parseTicket(id, raw).body, body);
+
+    const empty = await runFast(ticketArgs(port, ["ticket", "create", "--title", "Empty"]));
+    assert.equal(empty.code, 0);
+    const emptyId = empty.stdout.trim();
+    const emptyRaw = await fs.readFile(path.join(dir, "tickets", `${emptyId}.md`), "utf8");
+    const emptySplit = emptyRaw.indexOf("\n\n");
+    assert.ok(emptySplit >= 0);
+    assert.equal(emptyRaw.slice(emptySplit + 2), "");
+    assert.equal(parseTicket(emptyId, emptyRaw).body, "");
+    const emptyShown = await runFast(ticketArgs(port, ["ticket", "show", emptyId]));
+    assert.equal(emptyShown.code, 0);
+    assert.equal(emptyShown.stdout, "");
+
+    const namesBefore = (await fs.readdir(path.join(dir, "tickets"))).sort();
+    const kept = await fs.readFile(path.join(dir, "tickets", `${id}.md`), "utf8");
+    const keptEmpty = await fs.readFile(path.join(dir, "tickets", `${emptyId}.md`), "utf8");
+    const client = await hello(port, "user");
+    for (const bad of [1, null, false, {}, []]) {
+      client.send({ type: "ticket.create", username: "user", title: "Bad", body: bad });
+      assert.deepEqual(
+        await client.next((msg) => msg.type === "error" || msg.type === "file" || msg.type === "tickets"),
+        { type: "error", status: 400 },
+      );
+    }
+    client.ws.close();
+    assert.deepEqual((await fs.readdir(path.join(dir, "tickets"))).sort(), namesBefore);
+    assert.equal(await fs.readFile(path.join(dir, "tickets", `${id}.md`), "utf8"), kept);
+    assert.equal(await fs.readFile(path.join(dir, "tickets", `${emptyId}.md`), "utf8"), keptEmpty);
   });
 });
 

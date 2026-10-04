@@ -771,6 +771,11 @@ export async function createHub(stateDir, sourceRoot) {
       if (typeof msg.ticketType !== "string" || !TICKET_TYPES.includes(msg.ticketType)) return fail(socket, 400);
       type = msg.ticketType;
     }
+    let body = "";
+    if (Object.prototype.hasOwnProperty.call(msg, "body")) {
+      if (typeof msg.body !== "string") return fail(socket, 400);
+      body = msg.body;
+    }
     const reporter = socket.session.username;
     const created = new Date().toISOString();
     let allocated = null;
@@ -795,14 +800,14 @@ export async function createHub(stateDir, sourceRoot) {
       reporter,
       created,
     };
-    const composed = composeTicket({ ...ticket, body: "" });
+    const composed = composeTicket({ ...ticket, body });
     if (composed == null) return fail(socket, 500);
     await writeAtomic(allocated.dest, composed);
     files.set(allocated.rel, {
       rel: allocated.rel,
       full: allocated.dest,
       rev: 0,
-      text: "",
+      text: body,
       ticket,
       subscribers: new Set(),
       locks: new Map(),

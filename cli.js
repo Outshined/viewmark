@@ -57,6 +57,7 @@ ticket:
   --type is bug, enhancement, or task. An omitted type is task.
   reporter is --user. A stale rev exits 409 and does not write.
   list prints id, created, state, type, and title. show prints the body.
+  create reads the body from stdin when stdin is not a terminal.
   --json: list {tickets:[{id,title,state,type,parent,depends,reporter,created}]};
     show and set {id,path,rev,title,state,type,parent,depends,reporter,created,text};
     create {id,path,rev:0,reporter,created}; purge {purged:[...]};
@@ -102,6 +103,18 @@ function normalizeCreate(input) {
 function usage(message) {
   process.stderr.write(`viewmark: ${message}\n`);
   process.exitCode = 2;
+}
+
+// A terminal has no piped body. Reading it would wait on the keyboard.
+function readStdin() {
+  if (process.stdin.isTTY === true) return Promise.resolve("");
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => chunks.push(chunk));
+    process.stdin.on("end", () => resolve(chunks.join("")));
+    process.stdin.on("error", reject);
+  });
 }
 
 function help() {
@@ -798,7 +811,7 @@ async function runTicketShow(hub, username, id, json) {
 }
 
 async function runTicketCreate(hub, username, command, json) {
-  const payload = { type: "ticket.create", username, title: command.title };
+  const payload = { type: "ticket.create", username, title: command.title, body: command.body };
   if (command.state !== undefined) payload.state = command.state;
   if (command.type !== undefined) payload.ticketType = command.type;
   hub.send(payload);
@@ -1097,6 +1110,7 @@ async function main() {
       usage(command.error);
       return;
     }
+    if (command.sub === "create") command.body = await readStdin();
     await withHub(port, user, (hub) => runTicket(hub, user, args, command), args.repo);
     return;
   }

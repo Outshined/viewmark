@@ -908,10 +908,11 @@ async function assertNoHead(server, dir) {
   await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
 }
 
-async function createTicket(client, username, title, state, type) {
+async function createTicket(client, username, title, state, type, body) {
   const payload = { type: "ticket.create", username, title };
   if (state !== undefined) payload.state = state;
   if (type !== undefined) payload.ticketType = type;
+  if (body !== undefined) payload.body = body;
   const before = Date.now();
   client.send(payload);
   const listed = await client.next((msg) => msg.type === "tickets");
@@ -1068,6 +1069,11 @@ test("T-ticket-create", async () => {
       { type: "ticket.create", username: "A", title: "Ok", ticketType: "nope" },
       { type: "ticket.create", username: "A", title: "Ok", ticketType: "" },
       { type: "ticket.create", username: "A", title: "Ok", ticketType: "Bug" },
+      { type: "ticket.create", username: "A", title: "Ok", body: 1 },
+      { type: "ticket.create", username: "A", title: "Ok", body: null },
+      { type: "ticket.create", username: "A", title: "Ok", body: false },
+      { type: "ticket.create", username: "A", title: "Ok", body: {} },
+      { type: "ticket.create", username: "A", title: "Ok", body: [] },
     ]) {
       a.send(payload);
       assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 400 });
@@ -1129,6 +1135,24 @@ test("T-ticket-create", async () => {
     assert.equal(bugDisk.title, "Bug");
     assert.equal(bugDisk.body, "");
     assert.match(await readDoc(dir, bug.file.path), /^type: bug$/m);
+
+    const noted = "See the log.\n\nNext.\n";
+    const withBody = await createTicket(a, "A", "Noted", undefined, undefined, noted);
+    await b.next((msg) => msg.type === "tickets");
+    assert.equal(withBody.file.text, noted);
+    assert.equal(withBody.file.text.includes("title:"), false);
+    assert.equal(withBody.file.rev, 0);
+    const notedRaw = await readDoc(dir, withBody.file.path);
+    const notedSplit = notedRaw.indexOf("\n\n");
+    assert.ok(notedSplit >= 0);
+    assert.equal(notedRaw.slice(notedSplit + 2), noted);
+    assert.equal(parseTicket(withBody.file.ticket.id, notedRaw).body, noted);
+    assert.equal(parseTicket(withBody.file.ticket.id, notedRaw).title, "Noted");
+
+    const explicitEmpty = await createTicket(a, "A", "Blank", undefined, undefined, "");
+    await b.next((msg) => msg.type === "tickets");
+    assert.equal(explicitEmpty.file.text, "");
+    assert.equal(parseTicket(explicitEmpty.file.ticket.id, await readDoc(dir, explicitEmpty.file.path)).body, "");
 
     await assertNoHead(server, dir);
   });
