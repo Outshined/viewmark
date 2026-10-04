@@ -3513,7 +3513,9 @@ test("T-repo-select", () => {
     const select = nav.childNodes[0];
     assert.equal(select.tagName, "SELECT");
     assert.equal(select.classList.contains("md-repo"), true);
-    assert.equal(nav.childNodes[1], button);
+    assert.equal(nav.childNodes[1].classList.contains("file-block"), true);
+    assert.equal(button.parentElement.classList.contains("md-pane-head"), true);
+    assert.equal(button.parentElement.childNodes[0].textContent, "Files");
     assert.equal(select.childNodes.length, 0);
     assert.deepEqual(transport.sent.filter((message) => message.type === "repo" || message.type === "list" || message.type === "tickets"), []);
     transport.deliver({
@@ -3915,12 +3917,20 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     const buttons = () => walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"));
     assert.equal(buttons().length, 1);
     assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
-    assert.equal(nav.childNodes[1], buttons()[0]);
+    const fileBlock = () => walkNodes(nav, (node) => node.classList && node.classList.contains("file-block"))[0];
+    assert.equal(nav.childNodes[1], fileBlock());
     const button = buttons()[0];
     assert.equal(button.textContent, "+");
     assert.equal(button.type, "button");
+    const head = button.parentElement;
+    assert.equal(head.classList.contains("md-pane-head"), true);
+    assert.equal(head.childNodes[0].classList.contains("md-pane-heading"), true);
+    assert.equal(head.childNodes[0].textContent, "Files");
+    assert.equal(head.childNodes[1], button);
     const field = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name"))[0];
     assert.equal(field.tagName, "INPUT");
+    assert.equal(field.parentElement, fileBlock());
+    assert.ok(fileBlock().childNodes.indexOf(head) < fileBlock().childNodes.indexOf(field));
     assert.equal(field.hasAttribute("hidden"), true);
     assert.equal(field.hidden, true);
     button.listeners.click({ preventDefault() {} });
@@ -3931,7 +3941,8 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     assert.equal(labeled("notes").length, 1);
     assert.equal(labeled("idea.md").length, 0);
     const tree = walkNodes(nav, (node) => node.classList && node.classList.contains("file-tree"))[0];
-    assert.ok(nav.childNodes.indexOf(button) < nav.childNodes.indexOf(tree));
+    assert.equal(tree.parentElement, fileBlock());
+    assert.ok(fileBlock().childNodes.indexOf(field) < fileBlock().childNodes.indexOf(tree));
     assert.equal(walkNodes(tree, (node) => node.classList && node.classList.contains("md-new-file")).length, 0);
     field.value = "notes/idea";
     field.listeners.keydown({ key: "Enter", preventDefault() {} });
@@ -3961,14 +3972,15 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     assert.equal(buttons().length, 1);
     assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
     assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
-    assert.equal(nav.childNodes[1], buttons()[0]);
+    assert.equal(nav.childNodes[1], fileBlock());
+    assert.equal(buttons()[0].parentElement.classList.contains("md-pane-head"), true);
     again.destroy();
   } finally {
     mounted.restore();
   }
 });
 
-test("NodeList childNodes places the new-file button as the next sibling of the repo select", () => {
+test("NodeList childNodes places the file block as the next sibling of the repo select", () => {
   const mounted = mountEditor({ nodeList: true });
   const nav = document.createElement("nav");
   nav.className = "files";
@@ -3983,10 +3995,15 @@ test("NodeList childNodes places the new-file button as the next sibling of the 
     const view = createEditor(mounted.root, "x", 0, transport);
     const select = nav.childNodes[0];
     assert.equal(select.classList.contains("md-repo"), true);
-    const button = select.nextSibling;
-    assert.ok(button);
-    assert.equal(button.classList.contains("md-new-file"), true);
-    assert.equal(button.textContent, "+");
+    const block = select.nextSibling;
+    assert.ok(block);
+    assert.equal(block.classList.contains("file-block"), true);
+    const head = block.childNodes[0];
+    assert.equal(head.classList.contains("md-pane-head"), true);
+    assert.equal(head.childNodes[0].tagName, "H2");
+    assert.equal(head.childNodes[0].classList.contains("md-pane-heading"), true);
+    assert.equal(head.childNodes[1].classList.contains("md-new-file"), true);
+    assert.equal(head.childNodes[1].textContent, "+");
     assert.equal(typeof nav.childNodes.indexOf, "undefined");
     view.destroy();
   } finally {
@@ -4042,8 +4059,9 @@ test("commit button checkpoints the active repo", () => {
     assert.equal(button.hidden, true);
     assert.equal(button.hasAttribute("hidden"), true);
     assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
-    assert.equal(nav.childNodes[1], plus);
-    assert.ok(nav.childNodes.indexOf(plus) < nav.childNodes.indexOf(tree));
+    assert.equal(nav.childNodes[1].classList.contains("file-block"), true);
+    assert.equal(plus.parentElement.classList.contains("md-pane-head"), true);
+    assert.equal(tree.parentElement, nav.childNodes[1]);
     const select = nav.childNodes[0];
     transport.deliver({
       type: "repos",
@@ -4196,6 +4214,10 @@ function byClass(root, className) {
   return walkNodes(root, (node) => node.classList && node.classList.contains(className));
 }
 
+function filterBox(nav, name) {
+  return walkNodes(nav, (node) => node.dataset && node.dataset.filter === name)[0];
+}
+
 function ticketNode(nav, id) {
   return byClass(nav, "md-ticket-node").find((node) => node.dataset && node.dataset.id === id);
 }
@@ -4256,26 +4278,30 @@ test("T-ticket-rows", () => {
     const form = byClass(sheet, "ticket-form")[0];
     assert.equal(form.hidden, true);
     assert.equal(sheet.childNodes.indexOf(form), sheet.childNodes.indexOf(mounted.root) - 1);
-    const label = byClass(mounted.nav, "md-ticket-label")[0];
     const tree = byClass(mounted.nav, "file-tree")[0];
     const tickets = byClass(mounted.nav, "ticket-tree")[0];
     const block = byClass(mounted.nav, "ticket-block")[0];
-    assert.equal(label.textContent, "Tickets");
+    const fileBlock = byClass(mounted.nav, "file-block")[0];
+    const head = byClass(block, "md-pane-head")[0];
+    const heading = byClass(head, "md-pane-heading")[0];
+    assert.equal(heading.tagName, "H2");
+    assert.equal(heading.textContent, "Tickets");
     assert.equal(byClass(mounted.nav, "ticket-block").length, 1);
     assert.equal(byClass(mounted.nav, "ticket-tree").length, 1);
-    assert.equal(label.parentElement, block);
+    assert.equal(byClass(mounted.nav, "md-ticket-label").length, 0);
+    assert.equal(byClass(mounted.nav, "md-show-closed").length, 0);
+    assert.equal(byClass(mounted.nav, "md-show-closed-label").length, 0);
+    assert.equal(heading.parentElement, head);
     assert.equal(tickets.parentElement, block);
-    assert.equal(mounted.nav.childNodes.includes(label), false);
+    assert.equal(tree.parentElement, fileBlock);
+    assert.equal(mounted.nav.childNodes.includes(head), false);
     assert.equal(mounted.nav.childNodes.includes(tickets), false);
-    assert.ok(mounted.nav.childNodes.indexOf(tree) < mounted.nav.childNodes.indexOf(block));
-    assert.ok(block.childNodes.indexOf(label) < block.childNodes.indexOf(tickets));
-    const showClosed = byClass(mounted.nav, "md-show-closed")[0];
-    const showLabel = byClass(mounted.nav, "md-show-closed-label")[0];
-    assert.equal(showClosed.type, "checkbox");
-    assert.equal(showClosed.checked, false);
-    assert.equal(showLabel.textContent, "show closed");
-    assert.equal(showLabel.htmlFor, "md-show-closed");
+    assert.equal(mounted.nav.childNodes[0].classList.contains("md-repo"), true);
+    assert.ok(mounted.nav.childNodes.indexOf(fileBlock) < mounted.nav.childNodes.indexOf(block));
+    assert.ok(block.childNodes.indexOf(head) < block.childNodes.indexOf(tickets));
     const plus = byClass(mounted.nav, "md-new-ticket")[0];
+    assert.equal(plus.parentElement, head);
+    assert.equal(head.childNodes[0], heading);
     assert.equal(plus.textContent, "+");
     assert.equal(plus.type, "button");
     const list = [
@@ -4354,16 +4380,18 @@ test("T-ticket-closed", () => {
     });
     assert.equal(ticketNode(mounted.nav, "bbbbbbbb"), undefined);
     assert.equal(ticketNode(mounted.nav, "cccccccc"), undefined);
-    assert.ok(ticketNode(mounted.nav, "dddddddd"));
-    assert.equal(rowOf(mounted.nav, "dddddddd").textContent.includes("Delta"), true);
-    assert.equal(rowOf(mounted.nav, "dddddddd").textContent.includes("closed"), true);
+    assert.equal(ticketNode(mounted.nav, "dddddddd"), undefined);
     assert.equal(byClass(ticketNode(mounted.nav, "aaaaaaaa"), "md-ticket-expand").length, 0);
-    const box = byClass(mounted.nav, "md-show-closed")[0];
+    const box = filterBox(mounted.nav, "closed");
+    assert.equal(box.checked, false);
     const before = transport.sent.length;
     box.checked = true;
     box.listeners.change();
     assert.equal(transport.sent.length, before);
     assert.ok(ticketNode(mounted.nav, "bbbbbbbb"));
+    assert.ok(ticketNode(mounted.nav, "dddddddd"));
+    assert.equal(rowOf(mounted.nav, "dddddddd").textContent.includes("Delta"), true);
+    assert.equal(rowOf(mounted.nav, "dddddddd").textContent.includes("closed"), true);
     assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("bbbbbbbb"), false);
     assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("Bravo"), true);
     const expand = byClass(ticketNode(mounted.nav, "aaaaaaaa"), "md-ticket-expand")[0];
@@ -4397,7 +4425,7 @@ test("T-ticket-orphan", () => {
     });
     assert.equal(ticketNode(mounted.nav, "aaaaaaaa"), undefined);
     assert.equal(ticketNode(mounted.nav, "bbbbbbbb").parentElement.classList.contains("ticket-tree"), true);
-    const box = byClass(mounted.nav, "md-show-closed")[0];
+    const box = filterBox(mounted.nav, "closed");
     box.checked = true;
     box.listeners.change();
     assert.equal(ticketNode(mounted.nav, "aaaaaaaa").parentElement.classList.contains("ticket-tree"), true);
@@ -4408,6 +4436,154 @@ test("T-ticket-orphan", () => {
     assert.equal(ticketNode(mounted.nav, "aaaaaaaa"), undefined);
     assert.equal(ticketNode(mounted.nav, "bbbbbbbb").parentElement.classList.contains("ticket-tree"), true);
     view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("T-pane-head", () => {
+  const mounted = mountTicketPage();
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const headRule = css.match(/\.md-pane-head\s*\{[^}]*\}/);
+  const headingRule = css.match(/h2\.md-pane-heading\s*\{[^}]*\}/);
+  const blockRule = css.match(/\.file-block\s*\{[^}]*\}/);
+  assert.ok(headRule);
+  assert.ok(headingRule);
+  assert.ok(blockRule);
+  assert.match(headRule[0], /display:\s*flex/);
+  assert.match(headRule[0], /align-items:\s*center/);
+  assert.match(headRule[0], /justify-content:\s*space-between/);
+  assert.match(headingRule[0], /margin:\s*0/);
+  assert.match(headingRule[0], /font:\s*inherit/);
+  assert.match(headingRule[0], /font-weight:\s*700/);
+  assert.match(blockRule[0], /border:\s*1px solid #4a463f/);
+  assert.match(blockRule[0], /padding:\s*0\.4rem/);
+  assert.match(blockRule[0], /margin:\s*0 0 0\.8rem/);
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    assert.equal(mounted.nav.childNodes[0].classList.contains("md-repo"), true);
+    const fileBlock = byClass(mounted.nav, "file-block")[0];
+    const ticketBlock = byClass(mounted.nav, "ticket-block")[0];
+    const tree = byClass(mounted.nav, "file-tree")[0];
+    assert.equal(mounted.nav.childNodes[1], fileBlock);
+    assert.equal(tree.parentElement, fileBlock);
+    assert.equal(fileBlock.parentElement, mounted.nav);
+    const heads = byClass(mounted.nav, "md-pane-head");
+    assert.equal(heads.length, 2);
+    const filesHead = heads.find((head) => head.parentElement === fileBlock);
+    const ticketsHead = heads.find((head) => head.parentElement === ticketBlock);
+    const filesHeading = filesHead.childNodes[0];
+    const ticketsHeading = ticketsHead.childNodes[0];
+    assert.equal(filesHeading.tagName, "H2");
+    assert.equal(filesHeading.classList.contains("md-pane-heading"), true);
+    assert.equal(filesHeading.textContent, "Files");
+    assert.equal(filesHead.childNodes[1].classList.contains("md-new-file"), true);
+    assert.equal(filesHead.childNodes[1].textContent, "+");
+    assert.equal(ticketsHeading.tagName, "H2");
+    assert.equal(ticketsHeading.classList.contains("md-pane-heading"), true);
+    assert.equal(ticketsHeading.textContent, "Tickets");
+    assert.equal(ticketsHead.childNodes[1].classList.contains("md-new-ticket"), true);
+    assert.equal(ticketsHead.childNodes[1].textContent, "+");
+    const name = byClass(fileBlock, "md-new-name")[0];
+    assert.ok(fileBlock.childNodes.indexOf(filesHead) < fileBlock.childNodes.indexOf(name));
+    assert.ok(fileBlock.childNodes.indexOf(name) < fileBlock.childNodes.indexOf(tree));
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("T-ticket-filter", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const low = ticketFixture("aaaaaaaa", "Low", "new", T0, "", [], "Ada", "task", "low");
+    const med = ticketFixture("bbbbbbbb", "Med", "new", T1, "", [], "Ada", "task", "medium");
+    const bug = ticketFixture("cccccccc", "Bug", "new", T2, "", [], "Ada", "bug", "high");
+    const child = ticketFixture("dddddddd", "Enhance", "new", T3, "cccccccc", [], "Ada", "enhancement", "medium");
+    const done = ticketFixture("eeeeeeee", "Done", "closed", T0, "", [], "Ada", "task", "high");
+    transport.deliver({ type: "tickets", tickets: [low, med, bug, child, done] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/eeeeeeee.md",
+      rev: 1,
+      text: "done\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: done,
+    });
+    assert.equal(ticketNode(mounted.nav, "eeeeeeee"), undefined);
+    assert.equal(view.getState().doc, "done\n");
+    const filter = byClass(mounted.nav, "md-ticket-filter")[0];
+    const menu = byClass(mounted.nav, "md-ticket-filter-menu")[0];
+    const name = byClass(mounted.nav, "md-new-ticket-name")[0];
+    const tickets = byClass(mounted.nav, "ticket-tree")[0];
+    const block = byClass(mounted.nav, "ticket-block")[0];
+    assert.equal(filter.textContent, "Filter");
+    assert.equal(filter.type, "button");
+    assert.equal(filter.parentElement, block);
+    assert.equal(menu.hidden, true);
+    assert.equal(menu.hasAttribute("hidden"), true);
+    assert.ok(block.childNodes.indexOf(filter) < block.childNodes.indexOf(menu));
+    assert.ok(block.childNodes.indexOf(menu) < block.childNodes.indexOf(name));
+    assert.ok(block.childNodes.indexOf(name) < block.childNodes.indexOf(tickets));
+    const labels = menu.childNodes.filter((node) => node.tagName === "LABEL");
+    assert.deepEqual(labels.map((label) => label.textContent), ["closed", "low", "medium", "high", "task", "enhancement", "defect"]);
+    assert.deepEqual(
+      labels.map((label) => label.childNodes.find((node) => node.tagName === "INPUT").dataset.filter),
+      ["closed", "low", "medium", "high", "task", "enhancement", "bug"],
+    );
+    const box = (key) => filterBox(menu, key);
+    assert.equal(box("closed").checked, false);
+    for (const key of ["low", "medium", "high", "task", "enhancement", "bug"]) assert.equal(box(key).checked, true);
+    const beforeOpen = transport.sent.length;
+    filter.listeners.click({ preventDefault() {} });
+    assert.equal(transport.sent.length, beforeOpen);
+    assert.equal(menu.hidden, false);
+    byClass(ticketNode(mounted.nav, "cccccccc"), "md-ticket-expand")[0].listeners.click({ preventDefault() {}, stopPropagation() {} });
+    assert.equal(ticketNode(mounted.nav, "dddddddd").parentElement.classList.contains("md-ticket-children"), true);
+    const beforeLow = transport.sent.length;
+    box("low").checked = false;
+    box("low").listeners.change();
+    assert.equal(transport.sent.length, beforeLow);
+    assert.equal(menu.hidden, false);
+    assert.equal(ticketNode(mounted.nav, "aaaaaaaa"), undefined);
+    assert.ok(ticketNode(mounted.nav, "bbbbbbbb"));
+    box("bug").checked = false;
+    box("bug").listeners.change();
+    assert.equal(menu.hidden, false);
+    assert.equal(ticketNode(mounted.nav, "cccccccc"), undefined);
+    assert.equal(ticketNode(mounted.nav, "dddddddd").parentElement.classList.contains("ticket-tree"), true);
+    assert.equal(ticketNode(mounted.nav, "eeeeeeee"), undefined);
+    const all = byClass(menu, "md-ticket-filter-all")[0];
+    assert.equal(all.textContent, "show all");
+    const beforeAll = transport.sent.length;
+    all.listeners.click({ preventDefault() {} });
+    assert.equal(transport.sent.length, beforeAll);
+    assert.equal(menu.hidden, false);
+    for (const key of ["closed", "low", "medium", "high", "task", "enhancement", "bug"]) assert.equal(box(key).checked, true);
+    assert.ok(ticketNode(mounted.nav, "aaaaaaaa"));
+    assert.ok(ticketNode(mounted.nav, "bbbbbbbb"));
+    assert.ok(ticketNode(mounted.nav, "cccccccc"));
+    assert.equal(ticketNode(mounted.nav, "dddddddd").parentElement.classList.contains("md-ticket-children"), true);
+    assert.ok(ticketNode(mounted.nav, "eeeeeeee"));
+    box("closed").checked = false;
+    box("closed").listeners.change();
+    assert.equal(ticketNode(mounted.nav, "eeeeeeee"), undefined);
+    assert.equal(view.getState().doc, "done\n");
+    const beforeClosed = transport.sent.length;
+    box("closed").checked = true;
+    box("closed").listeners.change();
+    assert.equal(transport.sent.length, beforeClosed);
+    assert.ok(ticketNode(mounted.nav, "eeeeeeee"));
+    assert.equal(menu.hidden, false);
+    view.destroy();
+    assert.equal(filter.listeners.click, undefined);
+    assert.equal(box("low").listeners.change, undefined);
+    assert.equal(all.listeners.click, undefined);
   } finally {
     mounted.restore();
   }
@@ -4784,7 +4960,7 @@ test("T-ticket-gone", () => {
 test("file titles and move drops", () => {
   const mounted = mountEditor();
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
-  const fileRule = css.match(/\.file-tree\s*\{[^}]*\}/);
+  const fileRule = css.match(/\.file-block\s*\{[^}]*\}/);
   const ticketRule = css.match(/\.ticket-block\s*\{[^}]*\}/);
   assert.ok(fileRule);
   assert.ok(ticketRule);
@@ -4814,9 +4990,11 @@ test("file titles and move drops", () => {
   try {
     const view = createEditor(mounted.root, "x", 0, transport);
     const block = byClass(nav, "ticket-block")[0];
+    const fileBlock = byClass(nav, "file-block")[0];
     const tree = byClass(nav, "file-tree")[0];
     assert.equal(block.parentElement, nav);
-    assert.equal(tree.parentElement, nav);
+    assert.equal(tree.parentElement, fileBlock);
+    assert.equal(fileBlock.parentElement, nav);
     assert.equal(byClass(nav, "ticket-tree").length, 1);
     assert.equal(byClass(nav, "ticket-tree")[0].parentElement, block);
     transport.deliver({ type: "docs", files, titles });

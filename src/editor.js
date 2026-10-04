@@ -152,16 +152,163 @@ function findTicketTree(nav) {
   return findClassChild(findClassChild(nav, "ticket-block"), "ticket-tree");
 }
 
-function claimChild(nav, block, className) {
-  const held = findClassChild(block, className);
-  const stray = findClassChild(nav, className);
-  if (stray && stray !== held) detachNode(stray);
-  if (held) return held;
-  if (stray) {
-    block.appendChild(stray);
-    return stray;
+function findDeep(root, className) {
+  return findElement(root, (el) => el.classList && el.classList.contains(className));
+}
+
+function childArray(parent) {
+  const kids = parent && parent.childNodes ? parent.childNodes : [];
+  return typeof kids.indexOf === "function" ? kids : [...kids];
+}
+
+function isImmediatelyAfter(parent, after, node) {
+  if (!parent || !after || !node || node.parentElement !== parent || after.parentElement !== parent) return false;
+  const kids = childArray(parent);
+  const index = kids.indexOf(after);
+  return index >= 0 && kids[index + 1] === node;
+}
+
+function placeFirst(parent, node) {
+  if (!parent || !node) return;
+  if (childArray(parent)[0] === node) return;
+  detachNode(node);
+  placeNodeBefore(parent, node, parent.childNodes && parent.childNodes[0]);
+}
+
+function placeAfter(parent, after, node) {
+  if (!parent || !node) return;
+  if (!after) {
+    if (node.parentElement !== parent) {
+      detachNode(node);
+      parent.appendChild(node);
+    }
+    return;
   }
-  return null;
+  if (isImmediatelyAfter(parent, after, node)) return;
+  detachNode(node);
+  insertAfter(parent, after, node);
+}
+
+function detachClass(root, className) {
+  const doomed = [];
+  const walk = (node) => {
+    for (const child of [...((node && node.childNodes) || [])]) {
+      if (!child || child.nodeType !== 1) continue;
+      if (child.classList && child.classList.contains(className)) doomed.push(child);
+      else walk(child);
+    }
+  };
+  walk(root);
+  for (const node of doomed) detachNode(node);
+}
+
+function ensureFileBlock(nav) {
+  let block = findClassChild(nav, "file-block");
+  if (!block) {
+    block = document.createElement("div");
+    block.className = "file-block";
+    placeNodeBefore(nav, block, findClassChild(nav, "ticket-block"));
+  }
+  return block;
+}
+
+function ensurePaneHead(block, title) {
+  let head = findClassChild(block, "md-pane-head");
+  if (!head) {
+    head = document.createElement("div");
+    head.className = "md-pane-head";
+  }
+  placeFirst(block, head);
+  let heading = findClassChild(head, "md-pane-heading");
+  if (!heading) {
+    heading = document.createElement("h2");
+    heading.className = "md-pane-heading";
+    head.appendChild(heading);
+  }
+  if (heading.textContent !== title) heading.textContent = title;
+  placeFirst(head, heading);
+  return { head, heading };
+}
+
+function ensureNavButton(nav, className, text) {
+  let button = findDeep(nav, className);
+  if (!button) {
+    button = document.createElement("button");
+    button.className = className;
+  }
+  button.className = className;
+  button.type = "button";
+  if (typeof button.setAttribute === "function") button.setAttribute("type", "button");
+  if (button.textContent !== text) button.textContent = text;
+  return button;
+}
+
+// Defect is the label for ticket type bug. The form select still uses TICKET_TYPES.
+const TICKET_FILTERS = [
+  { label: "closed", filter: "closed", checked: false },
+  { label: "low", filter: "low", checked: true },
+  { label: "medium", filter: "medium", checked: true },
+  { label: "high", filter: "high", checked: true },
+  { label: "task", filter: "task", checked: true },
+  { label: "enhancement", filter: "enhancement", checked: true },
+  { label: "defect", filter: "bug", checked: true },
+];
+
+function filterBoxes(menu) {
+  const found = [];
+  const walk = (node) => {
+    for (const child of [...((node && node.childNodes) || [])]) {
+      if (!child || child.nodeType !== 1) continue;
+      if (child.dataset && child.dataset.filter) found.push(child);
+      walk(child);
+    }
+  };
+  walk(menu);
+  return found;
+}
+
+function enabledFilters(nav) {
+  const menu = findClassChild(findClassChild(nav, "ticket-block"), "md-ticket-filter-menu");
+  const on = new Set();
+  if (!menu) {
+    for (const row of TICKET_FILTERS) if (row.checked) on.add(row.filter);
+    return on;
+  }
+  for (const box of filterBoxes(menu)) if (box.checked === true) on.add(box.dataset.filter);
+  return on;
+}
+
+function applyFilterDefaults(menu) {
+  const byName = new Map();
+  for (const box of filterBoxes(menu)) byName.set(box.dataset.filter, box);
+  for (const row of TICKET_FILTERS) {
+    const box = byName.get(row.filter);
+    if (box) box.checked = row.checked;
+  }
+}
+
+function buildFilterMenu(menu) {
+  if (filterBoxes(menu).length > 0) return;
+  for (const row of TICKET_FILTERS) {
+    const label = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.filter = row.filter;
+    box.checked = row.checked;
+    if (typeof box.setAttribute === "function") {
+      box.setAttribute("type", "checkbox");
+      box.setAttribute("data-filter", row.filter);
+    }
+    label.appendChild(box);
+    label.appendChild(document.createTextNode(row.label));
+    menu.appendChild(label);
+  }
+  const all = document.createElement("button");
+  all.type = "button";
+  all.className = "md-ticket-filter-all";
+  all.textContent = "show all";
+  if (typeof all.setAttribute === "function") all.setAttribute("type", "button");
+  menu.appendChild(all);
 }
 
 function hideElement(el) {
@@ -240,7 +387,7 @@ function forestFrom(list) {
   const roots = [];
   for (const ticket of list) {
     const parent = ticket.parent && ticket.parent !== ticket.id ? byId.get(ticket.parent) : null;
-    // A closed parent left out of the list is not an anchor. The child is a root.
+    // A parent left out of the list is not an anchor. The child is a root.
     if (parent && !chainReaches(parent, ticket.id, byId)) {
       let kids = children.get(parent.id);
       if (!kids) {
@@ -656,7 +803,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const openDirs = new Set();
   let ticketList = [];
   let openTicket = null;
-  let showClosed = false;
   const expandedTickets = new Set();
   let ticketForm = null;
   let ticketChrome = null;
@@ -1637,7 +1783,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function fileTreeNode() {
-    return findClassChild(filesNav(), "file-tree");
+    const nav = filesNav();
+    return findClassChild(findClassChild(nav, "file-block"), "file-tree") || findClassChild(nav, "file-tree");
   }
 
   function clearDropMark() {
@@ -1855,15 +2002,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     fileList = Array.isArray(files) ? files : [];
     const nav = filesNav();
     if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
-    let tree = null;
-    for (const child of nav.childNodes || []) {
-      if (child.classList && child.classList.contains("file-tree")) tree = child;
-    }
+    const block = ensureFileBlock(nav);
+    let tree = findClassChild(block, "file-tree") || findClassChild(nav, "file-tree");
     if (!tree) {
       tree = document.createElement("div");
       tree.className = "file-tree";
-      placeNodeBefore(nav, tree, findClassChild(nav, "ticket-block"));
     }
+    const field = findClassChild(block, "md-new-name") || findDeep(block, "md-new-name");
+    const head = findClassChild(block, "md-pane-head");
+    if (field) placeAfter(block, field, tree);
+    else if (head) placeAfter(block, head, tree);
+    else block.appendChild(tree);
     bindTreeDrop(tree);
     if (!tree || typeof tree.replaceChildren !== "function") return;
     if (seed) seedOpen(openPath);
@@ -2360,9 +2509,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function visibleTicketList() {
-    const openId = openTicket ? openTicket.id : "";
-    if (showClosed) return ticketList.slice();
-    return ticketList.filter((ticket) => ticket.state !== "closed" || ticket.id === openId);
+    const on = enabledFilters(filesNav());
+    return ticketList.filter((ticket) => {
+      if (ticket.state === "closed" && !on.has("closed")) return false;
+      if (!on.has(ticket.priority)) return false;
+      if (!on.has(ticket.type)) return false;
+      return true;
+    });
   }
 
   function seedTicketAncestors(id) {
@@ -2771,19 +2924,32 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     ticketForm = form;
   }
 
+  function clearTicketBinding(binding) {
+    if (!binding) return;
+    if (binding.button && binding.onClick && typeof binding.button.removeEventListener === "function") {
+      binding.button.removeEventListener("click", binding.onClick);
+    }
+    if (binding.field && binding.onKey && typeof binding.field.removeEventListener === "function") {
+      binding.field.removeEventListener("keydown", binding.onKey);
+    }
+    if (binding.filterButton && binding.onFilter && typeof binding.filterButton.removeEventListener === "function") {
+      binding.filterButton.removeEventListener("click", binding.onFilter);
+    }
+    if (binding.onChange) {
+      for (const box of binding.boxes || []) {
+        if (box && typeof box.removeEventListener === "function") box.removeEventListener("change", binding.onChange);
+      }
+    }
+    if (binding.showAll && binding.onShowAll && typeof binding.showAll.removeEventListener === "function") {
+      binding.showAll.removeEventListener("click", binding.onShowAll);
+    }
+  }
+
   function unbindTickets() {
     if (ticketChrome) {
       const binding = ticketBindings.get(ticketChrome.button);
       if (binding && binding.onClick === ticketChrome.onClick) {
-        if (typeof binding.button.removeEventListener === "function") {
-          binding.button.removeEventListener("click", binding.onClick);
-        }
-        if (binding.field && typeof binding.field.removeEventListener === "function") {
-          binding.field.removeEventListener("keydown", binding.onKey);
-        }
-        if (binding.checkbox && typeof binding.checkbox.removeEventListener === "function") {
-          binding.checkbox.removeEventListener("change", binding.onToggle);
-        }
+        clearTicketBinding(binding);
         ticketBindings.delete(binding.button);
       }
       ticketChrome = null;
@@ -2798,51 +2964,31 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function bindTicketChrome(nav) {
     if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    detachClass(nav, "md-ticket-label");
+    detachClass(nav, "md-show-closed");
+    detachClass(nav, "md-show-closed-label");
     let block = findClassChild(nav, "ticket-block");
     if (!block) {
       block = document.createElement("div");
       block.className = "ticket-block";
       nav.appendChild(block);
     }
-    let label = claimChild(nav, block, "md-ticket-label");
-    if (!label) {
-      label = document.createElement("div");
-      label.className = "md-ticket-label";
-      label.textContent = "Tickets";
-      block.appendChild(label);
+    const { head, heading } = ensurePaneHead(block, "Tickets");
+    const button = ensureNavButton(nav, "md-new-ticket", "+");
+    placeAfter(head, heading, button);
+    const filterButton = ensureNavButton(nav, "md-ticket-filter", "Filter");
+    placeAfter(block, head, filterButton);
+    let menu = findClassChild(block, "md-ticket-filter-menu");
+    if (!menu) {
+      menu = document.createElement("div");
+      menu.className = "md-ticket-filter-menu";
     }
-    let checkbox = claimChild(nav, block, "md-show-closed");
-    if (!checkbox) {
-      checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.className = "md-show-closed";
-      checkbox.id = "md-show-closed";
-      if (typeof checkbox.setAttribute === "function") {
-        checkbox.setAttribute("type", "checkbox");
-        checkbox.setAttribute("id", "md-show-closed");
-      }
-      block.appendChild(checkbox);
-    }
-    checkbox.checked = showClosed;
-    let closedLabel = claimChild(nav, block, "md-show-closed-label");
-    if (!closedLabel) {
-      closedLabel = document.createElement("label");
-      closedLabel.className = "md-show-closed-label";
-      closedLabel.htmlFor = "md-show-closed";
-      if (typeof closedLabel.setAttribute === "function") closedLabel.setAttribute("for", "md-show-closed");
-      closedLabel.textContent = "show closed";
-      block.appendChild(closedLabel);
-    }
-    let button = claimChild(nav, block, "md-new-ticket");
-    if (!button) {
-      button = document.createElement("button");
-      button.type = "button";
-      button.className = "md-new-ticket";
-      button.textContent = "+";
-      if (typeof button.setAttribute === "function") button.setAttribute("type", "button");
-      block.appendChild(button);
-    }
-    let field = claimChild(nav, block, "md-new-ticket-name");
+    placeAfter(block, filterButton, menu);
+    buildFilterMenu(menu);
+    applyFilterDefaults(menu);
+    hideElement(menu);
+    const showAll = findClassChild(menu, "md-ticket-filter-all");
+    let field = findDeep(nav, "md-new-ticket-name");
     if (!field) {
       field = document.createElement("input");
       field.type = "text";
@@ -2850,24 +2996,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       field.value = "";
       if (typeof field.setAttribute === "function") field.setAttribute("type", "text");
       hideElement(field);
-      block.appendChild(field);
     }
-    let tree = claimChild(nav, block, "ticket-tree");
+    placeAfter(block, menu, field);
+    let tree = findClassChild(block, "ticket-tree") || findDeep(nav, "ticket-tree");
     if (!tree) {
       tree = document.createElement("div");
       tree.className = "ticket-tree";
-      block.appendChild(tree);
     }
+    placeAfter(block, field, tree);
     const previous = ticketBindings.get(button);
-    if (previous) {
-      if (typeof button.removeEventListener === "function") button.removeEventListener("click", previous.onClick);
-      if (previous.field && typeof previous.field.removeEventListener === "function") {
-        previous.field.removeEventListener("keydown", previous.onKey);
-      }
-      if (previous.checkbox && typeof previous.checkbox.removeEventListener === "function") {
-        previous.checkbox.removeEventListener("change", previous.onToggle);
-      }
-    }
+    clearTicketBinding(previous);
     const onClick = (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       showElement(field);
@@ -2889,14 +3027,26 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       hideElement(field);
       emit({ type: "ticket.create", title });
     };
-    const onToggle = () => {
-      showClosed = checkbox.checked === true;
+    const onFilter = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      if (menu.hidden) showElement(menu);
+      else hideElement(menu);
+    };
+    const onChange = () => {
       renderTicketTree();
     };
+    const onShowAll = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      for (const box of filterBoxes(menu)) box.checked = true;
+      renderTicketTree();
+    };
+    const boxes = filterBoxes(menu);
     button.addEventListener("click", onClick);
     field.addEventListener("keydown", onKey);
-    checkbox.addEventListener("change", onToggle);
-    const binding = { button, field, checkbox, onClick, onKey, onToggle };
+    filterButton.addEventListener("click", onFilter);
+    for (const box of boxes) box.addEventListener("change", onChange);
+    if (showAll && typeof showAll.addEventListener === "function") showAll.addEventListener("click", onShowAll);
+    const binding = { button, field, onClick, onKey, filterButton, onFilter, boxes, onChange, showAll, onShowAll };
     ticketBindings.set(button, binding);
     ticketChrome = binding;
   }
@@ -2924,31 +3074,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function bindNewFile(nav) {
     if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
-    let button = null;
-    for (const child of nav.childNodes || []) {
-      if (child.classList && child.classList.contains("md-new-file")) button = child;
-    }
-    if (!button) {
-      button = document.createElement("button");
-      button.type = "button";
-      button.className = "md-new-file";
-      button.textContent = "+";
-      const anchor = firstControl(nav);
-      if (anchor) insertAfter(nav, anchor, button);
-      else nav.appendChild(button);
-    }
-    let field = null;
-    for (const child of nav.childNodes || []) {
-      if (child.classList && child.classList.contains("md-new-name")) field = child;
-    }
+    const block = ensureFileBlock(nav);
+    const { head, heading } = ensurePaneHead(block, "Files");
+    const button = ensureNavButton(nav, "md-new-file", "+");
+    placeAfter(head, heading, button);
+    let field = findDeep(nav, "md-new-name");
     if (!field) {
       field = document.createElement("input");
       field.type = "text";
       field.className = "md-new-name";
       field.value = "";
+      if (typeof field.setAttribute === "function") field.setAttribute("type", "text");
       hideNameField(field);
-      insertAfter(nav, button, field);
     }
+    placeAfter(block, head, field);
     const previous = newFileBindings.get(button);
     if (previous && typeof button.removeEventListener === "function") {
       button.removeEventListener("click", previous.onClick);
@@ -3031,7 +3170,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     granted = { anchor: state.anchor, cursor: state.cursor };
     dismissTicketForm();
     const nav = filesNav();
-    const files = findClassChild(nav, "file-tree");
+    const files = fileTreeNode();
     if (files && typeof files.replaceChildren === "function") files.replaceChildren();
     const tickets = findTicketTree(nav);
     if (tickets && typeof tickets.replaceChildren === "function") tickets.replaceChildren();
@@ -3292,16 +3431,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
     },
   };
-}
-
-function firstControl(nav) {
-  if (!nav || !nav.childNodes) return null;
-  for (const child of nav.childNodes) {
-    if (!child || child.nodeType !== 1) continue;
-    const tag = String(child.tagName || "").toUpperCase();
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON") return child;
-  }
-  return null;
 }
 
 const loginBindings = new WeakMap();

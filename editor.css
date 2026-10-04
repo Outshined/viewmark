@@ -45,12 +45,6 @@ nav.files input {
   color: inherit;
 }
 
-nav.files input.md-show-closed {
-  width: auto;
-  margin: 0 0.35rem 0.6rem 0;
-  vertical-align: middle;
-}
-
 select.md-repo {
   box-sizing: border-box;
   width: 100%;
@@ -186,14 +180,51 @@ dialog.md-login::backdrop {
   cursor: pointer;
 }
 
-.md-ticket-label {
-  margin: 1.1rem 0 0.35rem;
+.md-pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
-.md-show-closed-label {
+.md-pane-head .md-new-file,
+.md-pane-head .md-new-ticket {
+  margin: 0;
+}
+
+h2.md-pane-heading {
+  margin: 0;
+  font: inherit;
+  font-weight: 700;
+  color: inherit;
+}
+
+button.md-ticket-filter,
+button.md-ticket-filter-all {
   display: inline;
-  margin: 0 0.8rem 0.6rem 0;
-  vertical-align: middle;
+  width: auto;
+  margin: 0 0 0.45rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.md-ticket-filter-menu[hidden] {
+  display: none;
+}
+
+.md-ticket-filter-menu label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 0.25rem;
+}
+
+nav.files .md-ticket-filter-menu input {
+  width: auto;
+  margin: 0;
 }
 
 .ticket-tree .md-ticket-row {
@@ -270,7 +301,7 @@ dialog.md-login::backdrop {
   margin-left: 0.8rem;
 }
 
-.file-tree {
+.file-block {
   border: 1px solid #4a463f;
   padding: 0.4rem;
   margin: 0 0 0.8rem;
