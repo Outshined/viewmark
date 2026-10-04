@@ -142,6 +142,22 @@ function findClassChild(parent, className) {
   return null;
 }
 
+function findTicketTree(nav) {
+  return findClassChild(findClassChild(nav, "ticket-block"), "ticket-tree");
+}
+
+function claimChild(nav, block, className) {
+  const held = findClassChild(block, className);
+  const stray = findClassChild(nav, className);
+  if (stray && stray !== held) detachNode(stray);
+  if (held) return held;
+  if (stray) {
+    block.appendChild(stray);
+    return stray;
+  }
+  return null;
+}
+
 function hideElement(el) {
   if (!el) return;
   el.hidden = true;
@@ -627,6 +643,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let waitingForFile = false;
   let openPath = "";
   let fileList = [];
+  let fileTitles = null;
+  let draggedMove = null;
+  let treeDrop = null;
   const openDirs = new Set();
   let ticketList = [];
   let openTicket = null;
@@ -1554,12 +1573,71 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return entries.map((entry) => (entry.kind === "dir" ? renderDirRow(entry.dir) : renderFileRow(entry.file)));
   }
 
+  function fileLabel(file) {
+    if (!fileTitles || typeof fileTitles !== "object") return file.name;
+    const title = fileTitles[file.path];
+    if (typeof title !== "string" || title.length === 0) return file.name;
+    return title;
+  }
+
+  function stopEvent(event) {
+    if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+  }
+
+  function acceptDrop(event) {
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    stopEvent(event);
+  }
+
+  function rememberDrag(event, path, directory) {
+    draggedMove = { path, directory };
+    const data = event && event.dataTransfer;
+    if (!data || typeof data.setData !== "function") return;
+    try {
+      data.setData("text/plain", path);
+      data.effectAllowed = "move";
+    } catch {
+      // A drag double may reject writes.
+    }
+  }
+
+  function sendMove(dir) {
+    if (!draggedMove || typeof draggedMove.path !== "string" || draggedMove.path === "") return;
+    if (draggedMove.directory && dir !== "" && (dir === draggedMove.path || dir.startsWith(`${draggedMove.path}/`))) return;
+    emit({ type: "move", path: draggedMove.path, dir });
+  }
+
+  function bindDragSource(target, path, directory) {
+    target.draggable = true;
+    if (typeof target.setAttribute === "function") target.setAttribute("draggable", "true");
+    target.addEventListener("dragstart", (event) => {
+      // preventDefault here cancels the drag before a drop can land.
+      stopEvent(event);
+      rememberDrag(event, path, directory);
+    });
+  }
+
+  function bindFileDrop(target) {
+    target.addEventListener("dragover", acceptDrop);
+    target.addEventListener("drop", acceptDrop);
+  }
+
+  function bindDirDrop(target, dirPath) {
+    target.addEventListener("dragover", acceptDrop);
+    target.addEventListener("drop", (event) => {
+      acceptDrop(event);
+      sendMove(dirPath);
+    });
+  }
+
   function renderFileRow(file) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "md-file";
     button.dataset.path = file.path;
-    button.textContent = file.name;
+    button.textContent = fileLabel(file);
+    bindDragSource(button, file.path, false);
+    bindFileDrop(button);
     button.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       openPath = file.path;
@@ -1580,6 +1658,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     button.textContent = dir.name;
     const open = openDirs.has(dir.path);
     if (!open) wrap.classList.add("md-dir-collapsed");
+    bindDragSource(wrap, dir.path, true);
+    bindDragSource(button, dir.path, true);
+    bindDirDrop(wrap, dir.path);
+    bindDirDrop(button, dir.path);
     button.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       if (openDirs.has(dir.path)) openDirs.delete(dir.path);
@@ -1596,6 +1678,33 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return wrap;
   }
 
+  function bindTreeDrop(tree) {
+    if (!tree || (treeDrop && treeDrop.tree === tree)) return;
+    if (treeDrop) unbindTreeDrop();
+    const onOver = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+    };
+    const onDrop = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      const target = event && event.target;
+      if (target && target !== tree) return;
+      sendMove("");
+    };
+    tree.addEventListener("dragover", onOver);
+    tree.addEventListener("drop", onDrop);
+    treeDrop = { tree, onOver, onDrop };
+  }
+
+  function unbindTreeDrop() {
+    if (!treeDrop) return;
+    const { tree, onOver, onDrop } = treeDrop;
+    if (typeof tree.removeEventListener === "function") {
+      tree.removeEventListener("dragover", onOver);
+      tree.removeEventListener("drop", onDrop);
+    }
+    treeDrop = null;
+  }
+
   function renderFileTree(files, seed) {
     fileList = Array.isArray(files) ? files : [];
     const nav = filesNav();
@@ -1607,8 +1716,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!tree) {
       tree = document.createElement("div");
       tree.className = "file-tree";
-      placeNodeBefore(nav, tree, findClassChild(nav, "md-ticket-label"));
+      placeNodeBefore(nav, tree, findClassChild(nav, "ticket-block"));
     }
+    bindTreeDrop(tree);
     if (!tree || typeof tree.replaceChildren !== "function") return;
     if (seed) seedOpen(openPath);
     tree.replaceChildren(...renderEntries(buildFileTree(fileList)));
@@ -1709,6 +1819,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     if (message.type === "docs") {
+      const incoming = message.titles;
+      fileTitles = incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : null;
       renderFileTree(message.files, true);
       return;
     }
@@ -2182,7 +2294,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function renderTicketTree() {
-    const tree = findClassChild(filesNav(), "ticket-tree");
+    const tree = findTicketTree(filesNav());
     if (!tree || typeof tree.replaceChildren !== "function") return;
     const forest = forestFrom(visibleTicketList());
     const seen = new Set();
@@ -2534,20 +2646,26 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       hideElement(ticketForm);
       if (typeof ticketForm.replaceChildren === "function") ticketForm.replaceChildren();
     }
-    const tree = findClassChild(filesNav(), "ticket-tree");
+    const tree = findTicketTree(filesNav());
     if (tree && typeof tree.replaceChildren === "function") tree.replaceChildren();
   }
 
   function bindTicketChrome(nav) {
     if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
-    let label = findClassChild(nav, "md-ticket-label");
+    let block = findClassChild(nav, "ticket-block");
+    if (!block) {
+      block = document.createElement("div");
+      block.className = "ticket-block";
+      nav.appendChild(block);
+    }
+    let label = claimChild(nav, block, "md-ticket-label");
     if (!label) {
       label = document.createElement("div");
       label.className = "md-ticket-label";
       label.textContent = "Tickets";
-      nav.appendChild(label);
+      block.appendChild(label);
     }
-    let checkbox = findClassChild(nav, "md-show-closed");
+    let checkbox = claimChild(nav, block, "md-show-closed");
     if (!checkbox) {
       checkbox = document.createElement("input");
       checkbox.type = "checkbox";
@@ -2557,28 +2675,28 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         checkbox.setAttribute("type", "checkbox");
         checkbox.setAttribute("id", "md-show-closed");
       }
-      nav.appendChild(checkbox);
+      block.appendChild(checkbox);
     }
     checkbox.checked = showClosed;
-    let closedLabel = findClassChild(nav, "md-show-closed-label");
+    let closedLabel = claimChild(nav, block, "md-show-closed-label");
     if (!closedLabel) {
       closedLabel = document.createElement("label");
       closedLabel.className = "md-show-closed-label";
       closedLabel.htmlFor = "md-show-closed";
       if (typeof closedLabel.setAttribute === "function") closedLabel.setAttribute("for", "md-show-closed");
       closedLabel.textContent = "show closed";
-      nav.appendChild(closedLabel);
+      block.appendChild(closedLabel);
     }
-    let button = findClassChild(nav, "md-new-ticket");
+    let button = claimChild(nav, block, "md-new-ticket");
     if (!button) {
       button = document.createElement("button");
       button.type = "button";
       button.className = "md-new-ticket";
       button.textContent = "+";
       if (typeof button.setAttribute === "function") button.setAttribute("type", "button");
-      nav.appendChild(button);
+      block.appendChild(button);
     }
-    let field = findClassChild(nav, "md-new-ticket-name");
+    let field = claimChild(nav, block, "md-new-ticket-name");
     if (!field) {
       field = document.createElement("input");
       field.type = "text";
@@ -2586,13 +2704,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       field.value = "";
       if (typeof field.setAttribute === "function") field.setAttribute("type", "text");
       hideElement(field);
-      nav.appendChild(field);
+      block.appendChild(field);
     }
-    let tree = findClassChild(nav, "ticket-tree");
+    let tree = claimChild(nav, block, "ticket-tree");
     if (!tree) {
       tree = document.createElement("div");
       tree.className = "ticket-tree";
-      nav.appendChild(tree);
+      block.appendChild(tree);
     }
     const previous = ticketBindings.get(button);
     if (previous) {
@@ -2758,6 +2876,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     openDirs.clear();
     expandedTickets.clear();
     fileList = [];
+    fileTitles = null;
+    draggedMove = null;
     ticketList = [];
     state = createState("");
     sentLines = lineSet(state.anchor, state.cursor);
@@ -2767,7 +2887,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const nav = filesNav();
     const files = findClassChild(nav, "file-tree");
     if (files && typeof files.replaceChildren === "function") files.replaceChildren();
-    const tickets = findClassChild(nav, "ticket-tree");
+    const tickets = findTicketTree(nav);
     if (tickets && typeof tickets.replaceChildren === "function") tickets.replaceChildren();
     render();
   }
@@ -2972,6 +3092,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       unbindCommit();
       unbindNewFile();
       unbindTickets();
+      unbindTreeDrop();
       ac.abort();
       if (addCommentButton && addCommentButton.parentElement && typeof addCommentButton.parentElement.removeChild === "function") {
         addCommentButton.parentElement.removeChild(addCommentButton);

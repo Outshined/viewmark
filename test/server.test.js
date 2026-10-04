@@ -281,6 +281,7 @@ test("T-list", async () => {
     assert.deepEqual(await client.next((msg) => msg.type === "docs"), {
       type: "docs",
       files: ["a.md", "sub/b.markdown"],
+      titles: {},
     });
     const raw = await get(port, "/raw/docs/a.md");
     assert.equal(raw.status, 200);
@@ -309,7 +310,7 @@ test("T-auth", async () => {
     a.send({ type: "list", username: "B" });
     assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 403 });
     a.send({ type: "list", username: "A" });
-    assert.deepEqual(await a.next((msg) => msg.type === "docs"), { type: "docs", files: ["a.md"] });
+    assert.deepEqual(await a.next((msg) => msg.type === "docs"), { type: "docs", files: ["a.md"], titles: {} });
 
     const a2 = await hello(port, "A");
     const rev = (await openDoc(a, "A", "a.md")).rev;
@@ -823,7 +824,7 @@ test("T-frame", async () => {
     parts.write(encodeFrame(0x1, Buffer.from('{"type":"list","username":"A"}'), { mask: true }));
     const deadline = Date.now() + 2000;
     while (!messages.some((msg) => msg.type === "docs") && Date.now() < deadline) await delay(20);
-    assert.deepEqual(messages.find((msg) => msg.type === "docs"), { type: "docs", files: [] });
+    assert.deepEqual(messages.find((msg) => msg.type === "docs"), { type: "docs", files: [], titles: {} });
     parts.end();
   });
 });
@@ -1023,6 +1024,7 @@ test("T-ticket-hide", async () => {
     assert.deepEqual(await client.next((msg) => msg.type === "docs"), {
       type: "docs",
       files: ["a.md", "notes/tickets/c.md", "sub/b.markdown", "tickets.md"],
+      titles: {},
     });
 
     for (const rel of [
@@ -1742,7 +1744,7 @@ test("T-ticket-purge", async () => {
     bye.send({ type: "open", username: "Bye", path: "tickets/cccccccc.md" });
     assert.deepEqual(await bye.next((msg) => msg.type === "error"), { type: "error", status: 404 });
     bye.send({ type: "list", username: "Bye" });
-    assert.deepEqual(await bye.next((msg) => msg.type === "docs"), { type: "docs", files: ["doc.md"] });
+    assert.deepEqual(await bye.next((msg) => msg.type === "docs"), { type: "docs", files: ["doc.md"], titles: {} });
 
     idle.send({ type: "ticket.purge", username: "Idle" });
     const second = await sub.next((msg) => msg.type === "tickets" || msg.type === "ticket");
@@ -2257,4 +2259,222 @@ test("T-checkpoint-split", async () => {
     await close(server).catch(() => {});
     await fs.rm(parent, { recursive: true, force: true });
   }
+});
+
+test("T-move", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.mkdir(path.join(dir, "archive"), { recursive: true });
+    await fs.mkdir(path.join(dir, "notes", "sub"), { recursive: true });
+    await fs.mkdir(path.join(dir, "elsewhere"), { recursive: true });
+    await fs.writeFile(path.join(dir, "archive", "keep.md"), "# Keep  \n");
+    await fs.writeFile(path.join(dir, "archive", "plain.md"), "# Taken\n");
+    await fs.writeFile(path.join(dir, "elsewhere", "plain.md"), "# Elsewhere\n");
+    await fs.writeFile(path.join(dir, "notes", "idea.md"), "intro\n# Idea Title\n");
+    await fs.writeFile(path.join(dir, "notes", "sub", "deep.md"), "# Deep\n");
+    await fs.writeFile(path.join(dir, "notes", "extra.txt"), "pic\n");
+    await fs.writeFile(path.join(dir, "plain.md"), "no heading\n");
+    await fs.writeFile(path.join(dir, "hash.md"), "#Title\n");
+    await fs.writeFile(path.join(dir, "bare.md"), "#\n");
+    await fs.writeFile(path.join(dir, "blankhash.md"), "# \n");
+    await fs.writeFile(path.join(dir, "second.md"), "## Second\n# Later\n");
+    await fs.writeFile(path.join(dir, "cached.md"), "# Disk\n");
+    await writeTicket(dir, {
+      id: "aaaaaaaa",
+      title: "Hidden",
+      state: "new",
+      created: "2020-01-01T00:00:00.000Z",
+      body: "secret\n",
+    });
+
+    const bare = await hello(port, "Bare", null);
+    bare.send({ type: "move", username: "Bare", path: "plain.md", dir: "" });
+    assert.deepEqual(await bare.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    bare.ws.close();
+
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    const openedCache = await openDoc(a, "A", "cached.md");
+    assert.equal(openedCache.text, "# Disk\n");
+    await fs.writeFile(path.join(dir, "cached.md"), "# Other\n");
+    a.send({ type: "list", username: "A" });
+    const listed = await a.next((msg) => msg.type === "docs");
+    assert.deepEqual(listed.files, [
+      "archive/keep.md",
+      "archive/plain.md",
+      "bare.md",
+      "blankhash.md",
+      "cached.md",
+      "elsewhere/plain.md",
+      "hash.md",
+      "notes/idea.md",
+      "notes/sub/deep.md",
+      "plain.md",
+      "second.md",
+    ]);
+    assert.equal(listed.files.every((file) => typeof file === "string"), true);
+    assert.deepEqual(listed.titles, {
+      "archive/keep.md": "Keep",
+      "archive/plain.md": "Taken",
+      "cached.md": "Disk",
+      "elsewhere/plain.md": "Elsewhere",
+      "notes/idea.md": "Idea Title",
+      "notes/sub/deep.md": "Deep",
+      "second.md": "Later",
+    });
+
+    const beforeRejects = await snapshotTree(dir);
+    for (const payload of [
+      { type: "move", username: "A", path: "tickets", dir: "" },
+      { type: "move", username: "A", path: "tickets/aaaaaaaa.md", dir: "archive" },
+      { type: "move", username: "A", path: "tickets/missing.md", dir: "" },
+      { type: "move", username: "A", path: "plain.md", dir: "tickets" },
+      { type: "move", username: "A", path: "notes", dir: "notes" },
+      { type: "move", username: "A", path: "notes", dir: "notes/sub" },
+    ]) {
+      a.send(payload);
+      assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "docs"), { type: "error", status: 400 });
+    }
+    a.send({ type: "move", username: "A", path: "elsewhere/plain.md", dir: "archive" });
+    assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "docs"), { type: "error", status: 409 });
+    a.send({ type: "move", username: "A", path: "missing.md", dir: "archive" });
+    assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "docs"), { type: "error", status: 404 });
+    a.send({ type: "move", username: "A", path: "../x.md", dir: "" });
+    assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "docs"), { type: "error", status: 404 });
+    a.send({ type: "move", username: "A", path: "plain.md", dir: "nope" });
+    assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "docs"), { type: "error", status: 404 });
+    assert.equal(a.all.some((msg) => msg.type === "docs"), false);
+    assert.deepEqual(await snapshotTree(dir), beforeRejects);
+
+    const opened = await openDoc(b, "B", "notes/idea.md");
+    assert.equal(opened.rev, 0);
+    assert.equal(opened.text, "intro\n# Idea Title\n");
+    await syncLock(b, [], "B", "notes/idea.md", 0, opened.rev);
+    b.send({ type: "edit", username: "B", path: "notes/idea.md", rev: opened.rev, op: "insert", text: "Q" });
+    const doc = await takeDoc(b);
+    assert.equal(doc.text, "Qintro\n# Idea Title\n");
+    assert.equal(doc.rev, 1);
+    b.send({ type: "commit", username: "B" });
+    assert.deepEqual(await b.next((msg) => msg.type === "commit" || msg.type === "error"), {
+      type: "commit",
+      commits: [{ author: "B", subject: "Edit notes/idea.md", paths: ["notes/idea.md"] }],
+    });
+
+    a.send({ type: "move", username: "A", path: "notes/idea.md", dir: "archive" });
+    const moved = await b.next((msg) => msg.type === "file" || msg.type === "docs" || msg.type === "error");
+    assert.equal(moved.type, "file");
+    assert.equal(moved.path, "archive/idea.md");
+    assert.equal(moved.rev, 1);
+    assert.equal(moved.text, "Qintro\n# Idea Title\n");
+    assert.deepEqual(moved.locks, [{ index: 0, username: "B" }]);
+    const docsB = await b.next((msg) => msg.type === "docs");
+    const docsA = await a.next((msg) => msg.type === "docs" || msg.type === "file");
+    assert.equal(docsA.type, "docs");
+    assert.deepEqual(docsA.files, docsB.files);
+    assert.equal(docsA.files.includes("archive/idea.md"), true);
+    assert.equal(docsA.files.includes("notes/idea.md"), false);
+    assert.equal(docsA.titles["archive/idea.md"], "Idea Title");
+    assert.equal(docsA.titles["notes/idea.md"], undefined);
+    assert.equal(a.all.length, 0);
+    assert.equal(b.all.length, 0);
+    assert.equal(await readDoc(dir, "archive/idea.md"), "Qintro\n# Idea Title\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes", "idea.md")));
+
+    await fs.writeFile(path.join(dir, "archive", "idea.md"), "# Sneaky\n");
+    a.send({ type: "list", username: "A" });
+    const cachedTitle = await a.next((msg) => msg.type === "docs");
+    assert.equal(cachedTitle.titles["archive/idea.md"], "Idea Title");
+    await fs.writeFile(path.join(dir, "archive", "idea.md"), "Qintro\n# Idea Title\n");
+
+    a.send({ type: "commit", username: "A" });
+    assert.deepEqual(await a.next((msg) => msg.type === "commit" || msg.type === "error"), {
+      type: "commit",
+      commits: [{ author: "A", subject: "Update docs", paths: ["archive/idea.md", "notes/idea.md"] }],
+    });
+    assert.equal(await git(dir, ["show", "HEAD:archive/idea.md"]), "Qintro\n# Idea Title\n");
+    assert.equal((await git(dir, ["ls-tree", "-r", "--name-only", "HEAD"])).includes("notes/idea.md"), false);
+
+    b.send({ type: "edit", username: "B", path: "notes/idea.md", rev: 1, op: "insert", text: "NO" });
+    assert.deepEqual(await b.next((msg) => msg.type === "error" || msg.type === "doc"), { type: "error", status: 409 });
+    assert.equal(await readDoc(dir, "archive/idea.md"), "Qintro\n# Idea Title\n");
+    b.send({ type: "edit", username: "B", path: "archive/idea.md", rev: 1, op: "insert", text: "Z" });
+    const edited = await takeDoc(b);
+    assert.equal(edited.rev, 2);
+    assert.equal(edited.text, "QZintro\n# Idea Title\n");
+    assert.equal(await readDoc(dir, "archive/idea.md"), "QZintro\n# Idea Title\n");
+
+    a.send({ type: "move", username: "A", path: "archive/idea.md", dir: "" });
+    const topped = await b.next((msg) => msg.type === "file" || msg.type === "error");
+    assert.equal(topped.type, "file");
+    assert.equal(topped.path, "idea.md");
+    assert.equal(topped.rev, 2);
+    assert.equal(topped.text, "QZintro\n# Idea Title\n");
+    const topDocsB = await b.next((msg) => msg.type === "docs");
+    const topDocsA = await a.next((msg) => msg.type === "docs" || msg.type === "file");
+    assert.equal(topDocsA.type, "docs");
+    assert.equal(topDocsA.files.includes("idea.md"), true);
+    assert.equal(topDocsA.files.includes("archive/idea.md"), false);
+    assert.equal(topDocsB.titles["idea.md"], "Idea Title");
+    assert.equal(await readDoc(dir, "idea.md"), "QZintro\n# Idea Title\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "archive", "idea.md")));
+    assert.equal(a.all.length, 0);
+    assert.equal(b.all.length, 0);
+
+    await openDoc(b, "B", "notes/sub/deep.md");
+    a.send({ type: "move", username: "A", path: "notes", dir: "archive" });
+    const nested = await b.next((msg) => msg.type === "file" || msg.type === "error");
+    assert.equal(nested.type, "file");
+    assert.equal(nested.path, "archive/notes/sub/deep.md");
+    assert.equal(nested.rev, 0);
+    assert.equal(nested.text, "# Deep\n");
+    const nestDocsB = await b.next((msg) => msg.type === "docs");
+    const nestDocsA = await a.next((msg) => msg.type === "docs" || msg.type === "file");
+    assert.equal(nestDocsA.type, "docs");
+    assert.equal(nestDocsA.files.includes("archive/notes/sub/deep.md"), true);
+    assert.equal(nestDocsA.files.includes("notes/sub/deep.md"), false);
+    assert.equal(nestDocsB.titles["archive/notes/sub/deep.md"], "Deep");
+    assert.equal(await readDoc(dir, "archive/notes/sub/deep.md"), "# Deep\n");
+    assert.equal(await readDoc(dir, "archive/notes/extra.txt"), "pic\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes")));
+    assert.equal(a.all.length, 0);
+    assert.equal(b.all.length, 0);
+
+    a.send({ type: "move", username: "A", path: "archive/notes", dir: "" });
+    const restored = await b.next((msg) => msg.type === "file" || msg.type === "error");
+    assert.equal(restored.type, "file");
+    assert.equal(restored.path, "notes/sub/deep.md");
+    assert.equal(restored.rev, 0);
+    assert.equal(restored.text, "# Deep\n");
+    await b.next((msg) => msg.type === "docs");
+    const backDocs = await a.next((msg) => msg.type === "docs" || msg.type === "file");
+    assert.equal(backDocs.type, "docs");
+    assert.equal(backDocs.files.includes("notes/sub/deep.md"), true);
+    assert.equal(backDocs.files.includes("archive/notes/sub/deep.md"), false);
+    assert.equal(await readDoc(dir, "notes/sub/deep.md"), "# Deep\n");
+    assert.equal(await readDoc(dir, "notes/extra.txt"), "pic\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "archive", "notes")));
+    assert.equal(a.all.length, 0);
+    assert.equal(b.all.length, 0);
+
+    a.send({ type: "move", username: "A", path: "archive/keep.md", dir: "archive" });
+    // A pending next() would stay first in line and swallow the next frame.
+    await delay(200);
+    assert.equal(a.all.length, 0);
+    assert.equal(b.all.length, 0);
+    assert.equal(await readDoc(dir, "archive/keep.md"), "# Keep  \n");
+
+    await openDoc(a, "A", "archive/keep.md");
+    await fs.rm(path.join(dir, "archive", "keep.md"));
+    await fs.mkdir(path.join(dir, "fresh"));
+    await fs.writeFile(path.join(dir, "fresh", "keep.md"), "# Fresh\n");
+    const cachedDest = await snapshotTree(dir);
+    a.send({ type: "move", username: "A", path: "fresh/keep.md", dir: "archive" });
+    assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "docs"), { type: "error", status: 409 });
+    assert.equal(a.all.some((msg) => msg.type === "docs"), false);
+    assert.deepEqual(await snapshotTree(dir), cachedDest);
+    assert.equal(await readDoc(dir, "fresh/keep.md"), "# Fresh\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "archive", "keep.md")));
+
+    a.ws.close();
+    b.ws.close();
+  });
 });

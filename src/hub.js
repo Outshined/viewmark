@@ -111,6 +111,34 @@ function inside(rootDir, candidate) {
   return rel === "" || (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel));
 }
 
+async function resolveInside(rootDir, rel) {
+  let real;
+  try {
+    real = await fs.realpath(path.resolve(rootDir, rel));
+  } catch {
+    return null;
+  }
+  if (!inside(rootDir, real)) return null;
+  return real;
+}
+
+async function placedFull(rootDir, dir, name) {
+  const parent = dir === "" ? rootDir : await resolveInside(rootDir, dir);
+  if (!parent) return null;
+  const dest = path.join(parent, name);
+  if (!inside(rootDir, dest)) return null;
+  return dest;
+}
+
+function baseName(rel) {
+  const slash = rel.lastIndexOf("/");
+  return slash === -1 ? rel : rel.slice(slash + 1);
+}
+
+function isTicketTree(rel) {
+  return rel === "tickets" || rel.startsWith("tickets/");
+}
+
 function containsPath(rootDir, candidate) {
   const rel = path.relative(rootDir, candidate);
   return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
@@ -286,6 +314,37 @@ async function listMarkdown(dir, prefix) {
   }
   out.sort();
   return out;
+}
+
+function headingTitle(text) {
+  if (typeof text !== "string") return "";
+  for (const raw of text.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const match = /^#\s+(\S.*)$/.exec(line);
+    if (!match) continue;
+    const title = match[1].trim();
+    if (title) return title;
+  }
+  return "";
+}
+
+async function titlesFor(repo, listed) {
+  const titles = {};
+  for (const rel of listed) {
+    const cached = repo.files.get(rel);
+    let text = null;
+    if (cached && typeof cached.text === "string") text = cached.text;
+    else {
+      try {
+        text = await fs.readFile(path.join(repo.path, rel), "utf8");
+      } catch {
+        continue;
+      }
+    }
+    const title = headingTitle(text);
+    if (title) titles[rel] = title;
+  }
+  return titles;
 }
 
 function ticketIdFromRel(rel) {
@@ -754,11 +813,121 @@ export async function createHub(stateDir, sourceRoot) {
     return dest;
   }
 
+  async function docsPayload(repo) {
+    const listed = await listMarkdown(repo.path, "");
+    return { type: "docs", files: listed, titles: await titlesFor(repo, listed) };
+  }
+
+  function broadcastDocs(repo, msg) {
+    for (const sock of sockets) {
+      if (sock.session?.repo === repo) send(sock, msg);
+    }
+  }
+
+  function fileFrame(file) {
+    const message = {
+      type: "file",
+      path: file.rel,
+      rev: file.rev,
+      text: file.text,
+      locks: lockSnapshot(file),
+    };
+    if (file.ticket) message.ticket = ticketView(file.ticket);
+    return message;
+  }
+
+  function retargetOpen(oldRel, file) {
+    const message = fileFrame(file);
+    const targets = new Set(file.subscribers);
+    for (const sock of sockets) {
+      if (sock.session?.docPath === oldRel) targets.add(sock);
+    }
+    for (const sock of targets) {
+      if (!sock.session) continue;
+      sock.session.docPath = file.rel;
+      send(sock, message);
+    }
+  }
+
   async function onList(socket) {
     const repo = socket.session.repo;
     if (!repo) return fail(socket, 400);
-    const listed = await listMarkdown(repo.path, "");
-    send(socket, { type: "docs", files: listed });
+    send(socket, await docsPayload(repo));
+  }
+
+  async function onMove(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const files = repo.files;
+    const docsDir = repo.path;
+    const rel = safeRel(msg.path);
+    if (!rel) return fail(socket, 404);
+    if (!Object.prototype.hasOwnProperty.call(msg, "dir") || typeof msg.dir !== "string") return fail(socket, 404);
+    let dir = "";
+    if (msg.dir !== "") {
+      dir = safeRel(msg.dir);
+      if (!dir) return fail(socket, 404);
+    }
+    if (isTicketTree(rel) || (dir !== "" && isTicketTree(dir))) return fail(socket, 400);
+
+    const listed = await listMarkdown(docsDir, "");
+    const fileMove = listed.includes(rel);
+    const nested = listed.filter((item) => item.startsWith(`${rel}/`));
+    if (!fileMove && nested.length === 0) return fail(socket, 404);
+    if (dir !== "" && !listed.some((item) => item.startsWith(`${dir}/`))) return fail(socket, 404);
+    if (!fileMove && (dir === rel || dir.startsWith(`${rel}/`))) return fail(socket, 400);
+
+    const pairs = [];
+    if (fileMove) {
+      const dest = dir ? `${dir}/${baseName(rel)}` : baseName(rel);
+      pairs.push({ src: rel, dest });
+    } else {
+      const destRoot = dir ? `${dir}/${baseName(rel)}` : baseName(rel);
+      for (const item of nested) pairs.push({ src: item, dest: destRoot + item.slice(rel.length) });
+    }
+    // Leaving every path where it is does not dirty the repo or the listeners.
+    if (pairs.every((pair) => pair.src === pair.dest)) return;
+
+    const destCount = new Map();
+    for (const pair of pairs) destCount.set(pair.dest, (destCount.get(pair.dest) || 0) + 1);
+    if ([...destCount.values()].some((count) => count > 1)) return fail(socket, 409);
+    const sources = new Set(pairs.map((pair) => pair.src));
+    for (const pair of pairs) {
+      if (pair.src === pair.dest) continue;
+      if (sources.has(pair.dest) || files.has(pair.dest)) return fail(socket, 409);
+      if (await existsPath(path.join(docsDir, pair.dest))) return fail(socket, 409);
+    }
+    if (!fileMove) {
+      const destRoot = dir ? `${dir}/${baseName(rel)}` : baseName(rel);
+      if (destRoot !== rel && (files.has(destRoot) || (await existsPath(path.join(docsDir, destRoot))))) {
+        return fail(socket, 409);
+      }
+    }
+
+    const srcReal = await resolveInside(docsDir, rel);
+    if (!srcReal) return fail(socket, 404);
+    const destFull = await placedFull(docsDir, dir, baseName(rel));
+    if (!destFull) return fail(socket, 404);
+    if (await existsPath(destFull)) return fail(socket, 409);
+    await fs.rename(srcReal, destFull);
+
+    const opened = [];
+    for (const pair of pairs) {
+      const cached = files.get(pair.src);
+      if (!cached) continue;
+      files.delete(pair.src);
+      cached.rel = pair.dest;
+      cached.full = fileMove ? destFull : path.join(destFull, pair.src.slice(rel.length + 1));
+      files.set(pair.dest, cached);
+      opened.push({ src: pair.src, file: cached });
+    }
+    const username = socket.session.username;
+    for (const pair of pairs) {
+      await markDelete(repo, pair.src, username);
+      mark(repo, pair.dest, username);
+    }
+    for (const item of opened) retargetOpen(item.src, item.file);
+    broadcastDocs(repo, await docsPayload(repo));
   }
 
   async function onOpen(socket, msg) {
@@ -823,11 +992,7 @@ export async function createHub(stateDir, sourceRoot) {
     await writeAtomic(dest, "");
     files.set(rel, { rel, full: dest, rev: 0, text: "", subscribers: new Set(), locks: new Map() });
     mark(repo, rel, socket.session.username);
-    const listed = await listMarkdown(docsDir, "");
-    const docs = { type: "docs", files: listed };
-    for (const sock of sockets) {
-      if (sock.session?.repo === repo) send(sock, docs);
-    }
+    broadcastDocs(repo, await docsPayload(repo));
     await onOpen(socket, { path: rel });
   }
 
@@ -1302,6 +1467,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "repo") return onSelect(socket, msg);
     if (msg.type === "commit") return onCommit(socket, msg);
     if (msg.type === "list") return onList(socket);
+    if (msg.type === "move") return onMove(socket, msg);
     if (msg.type === "open") return onOpen(socket, msg);
     if (msg.type === "create") return onCreate(socket, msg);
     if (msg.type === "tickets") return onTickets(socket);

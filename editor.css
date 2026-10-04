@@ -207,6 +207,18 @@ dialog.md-login::backdrop {
   margin-left: 0.8rem;
 }
 
+.file-tree {
+  border: 1px solid #4a463f;
+  padding: 0.4rem;
+  margin: 0 0 0.8rem;
+}
+
+.ticket-block {
+  border: 1px solid #4a463f;
+  padding: 0.4rem;
+  margin: 0 0 0.8rem;
+}
+
 .file-tree button {
   display: block;
   width: 100%;
