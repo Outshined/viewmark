@@ -37,7 +37,7 @@ Exit codes: 0, 1, 2, 400, 404, 409.
   1 five silent seconds or a dead socket
   2 usage
   400, 404, 409 hub status
-A stale rev exits 409 and does not write.
+A stale rev exits 409 and does not write. The shell status is that number modulo 256, so 400 is 144, 404 is 148, and 409 is 153. stderr \`conflict\` or \`error N\` is the hub status.
 `;
 
 const VALUE_FLAGS = new Set(["port", "user", "rev", "find", "replace"]);
@@ -408,7 +408,10 @@ async function runEdit(hub, username, path, rev, find, replace, json) {
     process.stderr.write(`matches ${hits.length}\n`);
     return 2;
   }
-  if (find === replace) return 0;
+  if (find === replace) {
+    printShow(held, json);
+    return 0;
+  }
   const anchor = hits[0];
   const cursor = anchor + find.length;
   const lines = touchedLines(held.text, anchor, cursor);

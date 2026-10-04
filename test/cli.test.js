@@ -210,7 +210,7 @@ function sawOwnEdit(queue, username) {
 
 function assertHelp(text) {
   for (const needle of HELP_NEEDLES) assert.ok(text.includes(needle), needle);
-  for (const code of ["0", "1", "2", "400", "404", "409"]) {
+  for (const code of ["0", "1", "2", "144", "148", "153", "400", "404", "409"]) {
     assert.match(text, new RegExp(`(^|[\\s:,])${code}(?![0-9])`, "m"));
   }
 }
@@ -613,8 +613,21 @@ test("T-cli-noop", async () => {
       "--replace", "hello",
     ]);
     assert.equal(same.code, 0);
-    assert.equal(same.stdout, "");
-    assert.equal(same.stderr, "");
+    assert.equal(same.stdout, HELLO);
+    assert.equal(same.stderr, "rev 0\n");
+    const json = await run([
+      "--json",
+      "--port", String(port),
+      "--user", "user",
+      "edit",
+      "hello.md",
+      "--rev", "0",
+      "--find", "hello",
+      "--replace", "hello",
+    ]);
+    assert.equal(json.code, 0);
+    assert.equal(json.stderr, "");
+    assert.equal(json.stdout, `${JSON.stringify({ path: "hello.md", rev: 0, text: HELLO })}\n`);
     await delay(100);
     assert.equal(sawOwnEdit(watcher.queue, "user"), false);
     assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
