@@ -466,7 +466,10 @@ export function createEditor(root, doc, cursor = 0, transport) {
   const noteDrafts = new Map();
   const authorDrafts = new Map();
   const editingNotes = new Set();
+  // Chromium focuses the editing host during this assignment.
+  const activeElement = typeof document !== "undefined" && document ? document.activeElement : null;
   root.contentEditable = "true";
+  if (activeElement && activeElement !== root && typeof activeElement.focus === "function") activeElement.focus();
   root.spellcheck = false;
   root.autocapitalize = "off";
   root.setAttribute("autocorrect", "off");

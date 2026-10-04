@@ -3024,3 +3024,80 @@ test("username opens, closes, and reopens the socket", () => {
     mounted.restore();
   }
 });
+
+test("username focus stays on the field through the first character", () => {
+  const mounted = mountEditor();
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const input = document.createElement("input");
+  input.value = "";
+  nav.appendChild(input);
+  const sheet = document.createElement("div");
+  sheet.append(nav, mounted.root);
+  document.getElementById = (id) => (id === "editor" ? mounted.root : null);
+  const sockets = [];
+  function factory(url) {
+    const handlers = {};
+    const socket = {
+      url,
+      sent: [],
+      closed: false,
+      addEventListener(type, fn) {
+        handlers[type] = fn;
+      },
+      send(data) {
+        this.sent.push(data);
+      },
+      close() {
+        this.closed = true;
+      },
+      emit(type, event) {
+        if (handlers[type]) handlers[type](event);
+      },
+    };
+    sockets.push(socket);
+    return socket;
+  }
+  try {
+    const page = startPage({
+      document: globalThis.document,
+      sessionStorage: { getItem() { return null; }, setItem() {} },
+      socketFactory: factory,
+      location: { protocol: "http:", host: "viewmark.test" },
+    });
+    assert.equal(sockets.length, 0);
+    document.activeElement = input;
+    Object.defineProperty(mounted.root, "contentEditable", {
+      configurable: true,
+      get() {
+        return this.editable;
+      },
+      set(value) {
+        this.editable = value;
+        document.activeElement = mounted.root;
+      },
+    });
+    input.value = "Ada";
+    input.listeners.input();
+    assert.equal(input.focused, true);
+    assert.equal(mounted.root.focused, false);
+    assert.equal(sockets.length, 1);
+    sockets[0].emit("open");
+    assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada" });
+    page.close();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("createEditor without activeElement does not throw", () => {
+  const mounted = mountEditor();
+  try {
+    assert.equal(document.activeElement, undefined);
+    const view = createEditor(mounted.root, "ab", 0);
+    assert.equal(view.getState().doc, "ab");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
