@@ -1598,6 +1598,7 @@ function mountSheet() {
       selectionStart: 0,
       selectionEnd: 0,
       focused: false,
+      attrs: new Map(),
     };
     el.style = {
       setProperty(name, value) {
@@ -1633,11 +1634,36 @@ function mountSheet() {
       child.parentElement = null;
       return child;
     };
+    el.insertBefore = (node, before) => {
+      if (!before) return el.appendChild(node);
+      const index = el.childNodes.indexOf(before);
+      if (index < 0) return el.appendChild(node);
+      node.parentElement = el;
+      el.childNodes.splice(index, 0, node);
+      return node;
+    };
+    el.setAttribute = (name, value) => {
+      el.attrs.set(name, String(value));
+      if (name === "hidden") el.hidden = true;
+      if (name === "type") el.type = String(value);
+    };
+    el.getAttribute = (name) => (el.attrs.has(name) ? el.attrs.get(name) : null);
+    el.hasAttribute = (name) => el.attrs.has(name);
+    el.removeAttribute = (name) => {
+      el.attrs.delete(name);
+      if (name === "hidden") el.hidden = false;
+    };
     el.addEventListener = (type, fn) => {
       el.listeners[type] = fn;
     };
+    el.removeEventListener = (type, fn) => {
+      if (el.listeners[type] === fn) delete el.listeners[type];
+    };
     el.focus = () => {
       el.focused = true;
+    };
+    el.blur = () => {
+      el.focused = false;
     };
     Object.defineProperty(el, "offsetHeight", { get() { return 30; } });
     el.getBoundingClientRect = () => {
@@ -3237,8 +3263,10 @@ test("username opens, closes, and reopens the socket", () => {
     sockets[0].emit("open");
     assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada" });
     assert.deepEqual(JSON.parse(sockets[0].sent[1]), { type: "list", username: "Ada" });
+    assert.equal(sockets[0].sent.length, 3);
+    assert.deepEqual(JSON.parse(sockets[0].sent[2]), { type: "tickets", username: "Ada" });
     sockets[0].emit("message", { data: JSON.stringify({ type: "ping" }) });
-    assert.deepEqual(JSON.parse(sockets[0].sent[2]), { type: "pong", username: "Ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[3]), { type: "pong", username: "Ada" });
     sockets[0].emit("message", { data: JSON.stringify({ type: "docs", files: ["b.md", "sub/a.md"] }) });
     const labeled = (text) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.textContent === text);
     assert.equal(labeled("b.md").length, 1);
@@ -3531,6 +3559,525 @@ test("createEditor without activeElement does not throw", () => {
     assert.equal(document.activeElement, undefined);
     const view = createEditor(mounted.root, "ab", 0);
     assert.equal(view.getState().doc, "ab");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+const T0 = "2026-10-01T00:00:00.000Z";
+const T1 = "2026-10-02T00:00:00.000Z";
+const T2 = "2026-10-03T00:00:00.000Z";
+const T3 = "2026-10-04T00:00:00.000Z";
+
+function ticketFixture(id, title, state, created, parent = "", depends = [], reporter = "Ada") {
+  return { id, title, state, parent, depends: depends.slice(), reporter, created };
+}
+
+function mountTicketPage() {
+  const mounted = mountSheet();
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  mounted.root.parentElement.insertBefore(nav, mounted.root);
+  mounted.nav = nav;
+  return mounted;
+}
+
+function byClass(root, className) {
+  return walkNodes(root, (node) => node.classList && node.classList.contains(className));
+}
+
+function ticketNode(nav, id) {
+  return byClass(nav, "md-ticket-node").find((node) => node.dataset && node.dataset.id === id);
+}
+
+function rootTicketIds(nav) {
+  const tree = byClass(nav, "ticket-tree")[0];
+  return byClass(tree, "md-ticket-node")
+    .filter((node) => node.parentElement === tree)
+    .map((node) => node.dataset.id);
+}
+
+function rowOf(nav, id) {
+  const node = ticketNode(nav, id);
+  return node && node.childNodes.find((child) => child.classList && child.classList.contains("md-ticket-row"));
+}
+
+test("T-ticket-rows", () => {
+  const mounted = mountTicketPage();
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
+  const rowRule = css.match(/\.ticket-tree \.md-ticket-row\s*\{[^}]*\}/);
+  const titleRule = css.match(/\.ticket-tree \.md-ticket-title\s*\{[^}]*\}/);
+  const stateRule = css.match(/\.ticket-tree \.md-ticket-state\s*\{[^}]*\}/);
+  const mark = css.match(/\.ticket-tree button\.md-ticket-expand::before\s*\{[^}]*\}/);
+  const inputs = css.match(/\.ticket-form input[\s\S]*?\{[^}]*\}/);
+  assert.ok(rowRule);
+  assert.match(rowRule[0], /white-space:\s*nowrap/);
+  assert.match(rowRule[0], /overflow:\s*hidden/);
+  assert.match(titleRule[0], /text-overflow:\s*ellipsis/);
+  assert.match(titleRule[0], /overflow:\s*hidden/);
+  assert.match(stateRule[0], /flex-shrink:\s*0/);
+  assert.match(stateRule[0], /white-space:\s*nowrap/);
+  assert.match(mark[0], /content:\s*""/);
+  assert.match(mark[0], /background:\s*currentColor/);
+  assert.match(mark[0], /clip-path:\s*polygon\(/);
+  assert.match(css, /nav\.files\s*\{[^}]*grid-column:\s*1/);
+  assert.match(css, /nav\.files\s*\{[^}]*grid-row:\s*1\s*\/\s*span\s*2/);
+  assert.match(css, /aside\.comments\s*\{[^}]*grid-column:\s*3/);
+  assert.match(css, /aside\.comments\s*\{[^}]*grid-row:\s*1\s*\/\s*span\s*2/);
+  assert.match(css, /#editor\s*\{[^}]*grid-column:\s*2/);
+  assert.match(css, /#editor\s*\{[^}]*grid-row:\s*1\s*\/\s*span\s*2/);
+  assert.match(css, /\.ticket-form\s*\{[^}]*grid-column:\s*2/);
+  assert.match(css, /\.ticket-form\s*\{[^}]*grid-row:\s*1/);
+  assert.match(css, /\.ticket-form:not\(\[hidden\]\)\s*\+\s*#editor\s*\{[^}]*grid-row:\s*2/);
+  assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.sheet\s*\{[^}]*display:\s*block;/);
+  assert.match(inputs[0], /background:\s*#1c1b19/);
+  assert.match(inputs[0], /border:\s*1px solid #4a463f/);
+  assert.equal(css.includes("#3a3424"), false);
+  assert.equal(/\.md-line\.md-raw\s*\{/.test(css), false);
+  assert.equal(src.includes("innerHTML"), false);
+  assert.equal(src.slice(src.indexOf("export function startPage")).includes("querySelector"), false);
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "notes", 0, transport);
+    assert.deepEqual(transport.sent.filter((message) => message.type === "tickets"), [{ type: "tickets", username: "" }]);
+    assert.equal(view.getState().doc, "notes");
+    const sheet = mounted.root.parentElement;
+    const form = byClass(sheet, "ticket-form")[0];
+    assert.equal(form.hidden, true);
+    assert.equal(sheet.childNodes.indexOf(form), sheet.childNodes.indexOf(mounted.root) - 1);
+    const label = byClass(mounted.nav, "md-ticket-label")[0];
+    const tree = byClass(mounted.nav, "file-tree")[0];
+    const tickets = byClass(mounted.nav, "ticket-tree")[0];
+    assert.equal(label.textContent, "Tickets");
+    assert.ok(mounted.nav.childNodes.indexOf(tree) < mounted.nav.childNodes.indexOf(label));
+    assert.ok(mounted.nav.childNodes.indexOf(label) < mounted.nav.childNodes.indexOf(tickets));
+    const showClosed = byClass(mounted.nav, "md-show-closed")[0];
+    const showLabel = byClass(mounted.nav, "md-show-closed-label")[0];
+    assert.equal(showClosed.type, "checkbox");
+    assert.equal(showClosed.checked, false);
+    assert.equal(showLabel.textContent, "show closed");
+    assert.equal(showLabel.htmlFor, "md-show-closed");
+    const plus = byClass(mounted.nav, "md-new-ticket")[0];
+    assert.equal(plus.textContent, "+");
+    assert.equal(plus.type, "button");
+    const list = [
+      ticketFixture("cccccccc", "Cedar", "triaged", T2),
+      ticketFixture("aaaaaaaa", "Alpha", "new", T0),
+      ticketFixture("dddddddd", "Delta", "in progress", T0),
+      ticketFixture("bbbbbbbb", "Bravo", "new", T1, "aaaaaaaa"),
+      ticketFixture("eeeeeeee", "Echo", "new", T3, "aaaaaaaa"),
+    ];
+    transport.deliver({ type: "tickets", tickets: list });
+    assert.equal(transport.sent.filter((message) => message.type === "tickets").length, 1);
+    assert.equal(view.getState().doc, "notes");
+    assert.deepEqual(rootTicketIds(mounted.nav), ["aaaaaaaa", "dddddddd", "cccccccc"]);
+    for (const ticket of list) {
+      const row = rowOf(mounted.nav, ticket.id);
+      if (ticket.state === "new" && ticket.parent === "aaaaaaaa") {
+        assert.equal(row, undefined);
+        continue;
+      }
+      assert.equal(row.textContent.includes(ticket.title), true);
+      assert.equal(row.textContent.includes(ticket.state), true);
+      assert.equal(row.textContent.includes(ticket.id), false);
+    }
+    const alpha = ticketNode(mounted.nav, "aaaaaaaa");
+    const expand = byClass(alpha, "md-ticket-expand")[0];
+    assert.equal(expand.textContent, "");
+    assert.equal(expand.tagName, "BUTTON");
+    assert.equal(byClass(ticketNode(mounted.nav, "dddddddd"), "md-ticket-expand").length, 0);
+    const before = transport.sent.length;
+    expand.listeners.click({ preventDefault() {}, stopPropagation() {} });
+    assert.equal(transport.sent.length, before);
+    const nest = byClass(ticketNode(mounted.nav, "aaaaaaaa"), "md-ticket-children")[0];
+    assert.deepEqual(
+      nest.childNodes.filter((node) => node.classList.contains("md-ticket-node")).map((node) => node.dataset.id),
+      ["bbbbbbbb", "eeeeeeee"],
+    );
+    assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("bbbbbbbb"), false);
+    assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("Bravo"), true);
+    assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("new"), true);
+    const open = byClass(ticketNode(mounted.nav, "bbbbbbbb"), "md-ticket").find((node) => node.tagName === "BUTTON");
+    open.listeners.click({ preventDefault() {} });
+    assert.deepEqual(transport.sent.at(-1), { type: "open", path: "tickets/bbbbbbbb.md", rev: 0, username: "" });
+    view.destroy();
+    assert.equal(plus.listeners.click, undefined);
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("T-ticket-closed", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0);
+    const bravo = ticketFixture("bbbbbbbb", "Bravo", "closed", T1);
+    const cedar = ticketFixture("cccccccc", "Cedar", "closed", T2, "aaaaaaaa");
+    const delta = ticketFixture("dddddddd", "Delta", "closed", T3, "", [], "Ada");
+    transport.deliver({ type: "tickets", tickets: [cedar, alpha, bravo, delta] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/dddddddd.md",
+      rev: 2,
+      text: "open closed\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: delta,
+    });
+    assert.equal(ticketNode(mounted.nav, "bbbbbbbb"), undefined);
+    assert.equal(ticketNode(mounted.nav, "cccccccc"), undefined);
+    assert.ok(ticketNode(mounted.nav, "dddddddd"));
+    assert.equal(rowOf(mounted.nav, "dddddddd").textContent.includes("Delta"), true);
+    assert.equal(rowOf(mounted.nav, "dddddddd").textContent.includes("closed"), true);
+    assert.equal(byClass(ticketNode(mounted.nav, "aaaaaaaa"), "md-ticket-expand").length, 0);
+    const box = byClass(mounted.nav, "md-show-closed")[0];
+    const before = transport.sent.length;
+    box.checked = true;
+    box.listeners.change();
+    assert.equal(transport.sent.length, before);
+    assert.ok(ticketNode(mounted.nav, "bbbbbbbb"));
+    assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("bbbbbbbb"), false);
+    assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("Bravo"), true);
+    const expand = byClass(ticketNode(mounted.nav, "aaaaaaaa"), "md-ticket-expand")[0];
+    assert.equal(expand.textContent, "");
+    expand.listeners.click({ preventDefault() {} });
+    assert.equal(ticketNode(mounted.nav, "cccccccc").parentElement.classList.contains("md-ticket-children"), true);
+    assert.equal(ticketNode(mounted.nav, "aaaaaaaa").parentElement.classList.contains("ticket-tree"), true);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("T-ticket-orphan", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "closed", T0);
+    const bravo = ticketFixture("bbbbbbbb", "Bravo", "new", T1, "aaaaaaaa");
+    transport.deliver({ type: "tickets", tickets: [alpha, bravo] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/bbbbbbbb.md",
+      rev: 1,
+      text: "child\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: bravo,
+    });
+    assert.equal(ticketNode(mounted.nav, "aaaaaaaa"), undefined);
+    assert.equal(ticketNode(mounted.nav, "bbbbbbbb").parentElement.classList.contains("ticket-tree"), true);
+    const box = byClass(mounted.nav, "md-show-closed")[0];
+    box.checked = true;
+    box.listeners.change();
+    assert.equal(ticketNode(mounted.nav, "aaaaaaaa").parentElement.classList.contains("ticket-tree"), true);
+    assert.equal(ticketNode(mounted.nav, "bbbbbbbb").parentElement.classList.contains("md-ticket-children"), true);
+    assert.equal(byClass(ticketNode(mounted.nav, "aaaaaaaa"), "md-ticket-expand")[0].textContent, "");
+    box.checked = false;
+    box.listeners.change();
+    assert.equal(ticketNode(mounted.nav, "aaaaaaaa"), undefined);
+    assert.equal(ticketNode(mounted.nav, "bbbbbbbb").parentElement.classList.contains("ticket-tree"), true);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("T-ticket-create", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const button = byClass(mounted.nav, "md-new-ticket")[0];
+    const field = byClass(mounted.nav, "md-new-ticket-name")[0];
+    assert.equal(field.hidden, true);
+    button.listeners.click({ preventDefault() {} });
+    assert.equal(field.hidden, false);
+    assert.equal(field.focused, true);
+    field.value = "  File the bug  ";
+    field.listeners.keydown({ key: "Enter", preventDefault() {} });
+    const created = transport.sent.at(-1);
+    assert.equal(created.type, "ticket.create");
+    assert.equal(created.title, "File the bug");
+    assert.equal("path" in created, false);
+    assert.equal(created.rev, undefined);
+    assert.equal(field.hidden, true);
+    button.listeners.click({ preventDefault() {} });
+    field.value = "   ";
+    const afterBlank = transport.sent.length;
+    field.listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.equal(transport.sent.length, afterBlank);
+    assert.equal(field.hidden, false);
+    assert.equal(field.value, "   ");
+    field.listeners.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(transport.sent.length, afterBlank);
+    assert.equal(field.hidden, true);
+    assert.equal(field.value, "");
+    view.destroy();
+    assert.equal(button.listeners.click, undefined);
+    const again = createEditor(mounted.root, "x", 0, transport);
+    assert.equal(byClass(mounted.nav, "md-new-ticket").length, 1);
+    again.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("T-ticket-title", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0);
+    transport.deliver({ type: "tickets", tickets: [alpha] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 4,
+      text: "hello\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    assert.equal(form.hidden, false);
+    const heading = () => byClass(form, "md-ticket-heading")[0];
+    const input = () => byClass(form, "md-ticket-title-input")[0];
+    assert.equal(heading().textContent, "Alpha");
+    assert.equal(input().hidden, true);
+    const sets = () => transport.sent.filter((message) => message.type === "ticket.set");
+    heading().listeners.click();
+    assert.equal(input().hidden, false);
+    input().value = "Nope";
+    input().listeners.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(sets().length, 0);
+    assert.equal(heading().textContent, "Alpha");
+    assert.equal(input().hidden, true);
+    heading().listeners.click();
+    input().value = "bad\ttitle";
+    input().listeners.blur();
+    assert.equal(sets().length, 0);
+    assert.equal(heading().textContent, "Alpha");
+    heading().listeners.click();
+    input().value = "   ";
+    input().listeners.blur();
+    assert.equal(sets().length, 0);
+    assert.equal(heading().textContent, "Alpha");
+    heading().listeners.click();
+    input().value = "  Alpha  ";
+    input().listeners.blur();
+    assert.equal(sets().length, 0);
+    heading().listeners.click();
+    input().value = "  Beta  ";
+    input().listeners.blur();
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 4,
+      title: "Beta",
+      username: "",
+    });
+    assert.equal(sets().length, 1);
+    assert.equal(view.getState().doc, "hello\n");
+    assert.equal(mounted.root.textContent.includes("hello"), true);
+    heading().listeners.click();
+    input().value = "Beta";
+    input().listeners.blur();
+    assert.equal(sets().length, 1);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("T-ticket-fields", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0, "bbbbbbbb", ["bbbbbbbb"]);
+    const bravo = ticketFixture("bbbbbbbb", "Bravo", "triaged", T1);
+    const cedar = ticketFixture("cccccccc", "Cedar", "closed", T2);
+    transport.deliver({ type: "tickets", tickets: [cedar, bravo, alpha] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      text: "hello\nnext\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    const state = () => byClass(form, "md-ticket-state")[0];
+    const parent = () => byClass(form, "md-ticket-parent")[0];
+    const depend = (id) => byClass(form, "md-ticket-depend").find((node) => node.value === id);
+    assert.deepEqual(
+      state().childNodes.map((option) => option.textContent),
+      ["new", "triaged", "in progress", "closed"],
+    );
+    assert.deepEqual(
+      state().childNodes.map((option) => option.value),
+      ["new", "triaged", "in progress", "closed"],
+    );
+    assert.equal(parent().childNodes[0].value, "");
+    assert.equal(parent().childNodes[0].textContent, "none");
+    assert.deepEqual(
+      parent().childNodes.slice(1).map((option) => option.value),
+      ["bbbbbbbb", "cccccccc"],
+    );
+    assert.equal(depend("bbbbbbbb").checked, true);
+    assert.equal(depend("cccccccc").checked, false);
+    assert.equal(byClass(form, "md-ticket-reporter")[0].textContent, "Ada");
+    assert.equal(byClass(form, "md-ticket-reporter")[0].tagName, "DIV");
+    assert.equal(byClass(form, "md-ticket-created")[0].textContent, T0);
+    const sets = () => transport.sent.filter((message) => message.type === "ticket.set");
+    state().value = "triaged";
+    state().listeners.change();
+    assert.equal(sets().length, 1);
+    const text = mounted.root.childNodes[1].childNodes[0].childNodes[0];
+    assert.equal(text.textContent, "next");
+    document.caretPositionFromPoint = () => ({ offsetNode: text, offset: 1 });
+    mounted.listeners.click({ target: text, clientX: 1, clientY: 1, preventDefault() {} });
+    assert.equal(view.getState().cursor, 7);
+    const beforeReject = transport.sent.length;
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(transport.sent.length, beforeReject);
+    assert.equal(view.getState().cursor, 7);
+    assert.equal(view.getState().doc, "hello\nnext\n");
+    assert.equal(state().value, "new");
+    assert.equal(parent().value, "bbbbbbbb");
+    assert.equal(depend("cccccccc").checked, false);
+    state().value = "new";
+    state().listeners.change();
+    assert.equal(sets().length, 1);
+    state().value = "in progress";
+    state().listeners.change();
+    parent().value = "";
+    parent().listeners.change();
+    depend("cccccccc").checked = true;
+    depend("cccccccc").listeners.change();
+    assert.deepEqual(sets().slice(1), [
+      { type: "ticket.set", path: "tickets/aaaaaaaa.md", rev: 6, state: "in progress", username: "" },
+      { type: "ticket.set", path: "tickets/aaaaaaaa.md", rev: 6, parent: "", username: "" },
+      { type: "ticket.set", path: "tickets/aaaaaaaa.md", rev: 6, depends: ["bbbbbbbb", "cccccccc"], username: "" },
+    ]);
+    assert.equal(sets().every((message) => message.reporter === undefined && message.created === undefined), true);
+    transport.deliver({ type: "error", status: 400 });
+    assert.equal(view.getState().cursor, 7);
+    assert.equal(state().value, "new");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("T-ticket-notice", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0);
+    transport.deliver({ type: "tickets", tickets: [alpha] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 3,
+      text: "Body line\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    transport.deliver({ type: "doc", rev: 4, text: "Body line!\n", actor: "Bea" });
+    assert.equal(view.getState().doc, "Body line!\n");
+    assert.equal(byClass(form, "md-ticket-heading")[0].textContent, "Alpha");
+    assert.equal(byClass(form, "md-ticket-reporter")[0].textContent, "Ada");
+    assert.equal(byClass(form, "md-ticket-created")[0].textContent, T0);
+    transport.deliver({
+      type: "ticket",
+      path: "tickets/aaaaaaaa.md",
+      rev: 8,
+      title: "Alpha two",
+      state: "triaged",
+      parent: "",
+      depends: [],
+      reporter: "Bea",
+      created: T2,
+    });
+    assert.equal(view.getState().doc, "Body line!\n");
+    assert.equal(mounted.root.textContent.includes("Body line!"), true);
+    assert.equal(byClass(form, "md-ticket-heading")[0].textContent, "Alpha two");
+    assert.equal(byClass(form, "md-ticket-reporter")[0].textContent, "Bea");
+    assert.equal(byClass(form, "md-ticket-created")[0].textContent, T2);
+    assert.equal(byClass(form, "md-ticket-state")[0].value, "triaged");
+    const state = byClass(form, "md-ticket-state")[0];
+    state.value = "closed";
+    state.listeners.change();
+    assert.deepEqual(transport.sent.filter((message) => message.type === "ticket.set").at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 8,
+      state: "closed",
+      username: "",
+    });
+    transport.deliver({ type: "file", path: "notes.md", rev: 1, text: "plain\n", locks: [] });
+    assert.equal(form.hidden, true);
+    assert.equal(view.getState().doc, "plain\n");
+    assert.equal(byClass(form, "md-ticket-heading").length, 0);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("T-ticket-gone", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const alpha = ticketFixture("aaaaaaaa", "Keep me", "new", T0);
+    const bravo = ticketFixture("bbbbbbbb", "Stay", "new", T1);
+    transport.deliver({ type: "tickets", tickets: [alpha, bravo] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 2,
+      text: "Keep me\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    assert.equal(form.hidden, false);
+    assert.equal(view.getState().doc, "Keep me\n");
+    const before = transport.sent.length;
+    transport.deliver({ type: "tickets", tickets: [bravo] });
+    assert.equal(transport.sent.length, before);
+    assert.equal(form.hidden, true);
+    assert.equal(byClass(form, "md-ticket-heading").length, 0);
+    assert.equal(view.getState().doc, "");
+    assert.equal(mounted.root.textContent.includes("Keep me"), false);
+    assert.equal(ticketNode(mounted.nav, "aaaaaaaa"), undefined);
+    assert.ok(ticketNode(mounted.nav, "bbbbbbbb"));
+    mounted.listeners.beforeinput({
+      inputType: "insertText",
+      data: "Z",
+      preventDefault() {},
+    });
+    assert.equal(transport.sent.length, before);
+    assert.equal(view.getState().doc, "");
     view.destroy();
   } finally {
     mounted.restore();

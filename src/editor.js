@@ -26,6 +26,7 @@ import {
   lineIndexAt,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
+import { TICKET_STATES } from "./ticket.js";
 
 export {
   sampleDocument,
@@ -98,7 +99,141 @@ function insertAfter(parent, after, node) {
   parent.appendChild(node);
 }
 
+function placeNodeBefore(parent, node, before) {
+  if (!parent || !node) return;
+  if (!before) {
+    parent.appendChild(node);
+    return;
+  }
+  if (typeof parent.insertBefore === "function") {
+    parent.insertBefore(node, before);
+    return;
+  }
+  const children = parent.childNodes || [];
+  const index = typeof children.indexOf === "function" ? children.indexOf(before) : -1;
+  if (index >= 0 && typeof children.splice === "function") {
+    node.parentElement = parent;
+    children.splice(index, 0, node);
+    return;
+  }
+  parent.appendChild(node);
+}
+
+function findClassChild(parent, className) {
+  if (!parent || !parent.childNodes) return null;
+  for (const child of parent.childNodes) {
+    if (child && child.classList && child.classList.contains(className)) return child;
+  }
+  return null;
+}
+
+function hideElement(el) {
+  if (!el) return;
+  el.hidden = true;
+  if (typeof el.setAttribute === "function") el.setAttribute("hidden", "");
+}
+
+function showElement(el) {
+  if (!el) return;
+  el.hidden = false;
+  if (typeof el.removeAttribute === "function") el.removeAttribute("hidden");
+}
+
+function validTicketTitle(value) {
+  if (typeof value !== "string") return null;
+  const title = value.trim();
+  if (title.length < 1 || title.length > 200) return null;
+  if (title.includes("\r") || title.includes("\n") || title.includes("\t")) return null;
+  return title;
+}
+
+function normalizeTicket(ticket) {
+  if (!ticket || typeof ticket !== "object") return null;
+  const id = typeof ticket.id === "string" ? ticket.id : "";
+  if (!id) return null;
+  const depends = [];
+  if (Array.isArray(ticket.depends)) {
+    for (const item of ticket.depends) if (typeof item === "string") depends.push(item);
+  }
+  return {
+    id,
+    title: typeof ticket.title === "string" ? ticket.title : "",
+    state: typeof ticket.state === "string" ? ticket.state : "",
+    parent: typeof ticket.parent === "string" ? ticket.parent : "",
+    depends,
+    reporter: typeof ticket.reporter === "string" ? ticket.reporter : "",
+    created: typeof ticket.created === "string" ? ticket.created : "",
+  };
+}
+
+function compareTickets(a, b) {
+  if (a.created < b.created) return -1;
+  if (a.created > b.created) return 1;
+  if (a.id < b.id) return -1;
+  if (a.id > b.id) return 1;
+  return 0;
+}
+
+function sameSet(a, b) {
+  const left = [...(a || [])].sort();
+  const right = [...(b || [])].sort();
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) if (left[i] !== right[i]) return false;
+  return true;
+}
+
+// A parent cycle would recurse forever, so a node already on the chain is not a child.
+function chainReaches(start, id, byId) {
+  const seen = new Set();
+  let current = start;
+  while (current && !seen.has(current.id)) {
+    if (current.id === id) return true;
+    seen.add(current.id);
+    current = current.parent ? byId.get(current.parent) : null;
+  }
+  return false;
+}
+
+function forestFrom(list) {
+  const byId = new Map();
+  for (const ticket of list) byId.set(ticket.id, ticket);
+  const children = new Map();
+  const roots = [];
+  for (const ticket of list) {
+    const parent = ticket.parent && ticket.parent !== ticket.id ? byId.get(ticket.parent) : null;
+    // A closed parent left out of the list is not an anchor. The child is a root.
+    if (parent && !chainReaches(parent, ticket.id, byId)) {
+      let kids = children.get(parent.id);
+      if (!kids) {
+        kids = [];
+        children.set(parent.id, kids);
+      }
+      kids.push(ticket);
+    } else {
+      roots.push(ticket);
+    }
+  }
+  roots.sort(compareTickets);
+  for (const kids of children.values()) kids.sort(compareTickets);
+  return { roots, children };
+}
+
+function checkedDepends(container) {
+  const ids = [];
+  const walk = (node) => {
+    if (!node || node.nodeType !== 1) return;
+    if (node.classList && node.classList.contains("md-ticket-depend") && node.checked === true) {
+      ids.push(String(node.value));
+    }
+    for (const child of node.childNodes || []) walk(child);
+  };
+  walk(container);
+  ids.sort();
+  return ids;
+}
+
 const newFileBindings = new WeakMap();
+const ticketBindings = new WeakMap();
 
 // A directory exists only when some markdown file is stored under it.
 function buildFileTree(files) {
@@ -473,6 +608,12 @@ export function createEditor(root, doc, cursor = 0, transport) {
   let openPath = "";
   let fileList = [];
   const openDirs = new Set();
+  let ticketList = [];
+  let openTicket = null;
+  let showClosed = false;
+  const expandedTickets = new Set();
+  let ticketForm = null;
+  let ticketChrome = null;
   // Create is answered by its own error or by the file from onOpen.
   // A 409 for that create is not a rejected caret grant.
   const conflictWaiters = [];
@@ -530,7 +671,7 @@ export function createEditor(root, doc, cursor = 0, transport) {
     return typeof active.username === "string" ? active.username : "";
   }
 
-  function emit(message) {
+  function emit(message, track = true) {
     const framed = { ...message, username: selfName() };
     const type = framed.type;
     if (type === "lock" || type === "edit" || type === "undo" || type === "redo" || type === "open") {
@@ -541,9 +682,13 @@ export function createEditor(root, doc, cursor = 0, transport) {
       conflictWaiters.push("create");
       fileWaiters.push("create");
     }
-    if (type === "lock") conflictWaiters.push("lock");
+    // A snapshot restates a caret it already stored. Waiting on that lock
+    // would stand in front of a later ticket.set and turn its 409 into a caret restore.
+    if (type === "lock" && track) conflictWaiters.push("lock");
     if (type === "edit" || type === "undo" || type === "redo") conflictWaiters.push("edit");
     if (type === "open") fileWaiters.push("open");
+    // The caller puts rev on ticket.set. A later 400 or 409 is a rejected field, not a lost caret.
+    if (type === "ticket.set") conflictWaiters.push("ticket");
     active.send(framed);
   }
 
@@ -1436,7 +1581,7 @@ export function createEditor(root, doc, cursor = 0, transport) {
     if (!tree) {
       tree = document.createElement("div");
       tree.className = "file-tree";
-      if (typeof nav.appendChild === "function") nav.appendChild(tree);
+      placeNodeBefore(nav, tree, findClassChild(nav, "md-ticket-label"));
     }
     if (!tree || typeof tree.replaceChildren !== "function") return;
     if (seed) seedOpen(openPath);
@@ -1519,7 +1664,7 @@ export function createEditor(root, doc, cursor = 0, transport) {
     render();
     if (!live) return;
     if (message.type === "file" || !sameLines(lines, previousLines)) {
-      emit({ type: "lock", anchor: state.anchor, cursor: state.cursor });
+      emit({ type: "lock", anchor: state.anchor, cursor: state.cursor }, false);
     }
   }
 
@@ -1535,6 +1680,14 @@ export function createEditor(root, doc, cursor = 0, transport) {
     }
     if (message.type === "docs") {
       renderFileTree(message.files, true);
+      return;
+    }
+    if (message.type === "tickets") {
+      applyTicketList(message);
+      return;
+    }
+    if (message.type === "ticket") {
+      applyTicketNotice(message);
       return;
     }
     if (message.type === "locks") {
@@ -1558,6 +1711,20 @@ export function createEditor(root, doc, cursor = 0, transport) {
       return;
     }
     if (message.type === "error") {
+      if (conflictWaiters[0] === "ticket") {
+        conflictWaiters.shift();
+        revertTicketForm();
+        return;
+      }
+      // 400 does not answer a lock or an edit. A ticket.set behind them still reverts.
+      if (message.status === 400) {
+        const ticketAt = conflictWaiters.indexOf("ticket");
+        if (ticketAt > 0 && conflictWaiters.slice(0, ticketAt).every((waiter) => waiter === "lock" || waiter === "edit")) {
+          conflictWaiters.splice(ticketAt, 1);
+          revertTicketForm();
+          return;
+        }
+      }
       const answersCreate = conflictWaiters[0] === "create" && (message.status === 400 || message.status === 404 || isConflict(message));
       if (answersCreate) {
         conflictWaiters.shift();
@@ -1608,6 +1775,7 @@ export function createEditor(root, doc, cursor = 0, transport) {
       }
     }
     if (message.type === "doc" || message.type === "file") applySnapshot(message);
+    if (message.type === "file") syncFileTicket(message);
     if (ownEdit) flushPendingEdit();
   }
 
@@ -1903,6 +2071,497 @@ export function createEditor(root, doc, cursor = 0, transport) {
     window.addEventListener("resize", () => layoutComments(), { signal: ac.signal });
   }
 
+  function visibleTicketList() {
+    const openId = openTicket ? openTicket.id : "";
+    if (showClosed) return ticketList.slice();
+    return ticketList.filter((ticket) => ticket.state !== "closed" || ticket.id === openId);
+  }
+
+  function seedTicketAncestors(id) {
+    const byId = new Map();
+    for (const ticket of ticketList) byId.set(ticket.id, ticket);
+    const seen = new Set();
+    let current = byId.get(id);
+    while (current && current.parent && !seen.has(current.id)) {
+      seen.add(current.id);
+      const parent = byId.get(current.parent);
+      if (!parent || parent.id === current.id) break;
+      expandedTickets.add(parent.id);
+      current = parent;
+    }
+  }
+
+  function renderTicketNode(ticket, children, seen) {
+    if (seen.has(ticket.id)) return null;
+    seen.add(ticket.id);
+    const kids = children.get(ticket.id) || [];
+    const node = document.createElement("div");
+    node.className = "md-ticket-node";
+    node.dataset.id = ticket.id;
+    const row = document.createElement("div");
+    row.className = "md-ticket-row";
+    if (kids.length > 0) {
+      const expand = document.createElement("button");
+      expand.type = "button";
+      expand.className = "md-ticket-expand";
+      if (typeof expand.setAttribute === "function") expand.setAttribute("type", "button");
+      if (expandedTickets.has(ticket.id)) expand.classList.add("md-ticket-expanded");
+      expand.addEventListener("click", (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+        if (expandedTickets.has(ticket.id)) expandedTickets.delete(ticket.id);
+        else expandedTickets.add(ticket.id);
+        renderTicketTree();
+      });
+      row.appendChild(expand);
+    }
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "md-ticket";
+    if (typeof open.setAttribute === "function") open.setAttribute("type", "button");
+    open.dataset.path = `tickets/${ticket.id}.md`;
+    const title = document.createElement("span");
+    title.className = "md-ticket-title";
+    title.textContent = ticket.title;
+    const state = document.createElement("span");
+    state.className = "md-ticket-state";
+    state.textContent = ticket.state;
+    open.appendChild(title);
+    open.appendChild(document.createTextNode(" "));
+    open.appendChild(state);
+    open.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      const path = `tickets/${ticket.id}.md`;
+      openPath = path;
+      seedTicketAncestors(ticket.id);
+      waitingForFile = true;
+      emit({ type: "open", path });
+    });
+    row.appendChild(open);
+    node.appendChild(row);
+    if (kids.length > 0 && expandedTickets.has(ticket.id)) {
+      const nest = document.createElement("div");
+      nest.className = "md-ticket-children";
+      for (const kid of kids) {
+        const child = renderTicketNode(kid, children, seen);
+        if (child) nest.appendChild(child);
+      }
+      node.appendChild(nest);
+    }
+    return node;
+  }
+
+  function renderTicketTree() {
+    const tree = findClassChild(filesNav(), "ticket-tree");
+    if (!tree || typeof tree.replaceChildren !== "function") return;
+    const forest = forestFrom(visibleTicketList());
+    const seen = new Set();
+    const nodes = [];
+    for (const ticket of forest.roots) {
+      const node = renderTicketNode(ticket, forest.children, seen);
+      if (node) nodes.push(node);
+    }
+    tree.replaceChildren(...nodes);
+  }
+
+  function sendTicketSet(fields) {
+    if (!openTicket || !openPath) return;
+    if (Object.prototype.hasOwnProperty.call(fields, "title")) {
+      if (fields.title === openTicket.title) return;
+    } else if (Object.prototype.hasOwnProperty.call(fields, "state")) {
+      if (fields.state === openTicket.state) return;
+    } else if (Object.prototype.hasOwnProperty.call(fields, "parent")) {
+      if ((fields.parent || "") === (openTicket.parent || "")) return;
+    } else if (Object.prototype.hasOwnProperty.call(fields, "depends")) {
+      if (sameSet(fields.depends, openTicket.depends)) return;
+    } else {
+      return;
+    }
+    emit({ type: "ticket.set", path: openPath, rev, ...fields });
+  }
+
+  function renderTicketForm() {
+    const form = ticketForm;
+    if (!form || !openTicket || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    const ticket = openTicket;
+    showElement(form);
+    const others = ticketList.filter((item) => item.id !== ticket.id).sort(compareTickets);
+    const heading = document.createElement("div");
+    heading.className = "md-ticket-heading";
+    heading.textContent = ticket.title;
+    const titleInput = document.createElement("input");
+    titleInput.type = "text";
+    titleInput.className = "md-ticket-title-input";
+    titleInput.value = ticket.title;
+    if (typeof titleInput.setAttribute === "function") titleInput.setAttribute("type", "text");
+    hideElement(titleInput);
+    let pendingTitle = null;
+    let skipTitleBlur = false;
+
+    function showHeading(text) {
+      heading.textContent = text;
+      showElement(heading);
+      hideElement(titleInput);
+    }
+
+    function restoreTitle() {
+      pendingTitle = null;
+      titleInput.value = ticket.title;
+      showHeading(ticket.title);
+    }
+
+    function commitTitle() {
+      if (titleInput.hidden || !openTicket) return;
+      const next = validTicketTitle(titleInput.value);
+      if (next == null) {
+        restoreTitle();
+        return;
+      }
+      if (next === openTicket.title || next === pendingTitle) {
+        showHeading(next === openTicket.title ? openTicket.title : next);
+        titleInput.value = heading.textContent;
+        return;
+      }
+      pendingTitle = next;
+      showHeading(next);
+      sendTicketSet({ title: next });
+    }
+
+    heading.addEventListener("click", () => {
+      if (!openTicket) return;
+      titleInput.value = heading.textContent;
+      hideElement(heading);
+      showElement(titleInput);
+      if (typeof titleInput.focus === "function") titleInput.focus();
+    });
+    titleInput.addEventListener("keydown", (event) => {
+      if (!event) return;
+      if (event.key === "Escape") {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        skipTitleBlur = true;
+        restoreTitle();
+        return;
+      }
+      if (event.key !== "Enter") return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      commitTitle();
+    });
+    titleInput.addEventListener("blur", () => {
+      if (skipTitleBlur) {
+        skipTitleBlur = false;
+        return;
+      }
+      commitTitle();
+    });
+
+    const stateLabel = document.createElement("label");
+    stateLabel.appendChild(document.createTextNode("State"));
+    const stateSelect = document.createElement("select");
+    stateSelect.className = "md-ticket-state";
+    for (const state of TICKET_STATES) {
+      const option = document.createElement("option");
+      option.value = state;
+      option.textContent = state;
+      stateSelect.appendChild(option);
+    }
+    stateSelect.value = ticket.state;
+    stateSelect.addEventListener("change", () => {
+      sendTicketSet({ state: stateSelect.value });
+    });
+    stateLabel.appendChild(stateSelect);
+
+    const parentLabel = document.createElement("label");
+    parentLabel.appendChild(document.createTextNode("Parent"));
+    const parentSelect = document.createElement("select");
+    parentSelect.className = "md-ticket-parent";
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "none";
+    parentSelect.appendChild(none);
+    for (const other of others) {
+      const option = document.createElement("option");
+      option.value = other.id;
+      option.textContent = other.title;
+      parentSelect.appendChild(option);
+    }
+    parentSelect.value = ticket.parent || "";
+    parentSelect.addEventListener("change", () => {
+      sendTicketSet({ parent: parentSelect.value || "" });
+    });
+    parentLabel.appendChild(parentSelect);
+
+    const depends = document.createElement("div");
+    depends.className = "md-ticket-depends";
+    const dependsName = document.createElement("div");
+    dependsName.textContent = "Depends";
+    depends.appendChild(dependsName);
+    const selected = new Set(ticket.depends || []);
+    for (const other of others) {
+      const label = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.className = "md-ticket-depend";
+      box.value = other.id;
+      box.checked = selected.has(other.id);
+      if (typeof box.setAttribute === "function") box.setAttribute("type", "checkbox");
+      label.appendChild(box);
+      label.appendChild(document.createTextNode(other.title));
+      depends.appendChild(label);
+      box.addEventListener("change", () => {
+        sendTicketSet({ depends: checkedDepends(depends) });
+      });
+    }
+
+    const reporterName = document.createElement("div");
+    reporterName.textContent = "Reporter";
+    const reporter = document.createElement("div");
+    reporter.className = "md-ticket-reporter";
+    reporter.textContent = ticket.reporter;
+    const createdName = document.createElement("div");
+    createdName.textContent = "Created";
+    const created = document.createElement("div");
+    created.className = "md-ticket-created";
+    created.textContent = ticket.created;
+
+    form.replaceChildren(
+      heading,
+      titleInput,
+      stateLabel,
+      parentLabel,
+      depends,
+      reporterName,
+      reporter,
+      createdName,
+      created,
+    );
+  }
+
+  function revertTicketForm() {
+    if (!openTicket) return;
+    renderTicketForm();
+  }
+
+  function settleTicketSet() {
+    const index = conflictWaiters.indexOf("ticket");
+    if (index >= 0) conflictWaiters.splice(index, 1);
+  }
+
+  function dismissTicketForm() {
+    openTicket = null;
+    if (!ticketForm) return;
+    hideElement(ticketForm);
+    if (typeof ticketForm.replaceChildren === "function") ticketForm.replaceChildren();
+  }
+
+  function clearOpenTicket() {
+    // The open ticket left the broadcast. Drop the mirror and do not ask for it again.
+    dismissTicketForm();
+    dropPendingEdits();
+    expectNewComment = false;
+    commentFocus = null;
+    live = false;
+    waitingForFile = true;
+    openPath = "";
+    state = createState("");
+    sentLines = lineSet(state.anchor, state.cursor);
+    outstandingLock = null;
+    granted = { anchor: state.anchor, cursor: state.cursor };
+    render();
+    renderTicketTree();
+  }
+
+  function applyTicketList(message) {
+    const incoming = Array.isArray(message.tickets) ? message.tickets : [];
+    const next = [];
+    for (const item of incoming) {
+      const ticket = normalizeTicket(item);
+      if (ticket) next.push(ticket);
+    }
+    ticketList = next;
+    if (openTicket && !ticketList.some((ticket) => ticket.id === openTicket.id)) {
+      clearOpenTicket();
+      return;
+    }
+    if (openTicket) seedTicketAncestors(openTicket.id);
+    renderTicketTree();
+  }
+
+  function applyTicketNotice(message) {
+    if (!openTicket || typeof message.path !== "string" || message.path !== openPath) return;
+    const nextRev = Number(message.rev);
+    if (Number.isFinite(nextRev)) rev = nextRev;
+    const next = normalizeTicket({
+      id: openTicket.id,
+      title: message.title,
+      state: message.state,
+      parent: message.parent,
+      depends: message.depends,
+      reporter: message.reporter,
+      created: message.created,
+    });
+    if (!next) return;
+    openTicket = next;
+    const index = ticketList.findIndex((ticket) => ticket.id === next.id);
+    if (index >= 0) ticketList[index] = { ...ticketList[index], ...next };
+    settleTicketSet();
+    renderTicketForm();
+    renderTicketTree();
+  }
+
+  function syncFileTicket(message) {
+    if (message.ticket && typeof message.ticket === "object") {
+      const next = normalizeTicket(message.ticket);
+      if (next) {
+        openTicket = next;
+        seedTicketAncestors(next.id);
+        renderTicketForm();
+        renderTicketTree();
+        return;
+      }
+    }
+    const had = openTicket != null;
+    dismissTicketForm();
+    if (had) renderTicketTree();
+  }
+
+  function ensureTicketForm() {
+    const parent = root && root.parentElement;
+    if (!parent || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    let form = findClassChild(parent, "ticket-form");
+    if (!form) {
+      form = document.createElement("div");
+      form.className = "ticket-form";
+      placeNodeBefore(parent, form, root);
+    }
+    hideElement(form);
+    if (typeof form.replaceChildren === "function") form.replaceChildren();
+    ticketForm = form;
+  }
+
+  function unbindTickets() {
+    if (ticketChrome) {
+      const binding = ticketBindings.get(ticketChrome.button);
+      if (binding && binding.onClick === ticketChrome.onClick) {
+        if (typeof binding.button.removeEventListener === "function") {
+          binding.button.removeEventListener("click", binding.onClick);
+        }
+        if (binding.field && typeof binding.field.removeEventListener === "function") {
+          binding.field.removeEventListener("keydown", binding.onKey);
+        }
+        if (binding.checkbox && typeof binding.checkbox.removeEventListener === "function") {
+          binding.checkbox.removeEventListener("change", binding.onToggle);
+        }
+        ticketBindings.delete(binding.button);
+      }
+      ticketChrome = null;
+    }
+    if (ticketForm) {
+      hideElement(ticketForm);
+      if (typeof ticketForm.replaceChildren === "function") ticketForm.replaceChildren();
+    }
+    const tree = findClassChild(filesNav(), "ticket-tree");
+    if (tree && typeof tree.replaceChildren === "function") tree.replaceChildren();
+  }
+
+  function bindTicketChrome(nav) {
+    if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    let label = findClassChild(nav, "md-ticket-label");
+    if (!label) {
+      label = document.createElement("div");
+      label.className = "md-ticket-label";
+      label.textContent = "Tickets";
+      nav.appendChild(label);
+    }
+    let checkbox = findClassChild(nav, "md-show-closed");
+    if (!checkbox) {
+      checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "md-show-closed";
+      checkbox.id = "md-show-closed";
+      if (typeof checkbox.setAttribute === "function") {
+        checkbox.setAttribute("type", "checkbox");
+        checkbox.setAttribute("id", "md-show-closed");
+      }
+      nav.appendChild(checkbox);
+    }
+    checkbox.checked = showClosed;
+    let closedLabel = findClassChild(nav, "md-show-closed-label");
+    if (!closedLabel) {
+      closedLabel = document.createElement("label");
+      closedLabel.className = "md-show-closed-label";
+      closedLabel.htmlFor = "md-show-closed";
+      if (typeof closedLabel.setAttribute === "function") closedLabel.setAttribute("for", "md-show-closed");
+      closedLabel.textContent = "show closed";
+      nav.appendChild(closedLabel);
+    }
+    let button = findClassChild(nav, "md-new-ticket");
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = "md-new-ticket";
+      button.textContent = "+";
+      if (typeof button.setAttribute === "function") button.setAttribute("type", "button");
+      nav.appendChild(button);
+    }
+    let field = findClassChild(nav, "md-new-ticket-name");
+    if (!field) {
+      field = document.createElement("input");
+      field.type = "text";
+      field.className = "md-new-ticket-name";
+      field.value = "";
+      if (typeof field.setAttribute === "function") field.setAttribute("type", "text");
+      hideElement(field);
+      nav.appendChild(field);
+    }
+    let tree = findClassChild(nav, "ticket-tree");
+    if (!tree) {
+      tree = document.createElement("div");
+      tree.className = "ticket-tree";
+      nav.appendChild(tree);
+    }
+    const previous = ticketBindings.get(button);
+    if (previous) {
+      if (typeof button.removeEventListener === "function") button.removeEventListener("click", previous.onClick);
+      if (previous.field && typeof previous.field.removeEventListener === "function") {
+        previous.field.removeEventListener("keydown", previous.onKey);
+      }
+      if (previous.checkbox && typeof previous.checkbox.removeEventListener === "function") {
+        previous.checkbox.removeEventListener("change", previous.onToggle);
+      }
+    }
+    const onClick = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      showElement(field);
+      if (typeof field.focus === "function") field.focus();
+    };
+    const onKey = (event) => {
+      if (!event) return;
+      if (event.key === "Escape") {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        field.value = "";
+        hideElement(field);
+        return;
+      }
+      if (event.key !== "Enter") return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      const title = validTicketTitle(field.value);
+      if (title == null) return;
+      field.value = "";
+      hideElement(field);
+      emit({ type: "ticket.create", title });
+    };
+    const onToggle = () => {
+      showClosed = checkbox.checked === true;
+      renderTicketTree();
+    };
+    button.addEventListener("click", onClick);
+    field.addEventListener("keydown", onKey);
+    checkbox.addEventListener("change", onToggle);
+    const binding = { button, field, checkbox, onClick, onKey, onToggle };
+    ticketBindings.set(button, binding);
+    ticketChrome = binding;
+  }
+
   let newFileButton = null;
   let newFileOnClick = null;
 
@@ -1988,12 +2647,16 @@ export function createEditor(root, doc, cursor = 0, transport) {
   }
 
   bindNewFile(filesNav());
+  renderFileTree(fileList, false);
+  bindTicketChrome(filesNav());
+  ensureTicketForm();
 
   if (active && typeof active.subscribe === "function") {
     unsubscribe = active.subscribe((message) => onMessage(message));
   }
 
   render();
+  emit({ type: "tickets" });
 
   return {
     getState() {
@@ -2007,6 +2670,7 @@ export function createEditor(root, doc, cursor = 0, transport) {
     destroy() {
       unsubscribe();
       unbindNewFile();
+      unbindTickets();
       ac.abort();
       if (addCommentButton && addCommentButton.parentElement && typeof addCommentButton.parentElement.removeChild === "function") {
         addCommentButton.parentElement.removeChild(addCommentButton);

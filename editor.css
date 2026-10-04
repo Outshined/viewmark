@@ -33,6 +33,8 @@ nav.files {
   box-sizing: border-box;
   min-width: 0;
   padding: 1rem 0.8rem 2rem;
+  grid-column: 1;
+  grid-row: 1 / span 2;
 }
 
 nav.files input {
@@ -41,6 +43,12 @@ nav.files input {
   margin: 0 0 0.8rem;
   font: inherit;
   color: inherit;
+}
+
+nav.files input.md-show-closed {
+  width: auto;
+  margin: 0 0.35rem 0.6rem 0;
+  vertical-align: middle;
 }
 
 dialog.md-login {
@@ -81,6 +89,102 @@ dialog.md-login::backdrop {
   font: inherit;
   color: inherit;
   cursor: pointer;
+}
+
+.md-new-ticket {
+  display: inline;
+  width: auto;
+  margin: 0 0.4rem 0.8rem 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.md-ticket-label {
+  margin: 1.1rem 0 0.35rem;
+}
+
+.md-show-closed-label {
+  display: inline;
+  margin: 0 0.8rem 0.6rem 0;
+  vertical-align: middle;
+}
+
+.ticket-tree .md-ticket-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.ticket-tree button.md-ticket-expand {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+  height: 1.1em;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ticket-tree button.md-ticket-expand::before {
+  content: "";
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  background: currentColor;
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+}
+
+.ticket-tree button.md-ticket-expand.md-ticket-expanded::before {
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+
+.ticket-tree button.md-ticket {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+  width: auto;
+  margin: 0;
+  padding: 0.15rem 0.2rem;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.ticket-tree .md-ticket-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ticket-tree .md-ticket-state {
+  flex: none;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.ticket-tree .md-ticket-children {
+  margin-left: 0.8rem;
 }
 
 .file-tree button {
@@ -136,6 +240,72 @@ aside.comments {
   position: relative;
   min-width: 0;
   box-sizing: border-box;
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+
+#editor {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-width: 0;
+}
+
+.ticket-form {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 1rem 1.4rem 0.4rem;
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.ticket-form[hidden] {
+  display: none;
+}
+
+.ticket-form:not([hidden]) + #editor {
+  grid-row: 2;
+}
+
+.ticket-form input,
+.ticket-form select,
+.md-new-ticket-name {
+  background: #1c1b19;
+  border: 1px solid #4a463f;
+  color: inherit;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.ticket-form select,
+.ticket-form .md-ticket-title-input {
+  width: 100%;
+  margin-top: 0.2rem;
+}
+
+.ticket-form select {
+  display: block;
+}
+
+.ticket-form .md-ticket-title-input[hidden] {
+  display: none;
+}
+
+.ticket-form label,
+.md-ticket-depends {
+  display: block;
+  margin: 0 0 0.7rem;
+}
+
+.md-ticket-heading {
+  margin: 0 0 0.8rem;
+  font-weight: 700;
+  cursor: text;
+}
+
+.md-ticket-reporter,
+.md-ticket-created {
+  color: #9c968c;
+  font-size: 0.85rem;
 }
 
 .editor {
