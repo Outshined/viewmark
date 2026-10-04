@@ -2,6 +2,7 @@
 
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { TICKET_ALPHABET, TICKET_STATES } from "./src/ticket.js";
 
 const HELP = `viewmark talks to the document hub, one command, then exit.
 
@@ -10,6 +11,11 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] show <path>
   viewmark [--port PORT] [--user NAME] [--json] create <path>
   viewmark [--port PORT] [--user NAME] [--json] edit <path> --rev N --find TEXT --replace TEXT
+  viewmark [--port PORT] [--user NAME] [--json] ticket list [--closed]
+  viewmark [--port PORT] [--user NAME] [--json] ticket show <id>
+  viewmark [--port PORT] [--user NAME] [--json] ticket create --title TEXT [--state STATE]
+  viewmark [--port PORT] [--user NAME] [--json] ticket set <id> --rev N [--title TEXT] [--state STATE] [--parent ID] [--depends IDS]
+  viewmark [--port PORT] [--user NAME] [--json] ticket purge
   viewmark help [cmd]
   viewmark --help
 
@@ -32,6 +38,17 @@ stdout and stderr:
 Example of one copy-paste edit:
   viewmark --user alice edit hello.md --rev 0 --find "hello" --replace "hi"
 
+ticket:
+  list [--closed], show <id>, create --title TEXT [--state STATE], set <id> --rev N, purge.
+  --rev, --title, --state, --parent, --depends, --closed.
+  --parent none clears. --depends none clears. --state is new, triaged, in progress, or closed.
+  reporter is --user. A stale rev exits 409 and does not write.
+  list prints id, created, state, and title. show prints the body.
+  --json: list {tickets:[{id,title,state,parent,depends,reporter,created}]};
+    show and set {id,path,rev,title,state,parent,depends,reporter,created,text};
+    create {id,path,rev:0,reporter,created}; purge {purged:[...]};
+    conflict adds "error":"conflict".
+
 Exit codes: 0, 1, 2, 400, 404, 409.
   0 success, help, or find equal to replace
   1 five silent seconds or a dead socket
@@ -40,7 +57,7 @@ Exit codes: 0, 1, 2, 400, 404, 409.
 A stale rev exits 409 and does not write. The shell status is that number modulo 256, so 400 is 144, 404 is 148, and 409 is 153. stderr \`conflict\` or \`error N\` is the hub status.
 `;
 
-const VALUE_FLAGS = new Set(["port", "user", "rev", "find", "replace"]);
+const VALUE_FLAGS = new Set(["port", "user", "rev", "find", "replace", "title", "state", "parent", "depends"]);
 
 // Same rejection the hub uses, so a bad name never opens a socket.
 export function validUsername(name) {
@@ -78,6 +95,15 @@ function parseArgs(argv) {
     find: "",
     replaceSet: false,
     replace: "",
+    titleSet: false,
+    title: "",
+    stateSet: false,
+    state: "",
+    parentSet: false,
+    parent: "",
+    dependsSet: false,
+    depends: "",
+    closed: false,
     positionals: [],
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -92,6 +118,10 @@ function parseArgs(argv) {
     }
     if (arg === "--json") {
       args.json = true;
+      continue;
+    }
+    if (arg === "--closed") {
+      args.closed = true;
       continue;
     }
     if (arg.startsWith("--")) {
@@ -123,6 +153,18 @@ function parseArgs(argv) {
       } else if (name === "replace") {
         args.replaceSet = true;
         args.replace = value;
+      } else if (name === "title") {
+        args.titleSet = true;
+        args.title = value;
+      } else if (name === "state") {
+        args.stateSet = true;
+        args.state = value;
+      } else if (name === "parent") {
+        args.parentSet = true;
+        args.parent = value;
+      } else if (name === "depends") {
+        args.dependsSet = true;
+        args.depends = value;
       }
       continue;
     }
@@ -434,6 +476,344 @@ async function runEdit(hub, username, path, rev, find, replace, json) {
   return 0;
 }
 
+function validTicketId(id) {
+  if (typeof id !== "string" || id.length !== 8) return false;
+  for (let i = 0; i < id.length; i += 1) {
+    if (!TICKET_ALPHABET.includes(id[i])) return false;
+  }
+  return true;
+}
+
+function normalizeTitle(raw) {
+  if (typeof raw !== "string") return null;
+  const title = raw.trim();
+  if (title.length === 0) return null;
+  return title;
+}
+
+function normalizeParent(raw) {
+  if (raw === "none") return "";
+  if (!validTicketId(raw)) return null;
+  return raw;
+}
+
+function normalizeDepends(raw) {
+  if (raw === "none") return [];
+  const ids = [];
+  const seen = new Set();
+  for (const part of String(raw).split(",")) {
+    const id = part.trim();
+    if (!validTicketId(id)) return null;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  ids.sort();
+  return ids;
+}
+
+function prepareTicket(args, rest) {
+  const [sub, ...more] = rest;
+  if (sub === "list") {
+    if (more.length !== 0) return { error: "unexpected argument" };
+    return { sub };
+  }
+  if (sub === "show") {
+    if (more.length === 0) return { error: "id required" };
+    if (more.length !== 1) return { error: "unexpected argument" };
+    if (!validTicketId(more[0])) return { error: "invalid id" };
+    return { sub, id: more[0] };
+  }
+  if (sub === "create") {
+    if (more.length !== 0) return { error: "unexpected argument" };
+    if (!args.titleSet) return { error: "empty title" };
+    const title = normalizeTitle(args.title);
+    if (title === null) return { error: "empty title" };
+    const command = { sub, title };
+    if (args.stateSet) {
+      if (!TICKET_STATES.includes(args.state)) return { error: "invalid state" };
+      command.state = args.state;
+    }
+    return command;
+  }
+  if (sub === "set") {
+    if (more.length === 0) return { error: "id required" };
+    if (more.length !== 1) return { error: "unexpected argument" };
+    if (!validTicketId(more[0])) return { error: "invalid id" };
+    if (!args.revSet) return { error: "set requires integer --rev" };
+    const rev = parseRev(args.rev);
+    if (rev === null) return { error: "set requires integer --rev" };
+    const fields = {};
+    if (args.titleSet) {
+      const title = normalizeTitle(args.title);
+      if (title === null) return { error: "empty title" };
+      fields.title = title;
+    }
+    if (args.stateSet) {
+      if (!TICKET_STATES.includes(args.state)) return { error: "invalid state" };
+      fields.state = args.state;
+    }
+    if (args.parentSet) {
+      const parent = normalizeParent(args.parent);
+      if (parent === null) return { error: "invalid id" };
+      fields.parent = parent;
+    }
+    if (args.dependsSet) {
+      const depends = normalizeDepends(args.depends);
+      if (depends === null) return { error: "invalid id" };
+      fields.depends = depends;
+    }
+    if (Object.keys(fields).length === 0) return { error: "set requires --title, --state, --parent, or --depends" };
+    return { sub, id: more[0], rev, fields };
+  }
+  if (sub === "purge") {
+    if (more.length !== 0) return { error: "unexpected argument" };
+    return { sub };
+  }
+  return { error: "unknown command" };
+}
+
+function asTicket(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  if (!validTicketId(raw.id)) return null;
+  if (typeof raw.title !== "string" || typeof raw.state !== "string") return null;
+  if (typeof raw.parent !== "string" || (raw.parent !== "" && !validTicketId(raw.parent))) return null;
+  if (!Array.isArray(raw.depends) || raw.depends.some((id) => !validTicketId(id))) return null;
+  if (typeof raw.reporter !== "string" || typeof raw.created !== "string") return null;
+  return {
+    id: raw.id,
+    title: raw.title,
+    state: raw.state,
+    parent: raw.parent,
+    depends: raw.depends.slice(),
+    reporter: raw.reporter,
+    created: raw.created,
+  };
+}
+
+function asTicketList(msg) {
+  if (!msg || !Array.isArray(msg.tickets)) return null;
+  const tickets = [];
+  for (const raw of msg.tickets) {
+    const ticket = asTicket(raw);
+    if (!ticket) return null;
+    tickets.push(ticket);
+  }
+  return tickets;
+}
+
+function asTicketNotice(msg, id) {
+  if (!msg || typeof msg !== "object") return null;
+  if (typeof msg.title !== "string" || typeof msg.state !== "string") return null;
+  if (typeof msg.parent !== "string" || (msg.parent !== "" && !validTicketId(msg.parent))) return null;
+  if (!Array.isArray(msg.depends) || msg.depends.some((dep) => !validTicketId(dep))) return null;
+  if (typeof msg.reporter !== "string" || typeof msg.created !== "string") return null;
+  if (typeof msg.rev !== "number") return null;
+  return {
+    id,
+    title: msg.title,
+    state: msg.state,
+    parent: msg.parent,
+    depends: msg.depends.slice(),
+    reporter: msg.reporter,
+    created: msg.created,
+    rev: msg.rev,
+  };
+}
+
+function asTicketFile(msg) {
+  const doc = asDoc(msg);
+  if (!doc) return null;
+  const ticket = asTicket(msg.ticket);
+  if (!ticket) return null;
+  return { ...ticket, path: doc.path, rev: doc.rev, text: doc.text };
+}
+
+function metaLine(label, value) {
+  return value === "" ? label : `${label} ${value}`;
+}
+
+function ticketMeta(view) {
+  const lines = [
+    `rev ${view.rev}`,
+    metaLine("title", view.title),
+    metaLine("state", view.state),
+    metaLine("parent", view.parent),
+    metaLine("depends", view.depends.join(",")),
+    metaLine("reporter", view.reporter),
+    metaLine("created", view.created),
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+function printTicket(view, json, conflict) {
+  if (json) {
+    const payload = {
+      id: view.id,
+      path: view.path,
+      rev: view.rev,
+      title: view.title,
+      state: view.state,
+      parent: view.parent,
+      depends: view.depends,
+      reporter: view.reporter,
+      created: view.created,
+      text: view.text,
+    };
+    if (conflict) payload.error = "conflict";
+    writeJson(payload);
+    return;
+  }
+  process.stdout.write(view.text);
+  process.stderr.write(ticketMeta(view));
+  if (conflict) process.stderr.write("conflict\n");
+}
+
+function sameDepends(stored, requested) {
+  const left = [...new Set(stored)].sort();
+  if (left.length !== requested.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== requested[i]) return false;
+  }
+  return true;
+}
+
+function requestedMatches(opened, fields) {
+  if (Object.prototype.hasOwnProperty.call(fields, "title") && fields.title !== opened.title) return false;
+  if (Object.prototype.hasOwnProperty.call(fields, "state") && fields.state !== opened.state) return false;
+  if (Object.prototype.hasOwnProperty.call(fields, "parent") && fields.parent !== opened.parent) return false;
+  if (Object.prototype.hasOwnProperty.call(fields, "depends") && !sameDepends(opened.depends, fields.depends)) return false;
+  return true;
+}
+
+function printTicketList(tickets, json) {
+  if (json) {
+    writeJson({
+      tickets: tickets.map((ticket) => ({
+        id: ticket.id,
+        title: ticket.title,
+        state: ticket.state,
+        parent: ticket.parent,
+        depends: ticket.depends,
+        reporter: ticket.reporter,
+        created: ticket.created,
+      })),
+    });
+    return;
+  }
+  if (tickets.length === 0) return;
+  process.stdout.write(tickets.map((ticket) => (
+    `${ticket.id}\t${ticket.created}\t${ticket.state}\t${ticket.title}\n`
+  )).join(""));
+}
+
+async function runTicketList(hub, username, json, includeClosed) {
+  hub.send({ type: "tickets", username });
+  const msg = await hub.next((item) => item.type === "tickets" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  const tickets = asTicketList(msg);
+  if (!tickets) return 1;
+  const visible = includeClosed ? tickets : tickets.filter((ticket) => ticket.state !== "closed");
+  printTicketList(visible, json);
+  return 0;
+}
+
+async function runTicketShow(hub, username, id, json) {
+  hub.send({ type: "open", username, path: `tickets/${id}.md` });
+  const msg = await hub.next((item) => item.type === "file" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  const view = asTicketFile(msg);
+  if (!view) return 1;
+  printTicket(view, json, false);
+  return 0;
+}
+
+async function runTicketCreate(hub, username, command, json) {
+  const payload = { type: "ticket.create", username, title: command.title };
+  if (command.state !== undefined) payload.state = command.state;
+  hub.send(payload);
+  const msg = await hub.next((item) => item.type === "file" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  const view = asTicketFile(msg);
+  if (!view) return 1;
+  if (json) {
+    writeJson({
+      id: view.id,
+      path: view.path,
+      rev: view.rev,
+      reporter: view.reporter,
+      created: view.created,
+    });
+    return 0;
+  }
+  process.stdout.write(`${view.id}\n`);
+  process.stderr.write(`rev ${view.rev}\n${metaLine("reporter", view.reporter)}\n${metaLine("created", view.created)}\n`);
+  return 0;
+}
+
+async function runTicketSet(hub, username, command, json) {
+  const path = `tickets/${command.id}.md`;
+  // Ticket frames go only to subscribers, so open before set.
+  hub.send({ type: "open", username, path });
+  const openedMsg = await hub.next((item) => item.type === "file" || item.type === "error");
+  if (openedMsg.type === "error") return serverError(openedMsg);
+  const opened = asTicketFile(openedMsg);
+  if (!opened) return 1;
+  // A mismatched rev is a conflict. Do not send: the hub reports a bad field
+  // as 400 before it compares rev.
+  if (opened.rev !== command.rev) return printTicket(opened, json, true), 409;
+  // The hub stays silent when the composed ticket would not change.
+  if (requestedMatches(opened, command.fields)) return printTicket(opened, json, false), 0;
+  hub.send({
+    type: "ticket.set",
+    username,
+    path: opened.path,
+    rev: command.rev,
+    ...command.fields,
+  });
+  const msg = await hub.next((item) => item.type === "error" || (item.type === "ticket" && item.path === opened.path));
+  if (msg.type === "error") {
+    if (msg.status === 409) return printTicket(opened, json, true), 409;
+    return serverError(msg);
+  }
+  const next = asTicketNotice(msg, opened.id);
+  if (!next) return 1;
+  printTicket({ ...next, path: opened.path, text: opened.text }, json, false);
+  return 0;
+}
+
+async function runTicketPurge(hub, username, json) {
+  hub.send({ type: "tickets", username });
+  const before = await hub.next((item) => item.type === "tickets" || item.type === "error");
+  if (before.type === "error") return serverError(before);
+  const prior = asTicketList(before);
+  if (!prior) return 1;
+  hub.send({ type: "ticket.purge", username });
+  const after = await hub.next((item) => item.type === "tickets" || item.type === "error");
+  if (after.type === "error") return serverError(after);
+  const left = asTicketList(after);
+  if (!left) return 1;
+  const remain = new Set(left.map((ticket) => ticket.id));
+  const purged = prior
+    .filter((ticket) => ticket.state === "closed" && !remain.has(ticket.id))
+    .map((ticket) => ticket.id);
+  if (json) {
+    writeJson({ purged });
+    return 0;
+  }
+  if (purged.length > 0) process.stdout.write(purged.map((id) => `${id}\n`).join(""));
+  return 0;
+}
+
+async function runTicket(hub, username, args, command) {
+  if (command.sub === "list") return runTicketList(hub, username, args.json, args.closed);
+  if (command.sub === "show") return runTicketShow(hub, username, command.id, args.json);
+  if (command.sub === "create") return runTicketCreate(hub, username, command, args.json);
+  if (command.sub === "set") return runTicketSet(hub, username, command, args.json);
+  if (command.sub === "purge") return runTicketPurge(hub, username, args.json);
+  return 2;
+}
+
 async function withHub(port, username, fn) {
   const hub = connectHub(port, username);
   try {
@@ -483,6 +863,15 @@ async function main() {
       return;
     }
     await withHub(port, user, (hub) => runList(hub, user, args.json));
+    return;
+  }
+  if (cmd === "ticket") {
+    const command = prepareTicket(args, rest);
+    if (command.error) {
+      usage(command.error);
+      return;
+    }
+    await withHub(port, user, (hub) => runTicket(hub, user, args, command));
     return;
   }
   if (cmd !== "show" && cmd !== "create" && cmd !== "edit") {
