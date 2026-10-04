@@ -7,8 +7,14 @@
   <link rel="stylesheet" href="editor.css">
 </head>
 <body>
+  <dialog class="md-login">
+    <form>
+      <label>Username<input class="md-login-name" name="username" autocomplete="username" placeholder="Username"></label>
+      <button type="submit">Continue</button>
+    </form>
+  </dialog>
   <div class="sheet">
-    <nav class="files"><input placeholder="Username"><button type="button" class="md-new-file">+</button></nav>
+    <nav class="files"><button type="button" class="md-new-file">+</button></nav>
     <div id="editor"></div>
     <aside class="comments"></aside>
   </div>

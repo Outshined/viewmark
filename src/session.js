@@ -142,7 +142,7 @@ export function createSocketTransport({ username, socketFactory, location } = {}
   }
 
   function onOpen() {
-    // A username keystroke can close this socket before the handshake finishes.
+    // close() can run before the handshake finishes.
     if (closed) return;
     socketOpen = true;
     // Hello is the first frame. Anything queued while connecting follows it.

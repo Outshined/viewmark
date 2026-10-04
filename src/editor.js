@@ -2015,15 +2015,6 @@ export function createEditor(root, doc, cursor = 0, transport) {
   };
 }
 
-function filesNavOf(root) {
-  const parent = root && root.parentElement;
-  if (!parent || !parent.childNodes) return null;
-  for (const child of parent.childNodes) {
-    if (child !== root && child.classList && child.classList.contains("files")) return child;
-  }
-  return null;
-}
-
 function firstControl(nav) {
   if (!nav || !nav.childNodes) return null;
   for (const child of nav.childNodes) {
@@ -2034,13 +2025,131 @@ function firstControl(nav) {
   return null;
 }
 
+const loginBindings = new WeakMap();
+
+// Hub hello rejects an empty name and any NUL, CR, LF, "<", or ">".
+function usernameAccepted(name) {
+  return typeof name === "string" && name.length > 0 && !/[\0\r\n<>]/.test(name);
+}
+
+function findElement(node, pred) {
+  for (const child of (node && node.childNodes) || []) {
+    if (!child || child.nodeType !== 1) continue;
+    if (pred(child)) return child;
+    const nested = findElement(child, pred);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function findLoginDialog(doc) {
+  const body = doc && doc.body;
+  if (!body || !body.childNodes) return null;
+  for (const child of body.childNodes) {
+    if (!child || child.nodeType !== 1 || !child.classList) continue;
+    if (String(child.tagName || "").toUpperCase() !== "DIALOG") continue;
+    if (child.classList.contains("md-login")) return child;
+  }
+  return null;
+}
+
+function buildLoginDialog(doc) {
+  const dialog = doc.createElement("dialog");
+  dialog.className = "md-login";
+  const form = doc.createElement("form");
+  const label = doc.createElement("label");
+  // textContent replaces children, so the label text is a node before the input.
+  label.appendChild(doc.createTextNode("Username"));
+  const input = doc.createElement("input");
+  input.className = "md-login-name";
+  input.name = "username";
+  input.placeholder = "Username";
+  input.autocomplete = "username";
+  if (typeof input.setAttribute === "function") {
+    input.setAttribute("name", "username");
+    input.setAttribute("autocomplete", "username");
+    input.setAttribute("placeholder", "Username");
+  }
+  label.appendChild(input);
+  const button = doc.createElement("button");
+  button.type = "submit";
+  button.textContent = "Continue";
+  if (typeof button.setAttribute === "function") button.setAttribute("type", "submit");
+  form.appendChild(label);
+  form.appendChild(button);
+  dialog.appendChild(form);
+  doc.body.appendChild(dialog);
+  return dialog;
+}
+
+function showLogin(dialog, input) {
+  dialog.open = true;
+  if (typeof dialog.showModal === "function") {
+    try {
+      dialog.showModal();
+    } catch {
+      // The open property is non-modal, and showModal throws while the dialog is open.
+      // Only a modal dialog paints ::backdrop.
+      if (typeof dialog.close === "function") dialog.close();
+      try {
+        dialog.showModal();
+      } catch {
+        dialog.open = true;
+      }
+    }
+  } else if (typeof dialog.setAttribute === "function") {
+    dialog.setAttribute("open", "");
+  }
+  if (input && typeof input.focus === "function") input.focus();
+}
+
+function dismissLogin(dialog, input, blur) {
+  dialog.open = false;
+  if (typeof dialog.close === "function") dialog.close();
+  else if (typeof dialog.removeAttribute === "function") dialog.removeAttribute("open");
+  if (blur && input && typeof input.blur === "function") input.blur();
+}
+
+function bindLogin(dialog, form, input, storage, connect) {
+  const onSubmit = (event) => {
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    const name = String(input && input.value != null ? input.value : "").trim();
+    if (!usernameAccepted(name)) return;
+    if (storage && typeof storage.setItem === "function") storage.setItem("viewmark.username", name);
+    dismissLogin(dialog, input, true);
+    connect(name);
+  };
+  const onCancel = (event) => {
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+  };
+  const onKey = (event) => {
+    if (!event || event.key !== "Escape") return;
+    if (typeof event.preventDefault === "function") event.preventDefault();
+  };
+  const previous = loginBindings.get(dialog);
+  if (previous) {
+    if (previous.form && typeof previous.form.removeEventListener === "function") {
+      previous.form.removeEventListener("submit", previous.onSubmit);
+    }
+    if (typeof dialog.removeEventListener === "function") {
+      dialog.removeEventListener("cancel", previous.onCancel);
+      dialog.removeEventListener("keydown", previous.onKey);
+    }
+  }
+  if (form && typeof form.addEventListener === "function") form.addEventListener("submit", onSubmit);
+  if (typeof dialog.addEventListener === "function") {
+    dialog.addEventListener("cancel", onCancel);
+    dialog.addEventListener("keydown", onKey);
+  }
+  loginBindings.set(dialog, { form, onSubmit, onCancel, onKey });
+}
+
 export function startPage(env = {}) {
   const doc = env.document || globalThis.document;
   if (!doc || typeof doc.getElementById !== "function") return null;
   const root = doc.getElementById("editor");
   if (!root) return null;
   const storage = env.sessionStorage || globalThis.sessionStorage;
-  const input = firstControl(filesNavOf(root));
   let current = null;
 
   function shutdown() {
@@ -2061,32 +2170,28 @@ export function startPage(env = {}) {
     current = { transport, editor, username };
   }
 
-  function persist() {
-    if (!input || !storage || typeof storage.setItem !== "function") return;
-    storage.setItem("viewmark.username", input.value == null ? "" : String(input.value));
+  let dialog = findLoginDialog(doc);
+  if (!dialog && doc.body && typeof doc.createElement === "function" && typeof doc.createTextNode === "function") {
+    dialog = buildLoginDialog(doc);
   }
+  const input = dialog && findElement(dialog, (node) => {
+    return String(node.tagName || "").toUpperCase() === "INPUT" && node.classList && node.classList.contains("md-login-name");
+  });
+  const form = dialog && findElement(dialog, (node) => String(node.tagName || "").toUpperCase() === "FORM");
+  if (dialog) bindLogin(dialog, form, input, storage, connect);
 
-  function sync() {
-    persist();
-    const next = input ? String(input.value == null ? "" : input.value).trim() : "";
-    const activeName = current ? current.username : "";
-    if (next === activeName) return;
-    if (!next) {
-      shutdown();
-      return;
-    }
-    connect(next);
+  let stored = "";
+  if (storage && typeof storage.getItem === "function") {
+    const raw = storage.getItem("viewmark.username");
+    if (typeof raw === "string") stored = raw.trim();
   }
-
-  if (input && storage && typeof storage.getItem === "function") {
-    const stored = storage.getItem("viewmark.username");
-    if (typeof stored === "string") input.value = stored;
+  if (usernameAccepted(stored)) {
+    if (storage && typeof storage.setItem === "function") storage.setItem("viewmark.username", stored);
+    if (dialog) dismissLogin(dialog, input, false);
+    connect(stored);
+  } else if (dialog) {
+    showLogin(dialog, input);
   }
-  if (input && typeof input.addEventListener === "function") {
-    input.addEventListener("input", sync);
-    input.addEventListener("change", sync);
-  }
-  sync();
   return { close: shutdown };
 }
 

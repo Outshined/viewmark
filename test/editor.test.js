@@ -1746,8 +1746,24 @@ test("comment cards edit the thread and line up with the highlight", () => {
   const mounted = mountSheet();
   try {
     const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-    assert.match(html, /<div class="sheet">\s*<nav class="files"><input placeholder="Username"><button type="button" class="md-new-file">\+<\/button><\/nav>\s*<div id="editor"><\/div>\s*<aside class="comments"><\/aside>/);
+    assert.match(html, /<body>\s*<dialog class="md-login">\s*<form>\s*<label>Username<input class="md-login-name" name="username" autocomplete="username" placeholder="Username"><\/label>\s*<button type="submit">Continue<\/button>\s*<\/form>\s*<\/dialog>\s*<div class="sheet">\s*<nav class="files"><button type="button" class="md-new-file">\+<\/button><\/nav>\s*<div id="editor"><\/div>\s*<aside class="comments"><\/aside>/);
     const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    assert.match(css, /dialog\.md-login\s*\{[^}]*background:\s*#242320/);
+    assert.match(css, /dialog\.md-login\s*\{[^}]*color:\s*#e7e2d8/);
+    assert.match(css, /dialog\.md-login\s*\{[^}]*border:\s*1px solid #3f3c37/);
+    assert.match(css, /dialog\.md-login\s*\{[^}]*border-radius:\s*6px/);
+    assert.match(css, /dialog\.md-login\s*\{[^}]*padding:\s*1rem 1\.1rem/);
+    assert.match(css, /dialog\.md-login\s*\{[^}]*width:\s*18rem/);
+    assert.match(css, /dialog\.md-login input\s*\{[^}]*background:\s*#1c1b19/);
+    assert.match(css, /dialog\.md-login input\s*\{[^}]*border:\s*1px solid #4a463f/);
+    assert.match(css, /dialog\.md-login input\s*\{[^}]*color:\s*inherit/);
+    assert.match(css, /dialog\.md-login input\s*\{[^}]*width:\s*100%/);
+    assert.match(css, /dialog\.md-login input\s*\{[^}]*box-sizing:\s*border-box/);
+    assert.match(css, /dialog\.md-login input\s*\{[^}]*font:\s*inherit/);
+    assert.match(css, /dialog\.md-login button\[type="submit"\]\s*\{[^}]*border:\s*1px solid #5c574e/);
+    assert.match(css, /dialog\.md-login button\[type="submit"\]\s*\{[^}]*background:\s*#2a2826/);
+    assert.match(css, /dialog\.md-login button\[type="submit"\]\s*\{[^}]*color:\s*#e7e2d8/);
+    assert.match(css, /dialog\.md-login::backdrop\s*\{[^}]*background:\s*rgba\(0,\s*0,\s*0,\s*0\.55\)/);
     assert.match(css, /\.md-comment-author\s*\{[^}]*min-height:\s*1\.25em;/);
     assert.match(css, /\.md-comment-text\s*\{[^}]*white-space:\s*pre-wrap;/);
     assert.match(css, /\.md-comment-text\s*\{[^}]*overflow-wrap:\s*anywhere;/);
@@ -3071,16 +3087,13 @@ test("username opens, closes, and reopens the socket", () => {
   globalThis.window.matchMedia = () => ({ matches: false });
   const nav = document.createElement("nav");
   nav.className = "files";
-  const input = document.createElement("input");
-  input.placeholder = "Username";
-  nav.appendChild(input);
   const sheet = document.createElement("div");
   const aside = document.createElement("aside");
   aside.className = "comments";
   sheet.append(nav, mounted.root, aside);
   document.getElementById = (id) => (id === "editor" ? mounted.root : null);
   const storage = {
-    data: { "viewmark.username": "ada" },
+    data: { "viewmark.username": "" },
     getItem(key) {
       return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
     },
@@ -3111,32 +3124,113 @@ test("username opens, closes, and reopens the socket", () => {
     sockets.push(socket);
     return socket;
   }
+  function loginDialog() {
+    for (const child of document.body.childNodes) {
+      if (child.classList && child.classList.contains("md-login")) return child;
+    }
+    return null;
+  }
+  function loginInput(dialog) {
+    return walkNodes(dialog, (node) => node.classList && node.classList.contains("md-login-name"))[0];
+  }
   try {
-    input.value = "   ";
+    document.body = document.createElement("body");
     const blank = startPage({
       document: globalThis.document,
-      sessionStorage: { getItem() { return ""; }, setItem() {} },
+      sessionStorage: storage,
       socketFactory: factory,
-      location: { protocol: "https:", host: "viewmark.test" },
+      location: { protocol: "http:", host: "viewmark.test" },
     });
     assert.equal(sockets.length, 0);
+    const created = loginDialog();
+    assert.equal(created.open, true);
+    assert.equal(created.getAttribute("open"), "");
+    const createdInput = loginInput(created);
+    assert.equal(createdInput.focused, true);
+    const label = walkNodes(created, (node) => node.tagName === "LABEL")[0];
+    assert.equal(label.childNodes[0].nodeType, 3);
+    assert.equal(label.childNodes[0].textContent, "Username");
+    assert.equal(label.childNodes[1], createdInput);
+    assert.equal(createdInput.listeners.input, undefined);
+    assert.equal(createdInput.listeners.change, undefined);
+    assert.equal(storage.data["viewmark.username"], "");
     blank.close();
 
+    document.body = document.createElement("body");
+    storage.data["viewmark.username"] = "  ";
     const page = startPage({
       document: globalThis.document,
       sessionStorage: storage,
       socketFactory: factory,
       location: { protocol: "http:", host: "viewmark.test" },
     });
-    assert.equal(input.value, "ada");
+    assert.equal(sockets.length, 0);
+    const dialog = loginDialog();
+    assert.equal(dialog.open, true);
+    const input = loginInput(dialog);
+    const form = walkNodes(dialog, (node) => node.tagName === "FORM")[0];
+    let blurred = 0;
+    input.blur = () => {
+      blurred += 1;
+    };
+    function submit(value) {
+      input.value = value;
+      let prevented = false;
+      form.listeners.submit({
+        preventDefault() {
+          prevented = true;
+        },
+      });
+      return prevented;
+    }
+    assert.equal(submit("   "), true);
+    assert.equal(dialog.open, true);
+    assert.equal(sockets.length, 0);
+    assert.equal(storage.data["viewmark.username"], "  ");
+    assert.equal(blurred, 0);
+    assert.equal(submit("a<b"), true);
+    assert.equal(dialog.open, true);
+    assert.equal(sockets.length, 0);
+    assert.equal(storage.data["viewmark.username"], "  ");
+    let cancelled = false;
+    dialog.listeners.cancel({
+      preventDefault() {
+        cancelled = true;
+      },
+    });
+    assert.equal(cancelled, true);
+    assert.equal(dialog.open, true);
+    let escaped = false;
+    dialog.listeners.keydown({
+      key: "Escape",
+      preventDefault() {
+        escaped = true;
+      },
+    });
+    assert.equal(escaped, true);
+    let otherKey = false;
+    dialog.listeners.keydown({
+      key: "a",
+      preventDefault() {
+        otherKey = true;
+      },
+    });
+    assert.equal(otherKey, false);
+    assert.equal(sockets.length, 0);
+
+    assert.equal(submit("  Ada  "), true);
+    assert.equal(storage.data["viewmark.username"], "Ada");
+    assert.equal(dialog.open, false);
+    assert.equal(dialog.hasAttribute("open"), false);
+    assert.equal(blurred, 1);
     assert.equal(sockets.length, 1);
     assert.equal(sockets[0].url, "ws://viewmark.test/api/ws");
     assert.equal(mounted.root.textContent.includes("Viewmark"), false);
     sockets[0].emit("open");
-    assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "ada" });
-    assert.deepEqual(JSON.parse(sockets[0].sent[1]), { type: "list", username: "ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[1]), { type: "list", username: "Ada" });
     sockets[0].emit("message", { data: JSON.stringify({ type: "ping" }) });
-    assert.deepEqual(JSON.parse(sockets[0].sent[2]), { type: "pong", username: "ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[2]), { type: "pong", username: "Ada" });
     sockets[0].emit("message", { data: JSON.stringify({ type: "docs", files: ["b.md", "sub/a.md"] }) });
     const labeled = (text) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.textContent === text);
     assert.equal(labeled("b.md").length, 1);
@@ -3157,7 +3251,7 @@ test("username opens, closes, and reopens the socket", () => {
     assert.equal(edit.type, "edit");
     assert.equal(edit.op, "insert");
     assert.equal(edit.text, "Q");
-    assert.equal(edit.username, "ada");
+    assert.equal(edit.username, "Ada");
     assert.equal(edit.path, "b.md");
     assert.equal(edit.rev, 4);
     assert.equal(edit.anchor, 1);
@@ -3170,52 +3264,34 @@ test("username opens, closes, and reopens the socket", () => {
         from: 1,
         to: 1,
         inserted: "Q",
-        actor: "ada",
+        actor: "Ada",
         cursor: 2,
         anchor: 2,
       }),
     });
     assert.equal(mounted.root.textContent, "aQb");
-
-    input.value = "ada ";
-    input.listeners.input();
-    assert.equal(storage.data["viewmark.username"], "ada ");
-    assert.equal(sockets.length, 1);
-    assert.equal(sockets[0].closed, false);
-
-    input.value = "bob";
-    input.listeners.input();
-    assert.equal(sockets[0].closed, true);
-    const staleFrames = sockets[0].sent.length;
-    sockets[0].emit("open");
-    sockets[0].emit("message", { data: JSON.stringify({ type: "docs", files: ["stale.markdown"] }) });
-    sockets[0].emit("message", { data: JSON.stringify({ type: "ping" }) });
-    assert.equal(sockets[0].sent.length, staleFrames);
-    assert.equal(labeled("stale.markdown").length, 0);
-    assert.equal(sockets.length, 2);
-    assert.equal(sockets[1].url, "ws://viewmark.test/api/ws");
-    assert.equal(sockets[1].closed, false);
-    sockets[1].emit("open");
-    assert.deepEqual(JSON.parse(sockets[1].sent[0]), { type: "hello", username: "bob" });
-
-    input.value = "  ";
-    input.listeners.input();
-    assert.equal(sockets[1].closed, true);
-    assert.equal(sockets.length, 2);
-    assert.equal(storage.data["viewmark.username"], "  ");
-
-    input.value = "ada";
-    input.listeners.input();
-    assert.equal(sockets.length, 3);
-    sockets[2].emit("open");
-    assert.deepEqual(JSON.parse(sockets[2].sent[0]), { type: "hello", username: "ada" });
     page.close();
-    assert.equal(sockets[2].closed, true);
-    const closedFrames = sockets[2].sent.length;
-    sockets[2].emit("open");
-    sockets[2].emit("message", { data: JSON.stringify({ type: "docs", files: ["late.md"] }) });
-    assert.equal(sockets[2].sent.length, closedFrames);
+    assert.equal(sockets[0].closed, true);
+    const closedFrames = sockets[0].sent.length;
+    sockets[0].emit("open");
+    sockets[0].emit("message", { data: JSON.stringify({ type: "docs", files: ["late.md"] }) });
+    assert.equal(sockets[0].sent.length, closedFrames);
     assert.equal(labeled("late.md").length, 0);
+
+    storage.data["viewmark.username"] = "ada";
+    const again = startPage({
+      document: globalThis.document,
+      sessionStorage: storage,
+      socketFactory: factory,
+      location: { protocol: "http:", host: "viewmark.test" },
+    });
+    assert.equal(dialog.open, false);
+    assert.equal(sockets.length, 2);
+    sockets[1].emit("open");
+    assert.deepEqual(JSON.parse(sockets[1].sent[0]), { type: "hello", username: "ada" });
+    assert.deepEqual(JSON.parse(sockets[1].sent[1]), { type: "list", username: "ada" });
+    again.close();
+    assert.equal(sockets[1].closed, true);
 
     const secure = startPage({
       document: globalThis.document,
@@ -3223,10 +3299,11 @@ test("username opens, closes, and reopens the socket", () => {
       socketFactory: factory,
       location: { protocol: "https:", host: "viewmark.test" },
     });
-    assert.equal(sockets.length, 4);
-    assert.equal(sockets[3].url, "wss://viewmark.test/api/ws");
+    assert.equal(sockets.length, 3);
+    assert.equal(sockets[2].url, "wss://viewmark.test/api/ws");
+    assert.equal(dialog.open, false);
     secure.close();
-    assert.equal(sockets[3].closed, true);
+    assert.equal(sockets[2].closed, true);
   } finally {
     mounted.restore();
   }
@@ -3236,12 +3313,10 @@ test("username focus stays on the field through the first character", () => {
   const mounted = mountEditor();
   const nav = document.createElement("nav");
   nav.className = "files";
-  const input = document.createElement("input");
-  input.value = "";
-  nav.appendChild(input);
   const sheet = document.createElement("div");
   sheet.append(nav, mounted.root);
   document.getElementById = (id) => (id === "editor" ? mounted.root : null);
+  document.body = document.createElement("body");
   const sockets = [];
   function factory(url) {
     const handlers = {};
@@ -3273,6 +3348,10 @@ test("username focus stays on the field through the first character", () => {
       location: { protocol: "http:", host: "viewmark.test" },
     });
     assert.equal(sockets.length, 0);
+    const dialog = document.body.childNodes.find((node) => node.classList && node.classList.contains("md-login"));
+    const input = walkNodes(dialog, (node) => node.classList && node.classList.contains("md-login-name"))[0];
+    const form = walkNodes(dialog, (node) => node.tagName === "FORM")[0];
+    assert.equal(dialog.open, true);
     document.activeElement = input;
     globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
     const host = {
@@ -3308,13 +3387,25 @@ test("username focus stays on the field through the first character", () => {
       },
     });
     input.value = "Ada";
-    input.listeners.input();
+    assert.equal(typeof input.listeners.input, "undefined");
+    assert.equal(typeof input.listeners.change, "undefined");
+    if (typeof input.listeners.input === "function") input.listeners.input();
+    if (typeof input.listeners.change === "function") input.listeners.change();
     assert.equal(added, false);
     assert.equal(document.activeElement, input);
+    assert.equal(sockets.length, 0);
+    let prevented = false;
+    form.listeners.submit({
+      preventDefault() {
+        prevented = true;
+      },
+    });
+    assert.equal(prevented, true);
     assert.equal(sockets.length, 1);
     sockets[0].emit("open");
     assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada" });
     page.close();
+    assert.equal(sockets[0].closed, true);
   } finally {
     mounted.restore();
   }
@@ -3330,9 +3421,6 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
   assert.equal(/\.md-new-file\s*\{[^}]*display:\s*block/.test(css), false);
   const nav = document.createElement("nav");
   nav.className = "files";
-  const input = document.createElement("input");
-  input.placeholder = "Username";
-  nav.appendChild(input);
   const sheet = document.createElement("div");
   sheet.appendChild(nav);
   sheet.appendChild(mounted.root);
@@ -3341,7 +3429,7 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     const view = createEditor(mounted.root, "x", 0, transport);
     const buttons = () => walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"));
     assert.equal(buttons().length, 1);
-    assert.equal(nav.childNodes[0], input);
+    assert.equal(nav.childNodes[0], buttons()[0]);
     const button = buttons()[0];
     assert.equal(button.textContent, "+");
     assert.equal(button.type, "button");
@@ -3386,7 +3474,7 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     const again = createEditor(mounted.root, "x", 0, transport);
     assert.equal(buttons().length, 1);
     assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
-    assert.equal(nav.childNodes[0], input);
+    assert.equal(nav.childNodes[0], buttons()[0]);
     again.destroy();
   } finally {
     mounted.restore();

@@ -43,6 +43,34 @@ nav.files input {
   color: inherit;
 }
 
+dialog.md-login {
+  background: #242320;
+  color: #e7e2d8;
+  border: 1px solid #3f3c37;
+  border-radius: 6px;
+  padding: 1rem 1.1rem;
+  width: 18rem;
+}
+
+dialog.md-login input {
+  background: #1c1b19;
+  border: 1px solid #4a463f;
+  color: inherit;
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+}
+
+dialog.md-login button[type="submit"] {
+  border: 1px solid #5c574e;
+  background: #2a2826;
+  color: #e7e2d8;
+}
+
+dialog.md-login::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
 .md-new-file {
   display: inline;
   width: auto;
