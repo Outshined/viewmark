@@ -2889,6 +2889,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const onClick = (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
+      if (!activeRepo) return;
       // A checkpoint is not a conflict waiter and carries no rev.
       emit({ type: "commit" });
     };

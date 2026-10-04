@@ -3931,8 +3931,7 @@ test("commit button checkpoints the active repo", () => {
     assert.equal(button.hasAttribute("hidden"), true);
     const quiet = transport.sent.length;
     button.listeners.click({ preventDefault() {} });
-    assert.equal(transport.sent.length, quiet + 1);
-    assert.deepEqual(transport.sent.at(-1), { type: "commit", username: "" });
+    assert.equal(transport.sent.length, quiet);
     view.destroy();
     assert.equal(button.listeners.click, undefined);
     assert.equal(commits().length, 1);
