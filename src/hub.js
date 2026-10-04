@@ -13,6 +13,14 @@ import {
   replaceCommentBody,
   setCommentResolved,
 } from "./doc.js";
+import {
+  TICKET_ALPHABET,
+  TICKET_STATES,
+  composeTicket,
+  generateId,
+  parseTicket,
+  rejectLink,
+} from "./ticket.js";
 import { acceptKey, createParser, encodeFrame, encodeText } from "./ws.js";
 
 const PING_MS = 15000;
@@ -223,12 +231,60 @@ async function listMarkdown(dir, prefix) {
   const out = [];
   for (const entry of entries) {
     if (entry.name === ".git" || entry.isSymbolicLink()) continue;
+    // tickets/ is the ticket store, not a document tree.
+    if (prefix === "" && entry.name === "tickets" && entry.isDirectory()) continue;
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isDirectory()) out.push(...await listMarkdown(path.join(dir, entry.name), rel));
     else if (entry.isFile() && (rel.endsWith(".md") || rel.endsWith(".markdown"))) out.push(rel);
   }
   out.sort();
   return out;
+}
+
+function ticketIdFromRel(rel) {
+  const prefix = "tickets/";
+  if (!rel.startsWith(prefix)) return null;
+  const name = rel.slice(prefix.length);
+  if (name.length !== 11 || !name.endsWith(".md")) return null;
+  const id = name.slice(0, 8);
+  for (let i = 0; i < id.length; i += 1) {
+    if (!TICKET_ALPHABET.includes(id[i])) return null;
+  }
+  return id;
+}
+
+function validTitle(value) {
+  if (typeof value !== "string") return null;
+  const title = value.trim();
+  if (title.length < 1 || title.length > 200 || /[\r\n\t]/.test(title)) return null;
+  return title;
+}
+
+function ticketView(ticket) {
+  return {
+    id: ticket.id,
+    title: ticket.title,
+    state: ticket.state,
+    parent: ticket.parent,
+    depends: [...ticket.depends],
+    reporter: ticket.reporter,
+    created: ticket.created,
+  };
+}
+
+function ticketNotice(file) {
+  const ticket = file.ticket;
+  return {
+    type: "ticket",
+    path: file.rel,
+    rev: file.rev,
+    title: ticket.title,
+    state: ticket.state,
+    parent: ticket.parent,
+    depends: [...ticket.depends],
+    reporter: ticket.reporter,
+    created: ticket.created,
+  };
 }
 
 function closeCode(reason) {
@@ -391,7 +447,13 @@ export function createHub(docsDir) {
       if (owner || mode === "edit") return false;
     }
     const after = before.slice(0, splice.from) + splice.inserted + before.slice(splice.to);
-    await writeAtomic(file.full, after);
+    if (file.ticket) {
+      const composed = composeTicket({ ...file.ticket, id: file.ticket.id, body: after });
+      if (composed == null) return false;
+      await writeAtomic(file.full, composed);
+    } else {
+      await writeAtomic(file.full, after);
+    }
     file.text = after;
     file.rev += 1;
     if (mode !== "edit") {
@@ -402,7 +464,8 @@ export function createHub(docsDir) {
     rebaseFile(file, socket, before, after, splice, entry);
     socket.session.cursor = caret.cursor;
     socket.session.anchor = caret.anchor;
-    socket.session.dirtyPath = file.rel;
+    // A ticket body is not a doc edit, so it must not schedule a git commit.
+    if (!file.ticket) socket.session.dirtyPath = file.rel;
     // The preparatory lock covers the splice, including a fence through EOF.
     // Keep the caret line so the rest can be taken. Do not commit for that.
     socket.session.lines = new Set(touchedLines(file.text, caret.cursor, caret.cursor));
@@ -468,9 +531,89 @@ export function createHub(docsDir) {
     }
     if (!info.isFile()) return null;
     const text = await fs.readFile(real, "utf8");
+    const ticketId = ticketIdFromRel(rel);
+    if (ticketId) {
+      const parsed = parseTicket(ticketId, text);
+      if (!parsed) return null;
+      const file = {
+        rel,
+        full: real,
+        rev: 0,
+        text: parsed.body,
+        ticket: ticketView(parsed),
+        subscribers: new Set(),
+        locks: new Map(),
+      };
+      files.set(rel, file);
+      return file;
+    }
     const file = { rel, full: real, rev: 0, text, subscribers: new Set(), locks: new Map() };
     files.set(rel, file);
     return file;
+  }
+
+  async function collectTickets() {
+    const dir = path.join(docsDir, "tickets");
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      if (err && (err.code === "ENOENT" || err.code === "ENOTDIR")) return [];
+      throw err;
+    }
+    const tickets = [];
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || !entry.isFile()) continue;
+      const rel = `tickets/${entry.name}`;
+      const id = ticketIdFromRel(rel);
+      if (!id) continue;
+      const cached = files.get(rel);
+      if (cached) {
+        if (cached.ticket) tickets.push(ticketView(cached.ticket));
+        continue;
+      }
+      let raw;
+      try {
+        raw = await fs.readFile(path.join(dir, entry.name), "utf8");
+      } catch {
+        continue;
+      }
+      const parsed = parseTicket(id, raw);
+      if (!parsed) continue;
+      tickets.push(ticketView(parsed));
+    }
+    tickets.sort((a, b) => {
+      if (a.created < b.created) return -1;
+      if (a.created > b.created) return 1;
+      if (a.id < b.id) return -1;
+      if (a.id > b.id) return 1;
+      return 0;
+    });
+    return tickets;
+  }
+
+  async function broadcastTickets() {
+    const msg = { type: "tickets", tickets: await collectTickets() };
+    for (const sock of sockets) send(sock, msg);
+  }
+
+  async function prepareTicketDest(id) {
+    const parent = path.resolve(docsDir, "tickets");
+    try {
+      await fs.mkdir(parent, { recursive: true });
+    } catch {
+      return null;
+    }
+    let parentReal;
+    try {
+      parentReal = await fs.realpath(parent);
+    } catch {
+      return null;
+    }
+    if (!inside(docsDir, parentReal)) return null;
+    const dest = path.join(parentReal, `${id}.md`);
+    if (!inside(docsDir, dest)) return null;
+    return dest;
   }
 
   async function onList(socket) {
@@ -481,6 +624,7 @@ export function createHub(docsDir) {
   async function onOpen(socket, msg) {
     const rel = safeRel(msg.path);
     if (!rel) return fail(socket, 404);
+    if (rel === "tickets" || (rel.startsWith("tickets/") && !ticketIdFromRel(rel))) return fail(socket, 404);
     const file = await loadFile(rel);
     if (!file) return fail(socket, 404);
     const session = socket.session;
@@ -494,18 +638,21 @@ export function createHub(docsDir) {
       session.redo = [];
       file.subscribers.add(socket);
     }
-    send(socket, {
+    const message = {
       type: "file",
       path: file.rel,
       rev: file.rev,
       text: file.text,
       locks: lockSnapshot(file),
-    });
+    };
+    if (file.ticket) message.ticket = ticketView(file.ticket);
+    send(socket, message);
   }
 
   async function onCreate(socket, msg) {
     const rel = safeRel(msg.path);
     if (!rel) return fail(socket, 404);
+    if (rel === "tickets" || rel.startsWith("tickets/")) return fail(socket, 400);
     if (!rel.endsWith(".md") && !rel.endsWith(".markdown")) return fail(socket, 400);
     if (files.has(rel)) return fail(socket, 409);
     const full = path.resolve(docsDir, rel);
@@ -533,6 +680,133 @@ export function createHub(docsDir) {
     const docs = { type: "docs", files: listed };
     for (const sock of sockets) send(sock, docs);
     await onOpen(socket, { path: rel });
+  }
+
+  async function onTickets(socket) {
+    send(socket, { type: "tickets", tickets: await collectTickets() });
+  }
+
+  async function onTicketCreate(socket, msg) {
+    const title = validTitle(msg.title);
+    if (!title) return fail(socket, 400);
+    let state = "new";
+    if (Object.prototype.hasOwnProperty.call(msg, "state")) {
+      if (typeof msg.state !== "string" || !TICKET_STATES.includes(msg.state)) return fail(socket, 400);
+      state = msg.state;
+    }
+    const reporter = socket.session.username;
+    const created = new Date().toISOString();
+    let allocated = null;
+    for (let draw = 0; draw < 8; draw += 1) {
+      const id = generateId();
+      const rel = `tickets/${id}.md`;
+      if (files.has(rel)) continue;
+      const dest = await prepareTicketDest(id);
+      if (!dest) return fail(socket, 500);
+      if (await existsPath(dest)) continue;
+      allocated = { id, rel, dest };
+      break;
+    }
+    if (!allocated) return fail(socket, 500);
+    const ticket = {
+      id: allocated.id,
+      title,
+      state,
+      parent: "",
+      depends: [],
+      reporter,
+      created,
+    };
+    const composed = composeTicket({ ...ticket, body: "" });
+    if (composed == null) return fail(socket, 500);
+    await writeAtomic(allocated.dest, composed);
+    files.set(allocated.rel, {
+      rel: allocated.rel,
+      full: allocated.dest,
+      rev: 0,
+      text: "",
+      ticket,
+      subscribers: new Set(),
+      locks: new Map(),
+    });
+    await broadcastTickets();
+    await onOpen(socket, { path: allocated.rel });
+  }
+
+  async function onTicketSet(socket, msg) {
+    if (Object.prototype.hasOwnProperty.call(msg, "reporter") || Object.prototype.hasOwnProperty.call(msg, "created")) {
+      return fail(socket, 400);
+    }
+    const rel = safeRel(msg.path);
+    if (!rel || !ticketIdFromRel(rel)) return fail(socket, 404);
+    const file = await loadFile(rel);
+    if (!file || !file.ticket) return fail(socket, 404);
+    const next = { ...file.ticket, depends: [...file.ticket.depends] };
+    if (Object.prototype.hasOwnProperty.call(msg, "title")) next.title = msg.title;
+    if (Object.prototype.hasOwnProperty.call(msg, "state")) next.state = msg.state;
+    if (Object.prototype.hasOwnProperty.call(msg, "parent")) next.parent = msg.parent;
+    if (Object.prototype.hasOwnProperty.call(msg, "depends")) next.depends = msg.depends;
+    const composed = composeTicket({ ...next, id: file.ticket.id, body: file.text });
+    if (composed == null) return fail(socket, 400);
+    if (typeof msg.rev !== "number" || msg.rev !== file.rev) return fail(socket, 409);
+    const parsed = parseTicket(file.ticket.id, composed);
+    if (!parsed) return fail(socket, 400);
+    const reason = rejectLink(await collectTickets(), parsed.id, parsed.parent, parsed.depends);
+    if (reason) return fail(socket, 409);
+    const current = composeTicket({ ...file.ticket, body: file.text });
+    if (composed === current) return;
+    await writeAtomic(file.full, composed);
+    file.ticket = ticketView(parsed);
+    file.rev += 1;
+    await broadcastTickets();
+    broadcast(file, ticketNotice(file));
+  }
+
+  async function rewriteTicketLinks(id, parent, depends) {
+    const rel = `tickets/${id}.md`;
+    const cached = files.get(rel);
+    if (cached && cached.ticket) {
+      const next = { ...cached.ticket, parent, depends };
+      const composed = composeTicket({ ...next, body: cached.text });
+      const current = composeTicket({ ...cached.ticket, body: cached.text });
+      if (composed == null || composed === current) return;
+      await writeAtomic(cached.full, composed);
+      cached.ticket = ticketView(next);
+      cached.rev += 1;
+      broadcast(cached, ticketNotice(cached));
+      return;
+    }
+    const full = path.join(docsDir, rel);
+    let raw;
+    try {
+      raw = await fs.readFile(full, "utf8");
+    } catch {
+      return;
+    }
+    const parsed = parseTicket(id, raw);
+    if (!parsed) return;
+    const composed = composeTicket({ ...parsed, parent, depends });
+    if (composed == null || composed === raw) return;
+    await writeAtomic(full, composed);
+  }
+
+  async function onTicketPurge() {
+    const all = await collectTickets();
+    const closedIds = new Set(all.filter((ticket) => ticket.state === "closed").map((ticket) => ticket.id));
+    for (const id of closedIds) {
+      const rel = `tickets/${id}.md`;
+      const cached = files.get(rel);
+      files.delete(rel);
+      await fs.rm(cached ? cached.full : path.join(docsDir, rel), { force: true });
+    }
+    for (const ticket of all) {
+      if (closedIds.has(ticket.id)) continue;
+      const parent = closedIds.has(ticket.parent) ? "" : ticket.parent;
+      const depends = ticket.depends.filter((dep) => !closedIds.has(dep));
+      if (parent === ticket.parent && depends.length === ticket.depends.length) continue;
+      await rewriteTicketLinks(ticket.id, parent, depends);
+    }
+    await broadcastTickets();
   }
 
   async function onLock(socket, msg) {
@@ -688,6 +962,10 @@ export function createHub(docsDir) {
     if (msg.type === "list") return onList(socket);
     if (msg.type === "open") return onOpen(socket, msg);
     if (msg.type === "create") return onCreate(socket, msg);
+    if (msg.type === "tickets") return onTickets(socket);
+    if (msg.type === "ticket.create") return onTicketCreate(socket, msg);
+    if (msg.type === "ticket.set") return onTicketSet(socket, msg);
+    if (msg.type === "ticket.purge") return onTicketPurge();
     if (msg.type === "lock") return onLock(socket, msg);
     if (msg.type === "edit") return onEdit(socket, msg);
     if (msg.type === "undo") return onHistory(socket, msg, "undo");
