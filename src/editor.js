@@ -84,7 +84,7 @@ function createPath(raw) {
 }
 
 function insertAfter(parent, after, node) {
-  // A NodeList has no indexOf. appendChild would put Commit after the new-file button.
+  // A NodeList has no indexOf. appendChild would put this node after later siblings.
   const follower = after ? after.nextSibling : undefined;
   if (after && typeof parent.insertBefore === "function" && (follower === null || (follower && typeof follower === "object"))) {
     parent.insertBefore(node, follower);
@@ -274,7 +274,8 @@ function checkedDepends(container) {
 const newFileBindings = new WeakMap();
 const ticketBindings = new WeakMap();
 const repoBindings = new WeakMap();
-const commitBindings = new WeakMap();
+const docMenuBindings = new WeakMap();
+const docCommitBindings = new WeakMap();
 const REPO_KEY = "viewmark.repo";
 
 // A directory exists only when some markdown file is stored under it.
@@ -662,8 +663,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let activeRepo = "";
   let repoSelect = null;
   let repoOnChange = null;
-  let commitButton = null;
-  let commitOnClick = null;
+  let docMenuButton = null;
+  let docMenuPanel = null;
+  let repoCommitButton = null;
+  let docMenuOnClick = null;
+  let repoCommitOnClick = null;
+  let docMenuBound = false;
   const repoStorage = storage || null;
   // Create is answered by its own error or by the file from onOpen.
   // A 409 for that create is not a rejected caret grant.
@@ -1264,6 +1269,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function renderCommentAside(comments) {
     if (!commentsAside || typeof commentsAside.replaceChildren !== "function") return;
+    ensureDocMenu();
     const list = comments || [];
     pruneCommentDrafts(list);
     const checkbox = document.createElement("input");
@@ -1271,8 +1277,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     checkbox.checked = showResolved;
     checkbox.disabled = false;
     checkbox.id = "show-resolved";
+    if (typeof checkbox.setAttribute === "function") {
+      checkbox.setAttribute("type", "checkbox");
+      checkbox.setAttribute("id", "show-resolved");
+    }
     const label = document.createElement("label");
     label.htmlFor = "show-resolved";
+    if (typeof label.setAttribute === "function") label.setAttribute("for", "show-resolved");
     label.textContent = "show resolved";
     checkbox.addEventListener("change", () => {
       showResolved = checkbox.checked === true;
@@ -1284,7 +1295,28 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       visible.push(comment);
     }
     const cards = orderVisibleComments(visible, state.doc).map((comment) => buildCommentCard(comment));
-    commentsAside.replaceChildren(checkbox, label, ...cards);
+    const stale = [];
+    for (const child of commentsAside.childNodes || []) stale.push(child);
+    for (const child of stale) {
+      if (child === docMenuButton || child === docMenuPanel) continue;
+      detachNode(child);
+    }
+    for (const card of cards) commentsAside.appendChild(card);
+    if (!docMenuPanel) return;
+    const panelStale = [];
+    for (const child of docMenuPanel.childNodes || []) panelStale.push(child);
+    for (const child of panelStale) {
+      if (child === repoCommitButton) continue;
+      detachNode(child);
+    }
+    if (repoCommitButton && repoCommitButton.parentElement === docMenuPanel) {
+      placeNodeBefore(docMenuPanel, checkbox, repoCommitButton);
+      insertAfter(docMenuPanel, checkbox, label);
+    } else {
+      docMenuPanel.appendChild(checkbox);
+      docMenuPanel.appendChild(label);
+      if (repoCommitButton) docMenuPanel.appendChild(repoCommitButton);
+    }
   }
 
   function elementRect(el) {
@@ -1320,33 +1352,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const narrow = typeof window !== "undefined"
       && typeof window.matchMedia === "function"
       && window.matchMedia("(max-width: 800px)").matches;
-    const placeShowResolved = (inFlow, floor) => {
-      const toggle = commentsAside.childNodes && commentsAside.childNodes[0];
-      const label = commentsAside.childNodes && commentsAside.childNodes[1];
-      if (!toggle || toggle.type !== "checkbox") return floor;
-      if (inFlow) {
-        setStyle(toggle, "position", "static");
-        setStyle(toggle, "top", "auto");
-        setStyle(toggle, "left", "auto");
-        if (label) {
-          setStyle(label, "position", "static");
-          setStyle(label, "top", "auto");
-          setStyle(label, "left", "auto");
-        }
-        return floor;
-      }
-      const top = `${floor}px`;
-      setStyle(toggle, "position", "absolute");
-      setStyle(toggle, "top", top);
-      setStyle(toggle, "left", "0px");
-      if (label) {
-        setStyle(label, "position", "absolute");
-        setStyle(label, "top", top);
-        setStyle(label, "left", "1.5rem");
-      }
-      const height = typeof toggle.offsetHeight === "number" ? toggle.offsetHeight : 0;
-      return floor + height + COMMENT_CARD_GAP;
-    };
     if (narrow || cards.length === 0) {
       for (const card of cards) {
         setStyle(card, "position", "static");
@@ -1355,14 +1360,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         setStyle(card, "width", "100%");
         setStyle(card, "margin", "");
       }
-      placeShowResolved(true, 0);
       setStyle(commentsAside, "height", "");
       return;
     }
     const asideRect = elementRect(commentsAside);
     if (!asideRect || typeof cards[0].getBoundingClientRect !== "function") return;
     const spans = findSpans(state.doc);
-    let floor = placeShowResolved(false, 0);
+    // The menu button is out of flow. The first card starts under it.
+    const menuHeight = docMenuButton && typeof docMenuButton.offsetHeight === "number" ? docMenuButton.offsetHeight : 0;
+    let floor = menuHeight + COMMENT_CARD_GAP;
     for (const card of cards) {
       const id = card.dataset.comment;
       let rects = highlightRects(id);
@@ -2915,7 +2921,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     writeStoredRepo(name);
     activeRepo = name;
     blankEditor();
-    syncCommitButton();
+    syncRepoCommit();
     sendRepoFrames(name);
   }
 
@@ -2967,25 +2973,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       deleteStoredRepo();
       activeRepo = "";
       clearRepoSelection(select);
-      syncCommitButton();
+      syncRepoCommit();
       return;
     }
     if (activeRepo) {
       markRepoSelected(select, activeRepo);
-      syncCommitButton();
+      syncRepoCommit();
       return;
     }
     const stored = readStoredRepo();
     if (stored && names.has(stored)) {
       markRepoSelected(select, stored);
       activeRepo = stored;
-      syncCommitButton();
+      syncRepoCommit();
       sendRepoFrames(stored);
       return;
     }
     if (stored) deleteStoredRepo();
     clearRepoSelection(select);
-    syncCommitButton();
+    syncRepoCommit();
   }
 
   function unbindRepoSelect() {
@@ -3000,58 +3006,105 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     repoOnChange = null;
   }
 
-  function syncCommitButton() {
-    if (!commitButton) return;
-    if (activeRepo) showElement(commitButton);
-    else hideElement(commitButton);
+  function syncRepoCommit() {
+    if (!repoCommitButton) return;
+    if (activeRepo) showElement(repoCommitButton);
+    else hideElement(repoCommitButton);
   }
 
-  function unbindCommit() {
-    if (!commitButton || !commitOnClick) return;
-    const binding = commitBindings.get(commitButton);
-    if (!binding || binding.onClick !== commitOnClick) return;
-    if (typeof commitButton.removeEventListener === "function") {
-      commitButton.removeEventListener("click", commitOnClick);
+  function unbindDocMenu() {
+    if (docMenuButton && docMenuOnClick) {
+      const binding = docMenuBindings.get(docMenuButton);
+      if (binding === docMenuOnClick && typeof docMenuButton.removeEventListener === "function") {
+        docMenuButton.removeEventListener("click", docMenuOnClick);
+      }
+      if (binding === docMenuOnClick) docMenuBindings.delete(docMenuButton);
     }
-    commitBindings.delete(commitButton);
-    commitButton = null;
-    commitOnClick = null;
+    if (repoCommitButton && repoCommitOnClick) {
+      const binding = docCommitBindings.get(repoCommitButton);
+      if (binding === repoCommitOnClick && typeof repoCommitButton.removeEventListener === "function") {
+        repoCommitButton.removeEventListener("click", repoCommitOnClick);
+      }
+      if (binding === repoCommitOnClick) docCommitBindings.delete(repoCommitButton);
+    }
+    docMenuOnClick = null;
+    repoCommitOnClick = null;
+    docMenuBound = false;
   }
 
-  function bindCommit(nav) {
-    if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
-    let button = findClassChild(nav, "md-commit");
-    if (!button) {
-      button = document.createElement("button");
+  function ensureDocMenu() {
+    if (!commentsAside || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    if (!docMenuButton || docMenuButton.parentElement !== commentsAside) {
+      docMenuButton = findClassChild(commentsAside, "md-doc-menu");
+    }
+    if (!docMenuButton) {
+      const button = document.createElement("button");
       button.type = "button";
-      button.className = "md-commit";
-      button.textContent = "Commit";
-      if (typeof button.setAttribute === "function") button.setAttribute("type", "button");
+      button.className = "md-doc-menu";
+      if (typeof button.setAttribute === "function") {
+        button.setAttribute("type", "button");
+        button.setAttribute("aria-label", "Menu");
+      }
+      for (let i = 0; i < 3; i += 1) {
+        const bar = document.createElement("span");
+        bar.className = "md-doc-menu-bar";
+        if (typeof bar.setAttribute === "function") bar.setAttribute("aria-hidden", "true");
+        button.appendChild(bar);
+      }
+      commentsAside.appendChild(button);
+      docMenuButton = button;
     }
-    const select = findClassChild(nav, "md-repo");
-    const children = nav.childNodes || [];
-    const selectAt = select && typeof children.indexOf === "function" ? children.indexOf(select) : -1;
-    const followsSelect = selectAt >= 0 ? children[selectAt + 1] === button : !!(select && select.nextSibling === button);
-    if (!followsSelect) {
-      detachNode(button);
-      if (select) insertAfter(nav, select, button);
-      else placeNodeBefore(nav, button, findClassChild(nav, "md-new-file") || (nav.childNodes && nav.childNodes[0]));
+    if (!docMenuPanel || docMenuPanel.parentElement !== commentsAside) {
+      docMenuPanel = findClassChild(commentsAside, "md-doc-menu-panel");
     }
-    const previous = commitBindings.get(button);
-    if (previous && typeof button.removeEventListener === "function") {
-      button.removeEventListener("click", previous.onClick);
+    if (!docMenuPanel) {
+      const panel = document.createElement("div");
+      panel.className = "md-doc-menu-panel";
+      hideElement(panel);
+      commentsAside.appendChild(panel);
+      docMenuPanel = panel;
     }
-    const onClick = (event) => {
-      if (event && typeof event.preventDefault === "function") event.preventDefault();
-      if (!activeRepo) return;
-      // A checkpoint is not a conflict waiter and carries no rev.
-      emit({ type: "commit" });
-    };
-    if (typeof button.addEventListener === "function") button.addEventListener("click", onClick);
-    commitBindings.set(button, { onClick });
-    commitButton = button;
-    commitOnClick = onClick;
-    syncCommitButton();
+    if (!repoCommitButton || repoCommitButton.parentElement !== docMenuPanel) {
+      repoCommitButton = findClassChild(docMenuPanel, "md-doc-commit");
+    }
+    if (!repoCommitButton) {
+      const commit = document.createElement("button");
+      commit.type = "button";
+      commit.className = "md-doc-commit";
+      commit.textContent = "Commit repo";
+      if (typeof commit.setAttribute === "function") commit.setAttribute("type", "button");
+      hideElement(commit);
+      docMenuPanel.appendChild(commit);
+      repoCommitButton = commit;
+    }
+    if (!docMenuBound) {
+      const previousMenu = docMenuBindings.get(docMenuButton);
+      if (previousMenu && typeof docMenuButton.removeEventListener === "function") {
+        docMenuButton.removeEventListener("click", previousMenu);
+      }
+      docMenuOnClick = (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        if (!docMenuPanel) return;
+        if (docMenuPanel.hidden) showElement(docMenuPanel);
+        else hideElement(docMenuPanel);
+      };
+      if (typeof docMenuButton.addEventListener === "function") docMenuButton.addEventListener("click", docMenuOnClick);
+      docMenuBindings.set(docMenuButton, docMenuOnClick);
+      const previousCommit = docCommitBindings.get(repoCommitButton);
+      if (previousCommit && typeof repoCommitButton.removeEventListener === "function") {
+        repoCommitButton.removeEventListener("click", previousCommit);
+      }
+      repoCommitOnClick = (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        if (!activeRepo) return;
+        // A checkpoint is not a conflict waiter and carries no rev.
+        emit({ type: "commit" });
+      };
+      if (typeof repoCommitButton.addEventListener === "function") repoCommitButton.addEventListener("click", repoCommitOnClick);
+      docCommitBindings.set(repoCommitButton, repoCommitOnClick);
+      docMenuBound = true;
+    }
+    syncRepoCommit();
   }
 
   function bindRepoSelect(nav) {
@@ -3079,7 +3132,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   bindRepoSelect(filesNav());
   bindNewFile(filesNav());
-  bindCommit(filesNav());
   renderFileTree(fileList, false);
   bindTicketChrome(filesNav());
   ensureTicketForm();
@@ -3102,7 +3154,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     destroy() {
       unsubscribe();
       unbindRepoSelect();
-      unbindCommit();
+      unbindDocMenu();
       unbindNewFile();
       unbindTickets();
       unbindTreeDrop();

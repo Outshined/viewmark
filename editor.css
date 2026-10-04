@@ -61,14 +61,77 @@ select.md-repo {
   color: inherit;
 }
 
-button.md-commit {
+button.md-doc-menu {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 5;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.22rem;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: 0;
+  padding: 0.35rem;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+button.md-doc-menu .md-doc-menu-bar {
+  display: block;
   width: 100%;
-  margin: 0 0 0.8rem;
+  height: 2px;
+  background: currentColor;
+}
+
+div.md-doc-menu-panel {
+  position: absolute;
+  top: 1.75rem;
+  right: 0;
+  z-index: 6;
+  box-sizing: border-box;
+  min-width: 10rem;
+  padding: 0.45rem 0.55rem 0.55rem;
+  background: #242320;
+  border: 1px solid #3f3c37;
+  border-radius: 6px;
+}
+
+div.md-doc-menu-panel[hidden] {
+  display: none;
+}
+
+div.md-doc-menu-panel label {
+  display: inline;
+  margin: 0 0 0.55rem 0.35rem;
+  font-size: 0.85rem;
+  vertical-align: middle;
+}
+
+div.md-doc-menu-panel input {
+  margin: 0;
+  vertical-align: middle;
+}
+
+button.md-doc-commit {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  margin: 0.55rem 0 0;
+  padding: 0.15rem 0.45rem;
   background: #1c1b19;
   border: 1px solid #4a463f;
   font: inherit;
   color: inherit;
+  cursor: pointer;
+}
+
+button.md-doc-commit[hidden] {
+  display: none;
 }
 
 dialog.md-login {
@@ -627,12 +690,6 @@ a.md-link {
   padding: 0.15rem 0.45rem;
 }
 
-aside.comments > label {
-  display: inline-block;
-  margin: 0 0 0.75rem 0.35rem;
-  font-size: 0.85rem;
-}
-
 .md-comment-card button {
   font: inherit;
   font-size: 0.85rem;
@@ -700,7 +757,7 @@ aside.comments > label {
     width: 100%;
     max-width: 100%;
     height: auto;
-    padding: 0 1.4rem 2rem;
+    padding: calc(1.75rem + 0.65rem) 1.4rem 2rem;
   }
 
   .md-comment-card {
