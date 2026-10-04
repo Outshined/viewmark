@@ -2239,7 +2239,8 @@ test("comment cards mark the thread being acted on", () => {
     const known = createEditor(mounted.root, knownDoc, 0);
     assert.equal(currentCards().length, 0);
     assert.equal(texts()[0].textContent, "hi");
-    clickEditor(marks()[0]);
+    assert.equal(typeof globalThis.document.caretPositionFromPoint, "undefined");
+    assert.doesNotThrow(() => clickEditor(marks()[0]));
     assert.equal(currentCards().length, 1);
     assert.equal(currentCards()[0].dataset.comment, "c1");
     assert.equal(editing("c1").length, 0);
@@ -2320,6 +2321,27 @@ test("comment cards mark the thread being acted on", () => {
     const second = addComment(first.doc, 0, 5);
     const paired = createEditor(mounted.root, second.doc, 0);
     assert.deepEqual(cards().map((card) => card.dataset.comment), ["c2", "c1"]);
+    const authorOf = (card) => {
+      let found = null;
+      const walk = (node) => {
+        if (!node || found) return;
+        if (node.classList && node.classList.contains("md-comment-author")) found = node;
+        for (const child of node.childNodes || []) walk(child);
+      };
+      walk(card);
+      return found;
+    };
+    const leading = cards().find((card) => card.dataset.comment === "c2");
+    const idle = cards().find((card) => card.dataset.comment === "c1");
+    const idleAuthor = authorOf(idle);
+    mounted.aside.listeners.click({ target: leading, preventDefault() {} });
+    assert.equal(leading.classList.contains("md-comment-current"), true);
+    assert.equal(idle.classList.contains("md-comment-current"), false);
+    mounted.aside.listeners.click({ target: idleAuthor, preventDefault() {} });
+    assert.equal(authorOf(idle), idleAuthor);
+    assert.equal(idle.classList.contains("md-comment-current"), true);
+    assert.equal(leading.classList.contains("md-comment-current"), false);
+    assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c1"]);
     mounted.aside.listeners.click({ target: cards()[1], preventDefault() {} });
     assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c1"]);
     mounted.aside.listeners.click({ target: texts().find((node) => node.dataset.comment === "c1"), preventDefault() {} });
@@ -2379,6 +2401,22 @@ test("comment cards mark the thread being acted on", () => {
     assert.equal(editing("c1").length, 0);
     assert.equal(areas().length, 0);
     resolved.destroy();
+
+    const caretView = createEditor(mounted.root, knownDoc, 0);
+    const savedMark = marks().find((mark) => mark.dataset.comment === "c1");
+    const word = savedMark.childNodes.find((node) => node.nodeType === 3);
+    const placed = 1;
+    const wordStart = Number(savedMark.dataset.start);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: word, offset: placed });
+    assert.doesNotThrow(() => clickEditor(savedMark));
+    assert.equal(caretView.getState().cursor, wordStart + placed);
+    assert.equal(caretView.getState().anchor, wordStart + placed);
+    assert.equal(currentCards().length, 1);
+    assert.equal(currentCards()[0].dataset.comment, "c1");
+    assert.equal(areas().length, 0);
+    assert.equal(editing("c1").length, 0);
+    delete globalThis.document.caretPositionFromPoint;
+    caretView.destroy();
   } finally {
     mounted.restore();
   }

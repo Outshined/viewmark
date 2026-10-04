@@ -2480,6 +2480,36 @@ export function createEditor(root, doc, cursor = 0) {
     walk(root);
   }
 
+  function findCommentCard(id) {
+    let found = null;
+    const walk = (node) => {
+      if (!node || found) return;
+      if (node.classList && node.classList.contains("md-comment-card") && node.dataset && node.dataset.comment === id) {
+        found = node;
+        return;
+      }
+      for (const child of node.childNodes || []) walk(child);
+    };
+    if (commentsAside) walk(commentsAside);
+    return found;
+  }
+
+  // The author field has to stay the node that was clicked, so the class moves on the live cards.
+  function showCurrentCard(card) {
+    if (!card || !card.dataset) return;
+    currentCommentId = card.dataset.comment;
+    if (!commentsAside) return;
+    const walk = (node) => {
+      if (!node) return;
+      if (node.classList && node.classList.contains("md-comment-card")) {
+        if (node === card) node.classList.add("md-comment-current");
+        else node.classList.remove("md-comment-current");
+      }
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(commentsAside);
+  }
+
   function clearCurrentComment() {
     currentCommentId = null;
     if (!commentsAside) return;
@@ -2680,6 +2710,7 @@ export function createEditor(root, doc, cursor = 0) {
       return;
     }
     const highlighted = target?.closest?.(".md-comment");
+    let keepCurrent = false;
     if (highlighted && highlighted.dataset && highlighted.dataset.comment) {
       const id = highlighted.dataset.comment;
       const inside = root.contains(highlighted);
@@ -2694,29 +2725,22 @@ export function createEditor(root, doc, cursor = 0) {
         return;
       }
       if (inside) {
-        currentCommentId = id;
-        const markedAtom = target?.closest?.(".md-atom");
-        if (markedAtom && root.contains(markedAtom)) {
-          event.preventDefault();
-          const next = atomClickOffset(markedAtom, target);
-          state = { ...state, anchor: next, cursor: next };
-          render();
-          return;
-        }
-        render();
-        return;
+        const card = findCommentCard(id);
+        if (card) showCurrentCard(card);
+        else currentCommentId = id;
+        keepCurrent = true;
       }
     }
     const atom = target?.closest?.(".md-atom");
     if (atom && root.contains(atom)) {
       event.preventDefault();
-      currentCommentId = null;
+      if (!keepCurrent) currentCommentId = null;
       const next = atomClickOffset(atom, target);
       state = { ...state, anchor: next, cursor: next };
       render();
       return;
     }
-    clearCurrentComment();
+    if (!keepCurrent) clearCurrentComment();
     if (typeof document.caretPositionFromPoint !== "function") return;
     const pos = document.caretPositionFromPoint(event.clientX, event.clientY);
     if (!pos) return;
@@ -2746,11 +2770,8 @@ export function createEditor(root, doc, cursor = 0) {
       }
       const card = ancestorWithClass(target && target.nodeType === 1 ? target : target && target.parentElement, "md-comment-card");
       if (!card || !card.dataset || !card.dataset.comment) return;
-      const id = card.dataset.comment;
-      if (!threadById(id)) return;
-      const already = currentCommentId === id && card.classList.contains("md-comment-current");
-      currentCommentId = id;
-      if (!already) render();
+      if (!threadById(card.dataset.comment)) return;
+      showCurrentCard(card);
     }, { signal: ac.signal });
     commentsAside.addEventListener("input", (event) => {
       const box = event.target;
