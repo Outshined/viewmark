@@ -16,6 +16,7 @@ import {
 import {
   TICKET_ALPHABET,
   TICKET_STATES,
+  TICKET_TYPES,
   composeTicket,
   generateId,
   parseTicket,
@@ -265,6 +266,7 @@ function ticketView(ticket) {
     id: ticket.id,
     title: ticket.title,
     state: ticket.state,
+    type: ticket.type,
     parent: ticket.parent,
     depends: [...ticket.depends],
     reporter: ticket.reporter,
@@ -280,6 +282,8 @@ function ticketNotice(file) {
     rev: file.rev,
     title: ticket.title,
     state: ticket.state,
+    // Frame `type` is the command, so the ticket type travels as ticketType.
+    ticketType: ticket.type,
     parent: ticket.parent,
     depends: [...ticket.depends],
     reporter: ticket.reporter,
@@ -694,6 +698,11 @@ export function createHub(docsDir) {
       if (typeof msg.state !== "string" || !TICKET_STATES.includes(msg.state)) return fail(socket, 400);
       state = msg.state;
     }
+    let type = "task";
+    if (Object.prototype.hasOwnProperty.call(msg, "ticketType")) {
+      if (typeof msg.ticketType !== "string" || !TICKET_TYPES.includes(msg.ticketType)) return fail(socket, 400);
+      type = msg.ticketType;
+    }
     const reporter = socket.session.username;
     const created = new Date().toISOString();
     let allocated = null;
@@ -712,6 +721,7 @@ export function createHub(docsDir) {
       id: allocated.id,
       title,
       state,
+      type,
       parent: "",
       depends: [],
       reporter,
@@ -744,6 +754,7 @@ export function createHub(docsDir) {
     const next = { ...file.ticket, depends: [...file.ticket.depends] };
     if (Object.prototype.hasOwnProperty.call(msg, "title")) next.title = msg.title;
     if (Object.prototype.hasOwnProperty.call(msg, "state")) next.state = msg.state;
+    if (Object.prototype.hasOwnProperty.call(msg, "ticketType")) next.type = msg.ticketType;
     if (Object.prototype.hasOwnProperty.call(msg, "parent")) next.parent = msg.parent;
     if (Object.prototype.hasOwnProperty.call(msg, "depends")) next.depends = msg.depends;
     const composed = composeTicket({ ...next, id: file.ticket.id, body: file.text });

@@ -2,7 +2,9 @@ export const TICKET_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz";
 
 export const TICKET_STATES = Object.freeze(["new", "triaged", "in progress", "closed"]);
 
-const KEYS = ["title", "state", "parent", "depends", "reporter", "created"];
+export const TICKET_TYPES = Object.freeze(["bug", "enhancement", "task"]);
+
+const KEYS = ["title", "state", "type", "parent", "depends", "reporter", "created"];
 
 const CREATED_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -66,6 +68,9 @@ function validateFields(fields) {
   const state = typeof fields.state === "string" ? fields.state.trim() : "";
   if (!TICKET_STATES.includes(state)) return null;
 
+  const type = typeof fields.type === "string" ? fields.type.trim() : "";
+  if (!TICKET_TYPES.includes(type)) return null;
+
   const parent = typeof fields.parent === "string" ? fields.parent.trim() : null;
   if (parent === null || (parent !== "" && !isId(parent))) return null;
 
@@ -87,6 +92,7 @@ function validateFields(fields) {
   return {
     title,
     state,
+    type,
     parent,
     depends: [...new Set(depends)].sort(),
     reporter,
@@ -99,7 +105,7 @@ function writeField(key, value) {
   return value === "" ? `${key}:` : `${key}: ${value}`;
 }
 
-// The header is six single lines. The first blank line ends it; everything
+// The header is seven single lines. The first blank line ends it; everything
 // after that is markdown and can contain blank lines and header-shaped text.
 export function parseTicket(id, text) {
   if (!isId(id) || typeof text !== "string") return null;
@@ -112,6 +118,7 @@ export function parseTicket(id, text) {
   const fields = validateFields({
     title: header.title,
     state: header.state,
+    type: header.type,
     parent: header.parent,
     depends,
     reporter: header.reporter,
@@ -129,6 +136,7 @@ export function composeTicket(ticket) {
   const lines = [
     writeField("title", fields.title),
     writeField("state", fields.state),
+    writeField("type", fields.type),
     writeField("parent", fields.parent),
     writeField("depends", fields.depends.join(" ")),
     writeField("reporter", fields.reporter),

@@ -2,7 +2,7 @@
 
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { TICKET_ALPHABET, TICKET_STATES } from "./src/ticket.js";
+import { TICKET_ALPHABET, TICKET_STATES, TICKET_TYPES } from "./src/ticket.js";
 
 const HELP = `viewmark talks to the document hub, one command, then exit.
 
@@ -13,8 +13,8 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] edit <path> --rev N --find TEXT --replace TEXT
   viewmark [--port PORT] [--user NAME] [--json] ticket list [--closed]
   viewmark [--port PORT] [--user NAME] [--json] ticket show <id>
-  viewmark [--port PORT] [--user NAME] [--json] ticket create --title TEXT [--state STATE]
-  viewmark [--port PORT] [--user NAME] [--json] ticket set <id> --rev N [--title TEXT] [--state STATE] [--parent ID] [--depends IDS]
+  viewmark [--port PORT] [--user NAME] [--json] ticket create --title TEXT [--state STATE] [--type TYPE]
+  viewmark [--port PORT] [--user NAME] [--json] ticket set <id> --rev N [--title TEXT] [--state STATE] [--type TYPE] [--parent ID] [--depends IDS]
   viewmark [--port PORT] [--user NAME] [--json] ticket purge
   viewmark help [cmd]
   viewmark --help
@@ -39,13 +39,14 @@ Example of one copy-paste edit:
   viewmark --user alice edit hello.md --rev 0 --find "hello" --replace "hi"
 
 ticket:
-  list [--closed], show <id>, create --title TEXT [--state STATE], set <id> --rev N, purge.
-  --rev, --title, --state, --parent, --depends, --closed.
+  list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE], set <id> --rev N, purge.
+  --rev, --title, --state, --type, --parent, --depends, --closed.
   --parent none clears. --depends none clears. --state is new, triaged, in progress, or closed.
+  --type is bug, enhancement, or task. An omitted type is task.
   reporter is --user. A stale rev exits 409 and does not write.
-  list prints id, created, state, and title. show prints the body.
-  --json: list {tickets:[{id,title,state,parent,depends,reporter,created}]};
-    show and set {id,path,rev,title,state,parent,depends,reporter,created,text};
+  list prints id, created, state, type, and title. show prints the body.
+  --json: list {tickets:[{id,title,state,type,parent,depends,reporter,created}]};
+    show and set {id,path,rev,title,state,type,parent,depends,reporter,created,text};
     create {id,path,rev:0,reporter,created}; purge {purged:[...]};
     conflict adds "error":"conflict".
 
@@ -57,7 +58,7 @@ Exit codes: 0, 1, 2, 400, 404, 409.
 A stale rev exits 409 and does not write. The shell status is that number modulo 256, so 400 is 144, 404 is 148, and 409 is 153. stderr \`conflict\` or \`error N\` is the hub status.
 `;
 
-const VALUE_FLAGS = new Set(["port", "user", "rev", "find", "replace", "title", "state", "parent", "depends"]);
+const VALUE_FLAGS = new Set(["port", "user", "rev", "find", "replace", "title", "state", "type", "parent", "depends"]);
 
 // Same rejection the hub uses, so a bad name never opens a socket.
 export function validUsername(name) {
@@ -99,6 +100,8 @@ function parseArgs(argv) {
     title: "",
     stateSet: false,
     state: "",
+    typeSet: false,
+    type: "",
     parentSet: false,
     parent: "",
     dependsSet: false,
@@ -159,6 +162,9 @@ function parseArgs(argv) {
       } else if (name === "state") {
         args.stateSet = true;
         args.state = value;
+      } else if (name === "type") {
+        args.typeSet = true;
+        args.type = value;
       } else if (name === "parent") {
         args.parentSet = true;
         args.parent = value;
@@ -534,6 +540,10 @@ function prepareTicket(args, rest) {
       if (!TICKET_STATES.includes(args.state)) return { error: "invalid state" };
       command.state = args.state;
     }
+    if (args.typeSet) {
+      if (!TICKET_TYPES.includes(args.type)) return { error: "invalid type" };
+      command.type = args.type;
+    }
     return command;
   }
   if (sub === "set") {
@@ -553,6 +563,10 @@ function prepareTicket(args, rest) {
       if (!TICKET_STATES.includes(args.state)) return { error: "invalid state" };
       fields.state = args.state;
     }
+    if (args.typeSet) {
+      if (!TICKET_TYPES.includes(args.type)) return { error: "invalid type" };
+      fields.type = args.type;
+    }
     if (args.parentSet) {
       const parent = normalizeParent(args.parent);
       if (parent === null) return { error: "invalid id" };
@@ -563,7 +577,7 @@ function prepareTicket(args, rest) {
       if (depends === null) return { error: "invalid id" };
       fields.depends = depends;
     }
-    if (Object.keys(fields).length === 0) return { error: "set requires --title, --state, --parent, or --depends" };
+    if (Object.keys(fields).length === 0) return { error: "set requires --title, --state, --type, --parent, or --depends" };
     return { sub, id: more[0], rev, fields };
   }
   if (sub === "purge") {
@@ -577,6 +591,7 @@ function asTicket(raw) {
   if (!raw || typeof raw !== "object") return null;
   if (!validTicketId(raw.id)) return null;
   if (typeof raw.title !== "string" || typeof raw.state !== "string") return null;
+  if (!TICKET_TYPES.includes(raw.type)) return null;
   if (typeof raw.parent !== "string" || (raw.parent !== "" && !validTicketId(raw.parent))) return null;
   if (!Array.isArray(raw.depends) || raw.depends.some((id) => !validTicketId(id))) return null;
   if (typeof raw.reporter !== "string" || typeof raw.created !== "string") return null;
@@ -584,6 +599,7 @@ function asTicket(raw) {
     id: raw.id,
     title: raw.title,
     state: raw.state,
+    type: raw.type,
     parent: raw.parent,
     depends: raw.depends.slice(),
     reporter: raw.reporter,
@@ -605,6 +621,7 @@ function asTicketList(msg) {
 function asTicketNotice(msg, id) {
   if (!msg || typeof msg !== "object") return null;
   if (typeof msg.title !== "string" || typeof msg.state !== "string") return null;
+  if (!TICKET_TYPES.includes(msg.ticketType)) return null;
   if (typeof msg.parent !== "string" || (msg.parent !== "" && !validTicketId(msg.parent))) return null;
   if (!Array.isArray(msg.depends) || msg.depends.some((dep) => !validTicketId(dep))) return null;
   if (typeof msg.reporter !== "string" || typeof msg.created !== "string") return null;
@@ -613,6 +630,7 @@ function asTicketNotice(msg, id) {
     id,
     title: msg.title,
     state: msg.state,
+    type: msg.ticketType,
     parent: msg.parent,
     depends: msg.depends.slice(),
     reporter: msg.reporter,
@@ -638,6 +656,7 @@ function ticketMeta(view) {
     `rev ${view.rev}`,
     metaLine("title", view.title),
     metaLine("state", view.state),
+    metaLine("type", view.type),
     metaLine("parent", view.parent),
     metaLine("depends", view.depends.join(",")),
     metaLine("reporter", view.reporter),
@@ -654,6 +673,7 @@ function printTicket(view, json, conflict) {
       rev: view.rev,
       title: view.title,
       state: view.state,
+      type: view.type,
       parent: view.parent,
       depends: view.depends,
       reporter: view.reporter,
@@ -681,6 +701,7 @@ function sameDepends(stored, requested) {
 function requestedMatches(opened, fields) {
   if (Object.prototype.hasOwnProperty.call(fields, "title") && fields.title !== opened.title) return false;
   if (Object.prototype.hasOwnProperty.call(fields, "state") && fields.state !== opened.state) return false;
+  if (Object.prototype.hasOwnProperty.call(fields, "type") && fields.type !== opened.type) return false;
   if (Object.prototype.hasOwnProperty.call(fields, "parent") && fields.parent !== opened.parent) return false;
   if (Object.prototype.hasOwnProperty.call(fields, "depends") && !sameDepends(opened.depends, fields.depends)) return false;
   return true;
@@ -693,6 +714,7 @@ function printTicketList(tickets, json) {
         id: ticket.id,
         title: ticket.title,
         state: ticket.state,
+        type: ticket.type,
         parent: ticket.parent,
         depends: ticket.depends,
         reporter: ticket.reporter,
@@ -703,7 +725,7 @@ function printTicketList(tickets, json) {
   }
   if (tickets.length === 0) return;
   process.stdout.write(tickets.map((ticket) => (
-    `${ticket.id}\t${ticket.created}\t${ticket.state}\t${ticket.title}\n`
+    `${ticket.id}\t${ticket.created}\t${ticket.state}\t${ticket.type}\t${ticket.title}\n`
   )).join(""));
 }
 
@@ -731,6 +753,7 @@ async function runTicketShow(hub, username, id, json) {
 async function runTicketCreate(hub, username, command, json) {
   const payload = { type: "ticket.create", username, title: command.title };
   if (command.state !== undefined) payload.state = command.state;
+  if (command.type !== undefined) payload.ticketType = command.type;
   hub.send(payload);
   const msg = await hub.next((item) => item.type === "file" || item.type === "error");
   if (msg.type === "error") return serverError(msg);
@@ -764,13 +787,19 @@ async function runTicketSet(hub, username, command, json) {
   if (opened.rev !== command.rev) return printTicket(opened, json, true), 409;
   // The hub stays silent when the composed ticket would not change.
   if (requestedMatches(opened, command.fields)) return printTicket(opened, json, false), 0;
-  hub.send({
+  const payload = {
     type: "ticket.set",
     username,
     path: opened.path,
     rev: command.rev,
-    ...command.fields,
-  });
+  };
+  const fields = command.fields;
+  if (Object.prototype.hasOwnProperty.call(fields, "title")) payload.title = fields.title;
+  if (Object.prototype.hasOwnProperty.call(fields, "state")) payload.state = fields.state;
+  if (Object.prototype.hasOwnProperty.call(fields, "parent")) payload.parent = fields.parent;
+  if (Object.prototype.hasOwnProperty.call(fields, "depends")) payload.depends = fields.depends;
+  if (Object.prototype.hasOwnProperty.call(fields, "type")) payload.ticketType = fields.type;
+  hub.send(payload);
   const msg = await hub.next((item) => item.type === "error" || (item.type === "ticket" && item.path === opened.path));
   if (msg.type === "error") {
     if (msg.status === 409) return printTicket(opened, json, true), 409;

@@ -45,6 +45,7 @@ const HELP_NEEDLES = [
   "ticket purge",
   "--title",
   "--state",
+  "--type",
   "--parent",
   "--depends",
   "--closed",
@@ -829,10 +830,12 @@ const BODY = "Keep me\n\ntitle: not a header\n";
 function ticketErr(fields, conflict = false) {
   const parent = fields.parent === "" ? "parent" : `parent ${fields.parent}`;
   const depends = fields.depends.length === 0 ? "depends" : `depends ${fields.depends.join(",")}`;
+  const type = fields.type ?? "task";
   const lines = [
     `rev ${fields.rev}`,
     `title ${fields.title}`,
     `state ${fields.state}`,
+    `type ${type}`,
     parent,
     depends,
     `reporter ${fields.reporter}`,
@@ -849,6 +852,7 @@ function ticketJson(fields) {
     rev: fields.rev,
     title: fields.title,
     state: fields.state,
+    type: fields.type ?? "task",
     parent: fields.parent,
     depends: fields.depends,
     reporter: fields.reporter,
@@ -880,6 +884,7 @@ async function writeTicket(dir, fields) {
     body: "",
     reporter: "indexer",
     state: "new",
+    type: "task",
     ...fields,
   });
   assert.ok(text);
@@ -950,19 +955,19 @@ test("T-cli-ticket-list", async () => {
     assert.equal(listed.code, 0);
     assert.equal(listed.stderr, "");
     assert.equal(listed.stdout, [
-      `${B}\t${T0}\tnew\tBeta\n`,
-      `${C}\t${T1}\ttriaged\tSee\n`,
-      `${Z}\t${T3}\tin progress\tHas spaces\n`,
+      `${B}\t${T0}\tnew\ttask\tBeta\n`,
+      `${C}\t${T1}\ttriaged\ttask\tSee\n`,
+      `${Z}\t${T3}\tin progress\ttask\tHas spaces\n`,
     ].join(""));
 
     const closed = await runFast(ticketArgs(port, ["--closed", "ticket", "list"]));
     assert.equal(closed.code, 0);
     assert.equal(closed.stderr, "");
     assert.equal(closed.stdout, [
-      `${A}\t${T0}\tclosed\tAlpha\n`,
-      `${B}\t${T0}\tnew\tBeta\n`,
-      `${C}\t${T1}\ttriaged\tSee\n`,
-      `${Z}\t${T3}\tin progress\tHas spaces\n`,
+      `${A}\t${T0}\tclosed\ttask\tAlpha\n`,
+      `${B}\t${T0}\tnew\ttask\tBeta\n`,
+      `${C}\t${T1}\ttriaged\ttask\tSee\n`,
+      `${Z}\t${T3}\tin progress\ttask\tHas spaces\n`,
     ].join(""));
 
     const json = await runFast(["--json", ...ticketArgs(port, ["ticket", "list"])]);
@@ -971,11 +976,12 @@ test("T-cli-ticket-list", async () => {
     const open = JSON.parse(json.stdout);
     assert.deepEqual(open, {
       tickets: [
-        { id: B, title: "Beta", state: "new", parent: "", depends: [], reporter: "indexer", created: T0 },
+        { id: B, title: "Beta", state: "new", type: "task", parent: "", depends: [], reporter: "indexer", created: T0 },
         {
           id: C,
           title: "See",
           state: "triaged",
+          type: "task",
           parent: B,
           depends: [A, Z],
           reporter: "indexer",
@@ -985,6 +991,7 @@ test("T-cli-ticket-list", async () => {
           id: Z,
           title: "Has spaces",
           state: "in progress",
+          type: "task",
           parent: "",
           depends: [],
           reporter: "indexer",
@@ -993,7 +1000,7 @@ test("T-cli-ticket-list", async () => {
       ],
     });
     for (const ticket of open.tickets) {
-      assert.deepEqual(Object.keys(ticket), ["id", "title", "state", "parent", "depends", "reporter", "created"]);
+      assert.deepEqual(Object.keys(ticket), ["id", "title", "state", "type", "parent", "depends", "reporter", "created"]);
     }
 
     const all = await runFast(ticketArgs(port, ["ticket", "--json", "list", "--closed"]));
@@ -1073,7 +1080,7 @@ test("T-cli-ticket-show", async () => {
     assert.equal(json.stderr, "");
     const parsed = JSON.parse(json.stdout);
     assert.deepEqual(Object.keys(parsed), [
-      "id", "path", "rev", "title", "state", "parent", "depends", "reporter", "created", "text",
+      "id", "path", "rev", "title", "state", "type", "parent", "depends", "reporter", "created", "text",
     ]);
     assert.deepEqual(parsed, ticketJson({
       id: C,
@@ -1113,6 +1120,9 @@ test("T-cli-ticket-create", async () => {
       ["ticket", "create", "--title", "Hello", "--state", "done"],
       ["ticket", "create", "--title", "Hello", "--state", ""],
       ["ticket", "create", "--title", "Hello", "--state", " new"],
+      ["ticket", "create", "--title", "Hello", "--type", "nope"],
+      ["ticket", "create", "--title", "Hello", "--type", ""],
+      ["ticket", "create", "--title", "Hello", "--type", "Bug"],
       ["ticket", "create", "--title", "Hello", "extra"],
       ["ticket", "create", "--state", "new"],
     ];
@@ -1144,6 +1154,7 @@ test("T-cli-ticket-create", async () => {
     const disk = parseTicket(id, await fs.readFile(path.join(dir, "tickets", `${id}.md`), "utf8"));
     assert.equal(disk.title, "Hello");
     assert.equal(disk.state, "new");
+    assert.equal(disk.type, "task");
     assert.equal(disk.parent, "");
     assert.deepEqual(disk.depends, []);
     assert.equal(disk.reporter, "user");
@@ -1155,11 +1166,24 @@ test("T-cli-ticket-create", async () => {
       rev: 0,
       title: "Hello",
       state: "new",
+      type: "task",
       parent: "",
       depends: [],
       reporter: "user",
       created: stamp,
     }));
+    assert.match(shown.stderr, /state new\ntype task\n/);
+
+    const bug = await runFast(ticketArgs(port, ["ticket", "create", "--title", "Bug", "--type", "bug"]));
+    assert.equal(bug.code, 0);
+    const bugId = bug.stdout.trim();
+    const bugDisk = parseTicket(bugId, await fs.readFile(path.join(dir, "tickets", `${bugId}.md`), "utf8"));
+    assert.equal(bugDisk.type, "bug");
+    assert.equal(bugDisk.state, "new");
+    assert.equal(bugDisk.title, "Bug");
+    assert.equal(bugDisk.body, "");
+    const bugShown = await runFast(ticketArgs(port, ["ticket", "show", bugId]));
+    assert.match(bugShown.stderr, /type bug\n/);
 
     const triaged = await runFast(ticketArgs(port, ["ticket", "create", "--title=Next", "--state=triaged"]));
     assert.equal(triaged.code, 0);
@@ -1255,6 +1279,9 @@ test("T-cli-ticket-set", async () => {
       ["ticket", "set", A, "--rev", "0", "--title", "   "],
       ["ticket", "set", A, "--rev", "0", "--state", "done"],
       ["ticket", "set", A, "--rev", "0", "--state", "closed "],
+      ["ticket", "set", A, "--rev", "0", "--type", "nope"],
+      ["ticket", "set", A, "--rev", "0", "--type", ""],
+      ["ticket", "set", A, "--rev", "0", "--type", "Bug"],
       ["ticket", "set", A, "--rev", "0", "--parent", "123"],
       ["ticket", "set", A, "--rev", "0", "--parent", "nonee"],
       ["ticket", "set", A, "--rev", "0", "--depends", ""],
@@ -1335,7 +1362,7 @@ test("T-cli-ticket-set", async () => {
       assert.equal(staleJson.stderr, "");
       const conflict = JSON.parse(staleJson.stdout);
       assert.deepEqual(Object.keys(conflict), [
-        "id", "path", "rev", "title", "state", "parent", "depends", "reporter", "created", "text", "error",
+        "id", "path", "rev", "title", "state", "type", "parent", "depends", "reporter", "created", "text", "error",
       ]);
       assert.deepEqual(conflict, {
         ...ticketJson({
@@ -1426,6 +1453,25 @@ test("T-cli-ticket-set", async () => {
       view.rev = 6;
       view.parent = A;
       assert.equal(parented.stderr, ticketErr(view));
+
+      const typed = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "6", "--type", "bug"]));
+      assert.equal(typed.code, 0);
+      view.rev = 7;
+      view.type = "bug";
+      assert.equal(typed.stdout, BODY);
+      assert.equal(typed.stderr, ticketErr(view));
+      const typedDisk = parseTicket(B, await fs.readFile(bPath, "utf8"));
+      assert.equal(typedDisk.type, "bug");
+      assert.equal(typedDisk.body, BODY);
+      assert.equal(typedDisk.state, "in progress");
+      assert.equal(typedDisk.title, "Renamed");
+
+      const beforeSame = await fs.readFile(bPath, "utf8");
+      const sameType = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "7", "--type", "bug"]));
+      assert.equal(sameType.code, 0);
+      assert.equal(sameType.stdout, BODY);
+      assert.equal(sameType.stderr, ticketErr(view));
+      assert.equal(await fs.readFile(bPath, "utf8"), beforeSame);
 
       const cycle = await runFast(ticketArgs(port, ["ticket", "set", A, "--rev", "0", "--parent", B]));
       assert.equal(cycle.code, shellStatus(409));
@@ -1522,7 +1568,7 @@ test("T-cli-ticket-purge", async () => {
       created: T2,
     }));
     const remain = await runFast(ticketArgs(port, ["ticket", "list", "--closed"]));
-    assert.equal(remain.stdout, `${B}\t${T0}\tnew\tBeta\n${E}\t${T2}\tnew\tEe\n`);
+    assert.equal(remain.stdout, `${B}\t${T0}\tnew\ttask\tBeta\n${E}\t${T2}\tnew\ttask\tEe\n`);
 
     const betaBefore = await fs.readFile(path.join(dir, "tickets", `${B}.md`), "utf8");
     const again = await runFast(ticketArgs(port, ["ticket", "purge"]));
@@ -1538,7 +1584,7 @@ test("T-cli-ticket-purge", async () => {
     assert.equal(json.stderr, "");
     assert.equal(json.stdout, `${JSON.stringify({ purged: [C, "ffffffff"] })}\n`);
     const left = await runFast(ticketArgs(port, ["ticket", "list", "--closed"]));
-    assert.equal(left.stdout, `${B}\t${T0}\tnew\tBeta\n${E}\t${T2}\tnew\tEe\n`);
+    assert.equal(left.stdout, `${B}\t${T0}\tnew\ttask\tBeta\n${E}\t${T2}\tnew\ttask\tEe\n`);
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
   });
 });

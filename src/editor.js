@@ -26,7 +26,7 @@ import {
   lineIndexAt,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
-import { TICKET_STATES } from "./ticket.js";
+import { TICKET_STATES, TICKET_TYPES } from "./ticket.js";
 
 export {
   sampleDocument,
@@ -159,6 +159,7 @@ function normalizeTicket(ticket) {
     id,
     title: typeof ticket.title === "string" ? ticket.title : "",
     state: typeof ticket.state === "string" ? ticket.state : "",
+    type: TICKET_TYPES.includes(ticket.type) ? ticket.type : "task",
     parent: typeof ticket.parent === "string" ? ticket.parent : "",
     depends,
     reporter: typeof ticket.reporter === "string" ? ticket.reporter : "",
@@ -2174,7 +2175,14 @@ export function createEditor(root, doc, cursor = 0, transport) {
       if ((fields.parent || "") === (openTicket.parent || "")) return;
     } else if (Object.prototype.hasOwnProperty.call(fields, "depends")) {
       if (sameSet(fields.depends, openTicket.depends)) return;
+    } else if (Object.prototype.hasOwnProperty.call(fields, "type")) {
+      if (fields.type === openTicket.type) return;
     } else {
+      return;
+    }
+    // Frame `type` is the command, so the ticket type travels as ticketType.
+    if (Object.prototype.hasOwnProperty.call(fields, "type")) {
+      emit({ type: "ticket.set", path: openPath, rev, ticketType: fields.type });
       return;
     }
     emit({ type: "ticket.set", path: openPath, rev, ...fields });
@@ -2270,6 +2278,22 @@ export function createEditor(root, doc, cursor = 0, transport) {
     });
     stateLabel.appendChild(stateSelect);
 
+    const typeLabel = document.createElement("label");
+    typeLabel.appendChild(document.createTextNode("Type"));
+    const typeSelect = document.createElement("select");
+    typeSelect.className = "md-ticket-type";
+    for (const type of TICKET_TYPES) {
+      const option = document.createElement("option");
+      option.value = type;
+      option.textContent = type;
+      typeSelect.appendChild(option);
+    }
+    typeSelect.value = ticket.type;
+    typeSelect.addEventListener("change", () => {
+      sendTicketSet({ type: typeSelect.value });
+    });
+    typeLabel.appendChild(typeSelect);
+
     const parentLabel = document.createElement("label");
     parentLabel.appendChild(document.createTextNode("Parent"));
     const parentSelect = document.createElement("select");
@@ -2327,6 +2351,7 @@ export function createEditor(root, doc, cursor = 0, transport) {
       heading,
       titleInput,
       stateLabel,
+      typeLabel,
       parentLabel,
       depends,
       reporterName,
@@ -2394,6 +2419,7 @@ export function createEditor(root, doc, cursor = 0, transport) {
       id: openTicket.id,
       title: message.title,
       state: message.state,
+      type: Object.prototype.hasOwnProperty.call(message, "ticketType") ? message.ticketType : openTicket.type,
       parent: message.parent,
       depends: message.depends,
       reporter: message.reporter,

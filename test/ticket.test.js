@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   TICKET_ALPHABET,
   TICKET_STATES,
+  TICKET_TYPES,
   generateId,
   parseTicket,
   composeTicket,
@@ -20,6 +21,7 @@ const N = "nnnnnnnn";
 const HEADER = [
   "title: Fix the login redirect",
   "state: new",
+  "type: task",
   "parent:",
   "depends:",
   "reporter: indexer",
@@ -40,6 +42,7 @@ function ticket(overrides = {}) {
     id: ID,
     title: "Fix the login redirect",
     state: "new",
+    type: "task",
     parent: "",
     depends: [],
     reporter: "indexer",
@@ -56,6 +59,7 @@ test("T-ticket-roundtrip", () => {
     "id",
     "title",
     "state",
+    "type",
     "parent",
     "depends",
     "reporter",
@@ -100,6 +104,7 @@ test("T-ticket-roundtrip", () => {
     [
       "title: Fix: the login redirect",
       "state: triaged",
+      "type: task",
       `parent: ${B}`,
       `depends: ${B} ${C}`,
       "reporter: Ada Lovelace",
@@ -207,6 +212,30 @@ test("T-ticket-state", () => {
   assert.equal(parseTicket(ID, SIMPLE.replace("state: new", "state:   in progress  ")).state, "in progress");
   assert.equal(parseTicket(ID, SIMPLE.replace("state: new", "state: closed ")).state, "closed");
   assert.equal(composeTicket(ticket({ state: "  closed  " })).includes("state: closed\n"), true);
+});
+
+test("T-ticket-type", () => {
+  assert.deepEqual(TICKET_TYPES, ["bug", "enhancement", "task"]);
+  assert.equal(Object.isFrozen(TICKET_TYPES), true);
+  assert.throws(() => TICKET_TYPES.push("feature"));
+  for (const type of TICKET_TYPES) {
+    const text = SIMPLE.replace("type: task", `type: ${type}`);
+    const parsed = parseTicket(ID, text);
+    assert.equal(parsed.type, type);
+    assert.equal(composeTicket(parsed), text);
+    assert.equal(composeTicket(ticket({ type })), text);
+  }
+
+  for (const type of ["", "nope", "Bug", "TASK", "feature"]) {
+    assert.equal(parseTicket(ID, SIMPLE.replace("type: task", type === "" ? "type:" : `type: ${type}`)), null);
+    assert.equal(composeTicket(ticket({ type })), null);
+  }
+  assert.equal(parseTicket(ID, SIMPLE.replace("type: task\n", "")), null);
+  assert.equal(parseTicket(ID, SIMPLE.replace("type: task", "type:task")), null);
+  assert.equal(composeTicket(ticket({ type: undefined })), null);
+  assert.equal(parseTicket(ID, SIMPLE.replace("type: task", "type:   bug  ")).type, "bug");
+  assert.equal(parseTicket(ID, SIMPLE.replace("type: task", "type: enhancement ")).type, "enhancement");
+  assert.equal(composeTicket(ticket({ type: "  task  " })).includes("type: task\n"), true);
 });
 
 test("T-ticket-self", () => {

@@ -3570,8 +3570,8 @@ const T1 = "2026-10-02T00:00:00.000Z";
 const T2 = "2026-10-03T00:00:00.000Z";
 const T3 = "2026-10-04T00:00:00.000Z";
 
-function ticketFixture(id, title, state, created, parent = "", depends = [], reporter = "Ada") {
-  return { id, title, state, parent, depends: depends.slice(), reporter, created };
+function ticketFixture(id, title, state, created, parent = "", depends = [], reporter = "Ada", type = "task") {
+  return { id, title, state, type, parent, depends: depends.slice(), reporter, created };
 }
 
 function mountTicketPage() {
@@ -3663,8 +3663,8 @@ test("T-ticket-rows", () => {
     assert.equal(plus.textContent, "+");
     assert.equal(plus.type, "button");
     const list = [
-      ticketFixture("cccccccc", "Cedar", "triaged", T2),
-      ticketFixture("aaaaaaaa", "Alpha", "new", T0),
+      ticketFixture("cccccccc", "Cedar", "triaged", T2, "", [], "Ada", "bug"),
+      ticketFixture("aaaaaaaa", "Alpha", "new", T0, "", [], "Ada", "enhancement"),
       ticketFixture("dddddddd", "Delta", "in progress", T0),
       ticketFixture("bbbbbbbb", "Bravo", "new", T1, "aaaaaaaa"),
       ticketFixture("eeeeeeee", "Echo", "new", T3, "aaaaaaaa"),
@@ -3682,6 +3682,7 @@ test("T-ticket-rows", () => {
       assert.equal(row.textContent.includes(ticket.title), true);
       assert.equal(row.textContent.includes(ticket.state), true);
       assert.equal(row.textContent.includes(ticket.id), false);
+      assert.equal(row.textContent.includes(ticket.type), false);
     }
     const alpha = ticketNode(mounted.nav, "aaaaaaaa");
     const expand = byClass(alpha, "md-ticket-expand")[0];
@@ -3699,6 +3700,9 @@ test("T-ticket-rows", () => {
     assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("bbbbbbbb"), false);
     assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("Bravo"), true);
     assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("new"), true);
+    assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("task"), false);
+    assert.equal(rowOf(mounted.nav, "cccccccc").textContent.includes("bug"), false);
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("enhancement"), false);
     const open = byClass(ticketNode(mounted.nav, "bbbbbbbb"), "md-ticket").find((node) => node.tagName === "BUTTON");
     open.listeners.click({ preventDefault() {} });
     assert.deepEqual(transport.sent.at(-1), { type: "open", path: "tickets/bbbbbbbb.md", rev: 0, username: "" });
@@ -3972,9 +3976,31 @@ test("T-ticket-fields", () => {
       { type: "ticket.set", path: "tickets/aaaaaaaa.md", rev: 6, depends: ["bbbbbbbb", "cccccccc"], username: "" },
     ]);
     assert.equal(sets().every((message) => message.reporter === undefined && message.created === undefined), true);
+    const typeSelect = () => byClass(form, "md-ticket-type")[0];
+    assert.deepEqual(typeSelect().childNodes.map((option) => option.textContent), ["bug", "enhancement", "task"]);
+    assert.deepEqual(typeSelect().childNodes.map((option) => option.value), ["bug", "enhancement", "task"]);
+    assert.equal(typeSelect().value, "task");
+    assert.equal(typeSelect().parentElement.childNodes[0].textContent, "Type");
+    assert.equal(form.childNodes.indexOf(typeSelect().parentElement), form.childNodes.indexOf(state().parentElement) + 1);
+    assert.ok(form.childNodes.indexOf(typeSelect().parentElement) < form.childNodes.indexOf(parent().parentElement));
+    const beforeType = sets().length;
+    typeSelect().value = "task";
+    typeSelect().listeners.change();
+    assert.equal(sets().length, beforeType);
+    typeSelect().value = "bug";
+    typeSelect().listeners.change();
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      ticketType: "bug",
+      username: "",
+    });
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("bug"), false);
     transport.deliver({ type: "error", status: 400 });
     assert.equal(view.getState().cursor, 7);
     assert.equal(state().value, "new");
+    assert.equal(typeSelect().value, "task");
     view.destroy();
   } finally {
     mounted.restore();
@@ -4010,6 +4036,7 @@ test("T-ticket-notice", () => {
       rev: 8,
       title: "Alpha two",
       state: "triaged",
+      ticketType: "enhancement",
       parent: "",
       depends: [],
       reporter: "Bea",
@@ -4021,6 +4048,10 @@ test("T-ticket-notice", () => {
     assert.equal(byClass(form, "md-ticket-reporter")[0].textContent, "Bea");
     assert.equal(byClass(form, "md-ticket-created")[0].textContent, T2);
     assert.equal(byClass(form, "md-ticket-state")[0].value, "triaged");
+    assert.equal(byClass(form, "md-ticket-type")[0].value, "enhancement");
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("Alpha two"), true);
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("triaged"), true);
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("enhancement"), false);
     const state = byClass(form, "md-ticket-state")[0];
     state.value = "closed";
     state.listeners.change();
