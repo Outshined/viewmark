@@ -1817,6 +1817,7 @@ export function createEditor(root, doc, cursor = 0) {
   const replyDrafts = new Map();
   const noteDrafts = new Map();
   const authorDrafts = new Map();
+  const editingNotes = new Set();
   root.contentEditable = "true";
   root.spellcheck = false;
   root.autocapitalize = "off";
@@ -2012,6 +2013,9 @@ export function createEditor(root, doc, cursor = 0) {
     for (const key of [...authorDrafts.keys()]) {
       if (!live.has(key.slice(0, key.indexOf("\t")))) authorDrafts.delete(key);
     }
+    for (const key of [...editingNotes]) {
+      if (!live.has(key.slice(0, key.indexOf("\t")))) editingNotes.delete(key);
+    }
   }
 
   function ancestorWithClass(node, className) {
@@ -2021,6 +2025,23 @@ export function createEditor(root, doc, cursor = 0) {
       current = current.parentElement;
     }
     return null;
+  }
+
+  function commentTextFromTarget(node) {
+    let current = node && node.nodeType === 1 ? node : node && node.parentElement;
+    return ancestorWithClass(current, "md-comment-text");
+  }
+
+  function openSavedNote(text) {
+    const id = text.dataset && text.dataset.comment;
+    if (!id) return;
+    const index = Number(text.dataset.note || 0);
+    const thread = threadById(id);
+    const stored = thread ? (commentNotes(thread.body)[index] || "") : "";
+    noteDrafts.delete(draftKey(id, index));
+    editingNotes.add(draftKey(id, index));
+    commentFocus = { id, note: index, start: stored.length, end: stored.length };
+    render();
   }
 
   function buttonLabeled(parent, label) {
@@ -2067,9 +2088,8 @@ export function createEditor(root, doc, cursor = 0) {
     if (box.dataset.reply === "true") replyDrafts.delete(id);
     unsavedThreads.delete(id);
     noteDrafts.delete(draftKey(id, index));
-    const start = Number.isFinite(box.selectionStart) ? box.selectionStart : String(box.value || "").length;
-    const end = Number.isFinite(box.selectionEnd) ? box.selectionEnd : start;
-    commentFocus = { id, note: index, start, end };
+    editingNotes.delete(draftKey(id, index));
+    commentFocus = null;
     const next = replaceCommentBody(state, id, body);
     if (next === state) render();
     else apply(next);
@@ -2095,9 +2115,8 @@ export function createEditor(root, doc, cursor = 0) {
       return;
     }
     noteDrafts.delete(draftKey(id, index));
-    const thread = threadById(id);
-    const stored = thread ? (commentNotes(thread.body)[index] || "") : "";
-    commentFocus = { id, note: index, start: stored.length, end: stored.length };
+    editingNotes.delete(draftKey(id, index));
+    commentFocus = null;
     render();
   }
 
@@ -2126,7 +2145,10 @@ export function createEditor(root, doc, cursor = 0) {
   function syncNoteButtons(box) {
     const parent = box.parentElement;
     if (!parent) return;
-    const keep = box.dataset.fresh === "true" || box.dataset.reply === "true" || box.value !== box.storedText;
+    const keep = box.dataset.fresh === "true"
+      || box.dataset.reply === "true"
+      || box.dataset.editing === "true"
+      || box.value !== box.storedText;
     const save = buttonLabeled(parent, "Save");
     const cancel = buttonLabeled(parent, "Cancel");
     if (keep) {
@@ -2147,7 +2169,21 @@ export function createEditor(root, doc, cursor = 0) {
     parent.appendChild(author);
   }
 
+  function appendStaticNote(parent, id, index, stored) {
+    const text = document.createElement("div");
+    text.className = "md-comment-text";
+    text.dataset.comment = id;
+    text.dataset.note = String(index);
+    // Markers in a saved note are characters, not formatting.
+    text.textContent = stored;
+    parent.appendChild(text);
+  }
+
   function appendBody(parent, id, index, stored, mode) {
+    if (mode === "saved") {
+      appendStaticNote(parent, id, index, stored);
+      return;
+    }
     const box = document.createElement("textarea");
     box.className = "md-comment-body";
     box.dataset.comment = id;
@@ -2156,15 +2192,14 @@ export function createEditor(root, doc, cursor = 0) {
     box.storedText = stored;
     if (mode === "fresh") box.dataset.fresh = "true";
     if (mode === "reply") box.dataset.reply = "true";
+    if (mode === "edit") box.dataset.editing = "true";
     let value = stored;
     if (mode === "reply") value = replyDrafts.get(id) || "";
     else if (noteDrafts.has(draftKey(id, index))) value = noteDrafts.get(draftKey(id, index));
     box.value = value;
     parent.appendChild(box);
-    if (mode !== "saved" || value !== stored) {
-      parent.appendChild(makeCommentButton("Save", () => onSave(box)));
-      parent.appendChild(makeCommentButton("Cancel", () => onCancel(box)));
-    }
+    parent.appendChild(makeCommentButton("Save", () => onSave(box)));
+    parent.appendChild(makeCommentButton("Cancel", () => onCancel(box)));
   }
 
   function buildCommentCard(comment) {
@@ -2183,7 +2218,8 @@ export function createEditor(root, doc, cursor = 0) {
       const note = document.createElement("div");
       note.className = "md-comment-note";
       appendAuthor(note, comment.id, index);
-      appendBody(note, comment.id, index, text, "saved");
+      const mode = editingNotes.has(draftKey(comment.id, index)) ? "edit" : "saved";
+      appendBody(note, comment.id, index, text, mode);
       card.appendChild(note);
     });
     if (replyDrafts.has(comment.id)) {
@@ -2608,6 +2644,12 @@ export function createEditor(root, doc, cursor = 0) {
   });
 
   if (commentsAside && typeof commentsAside.addEventListener === "function") {
+    commentsAside.addEventListener("click", (event) => {
+      const text = commentTextFromTarget(event && event.target);
+      if (!text) return;
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      openSavedNote(text);
+    }, { signal: ac.signal });
     commentsAside.addEventListener("input", (event) => {
       const box = event.target;
       if (!box || !box.classList) return;
@@ -2618,7 +2660,8 @@ export function createEditor(root, doc, cursor = 0) {
         const host = note || card;
         let index = 0;
         for (const child of host.childNodes || []) {
-          if (child.classList && child.classList.contains("md-comment-body") && child.dataset) {
+          if (!child.classList || !child.dataset) continue;
+          if (child.classList.contains("md-comment-body") || child.classList.contains("md-comment-text")) {
             index = Number(child.dataset.note);
           }
         }
@@ -2645,8 +2688,9 @@ export function createEditor(root, doc, cursor = 0) {
       if (key !== "z" && key !== "Z" && key !== "y" && key !== "Y") return;
       event.preventDefault();
       const id = box.dataset && box.dataset.comment;
+      const note = Number(box.dataset && box.dataset.note || 0);
       const redoKey = key === "y" || key === "Y" || event.shiftKey;
-      commentFocus = { id, start: Number.MAX_SAFE_INTEGER, end: Number.MAX_SAFE_INTEGER };
+      commentFocus = { id, note, start: Number.MAX_SAFE_INTEGER, end: Number.MAX_SAFE_INTEGER };
       apply(redoKey ? redo(state) : undo(state));
     }, { signal: ac.signal });
   }

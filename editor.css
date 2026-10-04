@@ -346,6 +346,20 @@ aside.comments > label {
   resize: vertical;
 }
 
+.md-comment-text {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 1.25em;
+  margin: 0;
+  font: inherit;
+  line-height: 1.45;
+  color: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
 @media (max-width: 800px) {
   .sheet {
     display: block;
