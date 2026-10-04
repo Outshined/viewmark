@@ -133,20 +133,6 @@ function git(dir, args) {
   });
 }
 
-async function commitWithin(dir, ms = 3000) {
-  const deadline = Date.now() + ms;
-  let last = new Error("no commit");
-  while (Date.now() < deadline) {
-    try {
-      return await git(dir, ["log", "-1", "--format=%an%n%ae%n%s"]);
-    } catch (err) {
-      last = err;
-      await delay(20);
-    }
-  }
-  throw last;
-}
-
 function messageText(data) {
   if (typeof data === "string") return Promise.resolve(data);
   if (Buffer.isBuffer(data)) return Promise.resolve(data.toString("utf8"));
@@ -452,11 +438,8 @@ test("T-cli-edit", async () => {
     assert.equal(edited.stdout, "a note\n");
     assert.equal(edited.stderr, "rev 1\n");
     assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), "a note\n");
-    const started = Date.now();
-    const log = await commitWithin(dir, 3000);
-    assert.ok(Date.now() - started <= 3000);
-    assert.equal(log, "user\nuser@viewmark.local\nEdit notes/draft.md\n");
-    assert.equal(await git(dir, ["show", "HEAD:notes/draft.md"]), "a note\n");
+    await delay(400);
+    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
 
     const cleared = await run([
       "--port", String(port),
@@ -746,7 +729,8 @@ test("T-cli-user", async () => {
     );
     assert.equal(fromEnv.code, 0);
     assert.equal(fromEnv.stdout, "howdy line\nsecond line\n");
-    assert.equal(await commitWithin(dir, 3000), "envuser\nenvuser@viewmark.local\nEdit hello.md\n");
+    await delay(400);
+    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
 
     const flagged = await run(
       [
@@ -762,14 +746,8 @@ test("T-cli-user", async () => {
     );
     assert.equal(flagged.code, 0);
     assert.equal(flagged.stdout, "flagged\n");
-    const deadline = Date.now() + 3000;
-    let log = "";
-    while (Date.now() < deadline) {
-      log = await git(dir, ["log", "-1", "--format=%an%n%ae%n%s"]);
-      if (log.startsWith("flaguser\n")) break;
-      await delay(20);
-    }
-    assert.equal(log, "flaguser\nflaguser@viewmark.local\nEdit notes/draft.md\n");
+    await delay(400);
+    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
 
     const shown = await run(["--port", String(port), "show", "notes/draft.md"], { VIEWMARK_USER: "a<b" });
     assert.equal(shown.code, 2);

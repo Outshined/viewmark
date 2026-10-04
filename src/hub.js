@@ -25,7 +25,7 @@ import {
 import { acceptKey, createParser, encodeFrame, encodeText } from "./ws.js";
 
 const PING_MS = 15000;
-const IDLE_MS = 30000;
+const CHECKPOINT_MS = 3600000;
 const STACK_CAP = 200;
 
 function gitEnv(docsDir, username) {
@@ -148,6 +148,8 @@ async function loadRepos(stateDir) {
       description: entry.description,
       path: entry.path,
       files: new Map(),
+      dirty: new Map(),
+      timer: null,
     });
   }
   return map;
@@ -379,14 +381,127 @@ export async function createHub(stateDir, sourceRoot) {
     socket.end();
   }
 
-  function touch(socket) {
-    const session = socket.session;
-    if (!session || session.gone) return;
-    if (session.idle) clearTimeout(session.idle);
-    session.idle = setTimeout(() => {
-      enqueue(() => commitIfDirty(socket));
-    }, IDLE_MS);
-    session.idle.unref();
+  function arm(repo) {
+    if (repo.timer) clearTimeout(repo.timer);
+    repo.timer = setTimeout(() => {
+      repo.timer = null;
+      enqueue(() => checkpoint(repo, null, null, true)).catch((err) => console.error(err));
+    }, CHECKPOINT_MS);
+    // The listening socket keeps the process up. A quiet repo must not.
+    repo.timer.unref();
+  }
+
+  function mark(repo, rel, username) {
+    repo.dirty.set(rel, username);
+    arm(repo);
+  }
+
+  async function tracked(repo, rel) {
+    try {
+      await git(repo.path, ["ls-files", "--error-unmatch", "--", rel]);
+      return true;
+    } catch (err) {
+      const detail = `${err.stdout ?? ""}\n${err.stderr ?? ""}`;
+      if (/did not match any file/i.test(detail)) return false;
+      throw err;
+    }
+  }
+
+  // git add refuses a missing path that was never committed, so drop it.
+  // A path already in the index stays and the next commit records the removal.
+  async function markDelete(repo, rel, username) {
+    if (await tracked(repo, rel)) {
+      mark(repo, rel, username);
+      return;
+    }
+    repo.dirty.delete(rel);
+    if (repo.dirty.size === 0 && repo.timer) {
+      clearTimeout(repo.timer);
+      repo.timer = null;
+    }
+  }
+
+  async function assertToplevel(repo) {
+    const top = (await git(repo.path, ["rev-parse", "--show-toplevel"])).trim();
+    const topReal = await fs.realpath(top);
+    if (topReal !== repo.path) throw new Error("refusing to commit outside the docs repo");
+  }
+
+  async function commitAuthor(repo, username, paths, message) {
+    const docsDir = repo.path;
+    const email = `${username}@viewmark.local`;
+    const config = [
+      "-c", `user.name=${username}`,
+      "-c", `user.email=${email}`,
+      "-c", "commit.gpgsign=false",
+      "-c", "core.autocrlf=false",
+    ];
+    await git(docsDir, [...config, "add", "-A", "--", ...paths], username);
+    const subject = message ?? (paths.length === 1 ? `Edit ${paths[0]}` : `Update ${repo.name}`);
+    const args = [...config, "commit", "--author", `${username} <${email}>`, "-m", subject];
+    if (paths.length > 1) args.push("-m", paths.join("\n"));
+    args.push("--", ...paths);
+    try {
+      await git(docsDir, args, username);
+    } catch (err) {
+      const detail = `${err.stdout ?? ""}\n${err.stderr ?? ""}`;
+      if (/nothing to commit|nothing added/i.test(detail)) return null;
+      throw err;
+    }
+    return subject;
+  }
+
+  // user null commits every author, sorted, one commit each. background logs
+  // and keeps that author's paths; an explicit failure throws and keeps them.
+  async function checkpoint(repo, user, message, background) {
+    if (!repo) return [];
+    const grouped = new Map();
+    for (const [rel, author] of repo.dirty) {
+      if (user != null && author !== user) continue;
+      let paths = grouped.get(author);
+      if (!paths) {
+        paths = [];
+        grouped.set(author, paths);
+      }
+      paths.push(rel);
+    }
+    const authors = [...grouped.keys()].sort();
+    if (authors.length === 0) {
+      if (repo.dirty.size === 0 && repo.timer) {
+        clearTimeout(repo.timer);
+        repo.timer = null;
+      }
+      return [];
+    }
+    try {
+      await assertToplevel(repo);
+    } catch (err) {
+      if (!background) throw err;
+      console.error(err);
+      if (!repo.timer) arm(repo);
+      return [];
+    }
+    const results = [];
+    for (const author of authors) {
+      const paths = grouped.get(author).sort();
+      try {
+        const subject = await commitAuthor(repo, author, paths, message);
+        for (const rel of paths) {
+          if (repo.dirty.get(rel) === author) repo.dirty.delete(rel);
+        }
+        if (subject != null) results.push({ author, subject, paths });
+      } catch (err) {
+        if (!background) throw err;
+        console.error(err);
+      }
+    }
+    if (repo.dirty.size === 0 && repo.timer) {
+      clearTimeout(repo.timer);
+      repo.timer = null;
+    } else if (background && repo.dirty.size > 0 && !repo.timer) {
+      arm(repo);
+    }
+    return results;
   }
 
   function lockSnapshot(file) {
@@ -419,41 +534,6 @@ export async function createHub(stateDir, sourceRoot) {
     } catch (err) {
       await fs.rm(tmp, { force: true }).catch(() => {});
       throw err;
-    }
-  }
-
-  async function commitIfDirty(socket) {
-    const session = socket.session;
-    const docsDir = session?.repo?.path;
-    if (!session || !docsDir || !session.dirtyPath || session.committing) return;
-    const rel = session.dirtyPath;
-    const username = session.username;
-    session.committing = true;
-    try {
-      const top = (await git(docsDir, ["rev-parse", "--show-toplevel"])).trim();
-      const topReal = await fs.realpath(top);
-      if (topReal !== docsDir) throw new Error("refusing to commit outside the docs repo");
-      const email = `${username}@viewmark.local`;
-      const config = [
-        "-c", `user.name=${username}`,
-        "-c", `user.email=${email}`,
-        "-c", "commit.gpgsign=false",
-        "-c", "core.autocrlf=false",
-      ];
-      await git(docsDir, [...config, "add", "--", rel], username);
-      try {
-        await git(
-          docsDir,
-          [...config, "commit", "--author", `${username} <${email}>`, "-m", `Edit ${rel}`, "--", rel],
-          username,
-        );
-      } catch (err) {
-        const detail = `${err.stdout ?? ""}\n${err.stderr ?? ""}`;
-        if (!/nothing to commit|nothing added/i.test(detail)) throw err;
-      }
-      if (session.dirtyPath === rel) session.dirtyPath = null;
-    } finally {
-      session.committing = false;
     }
   }
 
@@ -512,10 +592,9 @@ export async function createHub(stateDir, sourceRoot) {
     rebaseFile(file, socket, before, after, splice, entry);
     socket.session.cursor = caret.cursor;
     socket.session.anchor = caret.anchor;
-    // A ticket body is not a doc edit, so it must not schedule a git commit.
-    if (!file.ticket) socket.session.dirtyPath = file.rel;
+    mark(socket.session.repo, file.rel, socket.session.username);
     // The preparatory lock covers the splice, including a fence through EOF.
-    // Keep the caret line so the rest can be taken. Do not commit for that.
+    // Keep the caret line so the rest can be taken.
     socket.session.lines = new Set(touchedLines(file.text, caret.cursor, caret.cursor));
     syncLocks(file);
     broadcast(file, {
@@ -559,7 +638,6 @@ export async function createHub(stateDir, sourceRoot) {
         broadcast(file, { type: "locks", path: file.rel, rev: file.rev, lines: lockSnapshot(file) });
       }
     }
-    if (session.dirtyPath === rel) await commitIfDirty(socket);
   }
 
   async function loadFile(repo, rel) {
@@ -741,6 +819,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (await existsPath(dest)) return fail(socket, 409);
     await writeAtomic(dest, "");
     files.set(rel, { rel, full: dest, rev: 0, text: "", subscribers: new Set(), locks: new Map() });
+    mark(repo, rel, socket.session.username);
     const listed = await listMarkdown(docsDir, "");
     const docs = { type: "docs", files: listed };
     for (const sock of sockets) {
@@ -812,6 +891,7 @@ export async function createHub(stateDir, sourceRoot) {
       subscribers: new Set(),
       locks: new Map(),
     });
+    mark(repo, allocated.rel, socket.session.username);
     await broadcastTickets(repo);
     await onOpen(socket, { path: allocated.rel });
   }
@@ -844,11 +924,12 @@ export async function createHub(stateDir, sourceRoot) {
     await writeAtomic(file.full, composed);
     file.ticket = ticketView(parsed);
     file.rev += 1;
+    mark(repo, file.rel, socket.session.username);
     await broadcastTickets(repo);
     broadcast(file, ticketNotice(file));
   }
 
-  async function rewriteTicketLinks(repo, id, parent, depends) {
+  async function rewriteTicketLinks(repo, id, parent, depends, username) {
     const files = repo.files;
     const docsDir = repo.path;
     const rel = `tickets/${id}.md`;
@@ -862,6 +943,7 @@ export async function createHub(stateDir, sourceRoot) {
       cached.ticket = ticketView(next);
       cached.rev += 1;
       broadcast(cached, ticketNotice(cached));
+      mark(repo, rel, username);
       return;
     }
     const full = path.join(docsDir, rel);
@@ -876,6 +958,7 @@ export async function createHub(stateDir, sourceRoot) {
     const composed = composeTicket({ ...parsed, parent, depends });
     if (composed == null || composed === raw) return;
     await writeAtomic(full, composed);
+    mark(repo, rel, username);
   }
 
   async function onTicketPurge(socket) {
@@ -890,19 +973,19 @@ export async function createHub(stateDir, sourceRoot) {
       const cached = files.get(rel);
       files.delete(rel);
       await fs.rm(cached ? cached.full : path.join(docsDir, rel), { force: true });
+      await markDelete(repo, rel, socket.session.username);
     }
     for (const ticket of all) {
       if (closedIds.has(ticket.id)) continue;
       const parent = closedIds.has(ticket.parent) ? "" : ticket.parent;
       const depends = ticket.depends.filter((dep) => !closedIds.has(dep));
       if (parent === ticket.parent && depends.length === ticket.depends.length) continue;
-      await rewriteTicketLinks(repo, ticket.id, parent, depends);
+      await rewriteTicketLinks(repo, ticket.id, parent, depends, socket.session.username);
     }
     await broadcastTickets(repo);
   }
 
   async function onLock(socket, msg) {
-    touch(socket);
     const session = socket.session;
     const files = session.repo?.files;
     if (!files) return fail(socket, 400);
@@ -917,18 +1000,14 @@ export async function createHub(stateDir, sourceRoot) {
       const owner = file.locks.get(index);
       if (owner && owner !== socket) return fail(socket, 409);
     }
-    const previous = session.lines;
-    const releasedLast = previous.size > 0 && [...previous].every((index) => !nextLines.has(index));
     session.lines = nextLines;
     session.anchor = anchor;
     session.cursor = cursor;
     syncLocks(file);
-    if (releasedLast && session.dirtyPath === file.rel) await commitIfDirty(socket);
     broadcast(file, { type: "locks", path: file.rel, rev: file.rev, lines: lockSnapshot(file) });
   }
 
   async function onEdit(socket, msg) {
-    touch(socket);
     const session = socket.session;
     const files = session.repo?.files;
     if (!files) return fail(socket, 400);
@@ -1019,13 +1098,10 @@ export async function createHub(stateDir, sourceRoot) {
     if (!session || session.gone) return;
     session.gone = true;
     sockets.delete(socket);
-    if (session.idle) clearTimeout(session.idle);
-    session.idle = null;
     await releaseFile(socket);
     session.undo = [];
     session.redo = [];
     session.lines = new Set();
-    if (session.dirtyPath) await commitIfDirty(socket);
   }
 
   function reposPayload() {
@@ -1056,12 +1132,7 @@ export async function createHub(stateDir, sourceRoot) {
   async function dropRepoSelection(repo) {
     for (const sock of [...sockets]) {
       if (sock.session?.repo !== repo) continue;
-      if (sock.session.idle) {
-        clearTimeout(sock.session.idle);
-        sock.session.idle = null;
-      }
       await releaseFile(sock);
-      if (sock.session.dirtyPath) await commitIfDirty(sock);
       sock.session.repo = null;
       clearDocState(sock.session);
     }
@@ -1131,7 +1202,7 @@ export async function createHub(stateDir, sourceRoot) {
       if (hit === "nest") return fail(socket, 400);
     }
 
-    const repo = { name: msg.name, description, path: real, files: new Map() };
+    const repo = { name: msg.name, description, path: real, files: new Map(), dirty: new Map(), timer: null };
     repos.set(repo.name, repo);
     try {
       await saveRegistry();
@@ -1146,6 +1217,11 @@ export async function createHub(stateDir, sourceRoot) {
     if (typeof msg.name !== "string") return fail(socket, 404);
     const repo = repos.get(msg.name);
     if (!repo) return fail(socket, 404);
+    await checkpoint(repo, null, null);
+    if (repo.timer) {
+      clearTimeout(repo.timer);
+      repo.timer = null;
+    }
     await dropRepoSelection(repo);
     repos.delete(repo.name);
     repo.files.clear();
@@ -1164,10 +1240,23 @@ export async function createHub(stateDir, sourceRoot) {
     if (!repo) return fail(socket, 404);
     const session = socket.session;
     if (session.repo === repo) return;
+    if (session.repo) await checkpoint(session.repo, session.username, null);
     await releaseFile(socket);
-    if (session.dirtyPath) await commitIfDirty(socket);
     session.repo = repo;
     clearDocState(session);
+  }
+
+  async function onCommit(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    let message = null;
+    if (Object.prototype.hasOwnProperty.call(msg, "message")) {
+      if (typeof msg.message !== "string" || msg.message.includes("\0")) return fail(socket, 400);
+      message = validTitle(msg.message);
+      if (!message) return fail(socket, 400);
+    }
+    const commits = await checkpoint(repo, socket.session.username, message);
+    send(socket, { type: "commit", commits });
   }
 
   async function handleText(socket, payload) {
@@ -1190,12 +1279,10 @@ export async function createHub(stateDir, sourceRoot) {
         return;
       }
       session.username = msg.username;
-      touch(socket);
       return;
     }
     if (msg.type === "pong") {
       if (msg.username !== undefined && msg.username !== session.username) return fail(socket, 403);
-      touch(socket);
       return;
     }
     if (msg.username !== session.username) return fail(socket, 403);
@@ -1203,6 +1290,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "repo.register") return onRegister(socket, msg);
     if (msg.type === "repo.deregister") return onDeregister(socket, msg);
     if (msg.type === "repo") return onSelect(socket, msg);
+    if (msg.type === "commit") return onCommit(socket, msg);
     if (msg.type === "list") return onList(socket);
     if (msg.type === "open") return onOpen(socket, msg);
     if (msg.type === "create") return onCreate(socket, msg);
@@ -1227,11 +1315,8 @@ export async function createHub(stateDir, sourceRoot) {
       lines: new Set(),
       undo: [],
       redo: [],
-      dirtyPath: null,
-      idle: null,
       gone: false,
       ending: false,
-      committing: false,
     };
     socket.session = session;
     sockets.add(socket);
@@ -1306,15 +1391,18 @@ export async function createHub(stateDir, sourceRoot) {
     },
     shutdown() {
       // Close can observe the http server before a socket "close" listener
-      // enqueues its commit. Disconnect here so that commit is on this queue.
+      // runs. Checkpoint first so that work is on this queue, then drop sessions.
       if (!stopped) {
         stopped = true;
         clearInterval(pingTimer);
-        for (const sock of [...sockets]) {
-          if (sock.session?.idle) {
-            clearTimeout(sock.session.idle);
-            sock.session.idle = null;
+        for (const repo of repos.values()) {
+          if (repo.timer) {
+            clearTimeout(repo.timer);
+            repo.timer = null;
           }
+          enqueue(() => checkpoint(repo, null, null, true)).catch((err) => console.error(err));
+        }
+        for (const sock of [...sockets]) {
           enqueue(() => disconnect(sock)).catch((err) => console.error(err));
           sock.destroy();
         }

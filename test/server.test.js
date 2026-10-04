@@ -628,22 +628,94 @@ test("T-commit", async () => {
   const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" });
   await withDocs(async ({ port, dir }) => {
     await fs.writeFile(path.join(dir, "a.md"), ALPHA);
+    await fs.writeFile(path.join(dir, "b.md"), "b\n");
     const a = await hello(port, "A");
-    let rev = (await openDoc(a, "A", "a.md")).rev;
-    await syncLock(a, [], "A", "a.md", 0, rev);
-    await syncLock(a, [], "A", "a.md", ALPHA.indexOf("gamma"), rev);
+    const b = await hello(port, "B");
+    const bare = await hello(port, "C", null);
+    bare.send({ type: "commit", username: "C" });
+    assert.deepEqual(await bare.next((msg) => msg.type === "error" || msg.type === "commit"), {
+      type: "error",
+      status: 400,
+    });
+    for (const message of ["", "   ", "bad\nline", "bad\ttab", "x".repeat(201), "nul\0here", "\0"]) {
+      a.send({ type: "commit", username: "A", message });
+      assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "commit"), {
+        type: "error",
+        status: 400,
+      });
+    }
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
+    a.send({ type: "commit", username: "A" });
+    assert.deepEqual(await a.next((msg) => msg.type === "commit"), { type: "commit", commits: [] });
+    assert.equal(b.all.some((msg) => msg.type === "commit"), false);
+
+    let rev = (await openDoc(a, "A", "a.md")).rev;
     await syncLock(a, [], "A", "a.md", 0, rev);
     a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "X" });
     const doc = await takeDoc(a);
     rev = doc.rev;
     await syncLock(a, [], "A", "a.md", doc.text.indexOf("gamma"), rev);
-    assert.equal(await git(dir, ["log", "-1", "--format=%an%n%ae%n%s"]), "A\nA@viewmark.local\nEdit a.md\n");
-    const count = (await git(dir, ["rev-list", "--count", "HEAD"])).trim();
-    assert.equal(count, "1");
-    await syncLock(a, [], "A", "a.md", doc.text.indexOf("beta"), rev);
-    assert.equal((await git(dir, ["rev-list", "--count", "HEAD"])).trim(), "1");
+    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
+
+    a.send({ type: "create", username: "A", path: "extra.md" });
+    const docsA = await a.next((msg) => msg.type === "docs");
+    assert.ok(docsA.files.includes("extra.md"));
+    assert.equal((await a.next((msg) => msg.type === "file" && msg.path === "extra.md")).text, "");
+    await b.next((msg) => msg.type === "docs");
+    const revB = (await openDoc(b, "B", "b.md")).rev;
+    await syncLock(b, [], "B", "b.md", 0, revB);
+    b.send({ type: "edit", username: "B", path: "b.md", rev: revB, op: "insert", text: "Y" });
+    await takeDoc(b);
+
+    a.send({ type: "commit", username: "A", message: "  Save notes  " });
+    assert.deepEqual(await a.next((msg) => msg.type === "commit" || msg.type === "error"), {
+      type: "commit",
+      commits: [{ author: "A", subject: "Save notes", paths: ["a.md", "extra.md"] }],
+    });
+    assert.equal(b.all.some((msg) => msg.type === "commit"), false);
+    assert.equal(await git(dir, ["log", "-1", "--format=%an <%ae>%n%s"]), "A <A@viewmark.local>\nSave notes\n");
+    assert.equal((await git(dir, ["log", "-1", "--format=%b"])).trim(), "a.md\nextra.md");
+    assert.equal((await git(dir, ["log", "-1", "--format=%G?"])).trim(), "N");
+    assert.equal(await git(dir, ["show", "HEAD:a.md"]), `X${ALPHA}`);
+    assert.equal(await git(dir, ["show", "HEAD:extra.md"]), "");
+    assert.equal((await git(dir, ["ls-tree", "-r", "--name-only", "HEAD"])).includes("b.md"), false);
+
+    const hook = path.join(dir, ".git", "hooks", "pre-commit");
+    await fs.mkdir(path.dirname(hook), { recursive: true });
+    await fs.writeFile(hook, "#!/bin/sh\necho checkpoint-hook >&2\nexit 1\n");
+    await fs.chmod(hook, 0o755);
+    try {
+      a.send({ type: "open", username: "A", path: "a.md" });
+      const reopened = await a.next((msg) => msg.type === "file" && msg.path === "a.md");
+      rev = reopened.rev;
+      await syncLock(a, [], "A", "a.md", 0, rev);
+      a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "Z" });
+      rev = (await takeDoc(a)).rev;
+      a.send({ type: "commit", username: "A", message: "Nope" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "commit"), {
+        type: "error",
+        status: 500,
+      });
+      assert.equal((await git(dir, ["rev-list", "--count", "HEAD"])).trim(), "1");
+      assert.equal(await git(dir, ["show", "HEAD:a.md"]), `X${ALPHA}`);
+    } finally {
+      await fs.rm(hook, { force: true });
+    }
+    a.send({ type: "commit", username: "A" });
+    assert.deepEqual(await a.next((msg) => msg.type === "commit" || msg.type === "error"), {
+      type: "commit",
+      commits: [{ author: "A", subject: "Edit a.md", paths: ["a.md"] }],
+    });
+    assert.equal(await git(dir, ["show", "HEAD:a.md"]), `ZX${ALPHA}`);
+    assert.equal((await git(dir, ["rev-list", "--count", "HEAD"])).trim(), "2");
+    const untilClosed = closed(a.ws);
     a.ws.close();
+    await untilClosed;
+    await delay(400);
+    assert.equal((await git(dir, ["rev-list", "--count", "HEAD"])).trim(), "2");
+    assert.equal((await git(dir, ["ls-tree", "-r", "--name-only", "HEAD"])).includes("b.md"), false);
+    b.ws.close();
+    bare.ws.close();
   });
   assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }), head);
 });
@@ -756,30 +828,21 @@ test("T-frame", async () => {
   });
 });
 
-test("T-idle", { timeout: 60000 }, async () => {
+test("T-idle", async () => {
   await withDocs(async ({ port, dir }) => {
     await fs.writeFile(path.join(dir, "a.md"), ALPHA);
     const a = await hello(port, "Ada");
     const rev = (await openDoc(a, "Ada", "a.md")).rev;
     await syncLock(a, [], "Ada", "a.md", 0, rev);
     a.send({ type: "edit", username: "Ada", path: "a.md", rev, op: "insert", text: "X" });
-    await takeDoc(a);
-    await delay(2000);
+    const doc = await takeDoc(a);
+    await syncLock(a, [], "Ada", "a.md", doc.text.indexOf("gamma"), doc.rev);
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
-    assert.deepEqual(await a.waitPing(), { type: "ping" });
-    const deadline = Date.now() + 40000;
-    let log = "";
-    while (Date.now() < deadline) {
-      try {
-        log = await git(dir, ["log", "-1", "--format=%an%n%ae%n%s"]);
-        break;
-      } catch {
-        await delay(200);
-      }
-    }
-    assert.equal(log, "Ada\nAda@viewmark.local\nEdit a.md\n");
-    assert.equal((await git(dir, ["rev-list", "--count", "HEAD"])).trim(), "1");
+    const untilClosed = closed(a.ws);
     a.ws.close();
+    await untilClosed;
+    await delay(400);
+    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
   });
 });
 
@@ -823,17 +886,8 @@ test("T-create", async () => {
       const untilClosed = closed(a.ws);
       a.ws.close();
       await untilClosed;
-      const deadline = Date.now() + 5000;
-      let log = "";
-      while (Date.now() < deadline) {
-        try {
-          log = await git(dir, ["log", "-1", "--format=%an%n%ae%n%s"]);
-          break;
-        } catch {
-          await delay(50);
-        }
-      }
-      assert.equal(log, "A\nA@viewmark.local\nEdit notes/idea.md\n");
+      await delay(400);
+      await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
       assert.equal(await readDoc(dir, "notes/idea.md"), "Hi");
       assert.equal(await readDoc(dir, "exists.md"), "keep");
       b.ws.close();
@@ -904,8 +958,8 @@ async function snapshotTree(dir) {
 }
 
 async function assertNoHead(server, dir) {
-  await close(server);
   await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
+  await close(server);
 }
 
 async function createTicket(client, username, title, state, type, body) {
@@ -1854,13 +1908,19 @@ test("T-repo-switch", async () => {
     assert.equal(doc.text, "Xalpha\n");
     await client.next((msg) => msg.type === "locks");
     await assert.rejects(() => git(one, ["rev-parse", "HEAD"]));
+    client.send({ type: "repo", username: "A", name: "one" });
+    client.send({ type: "list", username: "A" });
+    const same = await client.next((msg) => msg.type === "docs" || msg.type === "error");
+    assert.equal(same.type, "docs");
+    await assert.rejects(() => git(one, ["rev-parse", "HEAD"]));
 
     client.send({ type: "repo", username: "A", name: "two" });
     client.send({ type: "open", username: "A", path: "a.md" });
     const next = await client.next((msg) => msg.type === "file" || msg.type === "docs" || msg.type === "error");
     assert.equal(next.type, "file");
     assert.equal(next.text, "alpha\n");
-    assert.equal(await git(one, ["log", "-1", "--format=%an%n%ae%n%s"]), "A\nA@viewmark.local\nEdit a.md\n");
+    assert.equal(await git(one, ["log", "-1", "--format=%an <%ae>%n%s"]), "A <A@viewmark.local>\nEdit a.md\n");
+    assert.equal((await git(one, ["log", "-1", "--format=%b"])).trim(), "");
     assert.equal(await fs.readFile(path.join(one, "a.md"), "utf8"), "Xalpha\n");
     await assert.rejects(() => git(two, ["rev-parse", "HEAD"]));
     client.send({ type: "undo", username: "A", path: "a.md", rev: next.rev });
@@ -1869,6 +1929,271 @@ test("T-repo-switch", async () => {
     client.ws.close();
   } finally {
     await close(server);
+    await fs.rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("T-checkpoint", async (t) => {
+  const realSetTimeout = setTimeout;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const wait = (ms) => new Promise((resolve) => realSetTimeout(resolve, ms));
+  async function untilGit(dir, args) {
+    let last;
+    for (let i = 0; i < 100; i += 1) {
+      try {
+        return await git(dir, args);
+      } catch (err) {
+        last = err;
+        await wait(20);
+      }
+    }
+    throw last;
+  }
+  async function untilCount(dir, count) {
+    let last = "";
+    for (let i = 0; i < 100; i += 1) {
+      try {
+        last = (await git(dir, ["rev-list", "--count", "HEAD"])).trim();
+        if (last === String(count)) return;
+      } catch (err) {
+        last = String(err && err.message ? err.message : err);
+      }
+      await wait(20);
+    }
+    throw new Error(`expected ${count} commits, saw ${last}`);
+  }
+
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), ALPHA);
+    await fs.writeFile(path.join(dir, "b.md"), "b\n");
+    const ada = await hello(port, "Ada");
+    let revA = (await openDoc(ada, "Ada", "a.md")).rev;
+    await syncLock(ada, [], "Ada", "a.md", 0, revA);
+    ada.send({ type: "edit", username: "Ada", path: "a.md", rev: revA, op: "insert", text: "X" });
+    await takeDoc(ada);
+    t.mock.timers.tick(3599999);
+    await wait(400);
+    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
+
+    let revB = (await openDoc(ada, "Ada", "b.md")).rev;
+    await syncLock(ada, [], "Ada", "b.md", 0, revB);
+    ada.send({ type: "edit", username: "Ada", path: "b.md", rev: revB, op: "insert", text: "Y" });
+    revB = (await takeDoc(ada)).rev;
+    t.mock.timers.tick(1);
+    await wait(400);
+    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
+
+    t.mock.timers.tick(3600000);
+    assert.equal(await untilGit(dir, ["log", "-1", "--format=%an <%ae>"]), "Ada <Ada@viewmark.local>\n");
+    assert.equal(await git(dir, ["log", "-1", "--format=%s"]), "Update docs\n");
+    assert.equal((await git(dir, ["log", "-1", "--format=%b"])).trim(), "a.md\nb.md");
+    assert.equal((await git(dir, ["log", "-1", "--format=%G?"])).trim(), "N");
+    assert.equal(await git(dir, ["show", "HEAD:a.md"]), `X${ALPHA}`);
+    assert.equal(await git(dir, ["show", "HEAD:b.md"]), "Yb\n");
+    assert.equal((await git(dir, ["rev-list", "--count", "HEAD"])).trim(), "1");
+
+    await syncLock(ada, [], "Ada", "b.md", 0, revB);
+    ada.send({ type: "edit", username: "Ada", path: "b.md", rev: revB, op: "insert", text: "Z" });
+    revB = (await takeDoc(ada)).rev;
+    t.mock.timers.tick(3600000);
+    await untilCount(dir, 2);
+    assert.equal(await git(dir, ["log", "-1", "--format=%s"]), "Edit b.md\n");
+    assert.equal(await git(dir, ["show", "HEAD:b.md"]), "ZYb\n");
+
+    ada.send({ type: "undo", username: "Ada", path: "b.md", rev: revB });
+    revB = (await takeDoc(ada)).rev;
+    assert.equal(await readDoc(dir, "b.md"), "Yb\n");
+    t.mock.timers.tick(3600000);
+    await untilCount(dir, 3);
+    assert.equal(await git(dir, ["show", "HEAD:b.md"]), "Yb\n");
+    assert.equal((await git(dir, ["log", "-1", "--format=%s"])).trim(), "Edit b.md");
+
+    ada.send({ type: "redo", username: "Ada", path: "b.md", rev: revB });
+    revB = (await takeDoc(ada)).rev;
+    assert.equal(await readDoc(dir, "b.md"), "ZYb\n");
+    t.mock.timers.tick(3600000);
+    await untilCount(dir, 4);
+    assert.equal(await git(dir, ["show", "HEAD:b.md"]), "ZYb\n");
+
+    const hook = path.join(dir, ".git", "hooks", "pre-commit");
+    await fs.mkdir(path.dirname(hook), { recursive: true });
+    await fs.writeFile(hook, "#!/bin/sh\necho checkpoint-hook >&2\nexit 1\n");
+    await fs.chmod(hook, 0o755);
+    const logged = [];
+    const orig = console.error;
+    console.error = (...args) => logged.push(args);
+    try {
+      await syncLock(ada, [], "Ada", "b.md", 0, revB);
+      ada.send({ type: "edit", username: "Ada", path: "b.md", rev: revB, op: "insert", text: "Q" });
+      revB = (await takeDoc(ada)).rev;
+      assert.equal(await readDoc(dir, "b.md"), "QZYb\n");
+      t.mock.timers.tick(3600000);
+      const hasHook = (args) => args.some((arg) => {
+        const stderr = arg && arg.stderr != null ? String(arg.stderr) : "";
+        const message = arg && arg.message != null ? String(arg.message) : "";
+        return `${stderr}\n${message}`.includes("checkpoint-hook");
+      });
+      for (let i = 0; i < 100 && !logged.some(hasHook); i += 1) await wait(20);
+      assert.equal(logged.some(hasHook), true);
+      assert.equal((await git(dir, ["rev-list", "--count", "HEAD"])).trim(), "4");
+      assert.equal(await git(dir, ["show", "HEAD:b.md"]), "ZYb\n");
+    } finally {
+      console.error = orig;
+      await fs.rm(hook, { force: true });
+    }
+    ada.send({ type: "commit", username: "Ada" });
+    assert.deepEqual(await ada.next((msg) => msg.type === "commit" || msg.type === "error"), {
+      type: "commit",
+      commits: [{ author: "Ada", subject: "Edit b.md", paths: ["b.md"] }],
+    });
+    assert.equal(await git(dir, ["show", "HEAD:b.md"]), "QZYb\n");
+    assert.equal(await git(dir, ["show", "HEAD:a.md"]), `X${ALPHA}`);
+    ada.ws.close();
+  });
+});
+
+test("T-checkpoint-split", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-split-"));
+  const state = path.join(parent, "state");
+  const docs = path.join(parent, "docs");
+  const other = path.join(parent, "other");
+  const tix = path.join(parent, "tix");
+  const server = await start(0, state);
+  try {
+    const port = server.address().port;
+    await registerRepo(port, "docs", "Docs", docs);
+    await registerRepo(port, "other", "Other", other);
+    await registerRepo(port, "tix", "Tix", tix);
+    await fs.writeFile(path.join(docs, "a.md"), "a\n");
+    await fs.writeFile(path.join(docs, "b.md"), "b\n");
+    await fs.writeFile(path.join(other, "c.md"), "c\n");
+    await fs.writeFile(path.join(other, "d.md"), "d\n");
+    const ada = await hello(port, "Ada");
+    const bo = await hello(port, "Bo");
+
+    let revA = (await openDoc(ada, "Ada", "a.md")).rev;
+    await syncLock(ada, [], "Ada", "a.md", 0, revA);
+    ada.send({ type: "edit", username: "Ada", path: "a.md", rev: revA, op: "insert", text: "X" });
+    await takeDoc(ada);
+    let revB = (await openDoc(bo, "Bo", "b.md")).rev;
+    await syncLock(bo, [], "Bo", "b.md", 0, revB);
+    bo.send({ type: "edit", username: "Bo", path: "b.md", rev: revB, op: "insert", text: "Y" });
+    await takeDoc(bo);
+
+    ada.send({ type: "commit", username: "Ada" });
+    assert.deepEqual(await ada.next((msg) => msg.type === "commit" || msg.type === "error"), {
+      type: "commit",
+      commits: [{ author: "Ada", subject: "Edit a.md", paths: ["a.md"] }],
+    });
+    assert.equal(bo.all.some((msg) => msg.type === "commit"), false);
+    assert.equal(await git(docs, ["log", "-1", "--format=%an <%ae>%n%s"]), "Ada <Ada@viewmark.local>\nEdit a.md\n");
+    assert.equal((await git(docs, ["ls-tree", "-r", "--name-only", "HEAD"])).trim(), "a.md");
+    assert.equal(await git(docs, ["show", "HEAD:a.md"]), "Xa\n");
+
+    ada.send({ type: "repo.deregister", username: "Ada", name: "docs" });
+    const listed = await ada.next((msg) => msg.type === "repos");
+    assert.equal(listed.repos.some((repo) => repo.name === "docs"), false);
+    assert.equal((await fs.stat(docs)).isDirectory(), true);
+    assert.equal(await fs.readFile(path.join(docs, "a.md"), "utf8"), "Xa\n");
+    assert.equal(await fs.readFile(path.join(docs, "b.md"), "utf8"), "Yb\n");
+    assert.equal(await git(docs, ["log", "-1", "--format=%an <%ae>%n%s"]), "Bo <Bo@viewmark.local>\nEdit b.md\n");
+    assert.equal(await git(docs, ["show", "HEAD:b.md"]), "Yb\n");
+    assert.equal((await git(docs, ["rev-list", "--count", "HEAD"])).trim(), "2");
+
+    ada.send({ type: "repo", username: "Ada", name: "tix" });
+    const keep = await createTicket(ada, "Ada", "Keep");
+    const relK = keep.file.path;
+    const idK = keep.file.ticket.id;
+    ada.send({ type: "commit", username: "Ada" });
+    assert.deepEqual(await ada.next((msg) => msg.type === "commit"), {
+      type: "commit",
+      commits: [{ author: "Ada", subject: `Edit ${relK}`, paths: [relK] }],
+    });
+    assert.equal(parseTicket(idK, await git(tix, ["show", `HEAD:${relK}`])).title, "Keep");
+
+    ada.send({ type: "ticket.set", username: "Ada", path: relK, rev: 0, title: "Kept" });
+    const kept = await ada.next((msg) => msg.type === "ticket");
+    await ada.next((msg) => msg.type === "tickets");
+    assert.equal(kept.rev, 1);
+    ada.send({ type: "commit", username: "Ada" });
+    await ada.next((msg) => msg.type === "commit");
+    assert.equal(parseTicket(idK, await git(tix, ["show", `HEAD:${relK}`])).title, "Kept");
+
+    await syncLock(ada, [], "Ada", relK, 0, kept.rev);
+    ada.send({ type: "edit", username: "Ada", path: relK, rev: kept.rev, op: "insert", text: "Hello\n" });
+    const body = await takeDoc(ada);
+    assert.equal(body.text, "Hello\n");
+    ada.send({ type: "commit", username: "Ada" });
+    await ada.next((msg) => msg.type === "commit");
+    assert.equal(parseTicket(idK, await git(tix, ["show", `HEAD:${relK}`])).body, "Hello\n");
+
+    const child = await createTicket(ada, "Ada", "Child");
+    const relC = child.file.path;
+    const idC = child.file.ticket.id;
+    ada.send({ type: "commit", username: "Ada" });
+    assert.deepEqual((await ada.next((msg) => msg.type === "commit")).commits[0].paths, [relC]);
+
+    ada.send({ type: "ticket.set", username: "Ada", path: relK, rev: body.rev, depends: [idC] });
+    const linked = await ada.next((msg) => msg.type === "tickets");
+    assert.deepEqual(linked.tickets.find((ticket) => ticket.id === idK).depends, [idC]);
+    ada.send({ type: "commit", username: "Ada" });
+    await ada.next((msg) => msg.type === "commit");
+    assert.deepEqual(parseTicket(idK, await git(tix, ["show", `HEAD:${relK}`])).depends, [idC]);
+
+    ada.send({ type: "ticket.set", username: "Ada", path: relC, rev: 0, state: "closed" });
+    await ada.next((msg) => msg.type === "ticket");
+    await ada.next((msg) => msg.type === "tickets");
+    ada.send({ type: "ticket.purge", username: "Ada" });
+    await ada.next((msg) => msg.type === "tickets");
+    await assert.rejects(() => fs.lstat(path.join(tix, relC)));
+    ada.send({ type: "commit", username: "Ada" });
+    const purged = await ada.next((msg) => msg.type === "commit");
+    const purgedPaths = [relK, relC].sort();
+    assert.deepEqual(purged.commits, [{ author: "Ada", subject: "Update tix", paths: purgedPaths }]);
+    assert.equal((await git(tix, ["log", "-1", "--format=%b"])).trim(), purgedPaths.join("\n"));
+    assert.equal((await git(tix, ["ls-tree", "-r", "--name-only", "HEAD"])).includes(relC), false);
+    assert.deepEqual(parseTicket(idK, await git(tix, ["show", `HEAD:${relK}`])).depends, []);
+    const count = (await git(tix, ["rev-list", "--count", "HEAD"])).trim();
+
+    const temp = await createTicket(ada, "Ada", "Temp");
+    ada.send({ type: "ticket.set", username: "Ada", path: temp.file.path, rev: 0, state: "closed" });
+    await ada.next((msg) => msg.type === "ticket");
+    await ada.next((msg) => msg.type === "tickets");
+    ada.send({ type: "ticket.purge", username: "Ada" });
+    await ada.next((msg) => msg.type === "tickets");
+    ada.send({ type: "commit", username: "Ada" });
+    assert.deepEqual(await ada.next((msg) => msg.type === "commit"), { type: "commit", commits: [] });
+    assert.equal((await git(tix, ["rev-list", "--count", "HEAD"])).trim(), count);
+    assert.equal((await git(tix, ["ls-tree", "-r", "--name-only", "HEAD"])).includes(temp.file.path), false);
+
+    ada.send({ type: "repo", username: "Ada", name: "other" });
+    bo.send({ type: "repo", username: "Bo", name: "other" });
+    const openedC = await openDoc(ada, "Ada", "c.md");
+    await syncLock(ada, [], "Ada", "c.md", 0, openedC.rev);
+    ada.send({ type: "edit", username: "Ada", path: "c.md", rev: openedC.rev, op: "insert", text: "C" });
+    await takeDoc(ada);
+    const openedD = await openDoc(bo, "Bo", "d.md");
+    await syncLock(bo, [], "Bo", "d.md", 0, openedD.rev);
+    bo.send({ type: "edit", username: "Bo", path: "d.md", rev: openedD.rev, op: "insert", text: "D" });
+    await takeDoc(bo);
+    const adaClosed = closed(ada.ws);
+    const boClosed = closed(bo.ws);
+    ada.ws.close();
+    bo.ws.close();
+    await adaClosed;
+    await boClosed;
+    await delay(400);
+    await assert.rejects(() => git(other, ["rev-parse", "HEAD"]));
+    await close(server);
+    assert.equal(
+      await git(other, ["log", "--reverse", "--format=%an <%ae>%n%s"]),
+      "Ada <Ada@viewmark.local>\nEdit c.md\nBo <Bo@viewmark.local>\nEdit d.md\n",
+    );
+    assert.equal(await git(other, ["show", "HEAD:c.md"]), "Cc\n");
+    assert.equal(await git(other, ["show", "HEAD:d.md"]), "Dd\n");
+    assert.equal((await fs.stat(other)).isDirectory(), true);
+  } finally {
+    await close(server).catch(() => {});
     await fs.rm(parent, { recursive: true, force: true });
   }
 });
