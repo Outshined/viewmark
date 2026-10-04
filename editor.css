@@ -39,6 +39,18 @@ nav.files input {
   color: inherit;
 }
 
+.md-new-file {
+  display: inline;
+  width: auto;
+  margin: 0 0.4rem 0.8rem 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
 .file-tree button {
   display: block;
   width: 100%;

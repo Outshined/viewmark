@@ -75,6 +75,31 @@ function isMarkdownPath(file) {
   return lower.endsWith(".md") || lower.endsWith(".markdown");
 }
 
+function createPath(raw) {
+  const trimmed = String(raw ?? "").trim().replace(/^\/+/, "");
+  if (!trimmed) return "";
+  if (trimmed.endsWith(".md") || trimmed.endsWith(".markdown")) return trimmed;
+  return `${trimmed}.md`;
+}
+
+function insertAfter(parent, after, node) {
+  const children = parent.childNodes || [];
+  const index = typeof children.indexOf === "function" ? children.indexOf(after) : -1;
+  const next = index >= 0 ? children[index + 1] : null;
+  if (next && typeof parent.insertBefore === "function") {
+    parent.insertBefore(node, next);
+    return;
+  }
+  if (next && typeof children.splice === "function") {
+    node.parentElement = parent;
+    children.splice(index + 1, 0, node);
+    return;
+  }
+  parent.appendChild(node);
+}
+
+const newFileBindings = new WeakMap();
+
 // A directory exists only when some markdown file is stored under it.
 function buildFileTree(files) {
   const root = { dirs: new Map(), files: [] };
@@ -448,6 +473,10 @@ export function createEditor(root, doc, cursor = 0, transport) {
   let openPath = "";
   let fileList = [];
   const openDirs = new Set();
+  // Create is answered by its own error or by the file from onOpen.
+  // A 409 for that create is not a rejected caret grant.
+  const conflictWaiters = [];
+  const fileWaiters = [];
   let lockTable = [];
   let expectNewComment = false;
   let unsubscribe = () => {};
@@ -505,6 +534,13 @@ export function createEditor(root, doc, cursor = 0, transport) {
       if (framed.path == null) framed.path = openPath;
       framed.rev = rev;
     }
+    if (type === "create") {
+      conflictWaiters.push("create");
+      fileWaiters.push("create");
+    }
+    if (type === "lock") conflictWaiters.push("lock");
+    if (type === "edit" || type === "undo" || type === "redo") conflictWaiters.push("edit");
+    if (type === "open") fileWaiters.push("open");
     active.send(framed);
   }
 
@@ -1473,17 +1509,41 @@ export function createEditor(root, doc, cursor = 0, transport) {
           granted = { anchor: state.anchor, cursor: state.cursor };
           sentLines = outstandingLock.lines.slice();
           outstandingLock = null;
+          const index = conflictWaiters.indexOf("lock");
+          if (index >= 0) conflictWaiters.splice(index, 1);
         }
       }
       render();
       return;
     }
     if (message.type === "error") {
+      const answersCreate = conflictWaiters[0] === "create" && (message.status === 400 || message.status === 404 || isConflict(message));
+      if (answersCreate) {
+        conflictWaiters.shift();
+        const at = fileWaiters.indexOf("create");
+        if (at >= 0) fileWaiters.splice(at, 1);
+        if (isConflict(message)) expectNewComment = false;
+        return;
+      }
       if (isConflict(message)) {
+        if (conflictWaiters.length > 0) conflictWaiters.shift();
         expectNewComment = false;
         restoreGrantedCaret();
       }
       return;
+    }
+    if (message.type === "file") {
+      if (fileWaiters.length > 0) {
+        const waiter = fileWaiters.shift();
+        if (waiter === "create") {
+          const index = conflictWaiters.indexOf("create");
+          if (index >= 0) conflictWaiters.splice(index, 1);
+        }
+      }
+      if (typeof message.path === "string" && message.path) {
+        seedOpen(message.path);
+        renderFileTree(fileList, false);
+      }
     }
     if (message.type === "doc") {
       if (waitingForFile) return;
@@ -1493,6 +1553,10 @@ export function createEditor(root, doc, cursor = 0, transport) {
         expectNewComment = false;
         emit({ type: "open", path: openPath });
         return;
+      }
+      if (message.actor === selfName()) {
+        const index = conflictWaiters.indexOf("edit");
+        if (index >= 0) conflictWaiters.splice(index, 1);
       }
     }
     if (message.type === "doc" || message.type === "file") applySnapshot(message);
@@ -1790,6 +1854,92 @@ export function createEditor(root, doc, cursor = 0, transport) {
     window.addEventListener("resize", () => layoutComments(), { signal: ac.signal });
   }
 
+  let newFileButton = null;
+  let newFileOnClick = null;
+
+  function hideNameField(field) {
+    field.hidden = true;
+    if (typeof field.setAttribute === "function") field.setAttribute("hidden", "");
+  }
+
+  function unbindNewFile() {
+    if (!newFileButton || !newFileOnClick) return;
+    const binding = newFileBindings.get(newFileButton);
+    if (!binding || binding.onClick !== newFileOnClick) return;
+    if (typeof newFileButton.removeEventListener === "function") {
+      newFileButton.removeEventListener("click", binding.onClick);
+    }
+    if (binding.field && typeof binding.field.removeEventListener === "function") {
+      binding.field.removeEventListener("keydown", binding.onKey);
+    }
+    newFileBindings.delete(newFileButton);
+  }
+
+  function bindNewFile(nav) {
+    if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    let button = null;
+    for (const child of nav.childNodes || []) {
+      if (child.classList && child.classList.contains("md-new-file")) button = child;
+    }
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = "md-new-file";
+      button.textContent = "+";
+      const anchor = firstControl(nav);
+      if (anchor) insertAfter(nav, anchor, button);
+      else nav.appendChild(button);
+    }
+    let field = null;
+    for (const child of nav.childNodes || []) {
+      if (child.classList && child.classList.contains("md-new-name")) field = child;
+    }
+    if (!field) {
+      field = document.createElement("input");
+      field.type = "text";
+      field.className = "md-new-name";
+      field.value = "";
+      hideNameField(field);
+      insertAfter(nav, button, field);
+    }
+    const previous = newFileBindings.get(button);
+    if (previous && typeof button.removeEventListener === "function") {
+      button.removeEventListener("click", previous.onClick);
+    }
+    if (previous && previous.field && typeof previous.field.removeEventListener === "function") {
+      previous.field.removeEventListener("keydown", previous.onKey);
+    }
+    const onClick = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      field.hidden = false;
+      if (typeof field.removeAttribute === "function") field.removeAttribute("hidden");
+      if (typeof field.focus === "function") field.focus();
+    };
+    const onKey = (event) => {
+      if (!event) return;
+      if (event.key === "Escape") {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        field.value = "";
+        hideNameField(field);
+        return;
+      }
+      if (event.key !== "Enter") return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      const path = createPath(field.value);
+      if (!path) return;
+      field.value = "";
+      hideNameField(field);
+      emit({ type: "create", path });
+    };
+    button.addEventListener("click", onClick);
+    field.addEventListener("keydown", onKey);
+    newFileBindings.set(button, { onClick, onKey, field });
+    newFileButton = button;
+    newFileOnClick = onClick;
+  }
+
+  bindNewFile(filesNav());
+
   if (active && typeof active.subscribe === "function") {
     unsubscribe = active.subscribe((message) => onMessage(message));
   }
@@ -1807,6 +1957,7 @@ export function createEditor(root, doc, cursor = 0, transport) {
     },
     destroy() {
       unsubscribe();
+      unbindNewFile();
       ac.abort();
       if (addCommentButton && addCommentButton.parentElement && typeof addCommentButton.parentElement.removeChild === "function") {
         addCommentButton.parentElement.removeChild(addCommentButton);

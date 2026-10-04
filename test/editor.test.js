@@ -1157,6 +1157,9 @@ function mountEditor() {
       styleProps: {},
       listeners: {},
       focused: false,
+      hidden: false,
+      value: "",
+      attrs: new Map(),
     };
     el.style = {
       setProperty(name, value) {
@@ -1187,8 +1190,21 @@ function mountEditor() {
       el.childNodes = [];
       for (const child of children) el.appendChild(child);
     };
+    el.setAttribute = (name, value) => {
+      el.attrs.set(name, String(value));
+      if (name === "hidden") el.hidden = true;
+    };
+    el.getAttribute = (name) => (el.attrs.has(name) ? el.attrs.get(name) : null);
+    el.hasAttribute = (name) => el.attrs.has(name);
+    el.removeAttribute = (name) => {
+      el.attrs.delete(name);
+      if (name === "hidden") el.hidden = false;
+    };
     el.addEventListener = (type, fn) => {
       el.listeners[type] = fn;
+    };
+    el.removeEventListener = (type, fn) => {
+      if (el.listeners[type] === fn) delete el.listeners[type];
     };
     el.focus = () => {
       el.focused = true;
@@ -1728,7 +1744,7 @@ test("comment cards edit the thread and line up with the highlight", () => {
   const mounted = mountSheet();
   try {
     const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-    assert.match(html, /<div class="sheet">\s*<nav class="files">\s*<input placeholder="Username">\s*<\/nav>\s*<div id="editor"><\/div>\s*<aside class="comments"><\/aside>/);
+    assert.match(html, /<div class="sheet">\s*<nav class="files"><input placeholder="Username"><button type="button" class="md-new-file">\+<\/button><\/nav>\s*<div id="editor"><\/div>\s*<aside class="comments"><\/aside>/);
     const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
     assert.match(css, /\.md-comment-author\s*\{[^}]*min-height:\s*1\.25em;/);
     assert.match(css, /\.md-comment-text\s*\{[^}]*white-space:\s*pre-wrap;/);
@@ -3108,6 +3124,115 @@ test("username focus stays on the field through the first character", () => {
     sockets[0].emit("open");
     assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada" });
     page.close();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("Enter on notes/idea creates notes/idea.md and a file message shows the row", () => {
+  const mounted = mountEditor();
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(css, /\.md-new-file\s*\{[^}]*border:\s*0;/);
+  assert.match(css, /\.md-new-file\s*\{[^}]*background:\s*none;/);
+  assert.match(css, /\.md-new-file\s*\{[^}]*font:\s*inherit;/);
+  assert.equal(/\.md-new-file\s*\{[^}]*width:\s*100%/.test(css), false);
+  assert.equal(/\.md-new-file\s*\{[^}]*display:\s*block/.test(css), false);
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const input = document.createElement("input");
+  input.placeholder = "Username";
+  nav.appendChild(input);
+  const sheet = document.createElement("div");
+  sheet.appendChild(nav);
+  sheet.appendChild(mounted.root);
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const buttons = () => walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"));
+    assert.equal(buttons().length, 1);
+    assert.equal(nav.childNodes[0], input);
+    const button = buttons()[0];
+    assert.equal(button.textContent, "+");
+    assert.equal(button.type, "button");
+    const field = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name"))[0];
+    assert.equal(field.tagName, "INPUT");
+    assert.equal(field.hasAttribute("hidden"), true);
+    assert.equal(field.hidden, true);
+    button.listeners.click({ preventDefault() {} });
+    assert.equal(field.hasAttribute("hidden"), false);
+    assert.equal(field.hidden, false);
+    transport.deliver({ type: "docs", files: ["notes/idea.md"] });
+    const labeled = (text) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.textContent === text);
+    assert.equal(labeled("notes").length, 1);
+    assert.equal(labeled("idea.md").length, 0);
+    const tree = walkNodes(nav, (node) => node.classList && node.classList.contains("file-tree"))[0];
+    assert.ok(nav.childNodes.indexOf(button) < nav.childNodes.indexOf(tree));
+    assert.equal(walkNodes(tree, (node) => node.classList && node.classList.contains("md-new-file")).length, 0);
+    field.value = "notes/idea";
+    field.listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.deepEqual(transport.sent.at(-1), { type: "create", path: "notes/idea.md", username: "" });
+    assert.equal(transport.sent.at(-1).rev, undefined);
+    const afterCreate = transport.sent.length;
+    field.value = "   ";
+    field.listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.equal(transport.sent.length, afterCreate);
+    field.value = "skip";
+    field.listeners.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(transport.sent.length, afterCreate);
+    assert.equal(field.hasAttribute("hidden"), true);
+    button.listeners.click({ preventDefault() {} });
+    field.value = "///notes/other.markdown";
+    field.listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.deepEqual(transport.sent.at(-1), { type: "create", path: "notes/other.markdown", username: "" });
+    button.listeners.click({ preventDefault() {} });
+    field.value = "notes/idea.md";
+    field.listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.equal(transport.sent.at(-1).path, "notes/idea.md");
+    transport.deliver({ type: "file", path: "notes/idea.md", rev: 0, text: "", locks: [] });
+    assert.equal(view.getState().doc, "");
+    assert.equal(labeled("idea.md").length, 1);
+    view.destroy();
+    const again = createEditor(mounted.root, "x", 0, transport);
+    assert.equal(buttons().length, 1);
+    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
+    assert.equal(nav.childNodes[0], input);
+    again.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a create 409 does not restore the caret and a later 409 does", () => {
+  const mounted = mountEditor();
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const input = document.createElement("input");
+  nav.appendChild(input);
+  const sheet = document.createElement("div");
+  sheet.append(nav, mounted.root);
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "ab\ncd\n", 0, transport);
+    const button = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"))[0];
+    const field = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name"))[0];
+    button.listeners.click({ preventDefault() {} });
+    field.value = "notes/idea";
+    field.listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.deepEqual(transport.sent.at(-1), { type: "create", path: "notes/idea.md", username: "" });
+    const line = mounted.root.childNodes[1];
+    const text = line.childNodes[0].childNodes[0];
+    assert.equal(text.textContent, "cd");
+    document.caretPositionFromPoint = () => ({ offsetNode: text, offset: 0 });
+    mounted.listeners.click({ target: text, clientX: 1, clientY: 1, preventDefault() {} });
+    assert.equal(view.getState().cursor, 3);
+    assert.equal(view.getState().anchor, 3);
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(view.getState().cursor, 3);
+    assert.equal(view.getState().anchor, 3);
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(view.getState().anchor, 0);
+    view.destroy();
   } finally {
     mounted.restore();
   }

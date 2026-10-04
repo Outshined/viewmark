@@ -101,6 +101,16 @@ function inside(rootDir, candidate) {
   return rel === "" || (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel));
 }
 
+async function existsPath(full) {
+  try {
+    await fs.lstat(full);
+    return true;
+  } catch (err) {
+    if (err && err.code === "ENOENT") return false;
+    throw err;
+  }
+}
+
 function clampOffset(value, length) {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   const index = Math.trunc(value);
@@ -493,6 +503,38 @@ export function createHub(docsDir) {
     });
   }
 
+  async function onCreate(socket, msg) {
+    const rel = safeRel(msg.path);
+    if (!rel) return fail(socket, 404);
+    if (!rel.endsWith(".md") && !rel.endsWith(".markdown")) return fail(socket, 400);
+    if (files.has(rel)) return fail(socket, 409);
+    const full = path.resolve(docsDir, rel);
+    if (await existsPath(full)) return fail(socket, 409);
+    const parent = path.dirname(full);
+    try {
+      await fs.mkdir(parent, { recursive: true });
+    } catch {
+      return fail(socket, 404);
+    }
+    let parentReal;
+    try {
+      parentReal = await fs.realpath(parent);
+    } catch {
+      return fail(socket, 404);
+    }
+    // A parent symlink can resolve outside the docs repo. Refuse before writing.
+    if (!inside(docsDir, parentReal)) return fail(socket, 404);
+    const dest = path.join(parentReal, path.basename(rel));
+    if (!inside(docsDir, dest)) return fail(socket, 404);
+    if (await existsPath(dest)) return fail(socket, 409);
+    await writeAtomic(dest, "");
+    files.set(rel, { rel, full: dest, rev: 0, text: "", subscribers: new Set(), locks: new Map() });
+    const listed = await listMarkdown(docsDir, "");
+    const docs = { type: "docs", files: listed };
+    for (const sock of sockets) send(sock, docs);
+    await onOpen(socket, { path: rel });
+  }
+
   async function onLock(socket, msg) {
     touch(socket);
     const session = socket.session;
@@ -645,6 +687,7 @@ export function createHub(docsDir) {
     if (msg.username !== session.username) return fail(socket, 403);
     if (msg.type === "list") return onList(socket);
     if (msg.type === "open") return onOpen(socket, msg);
+    if (msg.type === "create") return onCreate(socket, msg);
     if (msg.type === "lock") return onLock(socket, msg);
     if (msg.type === "edit") return onEdit(socket, msg);
     if (msg.type === "undo") return onHistory(socket, msg, "undo");

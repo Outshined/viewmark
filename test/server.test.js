@@ -763,3 +763,64 @@ test("T-idle", { timeout: 60000 }, async () => {
     a.ws.close();
   });
 });
+
+test("T-create", async () => {
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" });
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-out-"));
+  try {
+    await withDocs(async ({ port, dir }) => {
+      await fs.writeFile(path.join(dir, "exists.md"), "keep");
+      await fs.symlink(outside, path.join(dir, "out"));
+      const b = await hello(port, "B");
+      const a = await hello(port, "A");
+      a.send({ type: "create", username: "A", path: "notes/idea.md" });
+      const docsA = await a.next((msg) => msg.type === "docs");
+      const docsB = await b.next((msg) => msg.type === "docs");
+      assert.ok(docsA.files.includes("notes/idea.md"));
+      assert.ok(docsB.files.includes("notes/idea.md"));
+      const opened = await a.next((msg) => msg.type === "file" && msg.path === "notes/idea.md");
+      assert.equal(opened.text, "");
+      assert.equal(opened.rev, 0);
+      assert.equal(await readDoc(dir, "notes/idea.md"), "");
+      await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
+      a.send({ type: "create", username: "A", path: "notes/idea.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+      assert.equal(await readDoc(dir, "notes/idea.md"), "");
+      a.send({ type: "create", username: "A", path: "a.txt" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+      await assert.rejects(() => fs.lstat(path.join(dir, "a.txt")));
+      a.send({ type: "create", username: "A", path: "../x.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+      a.send({ type: "create", username: "A", path: "exists.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+      assert.equal(await readDoc(dir, "exists.md"), "keep");
+      a.send({ type: "create", username: "A", path: "out/x.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+      await assert.rejects(() => fs.lstat(path.join(outside, "x.md")));
+      await syncLock(a, [], "A", "notes/idea.md", 0, 0);
+      a.send({ type: "edit", username: "A", path: "notes/idea.md", rev: 0, op: "insert", text: "Hi" });
+      const doc = await takeDoc(a);
+      assert.equal(doc.text, "Hi");
+      const untilClosed = closed(a.ws);
+      a.ws.close();
+      await untilClosed;
+      const deadline = Date.now() + 5000;
+      let log = "";
+      while (Date.now() < deadline) {
+        try {
+          log = await git(dir, ["log", "-1", "--format=%an%n%ae%n%s"]);
+          break;
+        } catch {
+          await delay(50);
+        }
+      }
+      assert.equal(log, "A\nA@viewmark.local\nEdit notes/idea.md\n");
+      assert.equal(await readDoc(dir, "notes/idea.md"), "Hi");
+      assert.equal(await readDoc(dir, "exists.md"), "keep");
+      b.ws.close();
+    });
+  } finally {
+    await fs.rm(outside, { recursive: true, force: true });
+    assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }), head);
+  }
+});
