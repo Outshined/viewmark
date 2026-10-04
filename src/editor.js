@@ -24,11 +24,8 @@ import {
   commentNotes,
   orderVisibleComments,
   lineIndexAt,
-  replaceCommentBody,
-  removeCommentThread,
-  setCommentResolved,
-  replaceDocument,
 } from "./doc.js";
+import { createMemoryTransport, createSocketTransport } from "./session.js";
 
 export {
   sampleDocument,
@@ -50,6 +47,52 @@ export {
 // A declaration, not `export { plan }`: the served file is checked for this text.
 export function plan(doc, cursor) {
   return documentPlan(doc, cursor);
+}
+
+function sameLines(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function offsetOfLine(doc, index) {
+  const text = typeof doc === "string" ? doc : "";
+  let line = 0;
+  let start = 0;
+  for (let i = 0; i <= text.length; i += 1) {
+    if (i === text.length || text[i] === "\n") {
+      if (line === index) return start;
+      line += 1;
+      start = i + 1;
+      if (i === text.length) break;
+    }
+  }
+  return -1;
+}
+
+// A directory exists only when some markdown file is stored under it.
+function buildFileTree(files) {
+  const root = { dirs: new Map(), files: [] };
+  const list = Array.isArray(files) ? files : [];
+  for (const file of list) {
+    if (typeof file !== "string" || !file.toLowerCase().endsWith(".md")) continue;
+    const parts = file.split("/").filter(Boolean);
+    if (parts.length === 0) continue;
+    let node = root;
+    let acc = "";
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const name = parts[i];
+      acc = acc ? `${acc}/${name}` : name;
+      let child = node.dirs.get(name);
+      if (!child) {
+        child = { name, path: acc, dirs: new Map(), files: [] };
+        node.dirs.set(name, child);
+      }
+      node = child;
+    }
+    node.files.push({ name: parts[parts.length - 1], path: file });
+  }
+  return root;
 }
 
 function hasClass(el, name) {
@@ -90,6 +133,11 @@ export function mapOffset(startOrNode, offset) {
   const index = offset || 0;
   if (!node) return index;
   if (node.nodeType === 3) {
+    const parent = node.parentElement;
+    if (parent && parent.classList && parent.classList.contains("md-lock")) {
+      const tagged = nearestTagged(parent);
+      return tagged ? Number(tagged.dataset.start) : 0;
+    }
     const tagged = nearestTagged(node);
     if (!tagged) return index;
     const start = Number(tagged.dataset.start);
@@ -381,8 +429,24 @@ function buttonHost() {
 
 const COMMENT_CARD_GAP = 12;
 
-export function createEditor(root, doc, cursor = 0) {
+export function createEditor(root, doc, cursor = 0, transport) {
+  const external = arguments.length >= 4 && transport != null;
+  const active = external ? transport : createMemoryTransport(doc, cursor);
   let state = createState(doc, cursor);
+  let rev = 0;
+  // A supplied document is already the mirror. The page starts empty and waits for file.
+  let live = !external || active.memory === true || (typeof doc === "string" && doc.length > 0);
+  let granted = { anchor: state.anchor, cursor: state.cursor };
+  let outstandingLock = null;
+  let lockRejected = false;
+  let waitingForFile = false;
+  let openPath = "";
+  let fileList = [];
+  const openDirs = new Set();
+  let lockTable = [];
+  let expectNewComment = false;
+  let unsubscribe = () => {};
+  let sentLines = [];
   const ac = new AbortController();
   const listen = (type, fn, options = {}) => {
     root.addEventListener(type, fn, { ...options, signal: ac.signal });
@@ -411,6 +475,77 @@ export function createEditor(root, doc, cursor = 0) {
   let composing = false;
   let composed = "";
 
+  function lineSet(anchor, cursor) {
+    const from = Math.min(anchor, cursor);
+    const to = Math.max(anchor, cursor);
+    const start = lineIndexAt(state.doc, from);
+    const end = lineIndexAt(state.doc, to);
+    const lines = [];
+    for (let i = start; i <= end; i += 1) lines.push(i);
+    return lines;
+  }
+  sentLines = lineSet(state.anchor, state.cursor);
+
+  function selfName() {
+    return typeof active.username === "string" ? active.username : "";
+  }
+
+  function emit(message) {
+    active.send({ ...message, username: selfName() });
+  }
+
+  function emitEdit(partial) {
+    if (!live) return;
+    emit({
+      type: "edit",
+      anchor: state.anchor,
+      cursor: state.cursor,
+      ...partial,
+    });
+  }
+
+  function restoreGrantedCaret() {
+    lockRejected = true;
+    const restore = outstandingLock ? outstandingLock.restore : granted;
+    outstandingLock = null;
+    granted = { anchor: restore.anchor, cursor: restore.cursor };
+    state = { ...state, anchor: restore.anchor, cursor: restore.cursor };
+    sentLines = lineSet(restore.anchor, restore.cursor);
+    render();
+  }
+
+  // The line set is granted when this user already holds it, or when the memory
+  // transport accepts the lock before send returns. A 409 puts the caret back.
+  function claimLines(anchor, cursor) {
+    const lines = lineSet(anchor, cursor);
+    if (!live) {
+      sentLines = lines;
+      granted = { anchor, cursor };
+      outstandingLock = null;
+      return true;
+    }
+    if (sameLines(lines, sentLines) && !outstandingLock) {
+      granted = { anchor, cursor };
+      return true;
+    }
+    if (sameLines(lines, sentLines)) return true;
+    outstandingLock = { restore: { anchor: granted.anchor, cursor: granted.cursor }, lines };
+    lockRejected = false;
+    emit({ type: "lock", lines });
+    if (lockRejected) {
+      lockRejected = false;
+      return false;
+    }
+    if (active.memory === true) {
+      outstandingLock = null;
+      sentLines = lines;
+      granted = { anchor, cursor };
+      return true;
+    }
+    sentLines = lines;
+    return true;
+  }
+
   function clearAtomMark() {
     for (const el of root.querySelectorAll(".md-atom-selected")) el.classList.remove("md-atom-selected");
   }
@@ -420,7 +555,7 @@ export function createEditor(root, doc, cursor = 0) {
     let atEnd = null;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (node.parentElement?.closest(".md-atom")) continue;
+      if (node.parentElement?.closest(".md-atom") || node.parentElement?.closest(".md-lock")) continue;
       const tagged = nearestTagged(node);
       if (!tagged) continue;
       const start = Number(tagged.dataset.start);
@@ -535,12 +670,13 @@ export function createEditor(root, doc, cursor = 0) {
 
   function adoptDomSelection() {
     const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return;
+    if (!sel || sel.rangeCount === 0) return true;
     const holder = sel.anchorNode || sel.getRangeAt(0).commonAncestorContainer;
-    if (!holder || !root.contains(holder)) return;
+    if (!holder || !root.contains(holder)) return true;
     const mapped = selectionFromDom(sel);
-    if (!mapped) return;
+    if (!mapped) return true;
     state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
+    return claimLines(mapped.anchor, mapped.cursor);
   }
 
   function findCommentBox(id, note) {
@@ -671,9 +807,9 @@ export function createEditor(root, doc, cursor = 0) {
     editingNotes.delete(draftKey(id, index));
     currentCommentId = id;
     commentFocus = null;
-    const next = replaceCommentBody(state, id, body);
-    if (next === state) render();
-    else apply(next);
+    const before = state.doc;
+    emitEdit({ op: "comment.save", id, body });
+    if (state.doc === before) render();
   }
 
   function onCancel(box) {
@@ -686,7 +822,7 @@ export function createEditor(root, doc, cursor = 0) {
       authorDrafts.delete(draftKey(id, index));
       if (currentCommentId === id) currentCommentId = null;
       commentFocus = null;
-      apply(removeCommentThread(state, id));
+      emitEdit({ op: "comment.delete", id });
       return;
     }
     if (box.dataset.reply === "true") {
@@ -718,7 +854,7 @@ export function createEditor(root, doc, cursor = 0) {
     replyDrafts.delete(id);
     if (currentCommentId === id) currentCommentId = null;
     commentFocus = null;
-    apply(removeCommentThread(state, id));
+    emitEdit({ op: "comment.delete", id });
   }
 
   function onResolve(id) {
@@ -726,7 +862,7 @@ export function createEditor(root, doc, cursor = 0) {
     if (!thread) return;
     currentCommentId = id;
     commentFocus = null;
-    apply(setCommentResolved(state, id, !thread.resolved));
+    emitEdit({ op: "comment.resolve", id, resolved: !thread.resolved });
   }
 
   function syncNoteButtons(box) {
@@ -989,13 +1125,12 @@ export function createEditor(root, doc, cursor = 0) {
         event.preventDefault();
         const result = addComment(state.doc, state.anchor, state.cursor);
         if (!result) return;
-        unsavedThreads.add(result.id);
-        replyDrafts.delete(result.id);
-        noteDrafts.delete(draftKey(result.id, 0));
-        authorDrafts.delete(draftKey(result.id, 0));
-        currentCommentId = result.id;
-        commentFocus = { id: result.id, note: 0, start: 0, end: 0 };
-        apply(replaceDocument(state, result.doc, result.cursor));
+        expectNewComment = true;
+        const before = state.doc;
+        emitEdit({ op: "comment.add", anchor: state.anchor, cursor: state.cursor });
+        // A socket holds the edit until its doc message. Memory applies first,
+        // so an unchanged mirror there means the add never happened.
+        if (state.doc === before && (active.memory === true || !live)) expectNewComment = false;
       }, { signal: ac.signal });
     }
     const sel = typeof window !== "undefined" && window.getSelection ? window.getSelection() : null;
@@ -1078,9 +1213,33 @@ export function createEditor(root, doc, cursor = 0) {
     walk(commentsAside);
   }
 
+  function lockNames(block) {
+    const start = Number(block.start);
+    const end = Number(block.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return [];
+    const names = [];
+    for (const line of lockTable) {
+      if (!line || typeof line.username !== "string" || line.username === "" || line.username === selfName()) continue;
+      const at = offsetOfLine(state.doc, line.index);
+      if (at >= start && at <= end) names.push(line.username);
+    }
+    return names;
+  }
+
   function render() {
     const planned = plan(state.doc, state.cursor);
-    root.replaceChildren(...planned.blocks.map(renderBlock));
+    const nodes = planned.blocks.map((block) => {
+      const el = renderBlock(block);
+      for (const name of lockNames(block)) {
+        const mark = document.createElement("span");
+        mark.className = "md-lock";
+        mark.contentEditable = "false";
+        mark.textContent = name;
+        el.appendChild(mark);
+      }
+      return el;
+    });
+    root.replaceChildren(...nodes);
     markEditingHighlights();
     renderCommentAside(planned.comments);
     layoutComments();
@@ -1089,17 +1248,232 @@ export function createEditor(root, doc, cursor = 0) {
     updateCommentButton();
   }
 
-  function apply(next) {
-    if (next === state) return;
-    state = next;
+  function filesNav() {
+    const parent = root && root.parentElement;
+    if (!parent || !parent.childNodes) return null;
+    for (const child of parent.childNodes) {
+      if (child !== root && child.classList && child.classList.contains("files")) return child;
+    }
+    return null;
+  }
+
+  function seedOpen(path) {
+    if (!path) return;
+    const parts = String(path).split("/").filter(Boolean);
+    let acc = "";
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      acc = acc ? `${acc}/${parts[i]}` : parts[i];
+      openDirs.add(acc);
+    }
+  }
+
+  function renderEntries(node) {
+    const entries = [
+      ...[...node.dirs.values()].map((dir) => ({ kind: "dir", name: dir.name, dir })),
+      ...node.files.map((file) => ({ kind: "file", name: file.name, file })),
+    ];
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    return entries.map((entry) => (entry.kind === "dir" ? renderDirRow(entry.dir) : renderFileRow(entry.file)));
+  }
+
+  function renderFileRow(file) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "md-file";
+    button.dataset.path = file.path;
+    button.textContent = file.name;
+    button.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      openPath = file.path;
+      seedOpen(openPath);
+      waitingForFile = true;
+      emit({ type: "open", path: file.path });
+    });
+    return button;
+  }
+
+  function renderDirRow(dir) {
+    const wrap = document.createElement("div");
+    wrap.className = "md-dir";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "md-dir-toggle";
+    button.dataset.dir = dir.path;
+    button.textContent = dir.name;
+    const open = openDirs.has(dir.path);
+    if (!open) wrap.classList.add("md-dir-collapsed");
+    button.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      if (openDirs.has(dir.path)) openDirs.delete(dir.path);
+      else openDirs.add(dir.path);
+      renderFileTree(fileList, false);
+    });
+    wrap.appendChild(button);
+    if (open) {
+      const kids = document.createElement("div");
+      kids.className = "md-dir-children";
+      for (const child of renderEntries(dir)) kids.appendChild(child);
+      wrap.appendChild(kids);
+    }
+    return wrap;
+  }
+
+  function renderFileTree(files, seed) {
+    fileList = Array.isArray(files) ? files : [];
+    const nav = filesNav();
+    if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    let tree = null;
+    for (const child of nav.childNodes || []) {
+      if (child.classList && child.classList.contains("file-tree")) tree = child;
+    }
+    if (!tree) {
+      tree = document.createElement("div");
+      tree.className = "file-tree";
+      if (typeof nav.appendChild === "function") nav.appendChild(tree);
+    }
+    if (!tree || typeof tree.replaceChildren !== "function") return;
+    if (seed) seedOpen(openPath);
+    tree.replaceChildren(...renderEntries(buildFileTree(fileList)));
+  }
+
+  function clampCaret(pos, length) {
+    const value = Number.isFinite(pos) ? Math.trunc(pos) : 0;
+    return Math.max(0, Math.min(length, value));
+  }
+
+  function shiftPos(pos, message) {
+    const from = Number(message.from);
+    const to = Number(message.to);
+    const inserted = typeof message.inserted === "string" ? message.inserted : "";
+    if (!Number.isFinite(from) || !Number.isFinite(to)) return pos;
+    const delta = inserted.length - (to - from);
+    if (pos >= to) return pos + delta;
+    return pos;
+  }
+
+  function noteFreshComment(previousDoc, message) {
+    if (!expectNewComment) return;
+    expectNewComment = false;
+    if (message.actor !== selfName()) return;
+    const before = new Set(commentThreads(previousDoc).map((item) => item.id));
+    const novel = commentThreads(state.doc).filter((item) => !before.has(item.id));
+    if (novel.length === 0) return;
+    const id = novel[0].id;
+    unsavedThreads.add(id);
+    replyDrafts.delete(id);
+    noteDrafts.delete(draftKey(id, 0));
+    authorDrafts.delete(draftKey(id, 0));
+    currentCommentId = id;
+    commentFocus = { id, note: 0, start: 0, end: 0 };
+  }
+
+  function caretFor(message) {
+    const length = typeof message.text === "string" ? message.text.length : 0;
+    if (message.type === "file" || message.actor === selfName()) {
+      const cursor = Number.isFinite(message.cursor) ? message.cursor : (message.type === "file" ? 0 : state.cursor);
+      const anchor = Number.isFinite(message.anchor) ? message.anchor : cursor;
+      return { cursor: clampCaret(cursor, length), anchor: clampCaret(anchor, length) };
+    }
+    return {
+      cursor: clampCaret(shiftPos(state.cursor, message), length),
+      anchor: clampCaret(shiftPos(state.anchor, message), length),
+    };
+  }
+
+  // file and doc replace the mirror. The view does not paint a local edit.
+  function applySnapshot(message) {
+    const previousDoc = state.doc;
+    const previousLines = sentLines;
+    const text = typeof message.text === "string" ? message.text : "";
+    const caret = caretFor(message);
+    state = {
+      doc: text,
+      cursor: caret.cursor,
+      anchor: caret.anchor,
+      undo: Array.isArray(message.undo) ? message.undo : [],
+      redo: Array.isArray(message.redo) ? message.redo : [],
+    };
+    if (message.type === "file") {
+      const nextRev = Number(message.rev);
+      rev = Number.isFinite(nextRev) ? nextRev : 0;
+      waitingForFile = false;
+      live = true;
+      if (typeof message.path === "string") openPath = message.path;
+      expectNewComment = false;
+    } else {
+      rev = Number(message.rev);
+    }
+    outstandingLock = null;
+    granted = { anchor: state.anchor, cursor: state.cursor };
+    const lines = lineSet(state.anchor, state.cursor);
+    sentLines = lines;
+    noteFreshComment(previousDoc, message);
     render();
+    if (live && !sameLines(lines, previousLines)) emit({ type: "lock", lines });
+  }
+
+  function isConflict(message) {
+    return message.status === 409 || message.code === 409 || message.error === 409;
+  }
+
+  function onMessage(message) {
+    if (!message || typeof message !== "object") return;
+    if (message.type === "ping") {
+      emit({ type: "pong" });
+      return;
+    }
+    if (message.type === "docs") {
+      renderFileTree(message.files, true);
+      return;
+    }
+    if (message.type === "locks") {
+      lockTable = Array.isArray(message.lines) ? message.lines : [];
+      if (outstandingLock && active.memory !== true) {
+        const held = new Set();
+        for (const line of lockTable) {
+          if (line && line.username === selfName() && Number.isFinite(line.index)) held.add(line.index);
+        }
+        let ok = outstandingLock.lines.length > 0;
+        for (const index of outstandingLock.lines) if (!held.has(index)) ok = false;
+        if (ok) {
+          granted = { anchor: state.anchor, cursor: state.cursor };
+          sentLines = outstandingLock.lines.slice();
+          outstandingLock = null;
+        }
+      }
+      render();
+      return;
+    }
+    if (message.type === "error") {
+      if (isConflict(message)) {
+        expectNewComment = false;
+        restoreGrantedCaret();
+      }
+      return;
+    }
+    if (message.type === "doc") {
+      if (waitingForFile) return;
+      const nextRev = Number(message.rev);
+      if (!Number.isFinite(nextRev) || nextRev !== rev + 1) {
+        waitingForFile = true;
+        expectNewComment = false;
+        emit({ type: "open", path: openPath });
+        return;
+      }
+    }
+    if (message.type === "doc" || message.type === "file") applySnapshot(message);
   }
 
   function consumePaste(text) {
     if (pasteSeen) return;
     pasteSeen = true;
-    adoptDomSelection();
-    if (text) apply(insert(state, text));
+    if (!adoptDomSelection()) {
+      queueMicrotask(() => {
+        pasteSeen = false;
+      });
+      return;
+    }
+    if (text) emitEdit({ op: "insert", text });
     queueMicrotask(() => {
       pasteSeen = false;
     });
@@ -1116,8 +1490,9 @@ export function createEditor(root, doc, cursor = 0) {
     const range = sel.getRangeAt(0);
     const landed = mapOffset(range.startContainer, range.startOffset);
     const next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
-    const after = lineIndexAt(state.doc, next);
     state = { ...state, cursor: next, anchor: next };
+    if (!claimLines(next, next)) return;
+    const after = lineIndexAt(state.doc, state.cursor);
     if (before !== after) render();
     else if (next !== landed) placeCaret();
   }
@@ -1136,33 +1511,33 @@ export function createEditor(root, doc, cursor = 0) {
       || type === "deleteWordForward"
       || type === "insertFromPaste"
       || type === "insertFromDrop";
-    if (edits) adoptDomSelection();
+    if (edits && !adoptDomSelection()) return;
     if (type === "insertText") {
       if (event.data === "\t") return;
-      if (event.data && event.data !== composed) apply(insert(state, event.data));
+      if (event.data && event.data !== composed) emitEdit({ op: "insert", text: event.data });
       return;
     }
     if (type === "insertCompositionText" || type === "insertFromComposition") return;
     if (type === "insertParagraph" || type === "insertLineBreak") {
-      apply(insert(state, "\n"));
+      emitEdit({ op: "insert", text: "\n" });
       return;
     }
     if (type === "deleteContentBackward") {
-      apply(backspace(state));
+      emitEdit({ op: "backspace" });
       return;
     }
     if (type === "deleteContentForward") {
-      apply(deleteForward(state));
+      emitEdit({ op: "delete" });
       return;
     }
     if (type === "deleteWordBackward" || type === "deleteWordForward") {
       if (state.anchor !== state.cursor) {
-        apply(deleteForward(state));
+        emitEdit({ op: "delete" });
         return;
       }
       const edges = wordEdges(state.doc, state.cursor, type === "deleteWordBackward" ? -1 : 1);
       const [from, to] = expandAtoms(state.doc, edges[0], edges[1], state.cursor);
-      if (from !== to) apply(deleteForward({ ...state, anchor: from, cursor: to }));
+      if (from !== to) emitEdit({ op: "delete", anchor: from, cursor: to });
       return;
     }
     if (type === "insertFromPaste" || type === "insertFromDrop") {
@@ -1183,10 +1558,10 @@ export function createEditor(root, doc, cursor = 0) {
 
   listen("cut", (event) => {
     event.preventDefault();
-    adoptDomSelection();
-    const result = cut(state);
-    event.clipboardData.setData("text/plain", result.text);
-    apply(result.state);
+    if (!adoptDomSelection()) return;
+    const text = selectedSlice(state);
+    event.clipboardData.setData("text/plain", text);
+    if (state.anchor !== state.cursor) emitEdit({ op: "delete" });
   });
 
   listen("compositionstart", () => {
@@ -1196,8 +1571,7 @@ export function createEditor(root, doc, cursor = 0) {
   listen("compositionend", (event) => {
     composing = false;
     composed = event.data || "";
-    adoptDomSelection();
-    if (composed) apply(insert(state, composed));
+    if (adoptDomSelection() && composed) emitEdit({ op: "insert", text: composed });
     queueMicrotask(() => {
       composed = "";
     });
@@ -1207,19 +1581,19 @@ export function createEditor(root, doc, cursor = 0) {
     commentFocus = null;
     if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
-      adoptDomSelection();
-      apply(insert(state, "\t"));
+      if (!adoptDomSelection()) return;
+      emitEdit({ op: "insert", text: "\t" });
       return;
     }
     const mod = event.ctrlKey || event.metaKey;
     if (mod && !event.altKey && (event.key === "z" || event.key === "Z")) {
       event.preventDefault();
-      apply(event.shiftKey ? redo(state) : undo(state));
+      if (live) emit(event.shiftKey ? { type: "redo" } : { type: "undo" });
       return;
     }
     if (mod && !event.altKey && (event.key === "y" || event.key === "Y")) {
       event.preventDefault();
-      apply(redo(state));
+      if (live) emit({ type: "redo" });
       return;
     }
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
@@ -1252,8 +1626,9 @@ export function createEditor(root, doc, cursor = 0) {
     if (!mapped) return;
     didDrag = true;
     const before = lineIndexAt(state.doc, state.cursor);
-    const after = lineIndexAt(state.doc, mapped.cursor);
     state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
+    if (!claimLines(mapped.anchor, mapped.cursor)) return;
+    const after = lineIndexAt(state.doc, state.cursor);
     if (before !== after) render();
     else updateCommentButton();
   });
@@ -1294,6 +1669,7 @@ export function createEditor(root, doc, cursor = 0) {
       if (!keepCurrent) currentCommentId = null;
       const next = atomClickOffset(atom, target);
       state = { ...state, anchor: next, cursor: next };
+      if (!claimLines(next, next)) return;
       render();
       return;
     }
@@ -1303,6 +1679,7 @@ export function createEditor(root, doc, cursor = 0) {
     if (!pos) return;
     const offset = mapOffset(pos.offsetNode, pos.offset);
     state = { ...state, cursor: offset, anchor: offset };
+    if (!claimLines(offset, offset)) return;
     render();
   });
 
@@ -1371,12 +1748,16 @@ export function createEditor(root, doc, cursor = 0) {
       const note = Number(box.dataset && box.dataset.note || 0);
       const redoKey = key === "y" || key === "Y" || event.shiftKey;
       commentFocus = { id, note, start: Number.MAX_SAFE_INTEGER, end: Number.MAX_SAFE_INTEGER };
-      apply(redoKey ? redo(state) : undo(state));
+      if (live) emit(redoKey ? { type: "redo" } : { type: "undo" });
     }, { signal: ac.signal });
   }
 
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     window.addEventListener("resize", () => layoutComments(), { signal: ac.signal });
+  }
+
+  if (active && typeof active.subscribe === "function") {
+    unsubscribe = active.subscribe((message) => onMessage(message));
   }
 
   render();
@@ -1391,6 +1772,7 @@ export function createEditor(root, doc, cursor = 0) {
       placeCaret();
     },
     destroy() {
+      unsubscribe();
       ac.abort();
       if (addCommentButton && addCommentButton.parentElement && typeof addCommentButton.parentElement.removeChild === "function") {
         addCommentButton.parentElement.removeChild(addCommentButton);
@@ -1399,12 +1781,83 @@ export function createEditor(root, doc, cursor = 0) {
   };
 }
 
+function filesNavOf(root) {
+  const parent = root && root.parentElement;
+  if (!parent || !parent.childNodes) return null;
+  for (const child of parent.childNodes) {
+    if (child !== root && child.classList && child.classList.contains("files")) return child;
+  }
+  return null;
+}
+
+function firstControl(nav) {
+  if (!nav || !nav.childNodes) return null;
+  for (const child of nav.childNodes) {
+    if (!child || child.nodeType !== 1) continue;
+    const tag = String(child.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON") return child;
+  }
+  return null;
+}
+
+export function startPage(env = {}) {
+  const doc = env.document || globalThis.document;
+  if (!doc || typeof doc.getElementById !== "function") return null;
+  const root = doc.getElementById("editor");
+  if (!root) return null;
+  const storage = env.sessionStorage || globalThis.sessionStorage;
+  const input = firstControl(filesNavOf(root));
+  let current = null;
+
+  function shutdown() {
+    if (!current) return;
+    current.editor.destroy();
+    if (typeof current.transport.close === "function") current.transport.close();
+    current = null;
+  }
+
+  function connect(username) {
+    shutdown();
+    const transport = createSocketTransport({
+      username,
+      socketFactory: env.socketFactory,
+      location: env.location || globalThis.location,
+    });
+    const editor = createEditor(root, "", 0, transport);
+    current = { transport, editor, username };
+  }
+
+  function persist() {
+    if (!input || !storage || typeof storage.setItem !== "function") return;
+    storage.setItem("viewmark.username", input.value == null ? "" : String(input.value));
+  }
+
+  function sync() {
+    persist();
+    const next = input ? String(input.value == null ? "" : input.value).trim() : "";
+    const activeName = current ? current.username : "";
+    if (next === activeName) return;
+    if (!next) {
+      shutdown();
+      return;
+    }
+    connect(next);
+  }
+
+  if (input && storage && typeof storage.getItem === "function") {
+    const stored = storage.getItem("viewmark.username");
+    if (typeof stored === "string") input.value = stored;
+  }
+  if (input && typeof input.addEventListener === "function") {
+    input.addEventListener("input", sync);
+    input.addEventListener("change", sync);
+  }
+  sync();
+  return { close: shutdown };
+}
+
 function boot() {
-  const root = document.getElementById("editor");
-  if (!root) return;
-  const doc = sampleDocument();
-  const editor = createEditor(root, doc, initialCursor(doc));
-  editor.focus();
+  startPage();
 }
 
 if (typeof document !== "undefined") {

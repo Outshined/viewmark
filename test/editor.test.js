@@ -10,6 +10,7 @@ import {
   placeMove,
   createState,
   createEditor,
+  startPage,
   addComment,
   insert,
   backspace,
@@ -1154,6 +1155,8 @@ function mountEditor() {
       childNodes: [],
       parentElement: null,
       styleProps: {},
+      listeners: {},
+      focused: false,
     };
     el.style = {
       setProperty(name, value) {
@@ -1183,6 +1186,12 @@ function mountEditor() {
       for (const child of el.childNodes) child.parentElement = null;
       el.childNodes = [];
       for (const child of children) el.appendChild(child);
+    };
+    el.addEventListener = (type, fn) => {
+      el.listeners[type] = fn;
+    };
+    el.focus = () => {
+      el.focused = true;
     };
     Object.defineProperty(el, "textContent", {
       get() {
@@ -1219,6 +1228,7 @@ function mountEditor() {
   }
   root = makeElement("div");
   root.setAttribute = () => {};
+  root.querySelectorAll = () => [];
   root.addEventListener = (type, fn) => {
     listeners[type] = fn;
   };
@@ -1718,7 +1728,7 @@ test("comment cards edit the thread and line up with the highlight", () => {
   const mounted = mountSheet();
   try {
     const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-    assert.match(html, /<div class="sheet">\s*<div id="editor"><\/div>\s*<aside class="comments"><\/aside>/);
+    assert.match(html, /<div class="sheet">\s*<nav class="files">\s*<input placeholder="Username">\s*<\/nav>\s*<div id="editor"><\/div>\s*<aside class="comments"><\/aside>/);
     const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
     assert.match(css, /\.md-comment-author\s*\{[^}]*min-height:\s*1\.25em;/);
     assert.match(css, /\.md-comment-text\s*\{[^}]*white-space:\s*pre-wrap;/);
@@ -2417,6 +2427,507 @@ test("comment cards mark the thread being acted on", () => {
     assert.equal(editing("c1").length, 0);
     delete globalThis.document.caretPositionFromPoint;
     caretView.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+function holdingTransport() {
+  let listener = null;
+  const sent = [];
+  return {
+    username: "",
+    sent,
+    send(message) {
+      sent.push(message);
+    },
+    subscribe(fn) {
+      listener = fn;
+      return () => {
+        if (listener === fn) listener = null;
+      };
+    },
+    deliver(message) {
+      if (listener) listener(message);
+    },
+  };
+}
+
+function walkNodes(node, predicate, found = []) {
+  if (predicate(node)) found.push(node);
+  for (const child of node.childNodes || []) walkNodes(child, predicate, found);
+  return found;
+}
+
+test("an insert renders only from the doc message", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "ab", 1, transport);
+    assert.equal(mounted.root.textContent, "ab");
+    mounted.listeners.beforeinput({
+      inputType: "insertText",
+      data: "X",
+      preventDefault() {},
+    });
+    assert.equal(mounted.root.textContent, "ab");
+    assert.equal(view.getState().doc, "ab");
+    assert.equal(transport.sent.some((message) => message.type === "edit" && message.op === "insert" && message.text === "X"), true);
+    transport.deliver({
+      type: "doc",
+      rev: 1,
+      text: "aXb",
+      from: 1,
+      to: 1,
+      inserted: "X",
+      actor: "",
+      cursor: 2,
+      anchor: 2,
+    });
+    assert.equal(view.getState().doc, "aXb");
+    assert.equal(view.getState().cursor, 2);
+    assert.equal(mounted.root.textContent, "aXb");
+
+    transport.sent.length = 0;
+    mounted.listeners.keydown({
+      key: "z",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+    });
+    assert.equal(mounted.root.textContent, "aXb");
+    assert.equal(transport.sent.some((message) => message.type === "undo"), true);
+    transport.deliver({
+      type: "doc",
+      rev: 2,
+      text: "ab",
+      from: 1,
+      to: 2,
+      inserted: "",
+      actor: "",
+      cursor: 1,
+      anchor: 1,
+    });
+    assert.equal(mounted.root.textContent, "ab");
+
+    transport.sent.length = 0;
+    mounted.listeners.keydown({
+      key: "y",
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+    });
+    assert.equal(mounted.root.textContent, "ab");
+    assert.equal(transport.sent.some((message) => message.type === "redo"), true);
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(view.getState().doc, "ab");
+    assert.equal(view.getState().cursor, 1);
+    assert.equal(view.getState().anchor, 1);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a skipped doc rev sends open and waits for file", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "hello", 0, transport);
+    transport.deliver({
+      type: "doc",
+      rev: 2,
+      text: "NO",
+      from: 0,
+      to: 0,
+      inserted: "NO",
+      actor: "",
+      cursor: 2,
+      anchor: 2,
+    });
+    assert.equal(view.getState().doc, "hello");
+    assert.equal(transport.sent.some((message) => message.type === "open" && message.path === ""), true);
+    transport.deliver({
+      type: "doc",
+      rev: 3,
+      text: "NOPE",
+      from: 0,
+      to: 0,
+      inserted: "NOPE",
+      actor: "",
+      cursor: 4,
+      anchor: 4,
+    });
+    assert.equal(view.getState().doc, "hello");
+    transport.deliver({ type: "file", rev: 8, text: "yes\n", cursor: 1, anchor: 1 });
+    assert.equal(view.getState().doc, "yes\n");
+    assert.equal(view.getState().cursor, 1);
+    transport.deliver({
+      type: "doc",
+      rev: 9,
+      text: "yes!\n",
+      from: 3,
+      to: 3,
+      inserted: "!",
+      actor: "",
+      cursor: 4,
+      anchor: 4,
+    });
+    assert.equal(view.getState().doc, "yes!\n");
+    assert.equal(view.getState().cursor, 4);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("another user's doc shifts a caret at or after to", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  transport.username = "me";
+  try {
+    const view = createEditor(mounted.root, "hello\n", 5, transport);
+    transport.deliver({
+      type: "doc",
+      rev: 1,
+      text: "helXlo\n",
+      from: 3,
+      to: 3,
+      inserted: "X",
+      actor: "other",
+      cursor: 4,
+      anchor: 4,
+    });
+    assert.equal(view.getState().doc, "helXlo\n");
+    assert.equal(view.getState().cursor, 6);
+    assert.equal(view.getState().anchor, 6);
+    view.destroy();
+
+    const earlier = holdingTransport();
+    earlier.username = "me";
+    const stayed = createEditor(mounted.root, "hello\n", 2, earlier);
+    earlier.deliver({
+      type: "doc",
+      rev: 1,
+      text: "helXlo\n",
+      from: 3,
+      to: 3,
+      inserted: "X",
+      actor: "other",
+      cursor: 4,
+      anchor: 4,
+    });
+    assert.equal(stayed.getState().cursor, 2);
+    assert.equal(stayed.getState().anchor, 2);
+    stayed.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("locks name another user and a rejected lock does not take the caret", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  transport.username = "me";
+  try {
+    const view = createEditor(mounted.root, "one\ntwo\n", 0, transport);
+    transport.deliver({
+      type: "locks",
+      lines: [
+        { index: 0, username: "me" },
+        { index: 1, username: "ada" },
+      ],
+    });
+    const marks = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-lock"));
+    assert.deepEqual(marks.map((mark) => mark.textContent), ["ada"]);
+    const firstLine = mounted.root.childNodes[0];
+    assert.equal(walkNodes(firstLine, (node) => node.classList && node.classList.contains("md-lock")).length, 0);
+
+    const lines = mounted.root.childNodes;
+    const origin = lines[0].childNodes[0].childNodes[0];
+    const next = lines[1].childNodes[0].childNodes[0];
+    assert.equal(origin.textContent, "one");
+    assert.equal(next.textContent, "two");
+    const rejecting = {
+      username: "me",
+      sent: [],
+      subscribe(fn) {
+        this.listener = fn;
+        return () => {};
+      },
+      send(message) {
+        this.sent.push(message);
+        if (message.type === "lock" && this.listener) this.listener({ type: "error", status: 409 });
+      },
+    };
+    view.destroy();
+    const blocked = createEditor(mounted.root, "a\nb\n", 0, rejecting);
+    const text = mounted.root.childNodes.map((line) => line.childNodes[0] && line.childNodes[0].childNodes[0]).filter((node) => node && node.nodeType === 3);
+    assert.equal(text[0].textContent, "a");
+    assert.equal(text[1].textContent, "b");
+    mounted.listeners.mousedown({ clientX: 0, clientY: 0 });
+    mounted.setSelection = null;
+    const selection = {
+      rangeCount: 1,
+      anchorNode: text[0],
+      anchorOffset: 0,
+      focusNode: text[1],
+      focusOffset: 1,
+      getRangeAt() {
+        return { collapsed: false, commonAncestorContainer: mounted.root };
+      },
+    };
+    globalThis.window.getSelection = () => selection;
+    mounted.listeners.mouseup({ clientX: 20, clientY: 20 });
+    assert.equal(rejecting.sent.some((message) => message.type === "lock" && message.lines.join(",") === "0,1"), true);
+    assert.equal(blocked.getState().cursor, 0);
+    assert.equal(blocked.getState().anchor, 0);
+    blocked.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test('files ["b.md","sub/a.md"] show b.md and a collapsed sub', () => {
+  const mounted = mountEditor();
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(css, /grid-template-columns:\s*minmax\(10rem,\s*16rem\)\s+minmax\(0,\s*46rem\)\s+minmax\(14rem,\s*20rem\)/);
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const input = document.createElement("input");
+  input.placeholder = "Username";
+  nav.appendChild(input);
+  const sheet = document.createElement("div");
+  sheet.appendChild(nav);
+  sheet.appendChild(mounted.root);
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    transport.deliver({ type: "docs", files: ["b.md", "empty/notes.txt", "sub/a.md"] });
+    const labeled = (text) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.textContent === text);
+    assert.equal(labeled("b.md").length, 1);
+    assert.equal(labeled("sub").length, 1);
+    assert.equal(labeled("a.md").length, 0);
+    assert.equal(labeled("empty").length, 0);
+    assert.equal(labeled("notes.txt").length, 0);
+    assert.equal(nav.childNodes[0], input);
+    const before = transport.sent.length;
+    labeled("sub")[0].listeners.click({ preventDefault() {} });
+    assert.equal(transport.sent.length, before);
+    assert.equal(labeled("a.md").length, 1);
+    assert.equal(labeled("b.md").length, 1);
+    labeled("a.md")[0].listeners.click({ preventDefault() {} });
+    const opened = transport.sent.filter((message) => message.type === "open");
+    assert.deepEqual(opened.map((message) => message.path), ["sub/a.md"]);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a comment.add focuses the id the doc message added", () => {
+  const mounted = mountSheet();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "hello fox two deer\n", 0, transport);
+    const text = mounted.root.childNodes[0].childNodes[0].childNodes[0];
+    mounted.listeners.mousedown({ clientX: 0, clientY: 0 });
+    mounted.setSelection({
+      rangeCount: 1,
+      anchorNode: text,
+      anchorOffset: 6,
+      focusNode: text,
+      focusOffset: 9,
+      getRangeAt() {
+        return {
+          collapsed: false,
+          commonAncestorContainer: text,
+          getClientRects() {
+            return [{ top: 12, left: 0, right: 40, bottom: 28, width: 40, height: 16 }];
+          },
+        };
+      },
+    });
+    mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
+    const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    add.listeners.mousedown({ preventDefault() {} });
+    assert.equal(view.getState().doc, "hello fox two deer\n");
+    assert.equal(mounted.findAll((node) => node.tagName === "TEXTAREA").length, 0);
+    assert.equal(transport.sent.some((message) => message.type === "edit" && message.op === "comment.add" && message.anchor === 6 && message.cursor === 9 && message.id == null), true);
+    const next = "hello {c9}fox{/c9} two deer\n\n```comment c9\n\n```\n";
+    transport.deliver({
+      type: "doc",
+      rev: 1,
+      text: next,
+      from: 0,
+      to: "hello fox two deer\n".length,
+      inserted: next,
+      actor: "",
+      cursor: 10,
+      anchor: 10,
+    });
+    assert.equal(view.getState().doc, next);
+    const card = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"))[0];
+    assert.equal(card.dataset.comment, "c9");
+    assert.equal(card.classList.contains("md-comment-current"), true);
+    const box = mounted.findAll((node) => node.tagName === "TEXTAREA")[0];
+    assert.equal(box.value, "");
+    assert.equal(box.focused, true);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("username opens, closes, and reopens the socket", () => {
+  const mounted = mountEditor();
+  globalThis.window.matchMedia = () => ({ matches: false });
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const input = document.createElement("input");
+  input.placeholder = "Username";
+  nav.appendChild(input);
+  const sheet = document.createElement("div");
+  const aside = document.createElement("aside");
+  aside.className = "comments";
+  sheet.append(nav, mounted.root, aside);
+  document.getElementById = (id) => (id === "editor" ? mounted.root : null);
+  const storage = {
+    data: { "viewmark.username": "ada" },
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
+    },
+    setItem(key, value) {
+      this.data[key] = String(value);
+    },
+  };
+  const sockets = [];
+  function factory(url) {
+    const handlers = {};
+    const socket = {
+      url,
+      sent: [],
+      closed: false,
+      addEventListener(type, fn) {
+        handlers[type] = fn;
+      },
+      send(data) {
+        this.sent.push(data);
+      },
+      close() {
+        this.closed = true;
+      },
+      emit(type, event) {
+        if (handlers[type]) handlers[type](event);
+      },
+    };
+    sockets.push(socket);
+    return socket;
+  }
+  try {
+    input.value = "   ";
+    const blank = startPage({
+      document: globalThis.document,
+      sessionStorage: { getItem() { return ""; }, setItem() {} },
+      socketFactory: factory,
+      location: { protocol: "https:", host: "viewmark.test" },
+    });
+    assert.equal(sockets.length, 0);
+    blank.close();
+
+    const page = startPage({
+      document: globalThis.document,
+      sessionStorage: storage,
+      socketFactory: factory,
+      location: { protocol: "http:", host: "viewmark.test" },
+    });
+    assert.equal(input.value, "ada");
+    assert.equal(sockets.length, 1);
+    assert.equal(sockets[0].url, "ws://viewmark.test/api/ws");
+    assert.equal(mounted.root.textContent.includes("Viewmark"), false);
+    sockets[0].emit("open");
+    assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "ada" });
+    sockets[0].emit("message", { data: JSON.stringify({ type: "ping" }) });
+    assert.deepEqual(JSON.parse(sockets[0].sent[1]), { type: "pong", username: "ada" });
+    sockets[0].emit("message", { data: JSON.stringify({ type: "docs", files: ["b.md", "sub/a.md"] }) });
+    const labeled = (text) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.textContent === text);
+    assert.equal(labeled("b.md").length, 1);
+    assert.equal(labeled("a.md").length, 0);
+    const opensBefore = sockets[0].sent.length;
+    labeled("sub")[0].listeners.click({ preventDefault() {} });
+    assert.equal(sockets[0].sent.length, opensBefore);
+    assert.equal(labeled("a.md").length, 1);
+    sockets[0].emit("message", { data: JSON.stringify({ type: "file", rev: 4, text: "ab", cursor: 1, anchor: 1, path: "b.md" }) });
+    assert.equal(mounted.root.textContent, "ab");
+    mounted.listeners.beforeinput({
+      inputType: "insertText",
+      data: "Q",
+      preventDefault() {},
+    });
+    assert.equal(mounted.root.textContent, "ab");
+    const edit = JSON.parse(sockets[0].sent.at(-1));
+    assert.equal(edit.type, "edit");
+    assert.equal(edit.op, "insert");
+    assert.equal(edit.text, "Q");
+    assert.equal(edit.username, "ada");
+    sockets[0].emit("message", {
+      data: JSON.stringify({
+        type: "doc",
+        rev: 5,
+        text: "aQb",
+        from: 1,
+        to: 1,
+        inserted: "Q",
+        actor: "ada",
+        cursor: 2,
+        anchor: 2,
+      }),
+    });
+    assert.equal(mounted.root.textContent, "aQb");
+
+    input.value = "ada ";
+    input.listeners.input();
+    assert.equal(storage.data["viewmark.username"], "ada ");
+    assert.equal(sockets.length, 1);
+    assert.equal(sockets[0].closed, false);
+
+    input.value = "bob";
+    input.listeners.input();
+    assert.equal(sockets[0].closed, true);
+    assert.equal(sockets.length, 2);
+    assert.equal(sockets[1].url, "ws://viewmark.test/api/ws");
+    assert.equal(sockets[1].closed, false);
+    sockets[1].emit("open");
+    assert.deepEqual(JSON.parse(sockets[1].sent[0]), { type: "hello", username: "bob" });
+
+    input.value = "  ";
+    input.listeners.input();
+    assert.equal(sockets[1].closed, true);
+    assert.equal(sockets.length, 2);
+    assert.equal(storage.data["viewmark.username"], "  ");
+
+    input.value = "ada";
+    input.listeners.input();
+    assert.equal(sockets.length, 3);
+    sockets[2].emit("open");
+    assert.deepEqual(JSON.parse(sockets[2].sent[0]), { type: "hello", username: "ada" });
+    page.close();
+    assert.equal(sockets[2].closed, true);
+
+    const secure = startPage({
+      document: globalThis.document,
+      sessionStorage: storage,
+      socketFactory: factory,
+      location: { protocol: "https:", host: "viewmark.test" },
+    });
+    assert.equal(sockets.length, 4);
+    assert.equal(sockets[3].url, "wss://viewmark.test/api/ws");
+    secure.close();
+    assert.equal(sockets[3].closed, true);
   } finally {
     mounted.restore();
   }
