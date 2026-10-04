@@ -884,6 +884,8 @@ test("T-nested-lists", () => {
   assert.match(css, /\.md-line\.md-li \{[^}]*margin-left: calc\(1\.3em \+ var\(--indent, 0\) \* 1ch\);/);
   assert.match(css, /\.md-line\.md-ol \{[^}]*margin-left: calc\(1\.3em \+ var\(--indent, 0\) \* 1ch\);/);
   assert.match(css, /\.md-raw\.md-li,\n\.md-raw\.md-ol \{[^}]*margin-left: 1\.3em;/);
+  assert.equal(css.includes("#3a3424"), false);
+  assert.equal(css.includes(".md-line.md-raw"), false);
   const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
   assert.match(src, /The markdown this editor supports is GitHub, GitLab, and Obsidian markdown\./);
   assert.match(src, /A mermaid fence is a diagram\./);

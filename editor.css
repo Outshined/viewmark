@@ -182,11 +182,6 @@ aside.comments {
   background: #232220;
 }
 
-.md-line.md-raw {
-  background: #3a3424;
-  border-radius: 2px;
-}
-
 a.md-link {
   color: #8eb4f0;
   text-decoration: underline;
