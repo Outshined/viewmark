@@ -4715,14 +4715,30 @@ test("T-ticket-rows", () => {
   assert.match(css, /\.ticket-block\s*\{[^}]*position:\s*relative/);
   assert.match(css, /\.ticket-block\s*\{[^}]*overflow:\s*visible/);
   assert.equal(/0\.8rem/.test(css.match(/\.ticket-block\s*\{[^}]*\}/)[0]), false);
-  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*position:\s*absolute/);
-  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*left:\s*100%/);
-  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*top:\s*-0\.75rem/);
-  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*bottom:\s*-0\.75rem/);
-  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*z-index:\s*4/);
-  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*padding:\s*0\.75rem 0/);
-  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*width:\s*calc\(100vw - 16rem\)/);
-  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*background:\s*#1c1b19/);
+  const drawerRule = css.match(/\.md-ticket-drawer\s*\{[^}]*\}/)[0];
+  assert.match(drawerRule, /position:\s*relative/);
+  assert.match(drawerRule, /left:\s*0/);
+  assert.match(drawerRule, /width:\s*100%/);
+  assert.match(drawerRule, /background:\s*#1c1b19/);
+  assert.equal(/position:\s*absolute/.test(drawerRule), false);
+  assert.equal(/left:\s*100%/.test(drawerRule), false);
+  assert.equal(/calc\(100vw - 16rem\)/.test(drawerRule), false);
+  const wideRule = css.match(/\.md-ticket-wide\s*\{[^}]*\}/)[0];
+  assert.match(wideRule, /position:\s*fixed/);
+  assert.match(wideRule, /left:\s*0/);
+  assert.match(wideRule, /width:\s*100vw/);
+  assert.match(wideRule, /z-index:\s*4/);
+  assert.match(wideRule, /transition:\s*width 0\.5s,\s*left 0\.5s/);
+  assert.match(css, /\.ticket-tree \.md-ticket-row:hover\s*\{[^}]*background:\s*#2c3440/);
+  assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.ticket-tree \.md-ticket-row[^{]*\{[^}]*grid-template-columns:\s*1\.1em 8rem minmax\(0,\s*1fr\);/);
+  assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*button\.md-ticket[^{]*\{[^}]*grid-template-columns:\s*8rem minmax\(0,\s*1fr\);/);
+  assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.md-ticket-priority[^{]*\{[^}]*display:\s*none/);
+  assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.md-ticket-state[^{]*\{[^}]*display:\s*none/);
+  assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.md-ticket-type[^{]*\{[^}]*display:\s*none/);
+  const sortButtonRule = css.match(/\.ticket-tree \.md-ticket-columns button\s*\{[^}]*\}/);
+  assert.ok(sortButtonRule);
+  assert.match(sortButtonRule[0], /font-weight:\s*bold/);
+  assert.equal(/border:\s*0/.test(sortButtonRule[0]), false);
   assert.match(css, /\.ticket-tree\s*\{[^}]*height:\s*100%/);
   assert.match(css, /\.ticket-tree\s*\{[^}]*overflow:\s*auto/);
   assert.match(css, /\.ticket-tree\s*\{[^}]*scrollbar-gutter:\s*stable/);
@@ -4758,6 +4774,9 @@ test("T-ticket-rows", () => {
   assert.match(css, /\.ticket-form:not\(\[hidden\]\)\s*\+\s*#editor\s*\{[^}]*grid-row:\s*2/);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.sheet\s*\{[^}]*display:\s*block;/);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.md-ticket-drawer\s*\{[^}]*position:\s*static/);
+  assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.md-ticket-wide\s*\{[^}]*position:\s*static/);
+  assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.md-ticket-wide\s*\{[^}]*width:\s*auto/);
+  assert.equal(/@media \(max-width:\s*800px\)\s*\{[^]*\.md-ticket-wide\s*\{[^}]*position:\s*fixed/.test(css), false);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.md-ticket-drawer\[hidden\]\s*\{[^}]*display:\s*block/);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.ticket-tree\s*\{[^}]*max-height:\s*50vh/);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*min-height:\s*40vh/);
@@ -4792,8 +4811,9 @@ test("T-ticket-rows", () => {
     const drawer = byClass(block, "md-ticket-drawer")[0];
     const name = byClass(block, "md-new-ticket-name")[0];
     assert.equal(heading.parentElement, head);
-    assert.equal(drawer.hidden, true);
-    assert.equal(drawer.hasAttribute("hidden"), true);
+    assert.equal(drawer.hidden, false);
+    assert.equal(drawer.hasAttribute("hidden"), false);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), false);
     assert.equal(tickets.parentElement, drawer);
     assert.equal(drawer.parentElement, block);
     assert.equal(block.childNodes.indexOf(name) + 1, block.childNodes.indexOf(drawer));
@@ -4808,11 +4828,25 @@ test("T-ticket-rows", () => {
     assert.ok(columns);
     assert.equal(columns.classList.contains("md-ticket-node"), false);
     assert.deepEqual(
-      columns.childNodes.filter((node) => node.textContent).map((node) => node.textContent),
-      ["ID", "Title", "Priority", "State", "Type"],
+      columns.childNodes.filter((node) => node.textContent).map((node) => [node.tagName, node.textContent]),
+      [
+        ["BUTTON", "ID"],
+        ["BUTTON", "Title"],
+        ["BUTTON", "Priority"],
+        ["BUTTON", "State"],
+        ["BUTTON", "Type"],
+      ],
     );
+    for (const label of ["ID", "Title", "Priority", "State", "Type"]) {
+      const button = columns.childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === label);
+      assert.equal(button.getAttribute("aria-label"), `Sort by ${label}`);
+      assert.equal(button.type, "button");
+      assert.equal(button.childNodes.some((node) => String(node.tagName || "").toLowerCase() === "svg"), false);
+    }
     block.listeners.pointerenter();
     assert.equal(drawer.hidden, false);
+    assert.equal(drawer.hasAttribute("hidden"), false);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
     assert.equal(drawer.hasAttribute("hidden"), false);
     const plus = byClass(mounted.nav, "md-new-ticket")[0];
     assert.equal(plus.parentElement, head);
@@ -4894,6 +4928,7 @@ test("T-ticket-rows", () => {
     open.listeners.click({ preventDefault() {} });
     assert.deepEqual(transport.sent.at(-1), { type: "open", path: "tickets/bbbbbbbb.md", rev: 0, username: "" });
     assert.equal(drawer.hidden, false);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
     view.destroy();
     assert.equal(plus.listeners.click, undefined);
   } finally {
@@ -4918,14 +4953,76 @@ test("T-ticket-drawer", () => {
   };
   try {
     const view = createEditor(mounted.root, "x", 0, transport);
-    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0);
-    const bravo = ticketFixture("bbbbbbbb", "Bravo", "new", T1);
-    transport.deliver({ type: "tickets", tickets: [alpha, bravo] });
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T1, "", [], "Ada", "task", "low");
+    const bravo = ticketFixture("bbbbbbbb", "Bravo", "new", T0, "", [], "Ada", "task", "high");
+    const zed = ticketFixture("dddddddd", "Zed", "new", T0, "bbbbbbbb");
+    const ann = ticketFixture("eeeeeeee", "Ann", "new", T2, "bbbbbbbb");
+    transport.deliver({ type: "tickets", tickets: [alpha, bravo, zed, ann] });
     const block = byClass(mounted.nav, "ticket-block")[0];
     const drawer = byClass(block, "md-ticket-drawer")[0];
-    assert.equal(drawer.hidden, true);
+    const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    assert.equal(drawer.hidden, false);
+    assert.equal(drawer.hasAttribute("hidden"), false);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), false);
+    assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.md-ticket-priority[^{]*\{[^}]*display:\s*none/);
+    assert.deepEqual(rootTicketIds(mounted.nav), ["bbbbbbbb", "aaaaaaaa"]);
     block.listeners.pointerenter();
     assert.equal(drawer.hidden, false);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
+    const columns = byClass(mounted.nav, "md-ticket-columns")[0];
+    const heading = (label) => columns.childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === label);
+    const svgOf = (button) => button && button.childNodes.find((node) => String(node.tagName || "").toLowerCase() === "svg");
+    const pathOf = (button) => {
+      const svg = svgOf(button);
+      return svg && svg.childNodes.find((node) => String(node.tagName || "").toLowerCase() === "path");
+    };
+    const title = heading("Title");
+    const idHead = heading("ID");
+    for (const label of ["ID", "Title", "Priority", "State", "Type"]) {
+      assert.equal(heading(label).getAttribute("aria-label"), `Sort by ${label}`);
+    }
+    const expand = byClass(ticketNode(mounted.nav, "bbbbbbbb"), "md-ticket-expand")[0];
+    expand.listeners.click({ preventDefault() {}, stopPropagation() {} });
+    const childIds = () => {
+      const nest = byClass(ticketNode(mounted.nav, "bbbbbbbb"), "md-ticket-children")[0];
+      return nest.childNodes.filter((node) => node.classList.contains("md-ticket-node")).map((node) => node.dataset.id);
+    };
+    assert.deepEqual(childIds(), ["dddddddd", "eeeeeeee"]);
+    title.listeners.click({ preventDefault() {} });
+    assert.deepEqual(rootTicketIds(mounted.nav), ["aaaaaaaa", "bbbbbbbb"]);
+    assert.deepEqual(childIds(), ["eeeeeeee", "dddddddd"]);
+    const asc = pathOf(title);
+    assert.equal(svgOf(title).getAttribute("viewBox"), "0 0 24 24");
+    assert.equal(svgOf(title).getAttribute("aria-hidden"), "true");
+    assert.equal(asc.getAttribute("fill"), "none");
+    assert.equal(asc.getAttribute("stroke"), "currentColor");
+    assert.equal(asc.getAttribute("stroke-width"), "2");
+    assert.equal(asc.getAttribute("stroke-linecap"), "round");
+    assert.equal(asc.getAttribute("stroke-linejoin"), "round");
+    assert.equal(asc.getAttribute("d"), "M12 19V5M5 12l7-7 7 7");
+    assert.equal(svgOf(idHead), undefined);
+    title.listeners.click({ preventDefault() {} });
+    assert.deepEqual(rootTicketIds(mounted.nav), ["bbbbbbbb", "aaaaaaaa"]);
+    assert.deepEqual(childIds(), ["dddddddd", "eeeeeeee"]);
+    assert.equal(pathOf(title).getAttribute("d"), "M12 5v14M19 12l-7 7-7-7");
+    title.listeners.click({ preventDefault() {} });
+    assert.deepEqual(rootTicketIds(mounted.nav), ["bbbbbbbb", "aaaaaaaa"]);
+    assert.deepEqual(childIds(), ["dddddddd", "eeeeeeee"]);
+    assert.equal(svgOf(title), undefined);
+    idHead.listeners.click({ preventDefault() {} });
+    assert.deepEqual(rootTicketIds(mounted.nav), ["aaaaaaaa", "bbbbbbbb"]);
+    assert.ok(svgOf(idHead));
+    assert.equal(svgOf(title), undefined);
+    assert.equal(svgOf(heading("Priority")), undefined);
+    assert.equal(svgOf(heading("State")), undefined);
+    assert.equal(svgOf(heading("Type")), undefined);
+    heading("Priority").listeners.click({ preventDefault() {} });
+    assert.deepEqual(rootTicketIds(mounted.nav), ["bbbbbbbb", "aaaaaaaa"]);
+    assert.equal(svgOf(idHead), undefined);
+    assert.equal(pathOf(heading("Priority")).getAttribute("d"), "M12 19V5M5 12l7-7 7 7");
+    heading("Priority").listeners.click({ preventDefault() {} });
+    heading("Priority").listeners.click({ preventDefault() {} });
+    assert.equal(svgOf(heading("Priority")), undefined);
     const alphaRow = rowOf(mounted.nav, "aaaaaaaa");
     const bravoRow = rowOf(mounted.nav, "bbbbbbbb");
     const alphaOpen = byClass(alphaRow, "md-ticket").find((node) => node.tagName === "BUTTON");
@@ -4945,23 +5042,28 @@ test("T-ticket-drawer", () => {
     assert.equal(pending.length, 1);
     assert.equal(pending[0].ms, 200);
     assert.equal(drawer.hidden, false);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
     block.listeners.pointerenter();
     assert.equal(pending.length, 0);
     assert.equal(drawer.hidden, false);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
     block.listeners.pointerleave();
     assert.equal(pending.length, 1);
     assert.equal(pending[0].ms, 200);
     const hide = pending.pop();
     hide.fn();
-    assert.equal(drawer.hidden, true);
-    assert.equal(drawer.hasAttribute("hidden"), true);
+    assert.equal(drawer.hidden, false);
+    assert.equal(drawer.hasAttribute("hidden"), false);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), false);
     block.listeners.pointerenter();
     assert.equal(drawer.hidden, false);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
     block.listeners.pointerleave();
     assert.equal(pending.length, 1);
     bravoOpen.listeners.click({ preventDefault() {} });
     assert.equal(pending.length, 0);
     assert.equal(drawer.hidden, false);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
     assert.equal(bravoRow.classList.contains("md-ticket-current"), true);
     block.listeners.pointerleave();
     assert.equal(pending.length, 1);

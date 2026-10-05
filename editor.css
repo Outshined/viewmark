@@ -304,6 +304,10 @@ nav.files .md-ticket-filter-menu input {
   overflow: hidden;
 }
 
+.ticket-tree .md-ticket-row:hover {
+  background: #2c3440;
+}
+
 .ticket-tree .md-ticket-row.md-ticket-current {
   background: #3d5a80;
 }
@@ -383,6 +387,27 @@ nav.files .md-ticket-filter-menu input {
   white-space: nowrap;
 }
 
+.ticket-tree .md-ticket-columns button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: bold;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.ticket-tree .md-ticket-columns svg {
+  width: 0.9em;
+  height: 0.9em;
+  flex: none;
+}
+
 .ticket-tree .md-ticket-children {
   margin-left: 0.8rem;
 }
@@ -397,20 +422,51 @@ nav.files .md-ticket-filter-menu input {
 }
 
 .md-ticket-drawer {
-  position: absolute;
-  left: 100%;
-  top: -0.75rem;
-  bottom: -0.75rem;
-  z-index: 4;
+  position: relative;
+  left: 0;
   box-sizing: border-box;
-  padding: 0.75rem 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
   background: #1c1b19;
-  /* The block's right edge is about 15.2rem in, so this ends 0.8rem short of the viewport and covers aside.comments. */
-  width: calc(100vw - 16rem);
+  transition: width 0.5s, left 0.5s;
+}
+
+.md-ticket-wide {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 4;
+  width: 100vw;
+  transition: width 0.5s, left 0.5s;
+}
+
+.md-ticket-drawer:not(.md-ticket-wide) .ticket-tree .md-ticket-row,
+.md-ticket-drawer:not(.md-ticket-wide) .ticket-tree .md-ticket-columns {
+  grid-template-columns: 1.1em 8rem minmax(0, 1fr);
+}
+
+.md-ticket-drawer:not(.md-ticket-wide) .ticket-tree button.md-ticket {
+  grid-template-columns: 8rem minmax(0, 1fr);
+}
+
+.md-ticket-drawer:not(.md-ticket-wide) .md-ticket-priority,
+.md-ticket-drawer:not(.md-ticket-wide) .md-ticket-state,
+.md-ticket-drawer:not(.md-ticket-wide) .md-ticket-type {
+  display: none;
 }
 
 .md-ticket-drawer[hidden] {
   display: none;
+}
+
+.md-ticket-drawer > .ticket-tree {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .file-block {
@@ -429,6 +485,8 @@ nav.files .md-ticket-filter-menu input {
   min-height: 0;
   position: relative;
   overflow: visible;
+  display: flex;
+  flex-direction: column;
 }
 
 .file-tree {
@@ -1099,6 +1157,12 @@ a.md-link {
 
   .md-ticket-drawer {
     position: static;
+    width: auto;
+  }
+
+  .md-ticket-wide {
+    position: static;
+    left: auto;
     width: auto;
   }
 

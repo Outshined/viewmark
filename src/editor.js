@@ -273,6 +273,14 @@ const TICKET_FILTERS = [
   { label: "defect", filter: "bug", checked: true },
 ];
 
+const TICKET_COLUMNS = [
+  { key: "id", label: "ID", className: "md-ticket-id" },
+  { key: "title", label: "Title", className: "md-ticket-title" },
+  { key: "priority", label: "Priority", className: "md-ticket-priority" },
+  { key: "state", label: "State", className: "md-ticket-state" },
+  { key: "type", label: "Type", className: "md-ticket-type" },
+];
+
 function filterBoxes(menu) {
   const found = [];
   const walk = (node) => {
@@ -330,6 +338,21 @@ function buildFilterMenu(menu) {
   menu.appendChild(all);
 }
 
+function ticketSortGlyph(dir) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "2");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  path.setAttribute("d", dir === "desc" ? "M12 5v14M19 12l-7 7-7-7" : "M12 19V5M5 12l7-7 7 7");
+  svg.appendChild(path);
+  return svg;
+}
+
 function ensureTicketColumns(tree) {
   if (!tree || typeof document === "undefined" || typeof document.createElement !== "function") return null;
   let columns = findClassChild(tree, "md-ticket-columns");
@@ -338,10 +361,18 @@ function ensureTicketColumns(tree) {
   columns.className = "md-ticket-columns";
   // The first track is the expand control, so the labels share the field tracks.
   columns.appendChild(document.createElement("span"));
-  for (const label of ["ID", "Title", "Priority", "State", "Type"]) {
-    const cell = document.createElement("span");
-    cell.textContent = label;
-    columns.appendChild(cell);
+  for (const column of TICKET_COLUMNS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = column.className;
+    button.dataset.sort = column.key;
+    button.textContent = column.label;
+    if (typeof button.setAttribute === "function") {
+      button.setAttribute("type", "button");
+      button.setAttribute("aria-label", `Sort by ${column.label}`);
+      button.setAttribute("data-sort", column.key);
+    }
+    columns.appendChild(button);
   }
   return columns;
 }
@@ -397,6 +428,21 @@ function compareTickets(a, b) {
   return 0;
 }
 
+function columnText(ticket, key) {
+  const value = ticket && ticket[key];
+  return typeof value === "string" ? value : "";
+}
+
+function orderSiblings(list, order) {
+  const key = order && TICKET_COLUMNS.some((column) => column.key === order.key) ? order.key : "";
+  if (!key || (order.dir !== "asc" && order.dir !== "desc")) {
+    list.sort(compareTickets);
+    return;
+  }
+  list.sort((a, b) => columnText(a, key).localeCompare(columnText(b, key)));
+  if (order.dir === "desc") list.reverse();
+}
+
 function sameSet(a, b) {
   const left = [...(a || [])].sort();
   const right = [...(b || [])].sort();
@@ -417,7 +463,7 @@ function chainReaches(start, id, byId) {
   return false;
 }
 
-function forestFrom(list) {
+function forestFrom(list, order) {
   const byId = new Map();
   for (const ticket of list) byId.set(ticket.id, ticket);
   const children = new Map();
@@ -436,8 +482,8 @@ function forestFrom(list) {
       roots.push(ticket);
     }
   }
-  roots.sort(compareTickets);
-  for (const kids of children.values()) kids.sort(compareTickets);
+  orderSiblings(roots, order);
+  for (const kids of children.values()) orderSiblings(kids, order);
   return { roots, children };
 }
 
@@ -1109,6 +1155,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let ticketDrawerEnter = null;
   let ticketDrawerLeave = null;
   let ticketDrawerTimer = null;
+  let ticketSort = null;
+  const wiredSortButtons = new WeakSet();
   let activeRepo = "";
   let repoSelect = null;
   let repoOnChange = null;
@@ -3112,11 +3160,47 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return node;
   }
 
+  function wireTicketSort(columns) {
+    if (!columns) return;
+    for (const child of columns.childNodes || []) {
+      if (!child || child.tagName !== "BUTTON" || wiredSortButtons.has(child)) continue;
+      wiredSortButtons.add(child);
+      const key = child.dataset && child.dataset.sort;
+      child.addEventListener("click", (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        if (!key) return;
+        if (!ticketSort || ticketSort.key !== key) ticketSort = { key, dir: "asc" };
+        else if (ticketSort.dir === "asc") ticketSort = { key, dir: "desc" };
+        else ticketSort = null;
+        renderTicketTree();
+      });
+    }
+  }
+
+  function paintTicketSort(columns) {
+    if (!columns) return;
+    for (const child of columns.childNodes || []) {
+      if (!child || child.tagName !== "BUTTON") continue;
+      const key = child.dataset && child.dataset.sort;
+      for (const kid of [...(child.childNodes || [])]) {
+        if (kid && String(kid.tagName || "").toLowerCase() === "svg") detachNode(kid);
+      }
+      if (ticketSort && ticketSort.key === key) child.appendChild(ticketSortGlyph(ticketSort.dir));
+    }
+  }
+
+  function syncTicketColumns(tree) {
+    const columns = ensureTicketColumns(tree);
+    wireTicketSort(columns);
+    paintTicketSort(columns);
+    return columns;
+  }
+
   function renderTicketTree() {
     const tree = findTicketTree(filesNav());
     if (!tree || typeof tree.replaceChildren !== "function") return;
-    const columns = ensureTicketColumns(tree);
-    const forest = forestFrom(visibleTicketList());
+    const columns = syncTicketColumns(tree);
+    const forest = forestFrom(visibleTicketList(), ticketSort);
     const seen = new Set();
     const nodes = [];
     for (const ticket of forest.roots) {
@@ -3140,13 +3224,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (drawer) showElement(drawer);
   }
 
-  // Leaving the block starts a short hide so a pointer that comes back keeps the list up.
+  // A pointer that slips off and comes back inside 200ms keeps the wide list.
   function scheduleHideTicketDrawer() {
     if (ticketDrawerTimer != null) clearTimeout(ticketDrawerTimer);
     ticketDrawerTimer = setTimeout(() => {
       ticketDrawerTimer = null;
       const drawer = ticketDrawerEl();
-      if (drawer) hideElement(drawer);
+      if (drawer && drawer.classList) drawer.classList.remove("md-ticket-wide");
     }, 200);
   }
 
@@ -3188,6 +3272,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     releaseTicketDrawer();
     ticketDrawerEnter = () => {
       showTicketDrawer();
+      const drawer = ticketDrawerEl();
+      if (drawer && drawer.classList) drawer.classList.add("md-ticket-wide");
     };
     ticketDrawerLeave = () => {
       scheduleHideTicketDrawer();
@@ -3793,8 +3879,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!drawer) {
       drawer = document.createElement("div");
       drawer.className = "md-ticket-drawer";
-      hideElement(drawer);
     }
+    showElement(drawer);
     placeAfter(block, field, drawer);
     let tree = findClassChild(drawer, "ticket-tree") || findClassChild(block, "ticket-tree") || findDeep(nav, "ticket-tree");
     if (!tree) {
@@ -3805,7 +3891,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       detachNode(tree);
       drawer.appendChild(tree);
     }
-    const columns = ensureTicketColumns(tree);
+    const columns = syncTicketColumns(tree);
     if (columns && columns.parentElement !== tree) placeFirst(tree, columns);
     bindTicketDrawer(block);
     const previous = ticketBindings.get(button);
