@@ -2223,7 +2223,11 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.equal(menu.button.tagName, "BUTTON");
     assert.equal(menu.button.type, "button");
     assert.equal(menu.button.getAttribute("aria-label"), "Menu");
-    assert.equal(menu.button.childNodes.filter((node) => node.classList && node.classList.contains("md-doc-menu-bar")).length, 3);
+    assert.equal(menu.button.childNodes.filter((node) => node.classList && node.classList.contains("md-doc-menu-bar")).length, 0);
+    assert.equal(menu.button.childNodes.length, 1);
+    assert.equal(menu.button.childNodes[0].localName, "svg");
+    assert.deepEqual(iconPaths(menu.button), ["M4 6h16M4 12h16M4 18h16"]);
+    assert.equal(menu.button.textContent, "");
     assert.equal(menu.button.childNodes.every((node) => node.nodeType === 1), true);
     assert.equal(menu.panel.hidden, true);
     assert.equal(menu.checkbox.type, "checkbox");
@@ -2842,6 +2846,13 @@ function walkNodes(node, predicate, found = []) {
   if (predicate(node)) found.push(node);
   for (const child of node.childNodes || []) walkNodes(child, predicate, found);
   return found;
+}
+
+function iconPaths(button) {
+  const kids = button && button.childNodes ? [...button.childNodes] : [];
+  const svg = kids.find((node) => node && node.localName === "svg");
+  if (!svg || !svg.childNodes) return [];
+  return [...svg.childNodes].filter((node) => node && node.localName === "path").map((node) => node.getAttribute("d"));
 }
 
 test("an insert renders only from the doc message", () => {
@@ -4110,7 +4121,26 @@ test("username focus stays on the field through the first character", () => {
 test("Enter on notes/idea creates notes/idea.md and a file message shows the row", () => {
   const mounted = mountEditor();
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
-  assert.match(css, /\.md-new-file\s*\{[^}]*border:\s*0;/);
+  assert.match(css, /\.md-new-file\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
+  assert.match(css, /\.md-new-file\s*\{[^}]*border-radius:\s*0\.35rem;/);
+  assert.match(css, /button\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
+  assert.match(css, /button\s*\{[^}]*border-radius:\s*0\.35rem;/);
+  assert.match(css, /\.md-new-ticket\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
+  assert.match(css, /button\.md-doc-menu\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
+  assert.match(css, /button\.md-doc-menu\s*\{[^}]*border-radius:\s*0\.35rem;/);
+  assert.match(css, /\.ticket-tree button\.md-ticket-expand\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
+  assert.match(css, /\.ticket-tree button\.md-ticket\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
+  assert.match(css, /\.file-tree button\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
+  assert.match(css, /\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option,\s*\.ticket-form button\.md-ticket-rely\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
+  assert.match(css, /\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option,\s*\.ticket-form button\.md-ticket-rely\s*\{[^}]*border-radius:\s*0\.35rem;/);
+  assert.match(css, /:root\s*\{[^}]*--danger:\s*#ff7b72;/);
+  assert.match(css, /\.icon-btn svg\s*\{[^}]*width:\s*1\.1em;/);
+  assert.match(css, /\.icon-btn svg\s*\{[^}]*height:\s*1\.1em;/);
+  assert.match(css, /\.icon-btn svg\s*\{[^}]*display:\s*block;/);
+  assert.match(css, /\.icon-btn\.danger\s*\{[^}]*color:\s*var\(--danger\)/);
+  assert.match(css, /\.icon-btn\.resolve\s*\{[^}]*color:\s*#8fdb8a;/);
+  assert.match(css, /label,\s*\.md-ticket-label\s*\{[^}]*font-weight:\s*700;/);
+  assert.match(css, /\.md-line\.md-hr\s*\{[^}]*border:\s*0;/);
   assert.match(css, /\.md-new-file\s*\{[^}]*background:\s*none;/);
   assert.match(css, /\.md-new-file\s*\{[^}]*font:\s*inherit;/);
   assert.equal(/\.md-new-file\s*\{[^}]*width:\s*100%/.test(css), false);
@@ -4129,7 +4159,16 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     const fileBlock = () => walkNodes(nav, (node) => node.classList && node.classList.contains("file-block"))[0];
     assert.equal(nav.childNodes[1], fileBlock());
     const button = buttons()[0];
-    assert.equal(button.textContent, "+");
+    assert.equal(button.textContent, "");
+    assert.equal(button.getAttribute("aria-label"), "New file");
+    assert.equal(button.classList.contains("icon-btn"), true);
+    assert.deepEqual(iconPaths(button), ["M12 5v14M5 12h14"]);
+    const plusPath = [...button.childNodes].find((node) => node.localName === "svg").childNodes[0];
+    assert.equal(plusPath.getAttribute("fill"), "none");
+    assert.equal(plusPath.getAttribute("stroke"), "currentColor");
+    assert.equal(plusPath.getAttribute("stroke-width"), "2");
+    assert.equal(plusPath.getAttribute("stroke-linecap"), "round");
+    assert.equal(plusPath.getAttribute("stroke-linejoin"), "round");
     assert.equal(button.type, "button");
     const head = button.parentElement;
     assert.equal(head.classList.contains("md-pane-head"), true);
@@ -4221,7 +4260,9 @@ test("NodeList childNodes places the file block as the next sibling of the repo 
     assert.equal(head.childNodes[0].tagName, "H2");
     assert.equal(head.childNodes[0].classList.contains("md-pane-heading"), true);
     assert.equal(head.childNodes[1].classList.contains("md-new-file"), true);
-    assert.equal(head.childNodes[1].textContent, "+");
+    assert.equal(head.childNodes[1].textContent, "");
+    assert.equal(head.childNodes[1].getAttribute("aria-label"), "New file");
+    assert.deepEqual(iconPaths(head.childNodes[1]), ["M12 5v14M5 12h14"]);
     assert.equal(typeof nav.childNodes.indexOf, "undefined");
     view.destroy();
   } finally {
@@ -4466,7 +4507,6 @@ test("T-ticket-rows", () => {
   const rowRule = css.match(/\.ticket-tree \.md-ticket-row\s*\{[^}]*\}/);
   const titleRule = css.match(/\.ticket-tree \.md-ticket-title\s*\{[^}]*\}/);
   const stateRule = css.match(/\.ticket-tree \.md-ticket-state\s*\{[^}]*\}/);
-  const mark = css.match(/\.ticket-tree button\.md-ticket-expand::before\s*\{[^}]*\}/);
   const inputs = css.match(/\.ticket-form input[\s\S]*?\{[^}]*\}/);
   assert.ok(rowRule);
   assert.match(rowRule[0], /white-space:\s*nowrap/);
@@ -4475,9 +4515,11 @@ test("T-ticket-rows", () => {
   assert.match(titleRule[0], /overflow:\s*hidden/);
   assert.match(stateRule[0], /flex-shrink:\s*0/);
   assert.match(stateRule[0], /white-space:\s*nowrap/);
-  assert.match(mark[0], /content:\s*""/);
-  assert.match(mark[0], /background:\s*currentColor/);
-  assert.match(mark[0], /clip-path:\s*polygon\(/);
+  assert.equal(/\.ticket-tree button\.md-ticket-expand::before\s*\{/.test(css), false);
+  assert.equal(/clip-path:\s*polygon\(0 0, 100% 50%, 0 100%\)/.test(css), false);
+  assert.equal(/clip-path:\s*polygon\(0 0, 100% 0, 50% 100%\)/.test(css), false);
+  assert.match(src, /function iconButton\(action, className\)/);
+  assert.match(src, /minus:\s*\["M5 12h14"\]/);
   assert.match(css, /nav\.files\s*\{[^}]*grid-column:\s*1/);
   assert.match(css, /nav\.files\s*\{[^}]*grid-row:\s*1\s*\/\s*span\s*2/);
   assert.match(css, /nav\.files\s*\{[^}]*display:\s*flex/);
@@ -4596,7 +4638,9 @@ test("T-ticket-rows", () => {
     const plus = byClass(mounted.nav, "md-new-ticket")[0];
     assert.equal(plus.parentElement, head);
     assert.equal(head.childNodes[0], heading);
-    assert.equal(plus.textContent, "+");
+    assert.equal(plus.textContent, "");
+    assert.equal(plus.getAttribute("aria-label"), "New ticket");
+    assert.deepEqual(iconPaths(plus), ["M12 5v14M5 12h14"]);
     assert.equal(plus.type, "button");
     const list = [
       ticketFixture("cccccccc", "Cedar", "triaged", T2, "", [], "Ada", "bug"),
@@ -4637,10 +4681,16 @@ test("T-ticket-rows", () => {
     const expand = byClass(alpha, "md-ticket-expand")[0];
     assert.equal(expand.textContent, "");
     assert.equal(expand.tagName, "BUTTON");
+    assert.equal(expand.getAttribute("aria-label"), "expand");
+    assert.deepEqual(iconPaths(expand), ["M9 6l6 6-6 6"]);
     assert.equal(byClass(ticketNode(mounted.nav, "dddddddd"), "md-ticket-expand").length, 0);
     const before = transport.sent.length;
     expand.listeners.click({ preventDefault() {}, stopPropagation() {} });
     assert.equal(transport.sent.length, before);
+    const opened = byClass(ticketNode(mounted.nav, "aaaaaaaa"), "md-ticket-expand")[0];
+    assert.equal(opened.getAttribute("aria-label"), "collapse");
+    assert.deepEqual(iconPaths(opened), ["M6 9l6 6 6-6"]);
+    assert.equal(opened.classList.contains("md-ticket-expanded"), true);
     const nest = byClass(ticketNode(mounted.nav, "aaaaaaaa"), "md-ticket-children")[0];
     assert.deepEqual(
       nest.childNodes.filter((node) => node.classList.contains("md-ticket-node")).map((node) => node.dataset.id),
@@ -4866,7 +4916,8 @@ test("T-pane-head", () => {
   assert.match(filterRule[0], /text-align:\s*left/);
   assert.match(filterRule[0], /padding:\s*0\.15rem 0\.35rem/);
   assert.match(filterRule[0], /margin:\s*0 0 0\.45rem/);
-  assert.match(allRule[0], /border:\s*0/);
+  assert.match(allRule[0], /border:\s*1px solid #c4b8a4/);
+  assert.match(allRule[0], /border-radius:\s*0\.35rem/);
   assert.match(allRule[0], /background:\s*none/);
   assert.match(allRule[0], /font:\s*inherit/);
   assert.equal(/button\.md-ticket-filter-all\s*\{[^}]*width:\s*100%/.test(css), false);
@@ -4892,12 +4943,14 @@ test("T-pane-head", () => {
     assert.equal(filesHeading.classList.contains("md-pane-heading"), true);
     assert.equal(filesHeading.textContent, "Files");
     assert.equal(filesHead.childNodes[1].classList.contains("md-new-file"), true);
-    assert.equal(filesHead.childNodes[1].textContent, "+");
+    assert.equal(filesHead.childNodes[1].textContent, "");
+    assert.equal(filesHead.childNodes[1].getAttribute("aria-label"), "New file");
     assert.equal(ticketsHeading.tagName, "H2");
     assert.equal(ticketsHeading.classList.contains("md-pane-heading"), true);
     assert.equal(ticketsHeading.textContent, "Tickets");
     assert.equal(ticketsHead.childNodes[1].classList.contains("md-new-ticket"), true);
-    assert.equal(ticketsHead.childNodes[1].textContent, "+");
+    assert.equal(ticketsHead.childNodes[1].textContent, "");
+    assert.equal(ticketsHead.childNodes[1].getAttribute("aria-label"), "New ticket");
     const name = byClass(fileBlock, "md-new-name")[0];
     assert.ok(fileBlock.childNodes.indexOf(filesHead) < fileBlock.childNodes.indexOf(name));
     assert.ok(fileBlock.childNodes.indexOf(name) < fileBlock.childNodes.indexOf(tree));
@@ -6402,6 +6455,10 @@ test("T-deep-link", () => {
     assert.equal(row.childNodes.filter((node) => node.classList && node.classList.contains("md-comment-link")).length, 1);
     assert.equal(copy.childNodes.length, 1);
     assert.equal(copy.childNodes[0].localName, "svg");
+    assert.deepEqual(iconPaths(copy), [
+      "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71",
+      "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
+    ]);
     assert.equal(copy.textContent.includes("Copy link"), false);
     copy.listeners.click({ target: copy, preventDefault() {}, stopPropagation() {} });
     mounted.aside.listeners.click({ target: copy, preventDefault() {} });

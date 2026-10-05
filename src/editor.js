@@ -237,13 +237,27 @@ function ensurePaneHead(block, title) {
 
 function ensureNavButton(nav, className, text) {
   let button = findDeep(nav, className);
+  const icon = className === "md-new-file" || className === "md-new-ticket";
   if (!button) {
-    button = document.createElement("button");
-    button.className = className;
+    button = icon ? iconButton("plus", className) : document.createElement("button");
+    if (!icon) button.className = className;
   }
-  button.className = className;
   button.type = "button";
   if (typeof button.setAttribute === "function") button.setAttribute("type", "button");
+  if (icon) {
+    button.className = `icon-btn ${className}`;
+    if (typeof button.setAttribute === "function") {
+      button.setAttribute("aria-label", className === "md-new-file" ? "New file" : "New ticket");
+    }
+    // textContent replaces the svg, and "+" is not the button label.
+    if (button.textContent !== "" || !iconMatches(button, "plus")) {
+      for (const child of childArray(button).slice()) detachNode(child);
+      const svg = iconSvg("plus");
+      if (svg) button.appendChild(svg);
+    }
+    return button;
+  }
+  button.className = className;
   if (button.textContent !== text) button.textContent = text;
   return button;
 }
@@ -497,20 +511,68 @@ function selectChromeGap(selects) {
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-function linkIcon() {
-  if (typeof document === "undefined" || typeof document.createElementNS !== "function") return null;
-  const svg = document.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("aria-hidden", "true");
+const ICON_PATHS = {
+  plus: ["M12 5v14M5 12h14"],
+  minus: ["M5 12h14"],
+  menu: ["M4 6h16M4 12h16M4 18h16"],
+  expand: ["M9 6l6 6-6 6"],
+  collapse: ["M6 9l6 6 6-6"],
+  link: [
+    "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71",
+    "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
+  ],
+};
+
+function strokePath(d) {
   const path = document.createElementNS(SVG_NS, "path");
   path.setAttribute("fill", "none");
   path.setAttribute("stroke", "currentColor");
   path.setAttribute("stroke-width", "2");
   path.setAttribute("stroke-linecap", "round");
   path.setAttribute("stroke-linejoin", "round");
-  path.setAttribute("d", "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71");
-  svg.appendChild(path);
+  path.setAttribute("d", d);
+  return path;
+}
+
+function iconSvg(action) {
+  if (typeof document === "undefined" || typeof document.createElementNS !== "function") return null;
+  const paths = ICON_PATHS[action];
+  if (!paths) return null;
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of paths) svg.appendChild(strokePath(d));
   return svg;
+}
+
+function iconMatches(button, action) {
+  const expected = ICON_PATHS[action];
+  if (!expected || !button) return false;
+  const kids = childArray(button);
+  if (kids.length !== 1 || !kids[0] || kids[0].localName !== "svg") return false;
+  const paths = childArray(kids[0]).filter((node) => node && node.localName === "path");
+  if (paths.length !== expected.length) return false;
+  for (let i = 0; i < expected.length; i += 1) {
+    if (typeof paths[i].getAttribute !== "function" || paths[i].getAttribute("d") !== expected[i]) return false;
+  }
+  return true;
+}
+
+function linkIcon() {
+  return iconSvg("link");
+}
+
+function iconButton(action, className) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className ? `icon-btn ${className}` : "icon-btn";
+  if (typeof button.setAttribute === "function") {
+    button.setAttribute("type", "button");
+    button.setAttribute("aria-label", action);
+  }
+  const svg = iconSvg(action);
+  if (svg) button.appendChild(svg);
+  return button;
 }
 
 const newFileBindings = new WeakMap();
@@ -2953,11 +3015,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const row = document.createElement("div");
     row.className = "md-ticket-row";
     if (kids.length > 0) {
-      const expand = document.createElement("button");
-      expand.type = "button";
-      expand.className = "md-ticket-expand";
-      if (typeof expand.setAttribute === "function") expand.setAttribute("type", "button");
-      if (expandedTickets.has(ticket.id)) expand.classList.add("md-ticket-expanded");
+      const expanded = expandedTickets.has(ticket.id);
+      const expand = iconButton(expanded ? "collapse" : "expand", "md-ticket-expand");
+      if (expanded) expand.classList.add("md-ticket-expanded");
       expand.addEventListener("click", (event) => {
         if (event && typeof event.preventDefault === "function") event.preventDefault();
         if (event && typeof event.stopPropagation === "function") event.stopPropagation();
@@ -4261,19 +4321,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       docMenuButton = findClassChild(commentsAside, "md-doc-menu");
     }
     if (!docMenuButton) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "md-doc-menu";
-      if (typeof button.setAttribute === "function") {
-        button.setAttribute("type", "button");
-        button.setAttribute("aria-label", "Menu");
-      }
-      for (let i = 0; i < 3; i += 1) {
-        const bar = document.createElement("span");
-        bar.className = "md-doc-menu-bar";
-        if (typeof bar.setAttribute === "function") bar.setAttribute("aria-hidden", "true");
-        button.appendChild(bar);
-      }
+      const button = iconButton("menu", "md-doc-menu");
+      if (typeof button.setAttribute === "function") button.setAttribute("aria-label", "Menu");
       commentsAside.appendChild(button);
       docMenuButton = button;
     }

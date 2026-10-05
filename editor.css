@@ -1,5 +1,30 @@
 :root {
   color-scheme: dark;
+  --danger: #ff7b72;
+}
+
+button {
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
+}
+
+label,
+.md-ticket-label {
+  font-weight: 700;
+}
+
+.icon-btn svg {
+  width: 1.1em;
+  height: 1.1em;
+  display: block;
+}
+
+.icon-btn.danger {
+  color: var(--danger);
+}
+
+.icon-btn.resolve {
+  color: #8fdb8a;
 }
 
 html,
@@ -82,17 +107,11 @@ button.md-doc-menu {
   height: 1.75rem;
   margin: 0;
   padding: 0.35rem;
-  border: 0;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
   background: none;
   color: inherit;
   cursor: pointer;
-}
-
-button.md-doc-menu .md-doc-menu-bar {
-  display: block;
-  width: 100%;
-  height: 2px;
-  background: currentColor;
 }
 
 div.md-doc-menu-panel {
@@ -193,7 +212,8 @@ dialog.md-login::backdrop {
   width: auto;
   margin: 0 0.4rem 0.8rem 0;
   padding: 0;
-  border: 0;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
   background: none;
   font: inherit;
   color: inherit;
@@ -205,7 +225,8 @@ dialog.md-login::backdrop {
   width: auto;
   margin: 0 0.4rem 0.8rem 0;
   padding: 0;
-  border: 0;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
   background: none;
   font: inherit;
   color: inherit;
@@ -249,7 +270,8 @@ button.md-ticket-filter-all {
   width: auto;
   margin: 0 0 0.45rem;
   padding: 0;
-  border: 0;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
   background: none;
   font: inherit;
   color: inherit;
@@ -297,24 +319,12 @@ nav.files .md-ticket-filter-menu input {
   height: 1.1em;
   margin: 0;
   padding: 0;
-  border: 0;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
   background: none;
   color: inherit;
   font: inherit;
   cursor: pointer;
-}
-
-.ticket-tree button.md-ticket-expand::before {
-  content: "";
-  display: inline-block;
-  width: 0.55em;
-  height: 0.55em;
-  background: currentColor;
-  clip-path: polygon(0 0, 100% 50%, 0 100%);
-}
-
-.ticket-tree button.md-ticket-expand.md-ticket-expanded::before {
-  clip-path: polygon(0 0, 100% 0, 50% 100%);
 }
 
 .ticket-tree button.md-ticket {
@@ -328,7 +338,8 @@ nav.files .md-ticket-filter-menu input {
   width: auto;
   margin: 0;
   padding: 0.15rem 0;
-  border: 0;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
   background: none;
   font: inherit;
   text-align: left;
@@ -433,7 +444,8 @@ nav.files .md-ticket-filter-menu input {
   text-align: left;
   color: inherit;
   background: none;
-  border: 0;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
   cursor: pointer;
 }
 
@@ -601,7 +613,8 @@ aside.comments {
   width: 100%;
   margin: 0;
   padding: 0.15rem 0.2rem;
-  border: 0;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
   background: none;
   color: inherit;
   font: inherit;
