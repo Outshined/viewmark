@@ -4861,7 +4861,7 @@ test("T-ticket-rows", () => {
   const sortButtonRule = css.match(/\.ticket-tree \.md-ticket-columns button\s*\{[^}]*\}/);
   assert.ok(sortButtonRule);
   assert.match(sortButtonRule[0], /font-weight:\s*bold/);
-  assert.equal(/border:\s*0/.test(sortButtonRule[0]), false);
+  assert.equal(/border:\s*0/.test(sortButtonRule[0]), true);
   assert.match(css, /\.ticket-tree\s*\{[^}]*height:\s*100%/);
   assert.match(css, /\.ticket-tree\s*\{[^}]*overflow:\s*auto/);
   assert.match(css, /\.ticket-tree\s*\{[^}]*scrollbar-gutter:\s*stable/);

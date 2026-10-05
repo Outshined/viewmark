@@ -422,6 +422,7 @@ nav.files .md-ticket-filter-menu input {
   gap: 0.3rem;
   margin: 0;
   padding: 0;
+  border: 0;
   background: none;
   color: inherit;
   font: inherit;
