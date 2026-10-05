@@ -1782,6 +1782,133 @@ test("T-ticket-purge", async () => {
   });
 });
 
+test("T-hub-delete", async () => {
+  await withDocs(async ({ server, port, dir }) => {
+    await fs.writeFile(path.join(dir, "b.md"), "bee\n");
+    await fs.mkdir(path.join(dir, "sub"), { recursive: true });
+    await fs.writeFile(path.join(dir, "sub", "a.md"), "ay\n");
+    const ada = await hello(port, "Ada");
+    const bea = await hello(port, "Bea");
+    ada.send({ type: "delete", username: "Ada", path: "tickets/aaaaaaaa.md" });
+    assert.deepEqual(await ada.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    ada.send({ type: "delete", username: "Ada", path: ".." });
+    assert.deepEqual(await ada.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+    ada.send({ type: "delete", username: "Ada", path: "sub" });
+    assert.deepEqual(await ada.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+    ada.send({ type: "delete", username: "Ada", path: "missing.md" });
+    assert.deepEqual(await ada.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+    assert.equal(await readDoc(dir, "b.md"), "bee\n");
+    assert.equal(await readDoc(dir, "sub/a.md"), "ay\n");
+
+    await openDoc(bea, "Bea", "b.md");
+    await syncLock(bea, [], "Bea", "b.md", 0, 0);
+    ada.send({ type: "delete", username: "Ada", path: "b.md" });
+    assert.deepEqual(await ada.next((msg) => msg.type === "error" || msg.type === "deleted"), { type: "error", status: 409 });
+    assert.equal(await readDoc(dir, "b.md"), "bee\n");
+
+    bea.send({ type: "edit", username: "Bea", path: "b.md", rev: 0, anchor: 0, cursor: 0, op: "insert", text: "Z" });
+    const edited = await takeDoc(bea);
+    assert.equal(edited.text, "Zbee\n");
+    bea.send({ type: "delete", username: "Bea", path: "b.md" });
+    assert.deepEqual(await bea.next((msg) => msg.type === "deleted" || msg.type === "error"), { type: "deleted", path: "b.md" });
+    const docs = await bea.next((msg) => msg.type === "docs");
+    assert.equal(docs.files.includes("b.md"), false);
+    assert.equal(docs.files.includes("sub/a.md"), true);
+    const adaDocs = await ada.next((msg) => msg.type === "docs" || msg.type === "deleted");
+    assert.equal(adaDocs.type, "docs");
+    assert.equal(adaDocs.files.includes("b.md"), false);
+    assert.equal(ada.all.some((msg) => msg.type === "deleted"), false);
+    await assert.rejects(() => fs.lstat(path.join(dir, "b.md")));
+    assert.equal(await readDoc(dir, "sub/a.md"), "ay\n");
+    const subInfo = await fs.lstat(path.join(dir, "sub"));
+    assert.equal(subInfo.isDirectory(), true);
+
+    bea.send({ type: "undo", username: "Bea", path: "b.md", rev: edited.rev });
+    assert.deepEqual(await bea.next((msg) => msg.type === "error" || msg.type === "doc"), { type: "error", status: 409 });
+    await assert.rejects(() => fs.lstat(path.join(dir, "b.md")));
+
+    await fs.writeFile(path.join(dir, "b.md"), "back\n");
+    ada.send({ type: "delete", username: "Ada", path: "b.md" });
+    assert.deepEqual(await ada.next((msg) => msg.type === "deleted" || msg.type === "error"), { type: "deleted", path: "b.md" });
+    await assert.rejects(() => fs.lstat(path.join(dir, "b.md")));
+    await assertNoHead(server, dir);
+  });
+});
+
+test("T-hub-ticket-delete", async () => {
+  await withDocs(async ({ server, port, dir }) => {
+    const T0 = "2020-01-01T00:00:00.000Z";
+    const T1 = "2020-01-01T00:00:01.000Z";
+    const beta = await writeTicket(dir, {
+      id: "bbbbbbbb",
+      title: "Beta",
+      state: "new",
+      parent: "aaaaaaaa",
+      depends: ["cccccccc", "aaaaaaaa"],
+      created: T0,
+      body: "beta\n",
+    });
+    const alpha = await writeTicket(dir, {
+      id: "aaaaaaaa",
+      title: "Alpha",
+      state: "new",
+      created: T1,
+      body: "alpha\n",
+    });
+    const ada = await hello(port, "Ada");
+    const bea = await hello(port, "Bea");
+    ada.send({ type: "delete", username: "Ada", path: "tickets/aaaaaaaa.md" });
+    assert.deepEqual(await ada.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    assert.equal(await readDoc(dir, "tickets/aaaaaaaa.md"), alpha);
+
+    await openDoc(bea, "Bea", "tickets/aaaaaaaa.md");
+    ada.send({ type: "ticket.delete", username: "Ada", id: "aaaaaaaa" });
+    assert.deepEqual(await ada.next((msg) => msg.type === "error" || msg.type === "deleted"), { type: "error", status: 409 });
+    assert.equal(await readDoc(dir, "tickets/aaaaaaaa.md"), alpha);
+    assert.equal(await readDoc(dir, "tickets/bbbbbbbb.md"), beta);
+
+    bea.send({ type: "ticket.delete", username: "Bea", id: "aaaaaaaa" });
+    assert.deepEqual(await bea.next((msg) => msg.type === "deleted" || msg.type === "error"), {
+      type: "deleted",
+      path: "tickets/aaaaaaaa.md",
+    });
+    const listed = await bea.next((msg) => msg.type === "tickets");
+    assert.equal(listed.tickets.some((ticket) => ticket.id === "aaaaaaaa"), false);
+    const survivor = listed.tickets.find((ticket) => ticket.id === "bbbbbbbb");
+    assert.ok(survivor);
+    assert.equal(survivor.parent, "");
+    assert.deepEqual(survivor.depends, ["cccccccc"]);
+    const disk = parseTicket("bbbbbbbb", await readDoc(dir, "tickets/bbbbbbbb.md"));
+    assert.equal(disk.body, "beta\n");
+    assert.equal(disk.parent, "");
+    assert.deepEqual(disk.depends, ["cccccccc"]);
+    await assert.rejects(() => fs.lstat(path.join(dir, "tickets", "aaaaaaaa.md")));
+
+    bea.send({ type: "ticket.delete", username: "Bea", id: "cccccccc" });
+    assert.deepEqual(await bea.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+    bea.send({ type: "ticket.delete", username: "Bea", id: "nope" });
+    assert.deepEqual(await bea.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+
+    await writeTicket(dir, {
+      id: "aaaaaaaa",
+      title: "Alpha",
+      state: "new",
+      created: T1,
+      body: "alpha\n",
+    });
+    ada.send({ type: "ticket.delete", username: "Ada", id: "aaaaaaaa" });
+    assert.deepEqual(await ada.next((msg) => msg.type === "deleted" || msg.type === "error"), {
+      type: "deleted",
+      path: "tickets/aaaaaaaa.md",
+    });
+    await assert.rejects(() => fs.lstat(path.join(dir, "tickets", "aaaaaaaa.md")));
+    const again = parseTicket("bbbbbbbb", await readDoc(dir, "tickets/bbbbbbbb.md"));
+    assert.equal(again.parent, "");
+    assert.deepEqual(again.depends, ["cccccccc"]);
+    await assertNoHead(server, dir);
+  });
+});
+
 test("T-repo-isolate", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-iso-"));
   const state = path.join(parent, "state");
@@ -1803,6 +1930,8 @@ test("T-repo-isolate", async () => {
       { type: "ticket.create", username: "A", title: "X" },
       { type: "ticket.set", username: "A", path: "tickets/aaaaaaaa.md", rev: 0, title: "N" },
       { type: "ticket.purge", username: "A" },
+      { type: "delete", username: "A", path: "a.md" },
+      { type: "ticket.delete", username: "A", id: "aaaaaaaa" },
     ]) {
       bare.send(payload);
       assert.deepEqual(await bare.next((msg) => msg.type === "error"), { type: "error", status: 400 });

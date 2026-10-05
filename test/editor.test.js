@@ -5992,7 +5992,8 @@ test("file titles and move drops", () => {
     assert.equal(nested.length, 1);
     assert.equal(nested[0].parentElement, notesKids);
     const kidList = notesKids.childNodes;
-    assert.equal(kidList[kidList.indexOf(nested[0]) - 1], buttonPath("notes/idea.md"));
+    assert.equal(kidList[kidList.indexOf(nested[0]) - 1], buttonPath("notes/idea.md").parentElement);
+    assert.equal(kidList[kidList.indexOf(nested[0]) - 1].classList.contains("md-file-row"), true);
     assert.equal(kidList[kidList.indexOf(nested[0]) + 1], buttonDir("notes/sub").parentElement);
     buttonPath("notes/idea.md").listeners.dragend({});
     assert.equal(lines().length, 0);
@@ -7029,6 +7030,241 @@ test("T-deep-link", () => {
     if (previousLocation === undefined) delete globalThis.location;
     else globalThis.location = previousLocation;
     if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
+    mounted.restore();
+  }
+});
+
+test("T-file-delete", () => {
+  const mounted = mountEditor();
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
+  const glyph = "M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14";
+  assert.match(src, /delete:\s*\[\s*"M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"\s*\]/);
+  const rowRule = css.match(/\.md-file-row\s*\{[^}]*\}/);
+  assert.ok(rowRule);
+  assert.match(rowRule[0], /display:\s*flex/);
+  assert.match(rowRule[0], /align-items:\s*center/);
+  assert.match(rowRule[0], /gap:\s*0\.25rem/);
+  const nameRule = css.match(/\.md-file-row > button\.md-file\s*\{[^}]*\}/);
+  assert.ok(nameRule);
+  assert.match(nameRule[0], /flex:\s*1 1 auto/);
+  const deleteRule = css.match(/\.file-tree button\.md-file-delete\s*\{[^}]*\}/);
+  assert.ok(deleteRule);
+  assert.match(deleteRule[0], /width:\s*1\.75rem/);
+  const currentRule = css.match(/\.file-tree button\.md-file\.md-file-current\s*\{[^}]*\}/);
+  assert.ok(currentRule);
+  assert.match(currentRule[0], /background:\s*#3d5a80/);
+  const confirmRule = css.match(/dialog\.md-confirm\s*\{[^}]*\}/);
+  assert.ok(confirmRule);
+  assert.match(confirmRule[0], /background:\s*#242320/);
+  assert.match(confirmRule[0], /color:\s*#e7e2d8/);
+  assert.match(confirmRule[0], /border:\s*1px solid #3f3c37/);
+  assert.match(confirmRule[0], /border-radius:\s*6px/);
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const sheet = document.createElement("div");
+  sheet.append(nav, mounted.root);
+  const transport = holdingTransport();
+  const labeled = (text) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.textContent === text);
+  const confirm = () => walkNodes(sheet, (node) => node.tagName === "DIALOG" && node.classList && node.classList.contains("md-confirm"))[0];
+  try {
+    const view = createEditor(mounted.root, "a\nb\n", 0, transport);
+    transport.deliver({ type: "docs", files: ["b.md", "sub/a.md"] });
+    transport.deliver({ type: "tickets", tickets: [ticketFixture("aaaaaaaa", "Alpha", "new", T0)] });
+    const name = labeled("b.md")[0];
+    assert.equal(name.getAttribute("aria-label"), null);
+    assert.equal(name.classList.contains("icon-btn"), true);
+    assert.equal(name.classList.contains("md-file"), true);
+    const row = name.parentElement;
+    assert.equal(row.classList.contains("md-file-row"), true);
+    const trash = [...row.childNodes].find((node) => node.classList && node.classList.contains("md-file-delete"));
+    assert.ok(trash);
+    assert.equal(trash.parentElement, row);
+    assert.notEqual(trash.parentElement, name);
+    assert.equal(trash.classList.contains("icon-btn"), true);
+    assert.equal(trash.classList.contains("danger"), true);
+    assert.equal(trash.getAttribute("aria-label"), "Delete file");
+    assert.deepEqual(iconPaths(trash), [glyph]);
+    const sub = labeled("sub")[0];
+    assert.equal([...sub.parentElement.childNodes].some((node) => node.classList && node.classList.contains("md-file-delete")), false);
+
+    const before = transport.sent.length;
+    const clickTrash = () => trash.listeners.click({ preventDefault() {} });
+    clickTrash();
+    assert.equal(transport.sent.length, before);
+    const dialog = confirm();
+    assert.equal(walkNodes(sheet, (node) => node.classList && node.classList.contains("md-confirm")).length, 1);
+    assert.equal(dialog.open, true);
+    assert.equal(byClass(dialog, "md-confirm-text")[0].textContent, "Delete b.md?");
+    const named = (text) => walkNodes(dialog, (node) => node.tagName === "BUTTON" && node.textContent === text)[0];
+    assert.equal(named("Cancel").textContent, "Cancel");
+    assert.equal(named("Delete").textContent, "Delete");
+    named("Cancel").listeners.click({ preventDefault() {} });
+    assert.equal(transport.sent.length, before);
+    assert.equal(dialog.open, false);
+
+    clickTrash();
+    dialog.listeners.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(transport.sent.length, before);
+    assert.equal(dialog.open, false);
+
+    clickTrash();
+    dialog.listeners.cancel({ preventDefault() {} });
+    assert.equal(transport.sent.length, before);
+    assert.equal(dialog.open, false);
+
+    let modals = 0;
+    dialog.showModal = () => {
+      modals += 1;
+    };
+    clickTrash();
+    assert.equal(modals, 1);
+    assert.equal(dialog.open, true);
+    named("Cancel").listeners.click({ preventDefault() {} });
+    assert.equal(transport.sent.length, before);
+
+    let openAtSend = null;
+    const send = transport.send.bind(transport);
+    transport.send = (message) => {
+      if (message.type === "delete") openAtSend = dialog.open;
+      send(message);
+    };
+    clickTrash();
+    named("Delete").listeners.click({ preventDefault() {} });
+    assert.equal(openAtSend, false);
+    assert.equal(dialog.open, false);
+    assert.deepEqual(transport.sent[before], { type: "delete", path: "b.md", username: "" });
+    assert.equal(transport.sent.length, before + 1);
+    assert.equal(transport.sent.some((message) => message.type === "open"), false);
+
+    globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+    const lines = mounted.root.childNodes;
+    const text = lines.map((line) => line.childNodes[0] && line.childNodes[0].childNodes[0]).filter((node) => node && node.nodeType === 3);
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: text[0],
+      anchorOffset: 0,
+      focusNode: text[1],
+      focusOffset: 1,
+      getRangeAt() {
+        return { collapsed: false, commonAncestorContainer: mounted.root };
+      },
+    });
+    mounted.listeners.mousedown({ clientX: 0, clientY: 0 });
+    mounted.listeners.mouseup({ clientX: 20, clientY: 20 });
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, 3);
+    globalThis.window.getSelection = () => ({ rangeCount: 0 });
+    insertText(mounted, "X");
+    insertText(mounted, "Y");
+    assert.equal(transport.sent.filter((message) => message.type === "edit" && message.text === "Y").length, 0);
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(view.getState().doc, "a\nb\n");
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, 3);
+    assert.equal(transport.sent.filter((message) => message.type === "edit" && message.text === "Y").length, 0);
+    transport.deliver(docMessage(1, "a\nb\n", 3, ""));
+    assert.equal(transport.sent.filter((message) => message.type === "edit" && message.text === "Y").length, 1);
+
+    labeled("sub")[0].listeners.click({ preventDefault() {} });
+    labeled("a.md")[0].listeners.click({ preventDefault() {} });
+    const current = walkNodes(nav, (node) => node.classList && node.classList.contains("md-file-current"));
+    assert.equal(current.length, 1);
+    assert.equal(current[0].tagName, "BUTTON");
+    assert.equal(current[0].dataset.path, "sub/a.md");
+    assert.equal(current[0].getAttribute("aria-label"), null);
+    assert.equal(labeled("b.md")[0].classList.contains("md-file-current"), false);
+    assert.equal([...labeled("sub")[0].parentElement.childNodes].some((node) => node.classList && node.classList.contains("md-file-delete")), false);
+    transport.deliver({ type: "file", rev: 2, text: "hello\n", path: "sub/a.md", cursor: 0, anchor: 0, locks: [] });
+    assert.equal(view.getState().doc, "hello\n");
+    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-file-current")).length, 1);
+    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-file-current"))[0].dataset.path, "sub/a.md");
+    assert.ok(ticketNode(nav, "aaaaaaaa"));
+    const kept = transport.sent.length;
+    transport.deliver({ type: "deleted", path: "other.md" });
+    assert.equal(view.getState().doc, "hello\n");
+    assert.equal(transport.sent.length, kept);
+    transport.deliver({ type: "deleted", path: "sub/a.md" });
+    assert.equal(view.getState().doc, "");
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-file-current")).length, 0);
+    assert.equal(labeled("b.md").length, 1);
+    assert.equal(labeled("a.md").length, 1);
+    assert.ok(ticketNode(nav, "aaaaaaaa"));
+    const quiet = transport.sent.length;
+    mounted.listeners.beforeinput({ inputType: "insertText", data: "Z", preventDefault() {} });
+    assert.equal(transport.sent.length, quiet);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("T-ticket-delete", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  const glyph = "M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14";
+  try {
+    const view = createEditor(mounted.root, "hello\n", 0, transport);
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0);
+    transport.deliver({ type: "tickets", tickets: [alpha] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 1,
+      text: "hello\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    const idNode = byClass(form, "md-ticket-fact-id")[0];
+    assert.equal(idNode.childNodes[0].nodeType, 3);
+    assert.equal(idNode.childNodes[0].textContent, "aaaaaaaa");
+    assert.equal(idNode.childNodes[1].classList.contains("md-ticket-delete"), true);
+    assert.equal(idNode.childNodes[1].classList.contains("icon-btn"), true);
+    assert.equal(idNode.childNodes[1].classList.contains("danger"), true);
+    assert.equal(idNode.childNodes[1].getAttribute("aria-label"), "Delete ticket");
+    assert.deepEqual(iconPaths(idNode.childNodes[1]), [glyph]);
+    assert.equal(idNode.textContent, "aaaaaaaa");
+    assert.equal(idNode.childNodes[1].parentElement, idNode);
+    const before = transport.sent.length;
+    idNode.childNodes[1].listeners.click({ preventDefault() {} });
+    assert.equal(transport.sent.length, before);
+    const dialog = walkNodes(mounted.body, (node) => node.tagName === "DIALOG" && node.classList && node.classList.contains("md-confirm"))[0];
+    assert.equal(dialog.open, true);
+    assert.equal(byClass(dialog, "md-confirm-text")[0].textContent, "Delete aaaaaaaa?");
+    const cancel = walkNodes(dialog, (node) => node.tagName === "BUTTON" && node.textContent === "Cancel")[0];
+    cancel.listeners.click({ preventDefault() {} });
+    assert.equal(transport.sent.length, before);
+    assert.equal(dialog.open, false);
+    assert.equal(idNode.textContent, "aaaaaaaa");
+    idNode.childNodes[1].listeners.click({ preventDefault() {} });
+    const yes = walkNodes(dialog, (node) => node.tagName === "BUTTON" && node.textContent === "Delete")[0];
+    let openAtSend = null;
+    const send = transport.send.bind(transport);
+    transport.send = (message) => {
+      if (message.type === "ticket.delete") openAtSend = dialog.open;
+      send(message);
+    };
+    yes.listeners.click({ preventDefault() {} });
+    assert.equal(openAtSend, false);
+    assert.equal(dialog.open, false);
+    assert.deepEqual(transport.sent[before], { type: "ticket.delete", id: "aaaaaaaa", username: "" });
+    assert.equal(view.getState().doc, "hello\n");
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(view.getState().doc, "hello\n");
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(byClass(form, "md-ticket-fact-id")[0].textContent, "aaaaaaaa");
+    assert.ok(ticketNode(mounted.nav, "aaaaaaaa"));
+    transport.deliver({ type: "deleted", path: "tickets/aaaaaaaa.md" });
+    assert.equal(view.getState().doc, "");
+    assert.equal(view.getState().cursor, 0);
+    assert.ok(ticketNode(mounted.nav, "aaaaaaaa"));
+    assert.equal(byClass(mounted.nav, "md-ticket").length > 0, true);
+    view.destroy();
+  } finally {
     mounted.restore();
   }
 });

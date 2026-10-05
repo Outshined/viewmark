@@ -222,6 +222,14 @@ dialog.md-login::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
 
+dialog.md-confirm {
+  background: #242320;
+  color: #e7e2d8;
+  border: 1px solid #3f3c37;
+  border-radius: 6px;
+  padding: 1rem 1.1rem;
+}
+
 .md-new-file {
   display: inline;
   width: auto;
@@ -533,6 +541,27 @@ nav.files .md-ticket-filter-menu input {
   flex: none;
 }
 
+.md-file-row {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.md-file-row > button.md-file {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.file-tree button.md-file-delete {
+  flex: none;
+  width: 1.75rem;
+  justify-content: center;
+}
+
+.file-tree button.md-file.md-file-current {
+  background: #3d5a80;
+}
+
 .md-dir-children {
   margin-left: 0.8rem;
 }
@@ -751,6 +780,19 @@ aside.comments {
 .md-ticket-fact-id {
   color: inherit;
   text-align: left;
+}
+
+.md-ticket-fact-id {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+button.md-ticket-delete {
+  flex: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
 }
 
 .editor {

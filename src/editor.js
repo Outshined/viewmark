@@ -574,6 +574,7 @@ const ICON_PATHS = {
   folder: [
     "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
   ],
+  delete: ["M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"],
 };
 
 function strokePath(d) {
@@ -1262,6 +1263,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (type === "open") fileWaiters.push("open");
     // The caller puts rev on ticket.set. A later 400 or 409 is a rejected field, not a lost caret.
     if (type === "ticket.set") conflictWaiters.push("ticket");
+    if (type === "delete" || type === "ticket.delete") conflictWaiters.push("delete");
     active.send(framed);
   }
 
@@ -2253,10 +2255,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     walk(tree);
   }
 
+  function fileRowPath(row) {
+    if (!row || !row.classList) return null;
+    if (row.classList.contains("md-file")) {
+      const path = row.dataset && row.dataset.path;
+      return typeof path === "string" ? path : null;
+    }
+    if (!row.classList.contains("md-file-row")) return null;
+    for (const child of row.childNodes || []) {
+      if (!child || !child.classList || !child.classList.contains("md-file") || !child.dataset) continue;
+      if (typeof child.dataset.path === "string") return child.dataset.path;
+    }
+    return null;
+  }
+
   // The sort key is the path segment renderEntries uses, not the visible title.
   function rowSortName(row) {
     if (!row || !row.classList) return null;
-    if (row.classList.contains("md-file")) return pathBase(row.dataset && row.dataset.path);
+    const filePath = fileRowPath(row);
+    if (filePath != null) return pathBase(filePath);
     if (!row.classList.contains("md-dir")) return null;
     for (const child of row.childNodes || []) {
       if (child && child.classList && child.classList.contains("md-dir-toggle") && child.dataset && typeof child.dataset.dir === "string") {
@@ -2275,7 +2292,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       return false;
     }
-    return !!(row.classList.contains("md-file") && row.dataset && row.dataset.path === draggedMove.path);
+    const filePath = fileRowPath(row);
+    return filePath != null && filePath === draggedMove.path;
   }
 
   function placeDropLine(container) {
@@ -2377,10 +2395,95 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     button.appendChild(document.createTextNode(label));
   }
 
+  let confirmDialog = null;
+  let confirmText = null;
+  let confirmSend = null;
+
+  function confirmParent() {
+    const body = typeof document !== "undefined" ? document.body : null;
+    if (body && typeof body.appendChild === "function") return body;
+    return root && root.parentElement;
+  }
+
+  function closeConfirm() {
+    if (!confirmDialog) return;
+    confirmDialog.open = false;
+    if (typeof confirmDialog.close === "function") confirmDialog.close();
+    else if (typeof confirmDialog.removeAttribute === "function") confirmDialog.removeAttribute("open");
+  }
+
+  function openConfirm() {
+    if (!confirmDialog) return;
+    const wasOpen = confirmDialog.open === true;
+    confirmDialog.open = true;
+    if (typeof confirmDialog.showModal === "function") {
+      if (!wasOpen) confirmDialog.showModal();
+      return;
+    }
+    if (typeof confirmDialog.setAttribute === "function") confirmDialog.setAttribute("open", "");
+  }
+
+  function ensureConfirm() {
+    if (confirmDialog) return confirmDialog;
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return null;
+    const parent = confirmParent();
+    if (!parent) return null;
+    const dialog = document.createElement("dialog");
+    dialog.className = "md-confirm";
+    const text = document.createElement("p");
+    text.className = "md-confirm-text";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    if (typeof cancel.setAttribute === "function") cancel.setAttribute("type", "button");
+    const yes = document.createElement("button");
+    yes.type = "button";
+    yes.textContent = "Delete";
+    if (typeof yes.setAttribute === "function") yes.setAttribute("type", "button");
+    cancel.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      confirmSend = null;
+      closeConfirm();
+    });
+    yes.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      const send = confirmSend;
+      confirmSend = null;
+      closeConfirm();
+      if (send) send();
+    });
+    const dismiss = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      confirmSend = null;
+      closeConfirm();
+    };
+    dialog.addEventListener("cancel", dismiss);
+    dialog.addEventListener("keydown", (event) => {
+      if (!event || event.key !== "Escape") return;
+      dismiss(event);
+    });
+    dialog.append(text, cancel, yes);
+    parent.appendChild(dialog);
+    confirmDialog = dialog;
+    confirmText = text;
+    return dialog;
+  }
+
+  function showConfirm(name, send) {
+    const dialog = ensureConfirm();
+    if (!dialog || !confirmText) return;
+    confirmText.textContent = `Delete ${name}?`;
+    confirmSend = send;
+    openConfirm();
+  }
+
   function renderFileRow(file) {
+    const row = document.createElement("div");
+    row.className = "md-file-row";
     const button = document.createElement("button");
     button.type = "button";
     button.className = "md-file icon-btn";
+    if (file.path === openPath) button.classList.add("md-file-current");
     button.dataset.path = file.path;
     appendIconLabel(button, "file", fileLabel(file));
     bindDragSource(button, file.path, false);
@@ -2395,8 +2498,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       emit({ type: "open", path: file.path });
       publishHash();
       syncEntryLink();
+      renderFileTree(fileList, false);
     });
-    return button;
+    const remove = makeIconButton(
+      "Delete file",
+      ICON_PATHS.delete[0],
+      "icon-btn danger md-file-delete",
+      () => showConfirm(fileLabel(file), () => emit({ type: "delete", path: file.path })),
+    );
+    row.append(button, remove);
+    return row;
   }
 
   function renderDirRow(dir) {
@@ -2586,6 +2697,23 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       applyTicketList(message);
       return;
     }
+    if (message.type === "deleted") {
+      const at = conflictWaiters.indexOf("delete");
+      if (at >= 0) conflictWaiters.splice(at, 1);
+      if (typeof message.path !== "string" || message.path !== openPath) return;
+      // The open file is gone. Empty this mirror only; the ticket list stays until tickets.
+      dropPendingEdits();
+      live = false;
+      waitingForFile = true;
+      openPath = "";
+      state = createState("");
+      sentLines = lineSet(state.anchor, state.cursor);
+      outstandingLock = null;
+      granted = { anchor: state.anchor, cursor: state.cursor };
+      render();
+      renderFileTree(fileList, false);
+      return;
+    }
     if (message.type === "ticket") {
       applyTicketNotice(message);
       return;
@@ -2611,6 +2739,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     if (message.type === "error") {
+      // A rejected delete left the file in place. It is not a lost caret grant.
+      if (conflictWaiters[0] === "delete") {
+        conflictWaiters.shift();
+        return;
+      }
       if (conflictWaiters[0] === "ticket") {
         conflictWaiters.shift();
         revertTicketForm();
@@ -3765,6 +3898,22 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return row;
     }
 
+    function idFactRow(id) {
+      const row = document.createElement("div");
+      row.className = "md-ticket-fact";
+      const valueNode = document.createElement("div");
+      valueNode.className = "md-ticket-fact-id";
+      valueNode.appendChild(document.createTextNode(id));
+      valueNode.appendChild(makeIconButton(
+        "Delete ticket",
+        ICON_PATHS.delete[0],
+        "icon-btn danger md-ticket-delete",
+        () => showConfirm(id, () => emit({ type: "ticket.delete", id })),
+      ));
+      row.append(fieldName("Id"), valueNode);
+      return row;
+    }
+
     const relied = document.createElement("div");
     relied.className = "md-ticket-relied";
     const reliedBox = document.createElement("div");
@@ -3793,7 +3942,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const facts = document.createElement("div");
     facts.className = "md-ticket-column";
     facts.append(
-      factRow("Id", "md-ticket-fact-id", ticket.id),
+      idFactRow(ticket.id),
       factRow("Reporter", "md-ticket-reporter", ticket.reporter),
       factRow("Created", "md-ticket-created", ticket.created),
       relied,

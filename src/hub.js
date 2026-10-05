@@ -1136,6 +1136,63 @@ export async function createHub(stateDir, sourceRoot) {
     mark(repo, rel, username);
   }
 
+  function otherHolds(repo, rel, socket) {
+    for (const sock of sockets) {
+      if (sock === socket || !sock.session || sock.session.repo !== repo) continue;
+      if (sock.session.docPath === rel) return true;
+    }
+    const file = repo.files.get(rel);
+    if (!file) return false;
+    for (const owner of file.locks.values()) {
+      if (owner && owner !== socket) return true;
+    }
+    return false;
+  }
+
+  // The requester may still have the file open. Removal is not an edit: no undo entry and no commit.
+  async function unlinkFile(socket, rel) {
+    const repo = socket.session.repo;
+    if (socket.session.docPath === rel) await releaseFile(socket);
+    const cached = repo.files.get(rel);
+    repo.files.delete(rel);
+    await fs.rm(cached ? cached.full : path.join(repo.path, rel), { force: true });
+    await markDelete(repo, rel, socket.session.username);
+    send(socket, { type: "deleted", path: rel });
+    broadcastDocs(repo, await docsPayload(repo));
+  }
+
+  async function onDelete(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const rel = safeRel(msg.path);
+    if (!rel) return fail(socket, 404);
+    if (isTicketTree(rel)) return fail(socket, 400);
+    const listed = await listMarkdown(repo.path, "");
+    if (!listed.includes(rel)) return fail(socket, 404);
+    if (otherHolds(repo, rel, socket)) return fail(socket, 409);
+    await unlinkFile(socket, rel);
+  }
+
+  async function onTicketDelete(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const id = typeof msg.id === "string" ? msg.id : "";
+    const rel = `tickets/${id}.md`;
+    if (!ticketIdFromRel(rel)) return fail(socket, 404);
+    const all = await collectTickets(repo);
+    if (!all.some((ticket) => ticket.id === id)) return fail(socket, 404);
+    if (otherHolds(repo, rel, socket)) return fail(socket, 409);
+    await unlinkFile(socket, rel);
+    for (const ticket of all) {
+      if (ticket.id === id) continue;
+      const parent = ticket.parent === id ? "" : ticket.parent;
+      const depends = ticket.depends.filter((dep) => dep !== id);
+      if (parent === ticket.parent && depends.length === ticket.depends.length) continue;
+      await rewriteTicketLinks(repo, ticket.id, parent, depends, socket.session.username);
+    }
+    await broadcastTickets(repo);
+  }
+
   async function onTicketPurge(socket) {
     const repo = socket.session.repo;
     if (!repo) return fail(socket, 400);
@@ -1474,6 +1531,8 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "ticket.create") return onTicketCreate(socket, msg);
     if (msg.type === "ticket.set") return onTicketSet(socket, msg);
     if (msg.type === "ticket.purge") return onTicketPurge(socket);
+    if (msg.type === "delete") return onDelete(socket, msg);
+    if (msg.type === "ticket.delete") return onTicketDelete(socket, msg);
     if (msg.type === "lock") return onLock(socket, msg);
     if (msg.type === "edit") return onEdit(socket, msg);
     if (msg.type === "undo") return onHistory(socket, msg, "undo");
