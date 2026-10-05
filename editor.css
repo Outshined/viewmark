@@ -450,12 +450,12 @@ nav.files .md-ticket-filter-menu input {
 
 .md-ticket-drawer:not(.md-ticket-wide) .ticket-tree .md-ticket-row,
 .md-ticket-drawer:not(.md-ticket-wide) .ticket-tree .md-ticket-columns {
-  grid-template-columns: 1.1em 5.5rem minmax(0, 1fr);
+  grid-template-columns: 1.1em 7rem minmax(0, 1fr);
   column-gap: 0.35rem;
 }
 
 .md-ticket-drawer:not(.md-ticket-wide) .ticket-tree button.md-ticket {
-  grid-template-columns: 5.5rem minmax(0, 1fr);
+  grid-template-columns: 7rem minmax(0, 1fr);
   column-gap: 0.35rem;
 }
 

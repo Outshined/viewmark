@@ -4733,8 +4733,8 @@ test("T-ticket-rows", () => {
   assert.match(wideRule, /z-index:\s*4/);
   assert.match(wideRule, /transition:\s*width 0\.5s,\s*left 0\.5s/);
   assert.match(css, /\.ticket-tree \.md-ticket-row:hover\s*\{[^}]*background:\s*#2c3440/);
-  assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.ticket-tree \.md-ticket-row[^{]*\{[^}]*grid-template-columns:\s*1\.1em 5\.5rem minmax\(0,\s*1fr\);/);
-  assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*button\.md-ticket[^{]*\{[^}]*grid-template-columns:\s*5\.5rem minmax\(0,\s*1fr\);/);
+  assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.ticket-tree \.md-ticket-row[^{]*\{[^}]*grid-template-columns:\s*1\.1em 7rem minmax\(0,\s*1fr\);/);
+  assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*button\.md-ticket[^{]*\{[^}]*grid-template-columns:\s*7rem minmax\(0,\s*1fr\);/);
   assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.md-ticket-priority[^{]*\{[^}]*display:\s*none/);
   assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.md-ticket-state[^{]*\{[^}]*display:\s*none/);
   assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.md-ticket-type[^{]*\{[^}]*display:\s*none/);
