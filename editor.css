@@ -265,12 +265,13 @@ dialog.md-confirm .md-confirm-actions {
 .md-pane-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
 }
 
 .md-pane-head .md-new-file,
 .md-pane-head .md-new-ticket {
   margin: 0;
+  margin-left: auto;
 }
 
 h2.md-pane-heading {
@@ -538,7 +539,7 @@ nav.files .md-ticket-filter-menu input {
   text-align: left;
   color: inherit;
   background: none;
-  border: 1px solid #c4b8a4;
+  border: 0;
   border-radius: 0.35rem;
   cursor: pointer;
 }
@@ -566,6 +567,7 @@ nav.files .md-ticket-filter-menu input {
 
 .file-tree button.md-file.md-file-current {
   background: #3d5a80;
+  border: 1px solid #c4b8a4;
 }
 
 .md-dir-children {

@@ -2514,13 +2514,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       syncEntryLink();
       renderFileTree(fileList, false);
     });
-    const remove = makeIconButton(
-      "Delete file",
-      ICON_PATHS.delete[0],
-      "icon-btn danger md-file-delete",
-      () => showConfirm(fileLabel(file), () => emit({ type: "delete", path: file.path })),
-    );
-    row.append(button, remove);
+    row.append(button);
     return row;
   }
 
@@ -3385,6 +3379,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (drawer && drawer.classList) drawer.classList.remove("md-ticket-wide");
       setStyle(drawer, "top", "");
       setStyle(drawer, "height", "");
+      setStyle(drawer, "width", "");
     }, 200);
   }
 
@@ -3427,13 +3422,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     ticketDrawerEnter = () => {
       showTicketDrawer();
       const drawer = ticketDrawerEl();
-      // Fixed positioning replaces the pane box, so read that height first.
-      if (drawer && typeof drawer.getBoundingClientRect === "function") {
-        const rect = drawer.getBoundingClientRect();
+      // Fixed positioning replaces the pane box, so read it before the wide class.
+      // Width is 100% until then. Pin the measured pixels first, or 80vw transitions from 100vw.
+      const rect = drawer && typeof drawer.getBoundingClientRect === "function" ? drawer.getBoundingClientRect() : null;
+      if (rect) {
         setStyle(drawer, "top", `${rect.top}px`);
         setStyle(drawer, "height", `${rect.height}px`);
       }
+      const alreadyWide = Boolean(drawer && drawer.classList && drawer.classList.contains("md-ticket-wide"));
+      if (!alreadyWide && rect) setStyle(drawer, "width", `${rect.width}px`);
       if (drawer && drawer.classList) drawer.classList.add("md-ticket-wide");
+      if (!drawer || alreadyWide) return;
+      const widen = () => setStyle(drawer, "width", "80vw");
+      if (typeof globalThis.requestAnimationFrame === "function") globalThis.requestAnimationFrame(widen);
+      else widen();
     };
     ticketDrawerLeave = () => {
       scheduleHideTicketDrawer();
@@ -4249,6 +4251,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (binding.field && typeof binding.field.removeEventListener === "function") {
       binding.field.removeEventListener("keydown", binding.onKey);
     }
+    if (binding.deleteButton && binding.onDelete && typeof binding.deleteButton.removeEventListener === "function") {
+      binding.deleteButton.removeEventListener("click", binding.onDelete);
+    }
     newFileBindings.delete(newFileButton);
   }
 
@@ -4258,6 +4263,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const { head, heading } = ensurePaneHead(block, "Files");
     const button = ensureNavButton(nav, "md-new-file", "+");
     placeAfter(head, heading, button);
+    let remove = findClassChild(head, "md-file-delete");
+    if (!remove) {
+      remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "icon-btn danger md-file-delete";
+      if (typeof remove.setAttribute === "function") {
+        remove.setAttribute("type", "button");
+        remove.setAttribute("aria-label", "Delete file");
+      }
+      const icon = strokeIcon(ICON_PATHS.delete[0]);
+      if (icon) remove.appendChild(icon);
+    }
+    placeAfter(head, button, remove);
     let field = findDeep(nav, "md-new-name");
     if (!field) {
       field = document.createElement("input");
@@ -4274,6 +4292,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (previous && previous.field && typeof previous.field.removeEventListener === "function") {
       previous.field.removeEventListener("keydown", previous.onKey);
+    }
+    if (previous && previous.deleteButton && previous.onDelete && typeof previous.deleteButton.removeEventListener === "function") {
+      previous.deleteButton.removeEventListener("click", previous.onDelete);
     }
     const onClick = (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
@@ -4297,9 +4318,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       hideNameField(field);
       emit({ type: "create", path });
     };
+    const onDelete = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      if (!openPath || openPath.startsWith("tickets/")) return;
+      const path = openPath;
+      showConfirm(pathBase(path), () => emit({ type: "delete", path }));
+    };
     button.addEventListener("click", onClick);
     field.addEventListener("keydown", onKey);
-    newFileBindings.set(button, { onClick, onKey, field });
+    if (typeof remove.addEventListener === "function") remove.addEventListener("click", onDelete);
+    newFileBindings.set(button, { onClick, onKey, field, deleteButton: remove, onDelete });
     newFileButton = button;
     newFileOnClick = onClick;
   }
