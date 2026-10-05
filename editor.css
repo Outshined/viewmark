@@ -403,8 +403,8 @@ nav.files .md-ticket-filter-menu input {
 }
 
 .ticket-tree .md-ticket-columns svg {
-  width: 0.9em;
-  height: 0.9em;
+  width: 1.1em;
+  height: 1.1em;
   flex: none;
 }
 
@@ -1061,12 +1061,6 @@ a.md-link {
   width: 1.25rem;
   height: 1.25rem;
   padding: 0;
-}
-
-.md-comment-author-row > button.md-comment-link svg {
-  display: block;
-  width: 0.85rem;
-  height: 0.85rem;
 }
 
 .md-comment-card button.icon-btn {
