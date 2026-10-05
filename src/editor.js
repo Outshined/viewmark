@@ -3386,7 +3386,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   // A stored name is requested once. A later catalog that still lists it does not ask again.
   function applyRepos(message) {
-    const select = repoSelect || findClassChild(filesNav(), "md-repo");
+    const select = repoSelect || findDeep(filesNav(), "md-repo");
     if (!select || typeof document === "undefined" || typeof document.createElement !== "function") return;
     const incoming = Array.isArray(message.repos) ? message.repos : [];
     const blank = document.createElement("option");
@@ -3544,16 +3544,33 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function bindRepoSelect(nav) {
     if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
-    let select = findClassChild(nav, "md-repo");
+    // The select sits in the row after the label, so a direct-child search misses it.
+    let select = findDeep(nav, "md-repo");
     if (!select) {
       select = document.createElement("select");
       select.className = "md-repo";
     }
-    const first = nav.childNodes && nav.childNodes[0];
-    if (first !== select) {
-      detachNode(select);
-      placeNodeBefore(nav, select, nav.childNodes && nav.childNodes[0]);
+    let row = findClassChild(nav, "md-repo-row");
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "md-repo-row";
     }
+    placeFirst(nav, row);
+    let label = null;
+    for (const child of row.childNodes || []) {
+      if (child && child.nodeType === 1 && String(child.tagName || "").toUpperCase() === "LABEL") {
+        label = child;
+        break;
+      }
+    }
+    if (!label) {
+      label = document.createElement("label");
+      label.appendChild(document.createTextNode("Repo"));
+    } else if (label.textContent !== "Repo") {
+      label.textContent = "Repo";
+    }
+    placeFirst(row, label);
+    placeAfter(row, label, select);
     const previous = repoBindings.get(select);
     if (previous && typeof select.removeEventListener === "function") {
       select.removeEventListener("change", previous.onChange);

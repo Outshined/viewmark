@@ -48,11 +48,20 @@ nav.files input {
   color: inherit;
 }
 
+div.md-repo-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 0.8rem;
+  flex: none;
+}
+
 select.md-repo {
   box-sizing: border-box;
-  flex: none;
-  width: 100%;
-  margin: 0 0 0.8rem;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  margin: 0;
   background: #1c1b19;
   border: 1px solid #4a463f;
   font: inherit;

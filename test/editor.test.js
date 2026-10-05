@@ -3124,7 +3124,7 @@ test('files ["b.md","sub/a.md"] show b.md and a collapsed sub', () => {
     assert.equal(labeled("a.md").length, 0);
     assert.equal(labeled("empty").length, 0);
     assert.equal(labeled("notes.txt").length, 0);
-    assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
+    assert.equal(nav.childNodes[0].classList.contains("md-repo-row"), true);
     assert.ok(nav.childNodes.indexOf(input) > 0);
     const before = transport.sent.length;
     labeled("sub")[0].listeners.click({ preventDefault() {} });
@@ -3492,10 +3492,22 @@ test("username opens, closes, and reopens the socket", () => {
 test("T-repo-select", () => {
   const mounted = mountEditor();
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const rowRule = css.match(/div\.md-repo-row\s*\{[^}]*\}/);
+  assert.ok(rowRule);
+  assert.match(rowRule[0], /display:\s*flex/);
+  assert.match(rowRule[0], /align-items:\s*center/);
+  assert.match(rowRule[0], /gap:\s*0\.45rem/);
+  assert.match(rowRule[0], /margin:\s*0 0 0\.8rem/);
+  assert.match(rowRule[0], /flex:\s*none/);
   const rule = css.match(/select\.md-repo\s*\{[^}]*\}/);
   assert.ok(rule);
-  assert.match(rule[0], /width:\s*100%/);
-  assert.match(rule[0], /margin:\s*0 0 0\.8rem/);
+  assert.match(rule[0], /flex:\s*1 1 auto/);
+  assert.match(rule[0], /width:\s*auto/);
+  assert.match(rule[0], /min-width:\s*0/);
+  assert.match(rule[0], /margin:\s*0;/);
+  assert.equal(/flex:\s*none/.test(rule[0]), false);
+  assert.equal(/width:\s*100%/.test(rule[0]), false);
+  assert.equal(/margin:\s*0 0 0\.8rem/.test(rule[0]), false);
   assert.match(rule[0], /background:\s*#1c1b19/);
   assert.match(rule[0], /border:\s*1px solid #4a463f/);
   assert.match(rule[0], /font:\s*inherit/);
@@ -3513,7 +3525,12 @@ test("T-repo-select", () => {
   const transport = holdingTransport();
   try {
     const view = createEditor(mounted.root, "kept", 0, transport);
-    const select = nav.childNodes[0];
+    const row = nav.childNodes[0];
+    assert.equal(row.tagName, "DIV");
+    assert.equal(row.classList.contains("md-repo-row"), true);
+    assert.equal(row.childNodes[0].tagName, "LABEL");
+    assert.equal(row.childNodes[0].textContent, "Repo");
+    const select = row.childNodes[1];
     assert.equal(select.tagName, "SELECT");
     assert.equal(select.classList.contains("md-repo"), true);
     assert.equal(nav.childNodes[1].classList.contains("file-block"), true);
@@ -3528,7 +3545,10 @@ test("T-repo-select", () => {
         { name: "beta", description: "Beta notes", path: "/b" },
       ],
     });
-    assert.equal(nav.childNodes[0], select);
+    assert.equal(nav.childNodes[0], row);
+    assert.equal(select.parentElement, row);
+    assert.equal(row.childNodes[0].textContent, "Repo");
+    assert.equal(row.childNodes[1], select);
     assert.deepEqual(select.childNodes.map((option) => option.value), ["", "alpha", "beta"]);
     assert.deepEqual(select.childNodes.map((option) => option.textContent), ["", "Alpha notes", "Beta notes"]);
     assert.equal(select.value, "");
@@ -3579,7 +3599,9 @@ test("T-repo-switch", () => {
   const transport = holdingTransport();
   try {
     const view = createEditor(mounted.root, "", 0, transport, storage);
-    const select = nav.childNodes[0];
+    const select = nav.childNodes[0].childNodes[1];
+    assert.equal(nav.childNodes[0].classList.contains("md-repo-row"), true);
+    assert.equal(nav.childNodes[0].childNodes[0].textContent, "Repo");
     assert.equal(select.classList.contains("md-repo"), true);
     transport.deliver({
       type: "repos",
@@ -3669,7 +3691,7 @@ test("T-repo-switch", () => {
     storage.data["viewmark.repo"] = "alpha";
     const storedTransport = holdingTransport();
     const again = createEditor(mounted.root, "stale", 0, storedTransport, storage);
-    const storedSelect = nav.childNodes[0];
+    const storedSelect = nav.childNodes[0].childNodes[1];
     storedTransport.deliver({
       type: "repos",
       repos: [
@@ -3919,7 +3941,7 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     const view = createEditor(mounted.root, "x", 0, transport);
     const buttons = () => walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"));
     assert.equal(buttons().length, 1);
-    assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
+    assert.equal(nav.childNodes[0].classList.contains("md-repo-row"), true);
     const fileBlock = () => walkNodes(nav, (node) => node.classList && node.classList.contains("file-block"))[0];
     assert.equal(nav.childNodes[1], fileBlock());
     const button = buttons()[0];
@@ -3974,7 +3996,12 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     const again = createEditor(mounted.root, "x", 0, transport);
     assert.equal(buttons().length, 1);
     assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
-    assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
+    assert.equal(nav.childNodes[0].classList.contains("md-repo-row"), true);
+    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-repo-row")).length, 1);
+    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-repo")).length, 1);
+    assert.equal(walkNodes(nav, (node) => node.tagName === "LABEL" && node.textContent === "Repo").length, 1);
+    assert.equal(nav.childNodes[0].childNodes[0].textContent, "Repo");
+    assert.equal(nav.childNodes[0].childNodes[1].classList.contains("md-repo"), true);
     assert.equal(nav.childNodes[1], fileBlock());
     assert.equal(buttons()[0].parentElement.classList.contains("md-pane-head"), true);
     again.destroy();
@@ -3983,7 +4010,7 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
   }
 });
 
-test("NodeList childNodes places the file block as the next sibling of the repo select", () => {
+test("NodeList childNodes places the file block as the next sibling of the repo row", () => {
   const mounted = mountEditor({ nodeList: true });
   const nav = document.createElement("nav");
   nav.className = "files";
@@ -3996,9 +4023,13 @@ test("NodeList childNodes places the file block as the next sibling of the repo 
     assert.equal(typeof nav.insertBefore, "function");
     assert.equal(nav.nextSibling, mounted.root);
     const view = createEditor(mounted.root, "x", 0, transport);
-    const select = nav.childNodes[0];
+    const row = nav.childNodes[0];
+    assert.equal(row.classList.contains("md-repo-row"), true);
+    assert.equal(row.childNodes[0].tagName, "LABEL");
+    assert.equal(row.childNodes[0].textContent, "Repo");
+    const select = row.childNodes[1];
     assert.equal(select.classList.contains("md-repo"), true);
-    const block = select.nextSibling;
+    const block = row.nextSibling;
     assert.ok(block);
     assert.equal(block.classList.contains("file-block"), true);
     const head = block.childNodes[0];
@@ -4061,11 +4092,12 @@ test("commit button checkpoints the active repo", () => {
     assert.equal(button.textContent, "Commit repo");
     assert.equal(button.hidden, true);
     assert.equal(button.hasAttribute("hidden"), true);
-    assert.equal(nav.childNodes[0].classList.contains("md-repo"), true);
+    assert.equal(nav.childNodes[0].classList.contains("md-repo-row"), true);
+    assert.equal(nav.childNodes[0].childNodes[0].textContent, "Repo");
     assert.equal(nav.childNodes[1].classList.contains("file-block"), true);
     assert.equal(plus.parentElement.classList.contains("md-pane-head"), true);
     assert.equal(tree.parentElement, nav.childNodes[1]);
-    const select = nav.childNodes[0];
+    const select = nav.childNodes[0].childNodes[1];
     transport.deliver({
       type: "repos",
       repos: [
@@ -4268,7 +4300,7 @@ test("T-ticket-rows", () => {
   assert.match(css, /nav\.files\s*\{[^}]*flex-direction:\s*column/);
   assert.match(css, /nav\.files\s*\{[^}]*height:\s*100vh/);
   assert.equal(/overflow:\s*(?:hidden|auto|clip)/.test(css.match(/nav\.files\s*\{[^}]*\}/)[0]), false);
-  assert.match(css, /select\.md-repo\s*\{[^}]*flex:\s*none/);
+  assert.match(css, /div\.md-repo-row\s*\{[^}]*flex:\s*none/);
   assert.match(css, /\.file-block\s*\{[^}]*flex:\s*1 1 0/);
   assert.match(css, /\.file-block\s*\{[^}]*min-height:\s*0/);
   assert.match(css, /\.file-block\s*\{[^}]*overflow:\s*auto/);
@@ -4364,7 +4396,7 @@ test("T-ticket-rows", () => {
     assert.equal(tree.parentElement, fileBlock);
     assert.equal(mounted.nav.childNodes.includes(head), false);
     assert.equal(mounted.nav.childNodes.includes(tickets), false);
-    assert.equal(mounted.nav.childNodes[0].classList.contains("md-repo"), true);
+    assert.equal(mounted.nav.childNodes[0].classList.contains("md-repo-row"), true);
     assert.ok(mounted.nav.childNodes.indexOf(fileBlock) < mounted.nav.childNodes.indexOf(block));
     assert.ok(block.childNodes.indexOf(head) < block.childNodes.indexOf(drawer));
     const columns = byClass(tickets, "md-ticket-columns")[0];
@@ -4659,7 +4691,7 @@ test("T-pane-head", () => {
   const transport = holdingTransport();
   try {
     const view = createEditor(mounted.root, "x", 0, transport);
-    assert.equal(mounted.nav.childNodes[0].classList.contains("md-repo"), true);
+    assert.equal(mounted.nav.childNodes[0].classList.contains("md-repo-row"), true);
     const fileBlock = byClass(mounted.nav, "file-block")[0];
     const ticketBlock = byClass(mounted.nav, "ticket-block")[0];
     const tree = byClass(mounted.nav, "file-tree")[0];
