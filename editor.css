@@ -367,8 +367,8 @@ nav.files .md-ticket-filter-menu input {
   box-sizing: border-box;
   padding: 0.75rem 0;
   background: #1c1b19;
-  /* Nav content edge is 16rem − 0.8rem. The editor ends 21.5rem from the viewport's right. */
-  width: calc(100vw - 36.7rem);
+  /* The block's right edge is about 15.2rem in, so this ends 0.8rem short of the viewport and covers aside.comments. */
+  width: calc(100vw - 16rem);
 }
 
 .md-ticket-drawer[hidden] {

@@ -4284,7 +4284,7 @@ test("T-ticket-rows", () => {
   assert.match(css, /\.md-ticket-drawer\s*\{[^}]*bottom:\s*-0\.75rem/);
   assert.match(css, /\.md-ticket-drawer\s*\{[^}]*z-index:\s*4/);
   assert.match(css, /\.md-ticket-drawer\s*\{[^}]*padding:\s*0\.75rem 0/);
-  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*width:\s*calc\(100vw - 36\.7rem\)/);
+  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*width:\s*calc\(100vw - 16rem\)/);
   assert.match(css, /\.md-ticket-drawer\s*\{[^}]*background:\s*#1c1b19/);
   assert.match(css, /\.ticket-tree\s*\{[^}]*height:\s*100%/);
   assert.match(css, /\.ticket-tree\s*\{[^}]*overflow:\s*auto/);
