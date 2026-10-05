@@ -4674,9 +4674,11 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
   assert.match(css, /button\.icon-btn:not\(\.md-file\):not\(\.md-dir-toggle\)\s*\{[^}]*padding:\s*0;/);
   assert.match(css, /button\.icon-btn:not\(\.md-file\):not\(\.md-dir-toggle\)\s*\{[^}]*box-sizing:\s*border-box;/);
   assert.match(css, /button\.icon-btn:not\(\.md-file\):not\(\.md-dir-toggle\)\s*\{[^}]*flex:\s*none;/);
+  assert.match(css, /button\.icon-btn:not\(\.md-file\):not\(\.md-dir-toggle\)\s*\{[^}]*background:\s*none;/);
   assert.equal(/\.md-comment-card button\.icon-btn\s*\{[^}]*1\.25rem/.test(css), false);
   assert.equal(/\.md-comment-author-row > button\.md-comment-link\s*\{[^}]*1\.25rem/.test(css), false);
   assert.match(css, /\.icon-btn\.danger\s*\{[^}]*color:\s*var\(--danger\)/);
+  assert.equal(/\.icon-btn\.danger\s*\{[^}]*background/.test(css), false);
   assert.match(css, /\.icon-btn\.resolve\s*\{[^}]*color:\s*#8fdb8a;/);
   assert.match(css, /label,\s*\.md-ticket-label\s*\{[^}]*font-weight:\s*700;/);
   assert.match(css, /\.md-line\.md-hr\s*\{[^}]*border:\s*0;/);

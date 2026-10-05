@@ -28,6 +28,7 @@ button.icon-btn:not(.md-file):not(.md-dir-toggle) {
   padding: 0;
   box-sizing: border-box;
   flex: none;
+  background: none;
 }
 
 .icon-btn.danger {
