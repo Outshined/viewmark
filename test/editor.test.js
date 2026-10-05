@@ -4405,7 +4405,7 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
   assert.match(css, /button\.md-doc-menu\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
   assert.match(css, /button\.md-doc-menu\s*\{[^}]*border-radius:\s*0\.35rem;/);
   assert.match(css, /\.ticket-tree button\.md-ticket-expand\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
-  assert.match(css, /\.ticket-tree button\.md-ticket\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
+  assert.match(css, /\.ticket-tree button\.md-ticket\s*\{[^}]*border:\s*0;/);
   assert.match(css, /\.file-tree button\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
   assert.match(css, /\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option,\s*\.ticket-form button\.md-ticket-rely\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
   assert.match(css, /\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option,\s*\.ticket-form button\.md-ticket-rely\s*\{[^}]*border-radius:\s*0\.35rem;/);
