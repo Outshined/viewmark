@@ -4237,6 +4237,12 @@ function rowOf(nav, id) {
   return node && node.childNodes.find((child) => child.classList && child.classList.contains("md-ticket-row"));
 }
 
+function ticketSpans(nav, id) {
+  const row = rowOf(nav, id);
+  const open = row && row.childNodes.find((node) => node.tagName === "BUTTON" && node.classList.contains("md-ticket"));
+  return open ? open.childNodes.filter((node) => node.tagName === "SPAN") : [];
+}
+
 test("T-ticket-rows", () => {
   const mounted = mountTicketPage();
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
@@ -4258,6 +4264,36 @@ test("T-ticket-rows", () => {
   assert.match(mark[0], /clip-path:\s*polygon\(/);
   assert.match(css, /nav\.files\s*\{[^}]*grid-column:\s*1/);
   assert.match(css, /nav\.files\s*\{[^}]*grid-row:\s*1\s*\/\s*span\s*2/);
+  assert.match(css, /nav\.files\s*\{[^}]*display:\s*flex/);
+  assert.match(css, /nav\.files\s*\{[^}]*flex-direction:\s*column/);
+  assert.match(css, /nav\.files\s*\{[^}]*height:\s*100vh/);
+  assert.equal(/overflow:\s*(?:hidden|auto|clip)/.test(css.match(/nav\.files\s*\{[^}]*\}/)[0]), false);
+  assert.match(css, /select\.md-repo\s*\{[^}]*flex:\s*none/);
+  assert.match(css, /\.file-block\s*\{[^}]*flex:\s*1 1 0/);
+  assert.match(css, /\.file-block\s*\{[^}]*min-height:\s*0/);
+  assert.match(css, /\.file-block\s*\{[^}]*overflow:\s*auto/);
+  assert.match(css, /\.file-block\s*\{[^}]*margin-bottom:\s*0\.4rem/);
+  assert.match(css, /\.ticket-block\s*\{[^}]*flex:\s*1 1 0/);
+  assert.match(css, /\.ticket-block\s*\{[^}]*min-height:\s*0/);
+  assert.match(css, /\.ticket-block\s*\{[^}]*position:\s*relative/);
+  assert.match(css, /\.ticket-block\s*\{[^}]*overflow:\s*visible/);
+  assert.equal(/0\.8rem/.test(css.match(/\.ticket-block\s*\{[^}]*\}/)[0]), false);
+  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*position:\s*absolute/);
+  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*left:\s*100%/);
+  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*top:\s*-0\.75rem/);
+  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*bottom:\s*-0\.75rem/);
+  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*z-index:\s*4/);
+  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*padding:\s*0\.75rem 0/);
+  assert.match(css, /\.md-ticket-drawer\s*\{[^}]*width:\s*calc\(100vw - 36\.7rem\)/);
+  assert.match(css, /\.ticket-tree\s*\{[^}]*height:\s*100%/);
+  assert.match(css, /\.ticket-tree\s*\{[^}]*overflow:\s*auto/);
+  assert.match(css, /\.ticket-tree\s*\{[^}]*background:\s*#242320/);
+  assert.match(css, /\.ticket-tree\s*\{[^}]*border:\s*1px solid #4a463f/);
+  assert.match(css, /grid-template-columns:\s*1\.1em 5\.5rem minmax\(0,\s*1fr\) 5\.5rem 7\.5rem 7\.5rem/);
+  assert.match(css, /\.ticket-tree button\.md-ticket\s*\{[^}]*display:\s*grid/);
+  assert.match(css, /\.md-ticket-columns\s*\{[^}]*position:\s*sticky/);
+  assert.match(css, /\.md-ticket-current\s*\{[^}]*background:\s*#3d5a80/);
+  assert.match(css.match(/\.editor\s*\{[^}]*\}/)[0], /min-height:\s*100vh/);
   assert.match(css, /aside\.comments\s*\{[^}]*grid-column:\s*3/);
   assert.match(css, /aside\.comments\s*\{[^}]*grid-row:\s*1\s*\/\s*span\s*2/);
   assert.match(css, /#editor\s*\{[^}]*grid-column:\s*2/);
@@ -4266,6 +4302,10 @@ test("T-ticket-rows", () => {
   assert.match(css, /\.ticket-form\s*\{[^}]*grid-row:\s*1/);
   assert.match(css, /\.ticket-form:not\(\[hidden\]\)\s*\+\s*#editor\s*\{[^}]*grid-row:\s*2/);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.sheet\s*\{[^}]*display:\s*block;/);
+  assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.md-ticket-drawer\s*\{[^}]*position:\s*static/);
+  assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.md-ticket-drawer\[hidden\]\s*\{[^}]*display:\s*block/);
+  assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.ticket-tree\s*\{[^}]*max-height:\s*50vh/);
+  assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*min-height:\s*40vh/);
   assert.match(inputs[0], /background:\s*#1c1b19/);
   assert.match(inputs[0], /border:\s*1px solid #4a463f/);
   assert.equal(css.includes("#3a3424"), false);
@@ -4294,14 +4334,31 @@ test("T-ticket-rows", () => {
     assert.equal(byClass(mounted.nav, "md-ticket-label").length, 0);
     assert.equal(byClass(mounted.nav, "md-show-closed").length, 0);
     assert.equal(byClass(mounted.nav, "md-show-closed-label").length, 0);
+    const drawer = byClass(block, "md-ticket-drawer")[0];
+    const name = byClass(block, "md-new-ticket-name")[0];
     assert.equal(heading.parentElement, head);
-    assert.equal(tickets.parentElement, block);
+    assert.equal(drawer.hidden, true);
+    assert.equal(drawer.hasAttribute("hidden"), true);
+    assert.equal(tickets.parentElement, drawer);
+    assert.equal(drawer.parentElement, block);
+    assert.equal(block.childNodes.indexOf(name) + 1, block.childNodes.indexOf(drawer));
+    assert.equal(block.childNodes.at(-1), drawer);
     assert.equal(tree.parentElement, fileBlock);
     assert.equal(mounted.nav.childNodes.includes(head), false);
     assert.equal(mounted.nav.childNodes.includes(tickets), false);
     assert.equal(mounted.nav.childNodes[0].classList.contains("md-repo"), true);
     assert.ok(mounted.nav.childNodes.indexOf(fileBlock) < mounted.nav.childNodes.indexOf(block));
-    assert.ok(block.childNodes.indexOf(head) < block.childNodes.indexOf(tickets));
+    assert.ok(block.childNodes.indexOf(head) < block.childNodes.indexOf(drawer));
+    const columns = byClass(tickets, "md-ticket-columns")[0];
+    assert.ok(columns);
+    assert.equal(columns.classList.contains("md-ticket-node"), false);
+    assert.deepEqual(
+      columns.childNodes.filter((node) => node.textContent).map((node) => node.textContent),
+      ["ID", "Title", "Priority", "State", "Type"],
+    );
+    block.listeners.pointerenter();
+    assert.equal(drawer.hidden, false);
+    assert.equal(drawer.hasAttribute("hidden"), false);
     const plus = byClass(mounted.nav, "md-new-ticket")[0];
     assert.equal(plus.parentElement, head);
     assert.equal(head.childNodes[0], heading);
@@ -4324,13 +4381,23 @@ test("T-ticket-rows", () => {
         assert.equal(row, undefined);
         continue;
       }
+      const spans = ticketSpans(mounted.nav, ticket.id);
+      assert.deepEqual(spans.map((span) => span.className), [
+        "md-ticket-id",
+        "md-ticket-title",
+        "md-ticket-priority",
+        "md-ticket-state",
+        "md-ticket-type",
+      ]);
+      assert.deepEqual(spans.map((span) => span.textContent), [
+        ticket.id,
+        ticket.title,
+        ticket.priority,
+        ticket.state,
+        ticket.type,
+      ]);
       assert.equal(row.textContent.includes(ticket.title), true);
       assert.equal(row.textContent.includes(ticket.state), true);
-      assert.equal(row.textContent.includes(ticket.id), false);
-      assert.equal(row.textContent.includes(ticket.type), false);
-      assert.equal(row.textContent.includes("low"), false);
-      assert.equal(row.textContent.includes("medium"), false);
-      assert.equal(row.textContent.includes("high"), false);
     }
     const alpha = ticketNode(mounted.nav, "aaaaaaaa");
     const expand = byClass(alpha, "md-ticket-expand")[0];
@@ -4345,18 +4412,104 @@ test("T-ticket-rows", () => {
       nest.childNodes.filter((node) => node.classList.contains("md-ticket-node")).map((node) => node.dataset.id),
       ["bbbbbbbb", "eeeeeeee"],
     );
-    assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("bbbbbbbb"), false);
-    assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("Bravo"), true);
-    assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("new"), true);
-    assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("task"), false);
-    assert.equal(rowOf(mounted.nav, "cccccccc").textContent.includes("bug"), false);
-    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("enhancement"), false);
+    assert.deepEqual(ticketSpans(mounted.nav, "aaaaaaaa").map((span) => span.textContent), [
+      "aaaaaaaa",
+      "Alpha",
+      "medium",
+      "new",
+      "enhancement",
+    ]);
+    assert.equal(ticketSpans(mounted.nav, "cccccccc").find((span) => span.classList.contains("md-ticket-type")).textContent, "bug");
+    assert.deepEqual(ticketSpans(mounted.nav, "bbbbbbbb").map((span) => span.textContent), [
+      "bbbbbbbb",
+      "Bravo",
+      "medium",
+      "new",
+      "task",
+    ]);
     const open = byClass(ticketNode(mounted.nav, "bbbbbbbb"), "md-ticket").find((node) => node.tagName === "BUTTON");
     open.listeners.click({ preventDefault() {} });
     assert.deepEqual(transport.sent.at(-1), { type: "open", path: "tickets/bbbbbbbb.md", rev: 0, username: "" });
+    assert.equal(drawer.hidden, false);
     view.destroy();
     assert.equal(plus.listeners.click, undefined);
   } finally {
+    mounted.restore();
+  }
+});
+
+test("T-ticket-drawer", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  const pending = [];
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms) => {
+    const handle = { fn, ms };
+    pending.push(handle);
+    return handle;
+  };
+  globalThis.clearTimeout = (handle) => {
+    const index = pending.indexOf(handle);
+    if (index >= 0) pending.splice(index, 1);
+  };
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0);
+    const bravo = ticketFixture("bbbbbbbb", "Bravo", "new", T1);
+    transport.deliver({ type: "tickets", tickets: [alpha, bravo] });
+    const block = byClass(mounted.nav, "ticket-block")[0];
+    const drawer = byClass(block, "md-ticket-drawer")[0];
+    assert.equal(drawer.hidden, true);
+    block.listeners.pointerenter();
+    assert.equal(drawer.hidden, false);
+    const alphaRow = rowOf(mounted.nav, "aaaaaaaa");
+    const bravoRow = rowOf(mounted.nav, "bbbbbbbb");
+    const alphaOpen = byClass(alphaRow, "md-ticket").find((node) => node.tagName === "BUTTON");
+    alphaOpen.listeners.click({ preventDefault() {} });
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa"), alphaRow);
+    assert.equal(alphaRow.classList.contains("md-ticket-current"), true);
+    assert.equal(bravoRow.classList.contains("md-ticket-current"), false);
+    assert.equal(drawer.hidden, false);
+    const bravoOpen = byClass(bravoRow, "md-ticket").find((node) => node.tagName === "BUTTON");
+    bravoOpen.listeners.click({ preventDefault() {} });
+    assert.equal(rowOf(mounted.nav, "bbbbbbbb"), bravoRow);
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa"), alphaRow);
+    assert.equal(bravoRow.classList.contains("md-ticket-current"), true);
+    assert.equal(alphaRow.classList.contains("md-ticket-current"), false);
+    assert.equal(drawer.hidden, false);
+    block.listeners.pointerleave();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].ms, 200);
+    assert.equal(drawer.hidden, false);
+    block.listeners.pointerenter();
+    assert.equal(pending.length, 0);
+    assert.equal(drawer.hidden, false);
+    block.listeners.pointerleave();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].ms, 200);
+    const hide = pending.pop();
+    hide.fn();
+    assert.equal(drawer.hidden, true);
+    assert.equal(drawer.hasAttribute("hidden"), true);
+    block.listeners.pointerenter();
+    assert.equal(drawer.hidden, false);
+    block.listeners.pointerleave();
+    assert.equal(pending.length, 1);
+    bravoOpen.listeners.click({ preventDefault() {} });
+    assert.equal(pending.length, 0);
+    assert.equal(drawer.hidden, false);
+    assert.equal(bravoRow.classList.contains("md-ticket-current"), true);
+    block.listeners.pointerleave();
+    assert.equal(pending.length, 1);
+    view.destroy();
+    assert.equal(pending.length, 0);
+    assert.equal(drawer.hidden, false);
+    assert.equal(block.listeners.pointerenter, undefined);
+    assert.equal(block.listeners.pointerleave, undefined);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
     mounted.restore();
   }
 });
@@ -4395,7 +4548,7 @@ test("T-ticket-closed", () => {
     assert.ok(ticketNode(mounted.nav, "dddddddd"));
     assert.equal(rowOf(mounted.nav, "dddddddd").textContent.includes("Delta"), true);
     assert.equal(rowOf(mounted.nav, "dddddddd").textContent.includes("closed"), true);
-    assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("bbbbbbbb"), false);
+    assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("bbbbbbbb"), true);
     assert.equal(rowOf(mounted.nav, "bbbbbbbb").textContent.includes("Bravo"), true);
     const expand = byClass(ticketNode(mounted.nav, "aaaaaaaa"), "md-ticket-expand")[0];
     assert.equal(expand.textContent, "");
@@ -4467,7 +4620,8 @@ test("T-pane-head", () => {
   assert.match(headingRule[0], /font-weight:\s*700/);
   assert.match(blockRule[0], /border:\s*1px solid #4a463f/);
   assert.match(blockRule[0], /padding:\s*0\.4rem/);
-  assert.match(blockRule[0], /margin:\s*0 0 0\.8rem/);
+  assert.match(blockRule[0], /margin-bottom:\s*0\.4rem/);
+  assert.equal(/margin:\s*0 0 0\.8rem/.test(blockRule[0]), false);
   assert.match(filterRule[0], /display:\s*block/);
   assert.match(filterRule[0], /width:\s*100%/);
   assert.match(filterRule[0], /box-sizing:\s*border-box/);
@@ -4554,7 +4708,9 @@ test("T-ticket-filter", () => {
     assert.equal(menu.hasAttribute("hidden"), true);
     assert.ok(block.childNodes.indexOf(filter) < block.childNodes.indexOf(menu));
     assert.ok(block.childNodes.indexOf(menu) < block.childNodes.indexOf(name));
-    assert.ok(block.childNodes.indexOf(name) < block.childNodes.indexOf(tickets));
+    const drawer = byClass(block, "md-ticket-drawer")[0];
+    assert.equal(tickets.parentElement, drawer);
+    assert.ok(block.childNodes.indexOf(name) < block.childNodes.indexOf(drawer));
     const labels = menu.childNodes.filter((node) => node.tagName === "LABEL");
     assert.deepEqual(labels.map((label) => label.textContent), ["closed", "low", "medium", "high", "task", "enhancement", "defect"]);
     assert.deepEqual(
@@ -4901,8 +5057,8 @@ test("T-ticket-notice", () => {
     assert.equal(byClass(form, "md-ticket-priority")[0].value, "medium");
     assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("Alpha two"), true);
     assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("triaged"), true);
-    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("enhancement"), false);
-    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("medium"), false);
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("enhancement"), true);
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("medium"), true);
     transport.deliver({
       type: "ticket",
       path: "tickets/aaaaaaaa.md",
@@ -4917,7 +5073,7 @@ test("T-ticket-notice", () => {
       created: T2,
     });
     assert.equal(byClass(form, "md-ticket-priority")[0].value, "low");
-    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("low"), false);
+    assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("low"), true);
     assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("Alpha two"), true);
     assert.equal(rowOf(mounted.nav, "aaaaaaaa").textContent.includes("triaged"), true);
     const state = byClass(form, "md-ticket-state")[0];
@@ -4993,8 +5149,9 @@ test("file titles and move drops", () => {
   for (const rule of [fileRule[0], ticketRule[0]]) {
     assert.match(rule, /border:\s*1px solid #4a463f/);
     assert.match(rule, /padding:\s*0\.4rem/);
-    assert.match(rule, /margin:\s*0 0 0\.8rem/);
+    assert.equal(/margin:\s*0 0 0\.8rem/.test(rule), false);
   }
+  assert.match(fileRule[0], /margin-bottom:\s*0\.4rem/);
   const lineRule = css.match(/\.md-drop-line\s*\{[^}]*\}/);
   const targetRule = css.match(/\.md-dir\.md-drop-target\s*>\s*\.md-dir-toggle\s*\{[^}]*\}/);
   assert.ok(lineRule);
@@ -5022,7 +5179,8 @@ test("file titles and move drops", () => {
     assert.equal(tree.parentElement, fileBlock);
     assert.equal(fileBlock.parentElement, nav);
     assert.equal(byClass(nav, "ticket-tree").length, 1);
-    assert.equal(byClass(nav, "ticket-tree")[0].parentElement, block);
+    assert.equal(byClass(nav, "ticket-tree")[0].parentElement.classList.contains("md-ticket-drawer"), true);
+    assert.equal(byClass(nav, "ticket-tree")[0].parentElement.parentElement, block);
     transport.deliver({ type: "docs", files, titles });
     assert.equal(buttonDir("notes").textContent, "notes");
     assert.equal(buttonPath("notes/idea.md"), undefined);

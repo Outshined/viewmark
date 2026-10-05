@@ -149,7 +149,12 @@ function findClassChild(parent, className) {
 }
 
 function findTicketTree(nav) {
-  return findClassChild(findClassChild(nav, "ticket-block"), "ticket-tree");
+  const block = findClassChild(nav, "ticket-block");
+  if (!block) return null;
+  const drawer = findClassChild(block, "md-ticket-drawer");
+  const nested = findClassChild(drawer, "ticket-tree");
+  if (nested) return nested;
+  return findClassChild(block, "ticket-tree");
 }
 
 function findDeep(root, className) {
@@ -309,6 +314,22 @@ function buildFilterMenu(menu) {
   all.textContent = "show all";
   if (typeof all.setAttribute === "function") all.setAttribute("type", "button");
   menu.appendChild(all);
+}
+
+function ensureTicketColumns(tree) {
+  if (!tree || typeof document === "undefined" || typeof document.createElement !== "function") return null;
+  let columns = findClassChild(tree, "md-ticket-columns");
+  if (columns) return columns;
+  columns = document.createElement("div");
+  columns.className = "md-ticket-columns";
+  // The first track is the expand control, so the labels share the field tracks.
+  columns.appendChild(document.createElement("span"));
+  for (const label of ["ID", "Title", "Priority", "State", "Type"]) {
+    const cell = document.createElement("span");
+    cell.textContent = label;
+    columns.appendChild(cell);
+  }
+  return columns;
 }
 
 function hideElement(el) {
@@ -836,6 +857,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const expandedTickets = new Set();
   let ticketForm = null;
   let ticketChrome = null;
+  let ticketBlockEl = null;
+  let ticketDrawerEnter = null;
+  let ticketDrawerLeave = null;
+  let ticketDrawerTimer = null;
   let activeRepo = "";
   let repoSelect = null;
   let repoOnChange = null;
@@ -2609,23 +2634,31 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     open.type = "button";
     open.className = "md-ticket";
     if (typeof open.setAttribute === "function") open.setAttribute("type", "button");
-    open.dataset.path = `tickets/${ticket.id}.md`;
-    const title = document.createElement("span");
-    title.className = "md-ticket-title";
-    title.textContent = ticket.title;
-    const state = document.createElement("span");
-    state.className = "md-ticket-state";
-    state.textContent = ticket.state;
-    open.appendChild(title);
-    open.appendChild(document.createTextNode(" "));
-    open.appendChild(state);
+    const path = `tickets/${ticket.id}.md`;
+    open.dataset.path = path;
+    const fields = [
+      ["md-ticket-id", ticket.id],
+      ["md-ticket-title", ticket.title],
+      ["md-ticket-priority", ticket.priority],
+      ["md-ticket-state", ticket.state],
+      ["md-ticket-type", ticket.type],
+    ];
+    for (const [className, text] of fields) {
+      const span = document.createElement("span");
+      span.className = className;
+      span.textContent = text;
+      open.appendChild(span);
+    }
+    if (openPath === path) row.classList.add("md-ticket-current");
     open.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
-      const path = `tickets/${ticket.id}.md`;
       openPath = path;
       seedTicketAncestors(ticket.id);
       waitingForFile = true;
       emit({ type: "open", path });
+      // The open frame can rebuild the list. Mark whatever row is on screen now.
+      markOpenTicket();
+      showTicketDrawer();
     });
     row.appendChild(open);
     node.appendChild(row);
@@ -2644,6 +2677,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function renderTicketTree() {
     const tree = findTicketTree(filesNav());
     if (!tree || typeof tree.replaceChildren !== "function") return;
+    const columns = ensureTicketColumns(tree);
     const forest = forestFrom(visibleTicketList());
     const seen = new Set();
     const nodes = [];
@@ -2651,7 +2685,80 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const node = renderTicketNode(ticket, forest.children, seen);
       if (node) nodes.push(node);
     }
-    tree.replaceChildren(...nodes);
+    if (columns) tree.replaceChildren(columns, ...nodes);
+    else tree.replaceChildren(...nodes);
+  }
+
+  function ticketDrawerEl() {
+    return findClassChild(findClassChild(filesNav(), "ticket-block"), "md-ticket-drawer");
+  }
+
+  function showTicketDrawer() {
+    if (ticketDrawerTimer != null) {
+      clearTimeout(ticketDrawerTimer);
+      ticketDrawerTimer = null;
+    }
+    const drawer = ticketDrawerEl();
+    if (drawer) showElement(drawer);
+  }
+
+  // Leaving the block starts a short hide so a pointer that comes back keeps the list up.
+  function scheduleHideTicketDrawer() {
+    if (ticketDrawerTimer != null) clearTimeout(ticketDrawerTimer);
+    ticketDrawerTimer = setTimeout(() => {
+      ticketDrawerTimer = null;
+      const drawer = ticketDrawerEl();
+      if (drawer) hideElement(drawer);
+    }, 200);
+  }
+
+  function markOpenTicket() {
+    const tree = findTicketTree(filesNav());
+    if (!tree) return;
+    const walk = (node) => {
+      for (const child of [...((node && node.childNodes) || [])]) {
+        if (!child || child.nodeType !== 1) continue;
+        if (child.classList && child.classList.contains("md-ticket-row")) {
+          const button = findClassChild(child, "md-ticket");
+          const path = button && button.dataset ? button.dataset.path : "";
+          if (path && path === openPath) child.classList.add("md-ticket-current");
+          else child.classList.remove("md-ticket-current");
+        }
+        walk(child);
+      }
+    };
+    walk(tree);
+  }
+
+  function releaseTicketDrawer() {
+    if (ticketDrawerTimer != null) {
+      clearTimeout(ticketDrawerTimer);
+      ticketDrawerTimer = null;
+    }
+    if (ticketBlockEl && typeof ticketBlockEl.removeEventListener === "function") {
+      if (ticketDrawerEnter) ticketBlockEl.removeEventListener("pointerenter", ticketDrawerEnter);
+      if (ticketDrawerLeave) ticketBlockEl.removeEventListener("pointerleave", ticketDrawerLeave);
+    }
+    ticketBlockEl = null;
+    ticketDrawerEnter = null;
+    ticketDrawerLeave = null;
+  }
+
+  function bindTicketDrawer(block) {
+    if (!block) return;
+    if (ticketBlockEl === block && ticketDrawerEnter) return;
+    releaseTicketDrawer();
+    ticketDrawerEnter = () => {
+      showTicketDrawer();
+    };
+    ticketDrawerLeave = () => {
+      scheduleHideTicketDrawer();
+    };
+    ticketBlockEl = block;
+    if (typeof block.addEventListener === "function") {
+      block.addEventListener("pointerenter", ticketDrawerEnter);
+      block.addEventListener("pointerleave", ticketDrawerLeave);
+    }
   }
 
   function sendTicketSet(fields) {
@@ -2993,6 +3100,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function unbindTickets() {
+    releaseTicketDrawer();
     if (ticketChrome) {
       const binding = ticketBindings.get(ticketChrome.button);
       if (binding && binding.onClick === ticketChrome.onClick) {
@@ -3045,12 +3153,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       hideElement(field);
     }
     placeAfter(block, menu, field);
-    let tree = findClassChild(block, "ticket-tree") || findDeep(nav, "ticket-tree");
+    let drawer = findClassChild(block, "md-ticket-drawer");
+    if (!drawer) {
+      drawer = document.createElement("div");
+      drawer.className = "md-ticket-drawer";
+      hideElement(drawer);
+    }
+    placeAfter(block, field, drawer);
+    let tree = findClassChild(drawer, "ticket-tree") || findClassChild(block, "ticket-tree") || findDeep(nav, "ticket-tree");
     if (!tree) {
       tree = document.createElement("div");
       tree.className = "ticket-tree";
     }
-    placeAfter(block, field, tree);
+    if (tree.parentElement !== drawer) {
+      detachNode(tree);
+      drawer.appendChild(tree);
+    }
+    const columns = ensureTicketColumns(tree);
+    if (columns && columns.parentElement !== tree) placeFirst(tree, columns);
+    bindTicketDrawer(block);
     const previous = ticketBindings.get(button);
     clearTicketBinding(previous);
     const onClick = (event) => {

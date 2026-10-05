@@ -31,6 +31,9 @@ body {
 
 nav.files {
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
   min-width: 0;
   padding: 1rem 0.8rem 2rem;
   grid-column: 1;
@@ -47,6 +50,7 @@ nav.files input {
 
 select.md-repo {
   box-sizing: border-box;
+  flex: none;
   width: 100%;
   margin: 0 0 0.8rem;
   background: #1c1b19;
@@ -242,15 +246,21 @@ nav.files .md-ticket-filter-menu input {
 }
 
 .ticket-tree .md-ticket-row {
-  display: flex;
-  flex-wrap: nowrap;
+  display: grid;
+  grid-template-columns: 1.1em 5.5rem minmax(0, 1fr) 5.5rem 7.5rem 7.5rem;
   align-items: center;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
 }
 
+.ticket-tree .md-ticket-row.md-ticket-current {
+  background: #3d5a80;
+}
+
 .ticket-tree button.md-ticket-expand {
+  grid-column: 1;
+  grid-row: 1;
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -280,14 +290,15 @@ nav.files .md-ticket-filter-menu input {
 }
 
 .ticket-tree button.md-ticket {
-  display: flex;
-  flex: 1 1 auto;
-  align-items: baseline;
-  gap: 0.6rem;
+  display: grid;
+  grid-column: 2 / -1;
+  grid-row: 1;
+  grid-template-columns: 5.5rem minmax(0, 1fr) 5.5rem 7.5rem 7.5rem;
+  align-items: center;
   min-width: 0;
   width: auto;
   margin: 0;
-  padding: 0.15rem 0.2rem;
+  padding: 0.15rem 0;
   border: 0;
   background: none;
   font: inherit;
@@ -305,9 +316,25 @@ nav.files .md-ticket-filter-menu input {
   white-space: nowrap;
 }
 
+.ticket-tree .md-ticket-id,
+.ticket-tree .md-ticket-priority,
+.ticket-tree .md-ticket-type {
+  white-space: nowrap;
+}
+
 .ticket-tree .md-ticket-state {
   flex: none;
   flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.ticket-tree .md-ticket-columns {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1.1em 5.5rem minmax(0, 1fr) 5.5rem 7.5rem 7.5rem;
+  background: #242320;
   white-space: nowrap;
 }
 
@@ -315,16 +342,46 @@ nav.files .md-ticket-filter-menu input {
   margin-left: 0.8rem;
 }
 
+.ticket-tree {
+  box-sizing: border-box;
+  height: 100%;
+  overflow: auto;
+  background: #242320;
+  border: 1px solid #4a463f;
+}
+
+.md-ticket-drawer {
+  position: absolute;
+  left: 100%;
+  top: -0.75rem;
+  bottom: -0.75rem;
+  z-index: 4;
+  box-sizing: border-box;
+  padding: 0.75rem 0;
+  /* Nav content edge is 16rem − 0.8rem. The editor ends 21.5rem from the viewport's right. */
+  width: calc(100vw - 36.7rem);
+}
+
+.md-ticket-drawer[hidden] {
+  display: none;
+}
+
 .file-block {
   border: 1px solid #4a463f;
   padding: 0.4rem;
-  margin: 0 0 0.8rem;
+  margin-bottom: 0.4rem;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
 }
 
 .ticket-block {
   border: 1px solid #4a463f;
   padding: 0.4rem;
-  margin: 0 0 0.8rem;
+  flex: 1 1 0;
+  min-height: 0;
+  position: relative;
+  overflow: visible;
 }
 
 .file-tree {
@@ -847,5 +904,23 @@ a.md-link {
 
   .ticket-form {
     display: block;
+  }
+
+  .file-block,
+  .ticket-block {
+    min-height: 40vh;
+  }
+
+  .md-ticket-drawer {
+    position: static;
+    width: auto;
+  }
+
+  .md-ticket-drawer[hidden] {
+    display: block;
+  }
+
+  .ticket-tree {
+    max-height: 50vh;
   }
 }
