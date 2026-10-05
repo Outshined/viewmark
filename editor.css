@@ -282,16 +282,15 @@ h2.md-pane-heading {
 }
 
 button.md-ticket-filter {
-  display: block;
-  box-sizing: border-box;
-  width: 100%;
-  margin: 0 0 0.45rem;
-  padding: 0.15rem 0.35rem;
-  background: #1c1b19;
-  border: 1px solid #4a463f;
+  display: inline;
+  width: auto;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
+  background: none;
   font: inherit;
   color: inherit;
-  text-align: left;
   cursor: pointer;
 }
 
@@ -306,6 +305,19 @@ button.md-ticket-filter-all {
   font: inherit;
   color: inherit;
   cursor: pointer;
+}
+
+.md-ticket-filter-menu {
+  position: absolute;
+  z-index: 5;
+  top: 1.9rem;
+  right: 0.4rem;
+  box-sizing: border-box;
+  min-width: 9rem;
+  padding: 0.35rem 0.45rem;
+  background: #242320;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
 }
 
 .md-ticket-filter-menu[hidden] {

@@ -262,6 +262,24 @@ function ensureNavButton(nav, className, text) {
   return button;
 }
 
+// ensureNavButton assigns textContent, which replaces the svg.
+function ensureFilterButton(nav) {
+  let button = findDeep(nav, "md-ticket-filter");
+  if (!button) button = document.createElement("button");
+  button.type = "button";
+  button.className = "icon-btn md-ticket-filter";
+  if (typeof button.setAttribute === "function") {
+    button.setAttribute("type", "button");
+    button.setAttribute("aria-label", "Filter");
+  }
+  if (button.textContent !== "" || !iconMatches(button, "filter")) {
+    for (const child of childArray(button).slice()) detachNode(child);
+    const svg = iconSvg("filter");
+    if (svg) button.appendChild(svg);
+  }
+  return button;
+}
+
 // Defect is the label for ticket type bug. The form select still uses TICKET_TYPES.
 const TICKET_FILTERS = [
   { label: "closed", filter: "closed", checked: false },
@@ -575,6 +593,7 @@ const ICON_PATHS = {
     "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
   ],
   delete: ["M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"],
+  filter: ["M22 3H2l8 9.46V19l4 2v-6.54L22 3z"],
 };
 
 function strokePath(d) {
@@ -4149,14 +4168,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const { head, heading } = ensurePaneHead(block, "Tickets");
     const button = ensureNavButton(nav, "md-new-ticket", "+");
     placeAfter(head, heading, button);
-    const filterButton = ensureNavButton(nav, "md-ticket-filter", "Filter");
-    placeAfter(block, head, filterButton);
+    const filterButton = ensureFilterButton(nav);
+    placeAfter(head, button, filterButton);
     let menu = findClassChild(block, "md-ticket-filter-menu");
     if (!menu) {
       menu = document.createElement("div");
       menu.className = "md-ticket-filter-menu";
     }
-    placeAfter(block, filterButton, menu);
+    placeAfter(block, head, menu);
     buildFilterMenu(menu);
     applyFilterDefaults(menu);
     hideElement(menu);
