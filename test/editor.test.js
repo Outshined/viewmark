@@ -1977,6 +1977,9 @@ function mountSheet() {
     body,
     createElement: (tag) => makeElement(tag),
     createElementNS: (_ns, tag) => makeElement(tag),
+    addEventListener(type, fn) {
+      listeners[type] = fn;
+    },
     createTextNode: (text) => ({ nodeType: 3, textContent: text, length: String(text).length, parentElement: null, childNodes: [] }),
     createTreeWalker: () => ({ nextNode: () => null }),
     createRange: () => ({
@@ -5478,7 +5481,7 @@ test("T-ticket-fields", () => {
       state().childNodes.map((option) => option.value),
       ["new", "triaged", "in progress", "closed"],
     );
-    assert.equal(byClass(parent(), "md-ticket-parent-value")[0].textContent, "Bravo");
+    assert.equal(byClass(parent(), "md-ticket-match")[0].value, "Bravo");
     assert.equal(dependRow("bbbbbbbb").textContent, "Bravo");
     assert.equal(dependRow("cccccccc"), undefined);
     assert.equal(byClass(form, "md-ticket-reporter")[0].textContent, "Ada");
@@ -5499,14 +5502,16 @@ test("T-ticket-fields", () => {
     assert.equal(view.getState().cursor, 7);
     assert.equal(view.getState().doc, "hello\nnext\n");
     assert.equal(state().value, "new");
-    assert.equal(byClass(parent(), "md-ticket-parent-value")[0].textContent, "Bravo");
+    assert.equal(byClass(parent(), "md-ticket-match")[0].value, "Bravo");
     assert.equal(dependRow("cccccccc"), undefined);
     state().value = "new";
     state().listeners.change();
     assert.equal(sets().length, 1);
     state().value = "in progress";
     state().listeners.change();
-    byClass(parent(), "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    const parentInput = byClass(parent(), "md-ticket-match")[0];
+    parentInput.value = "";
+    parentInput.listeners.input();
     const depends = byClass(form, "md-ticket-depends")[0];
     const dependMatch = byClass(depends, "md-ticket-match")[0];
     dependMatch.value = "ce";
@@ -6181,6 +6186,8 @@ test("the state select and the reporter sit in different columns", () => {
   assert.match(css, /\.ticket-form label\.md-ticket-field\s*\{[^}]*display:\s*flex;/);
   assert.equal(/\.ticket-form label\.md-ticket-field select\s*\{[^}]*flex:\s*1 1 auto;/.test(css), false);
   assert.match(css, /\.ticket-form \.md-ticket-label\s*\{[^}]*font-weight:\s*700;/);
+  assert.match(css, /\.ticket-form \.md-ticket-label\s*\{[^}]*width:\s*8rem;/);
+  assert.match(css, /\.ticket-form \.md-ticket-label\s*\{[^}]*text-align:\s*right;/);
   const factRule = css.match(/\.md-ticket-fact\s*\{[^}]*\}/);
   assert.ok(factRule);
   assert.match(factRule[0], /display:\s*flex;/);
@@ -6188,6 +6195,13 @@ test("the state select and the reporter sit in different columns", () => {
   const reporterRule = css.match(/\.md-ticket-reporter,\s*\.md-ticket-created,\s*\.md-ticket-fact-id\s*\{[^}]*\}/);
   assert.ok(reporterRule);
   assert.equal(/font-size:\s*0\.85rem/.test(reporterRule[0]), false);
+  assert.match(reporterRule[0], /color:\s*inherit/);
+  assert.equal(/#9c968c/.test(reporterRule[0]), false);
+  const linkRule = css.match(/\.ticket-form \.md-ticket-links\s*\{[^}]*\}/);
+  assert.ok(linkRule);
+  assert.match(linkRule[0], /height:\s*6\.5rem/);
+  assert.match(linkRule[0], /overflow:\s*auto/);
+  assert.match(linkRule[0], /border:\s*1px solid #4a463f/);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.ticket-form\s*\{[^}]*display:\s*block;/);
   const transport = holdingTransport();
   try {
@@ -6255,7 +6269,8 @@ test("the state select and the reporter sit in different columns", () => {
     );
     assert.equal(right.childNodes[0].childNodes[1].textContent, "aaaaaaaa");
     assert.equal(reporter.parentElement.classList.contains("md-ticket-fact"), true);
-    assert.equal(byClass(right, "md-ticket-relied")[0].childNodes[0].textContent, "Relied on by");
+    assert.equal(byClass(right, "md-ticket-relied")[0].childNodes[0].textContent, "Blocks");
+    assert.equal(byClass(byClass(right, "md-ticket-relied")[0], "md-ticket-links")[0].textContent, "(none)");
     const heading = byClass(form, "md-ticket-heading")[0];
     const input = byClass(form, "md-ticket-title-input")[0];
     assert.equal(input.hidden, true);
@@ -6416,9 +6431,34 @@ test("ticket parent, depends, and children share a completion control", () => {
       )),
       [true, true, true, true, true, true],
     );
-    assert.equal(byClass(parent, "md-ticket-parent-value")[0].textContent, "Bravo");
-    assert.equal(byClass(parent, "md-ticket-add")[0].textContent, "+");
-    assert.equal(byClass(parent, "md-ticket-remove")[0].textContent, "-");
+    assert.equal(byClass(parent, "md-ticket-add").length, 0);
+    assert.equal(byClass(parent, "md-ticket-remove").length, 0);
+    assert.equal(byClass(parent, "md-ticket-parent-value").length, 0);
+    assert.equal(byClass(parent, "md-ticket-match")[0].value, "Bravo");
+    const dependAdd = byClass(depends, "md-ticket-add")[0];
+    assert.equal(dependAdd.classList.contains("icon-btn"), true);
+    assert.equal(dependAdd.getAttribute("aria-label"), "Add");
+    assert.equal(dependAdd.textContent, "");
+    assert.equal(dependAdd.type, "button");
+    const dependAddSvg = dependAdd.childNodes.find((node) => node.tagName === "SVG");
+    assert.equal(dependAddSvg.getAttribute("viewBox"), "0 0 24 24");
+    assert.equal(dependAddSvg.getAttribute("aria-hidden"), "true");
+    const dependAddPath = dependAddSvg.childNodes.find((node) => node.tagName === "PATH");
+    assert.equal(dependAddPath.getAttribute("d"), "M12 5v14M5 12h14");
+    assert.equal(dependAddPath.getAttribute("fill"), "none");
+    assert.equal(dependAddPath.getAttribute("stroke"), "currentColor");
+    assert.equal(dependAddPath.getAttribute("stroke-width"), "2");
+    assert.equal(dependAddPath.getAttribute("stroke-linecap"), "round");
+    assert.equal(dependAddPath.getAttribute("stroke-linejoin"), "round");
+    const dependRemove = byClass(depends, "md-ticket-remove")[0];
+    assert.equal(dependRemove.classList.contains("icon-btn"), true);
+    assert.equal(dependRemove.type, "button");
+    assert.equal(dependRemove.getAttribute("aria-label"), "Remove");
+    assert.equal(dependRemove.textContent, "");
+    const dependRemoveSvg = dependRemove.childNodes.find((node) => node.tagName === "SVG");
+    assert.equal(dependRemoveSvg.getAttribute("aria-hidden"), "true");
+    const dependRemovePath = dependRemoveSvg.childNodes.find((node) => node.tagName === "PATH");
+    assert.equal(dependRemovePath.getAttribute("d"), "M5 12h14");
     assert.equal(byClass(depends, "md-ticket-match")[0].tagName, "INPUT");
     assert.equal(block("md-ticket-menu").hidden, true);
     assert.deepEqual(
@@ -6487,7 +6527,9 @@ test("ticket parent, depends, and children share a completion control", () => {
     dependMatch.listeners.input();
     const options = byClass(byClass(depends, "md-ticket-menu")[0], "md-ticket-option");
     assert.equal(options[1].textContent, "bravo extra");
+    const beforeDependPick = sets().length;
     options[1].listeners.click({ preventDefault() {} });
+    assert.equal(sets().length, beforeDependPick);
     assert.equal(dependMatch.value, "bravo extra");
     assert.equal(byClass(depends, "md-ticket-menu")[0].hidden, true);
     byClass(depends, "md-ticket-add")[0].listeners.click({ preventDefault() {} });
@@ -6517,7 +6559,25 @@ test("ticket parent, depends, and children share a completion control", () => {
     assert.equal(dependMatch.selectionEnd, "gggggggg".length);
     assert.equal(byClass(byClass(depends, "md-ticket-menu")[0], "md-ticket-option")[0].textContent, "Queen");
 
-    byClass(parent, "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    mounted.listeners.pointerdown({ target: form });
+    assert.equal(byClass(depends, "md-ticket-menu")[0].hidden, true);
+    const beforeOutside = sets().length;
+    dependMatch.value = "qu";
+    dependMatch.listeners.input();
+    assert.equal(dependMatch.value, "Quest");
+    assert.equal(byClass(depends, "md-ticket-menu")[0].hidden, false);
+    const inside = byClass(depends, "md-ticket-option")[0];
+    mounted.listeners.pointerdown({ target: inside });
+    assert.equal(byClass(depends, "md-ticket-menu")[0].hidden, false);
+    assert.equal(sets().length, beforeOutside);
+    mounted.listeners.pointerdown({ target: form });
+    assert.equal(byClass(depends, "md-ticket-menu")[0].hidden, true);
+    assert.equal(sets().length, beforeOutside);
+    assert.equal(dependMatch.value, "qu");
+
+    const parentMatch = byClass(parent, "md-ticket-match")[0];
+    parentMatch.value = "";
+    parentMatch.listeners.input();
     assert.deepEqual(sets().at(-1), {
       type: "ticket.set",
       path: "tickets/aaaaaaaa.md",
@@ -6525,11 +6585,14 @@ test("ticket parent, depends, and children share a completion control", () => {
       parent: "",
       username: "",
     });
-    const parentMatch = byClass(parent, "md-ticket-match")[0];
     parentMatch.value = "de";
     parentMatch.listeners.input();
     assert.equal(parentMatch.value, "Delta");
-    byClass(parent, "md-ticket-add")[0].listeners.click({ preventDefault() {} });
+    const beforeParentPick = sets().length;
+    byClass(byClass(parent, "md-ticket-menu")[0], "md-ticket-option")[0].listeners.click({ preventDefault() {} });
+    assert.equal(parentMatch.value, "Delta");
+    assert.equal(byClass(parent, "md-ticket-menu")[0].hidden, true);
+    assert.equal(sets().length, beforeParentPick + 1);
     assert.deepEqual(sets().at(-1), {
       type: "ticket.set",
       path: "tickets/aaaaaaaa.md",
@@ -6592,6 +6655,42 @@ test("ticket parent, depends, and children share a completion control", () => {
       username: "",
     });
     assert.equal(globalThis.location.hash, "#viewmark/ticket/eeeeeeee");
+    const bare = ticketFixture("pppppppp", "", "new", "2026-11-01T00:00:00.000Z");
+    const quot = ticketFixture("qqqqqqqq", "Quot", "new", "2026-11-02T00:00:00.000Z", "pppppppp");
+    transport.deliver({ type: "tickets", tickets: [bare, quot] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/qqqqqqqq.md",
+      rev: 2,
+      text: "q\n",
+      locks: [],
+      ticket: quot,
+    });
+    assert.equal(byClass(form, "md-ticket-match")[0].value, "pppppppp");
+    const missing = ticketFixture("ssssssss", "Solo", "new", "2026-11-04T00:00:00.000Z", "zzzzzzzz");
+    transport.deliver({ type: "tickets", tickets: [missing] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/ssssssss.md",
+      rev: 1,
+      text: "s\n",
+      locks: [],
+      ticket: missing,
+    });
+    assert.equal(byClass(form, "md-ticket-match")[0].value, "zzzzzzzz");
+    const none = ticketFixture("rrrrrrrr", "Roto", "new", "2026-11-03T00:00:00.000Z");
+    transport.deliver({ type: "tickets", tickets: [none] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/rrrrrrrr.md",
+      rev: 1,
+      text: "r\n",
+      locks: [],
+      ticket: none,
+    });
+    assert.equal(byClass(form, "md-ticket-match")[0].value, "");
+    assert.equal(byClass(form, "md-ticket-relied")[0].childNodes[0].textContent, "Blocks");
+    assert.equal(byClass(byClass(form, "md-ticket-relied")[0], "md-ticket-links")[0].textContent, "(none)");
     view.destroy();
   } finally {
     if (previousHistory === undefined) delete globalThis.history;

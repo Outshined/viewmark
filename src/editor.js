@@ -1150,6 +1150,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let openTicket = null;
   const expandedTickets = new Set();
   let ticketForm = null;
+  const ticketPickers = [];
+  let ticketPointerBound = false;
   let ticketChrome = null;
   let ticketBlockEl = null;
   let ticketDrawerEnter = null;
@@ -3368,25 +3370,84 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return button;
   }
 
-  function buildTicketPicker(onAdd, onRemove) {
+  function strokeButton(className, label, d) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `icon-btn ${className}`;
+    if (typeof button.setAttribute === "function") {
+      button.setAttribute("type", "button");
+      button.setAttribute("aria-label", label);
+    }
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = typeof document.createElementNS === "function"
+      ? document.createElementNS(svgNS, "svg")
+      : document.createElement("svg");
+    const path = typeof document.createElementNS === "function"
+      ? document.createElementNS(svgNS, "path")
+      : document.createElement("path");
+    if (typeof svg.setAttribute === "function") {
+      svg.setAttribute("viewBox", "0 0 24 24");
+      svg.setAttribute("aria-hidden", "true");
+    }
+    if (typeof path.setAttribute === "function") {
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "currentColor");
+      path.setAttribute("stroke-width", "2");
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("stroke-linejoin", "round");
+      path.setAttribute("d", d);
+    }
+    svg.appendChild(path);
+    button.appendChild(svg);
+    return button;
+  }
+
+  function nodeWithin(ancestor, node) {
+    let current = node;
+    while (current) {
+      if (current === ancestor) return true;
+      current = current.parentElement;
+    }
+    return false;
+  }
+
+  function onTicketPointerDown(event) {
+    const target = event && event.target;
+    for (const picker of ticketPickers) picker.dismissOutside(target);
+  }
+
+  function bindTicketPointer() {
+    if (ticketPointerBound) return;
+    if (typeof document === "undefined" || typeof document.addEventListener !== "function") return;
+    document.addEventListener("pointerdown", onTicketPointerDown);
+    ticketPointerBound = true;
+  }
+
+  function buildTicketPicker(options) {
+    const onAdd = options.onAdd;
+    const onRemove = options.onRemove;
+    const onClear = options.onClear;
+    const commitOnPick = options.commitOnPick === true;
+    const buttons = options.buttons !== false;
     const picker = document.createElement("div");
     picker.className = "md-ticket-picker";
     const input = document.createElement("input");
     input.type = "text";
     input.className = "md-ticket-match";
-    input.value = "";
+    input.value = typeof options.value === "string" ? options.value : "";
     if (typeof input.setAttribute === "function") input.setAttribute("type", "text");
-    const add = plainButton("md-ticket-add", "+");
-    const remove = plainButton("md-ticket-remove", "-");
     const menu = document.createElement("div");
     menu.className = "md-ticket-menu";
     hideElement(menu);
     const state = { chosen: null };
     let applying = false;
+    // Typed text when the menu opens, before the completion replaces it. Outside puts that back and sends nothing.
+    let openedValue = input.value;
 
     function clearMatch() {
       state.chosen = null;
       input.value = "";
+      openedValue = "";
       selectInput(input, 0, 0);
       menu.replaceChildren();
       hideElement(menu);
@@ -3395,6 +3456,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     function showMatches() {
       if (applying) return;
       applying = true;
+      const wasHidden = menu.hidden;
+      const typedValue = input.value;
       const query = typedQuery(input);
       const matches = matchingTickets(query);
       menu.replaceChildren();
@@ -3404,6 +3467,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         applying = false;
         return;
       }
+      if (wasHidden) openedValue = typedValue;
       state.chosen = matches[0].ticket;
       const completion = matches[0].text;
       if (input.value !== completion) input.value = completion;
@@ -3419,8 +3483,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           if (event && typeof event.preventDefault === "function") event.preventDefault();
           state.chosen = match.ticket;
           input.value = match.text;
+          openedValue = match.text;
           selectInput(input, match.text.length, match.text.length);
           hideElement(menu);
+          if (commitOnPick) onAdd(match.ticket);
         });
         menu.appendChild(option);
       }
@@ -3428,19 +3494,50 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       applying = false;
     }
 
-    input.addEventListener("input", showMatches);
-    add.addEventListener("click", (event) => {
-      if (event && typeof event.preventDefault === "function") event.preventDefault();
-      const ticket = state.chosen;
-      if (!ticket) return;
-      clearMatch();
-      onAdd(ticket);
+    function onMatchInput() {
+      if (commitOnPick && input.value === "") {
+        state.chosen = null;
+        openedValue = "";
+        menu.replaceChildren();
+        hideElement(menu);
+        if (onClear) onClear();
+        return;
+      }
+      showMatches();
+    }
+
+    input.addEventListener("input", onMatchInput);
+    const parts = [input];
+    if (buttons) {
+      const add = strokeButton("md-ticket-add", "Add", "M12 5v14M5 12h14");
+      const remove = strokeButton("md-ticket-remove", "Remove", "M5 12h14");
+      add.addEventListener("click", (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        const ticket = state.chosen;
+        if (!ticket) return;
+        clearMatch();
+        onAdd(ticket);
+      });
+      remove.addEventListener("click", (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        onRemove();
+      });
+      parts.push(add, remove);
+    }
+    parts.push(menu);
+    picker.append(...parts);
+    ticketPickers.push({
+      dismissOutside(target) {
+        if (menu.hidden) return;
+        if (nodeWithin(picker, target)) return;
+        input.value = openedValue;
+        selectInput(input, openedValue.length, openedValue.length);
+        state.chosen = null;
+        menu.replaceChildren();
+        hideElement(menu);
+      },
     });
-    remove.addEventListener("click", (event) => {
-      if (event && typeof event.preventDefault === "function") event.preventDefault();
-      onRemove();
-    });
-    picker.append(input, add, remove, menu);
+    bindTicketPointer();
     return picker;
   }
 
@@ -3474,6 +3571,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function renderTicketForm() {
     const form = ticketForm;
     if (!form || !openTicket || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    ticketPickers.length = 0;
     const ticket = openTicket;
     showElement(form);
     const heading = document.createElement("div");
@@ -3584,14 +3682,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const parentField = document.createElement("div");
     parentField.className = "md-ticket-field md-ticket-parent";
     const parentTicket = ticket.parent ? ticketList.find((item) => item.id === ticket.parent) : null;
-    const parentValue = document.createElement("span");
-    parentValue.className = "md-ticket-parent-value";
-    parentValue.textContent = ticket.parent ? (parentTicket ? (parentTicket.title || parentTicket.id) : ticket.parent) : "";
-    const parentPicker = buildTicketPicker(
-      (chosen) => sendTicketSet({ parent: chosen.id }),
-      () => sendTicketSet({ parent: "" }),
-    );
-    parentField.append(fieldName("Parent"), parentPicker, parentValue);
+    const parentShown = ticket.parent ? (parentTicket ? (parentTicket.title || parentTicket.id) : ticket.parent) : "";
+    const parentPicker = buildTicketPicker({
+      commitOnPick: true,
+      buttons: false,
+      value: parentShown,
+      onAdd: (chosen) => sendTicketSet({ parent: chosen.id }),
+      onClear: () => sendTicketSet({ parent: "" }),
+    });
+    parentField.append(fieldName("Parent"), parentPicker);
 
     function knownTicket(id) {
       return ticketList.find((item) => item.id === id) || {
@@ -3609,15 +3708,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const dependList = buildLinkList((ticket.depends || []).map(knownTicket), (selected) => {
       sendTicketSet({ depends: (ticket.depends || []).filter((id) => id !== selected.id) });
     });
-    const dependPicker = buildTicketPicker(
-      (chosen) => {
+    const dependPicker = buildTicketPicker({
+      onAdd: (chosen) => {
         const ids = (ticket.depends || []).slice();
         if (!ids.includes(chosen.id)) ids.push(chosen.id);
         sendTicketSet({ depends: ids });
       },
-      () => dependList.removeSelected(),
-    );
-    depends.append(fieldName("Depends"), dependPicker, dependList.links);
+      onRemove: () => dependList.removeSelected(),
+    });
+    const dependStack = document.createElement("div");
+    dependStack.className = "md-ticket-stack";
+    dependStack.append(dependPicker, dependList.links);
+    depends.append(fieldName("Depends"), dependStack);
 
     const children = document.createElement("div");
     children.className = "md-ticket-children";
@@ -3631,17 +3733,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         parent: "",
       });
     });
-    const childPicker = buildTicketPicker(
-      (chosen) => {
+    const childPicker = buildTicketPicker({
+      onAdd: (chosen) => {
         sendTicketSet({
           path: `tickets/${chosen.id}.md`,
           rev: chosen.rev,
           parent: ticket.id,
         });
       },
-      () => childList.removeSelected(),
-    );
-    children.append(fieldName("Children"), childPicker, childList.links);
+      onRemove: () => childList.removeSelected(),
+    });
+    const childStack = document.createElement("div");
+    childStack.className = "md-ticket-stack";
+    childStack.append(childPicker, childList.links);
+    children.append(fieldName("Children"), childStack);
 
     function factRow(labelText, valueClass, value) {
       const row = document.createElement("div");
@@ -3655,19 +3760,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
     const relied = document.createElement("div");
     relied.className = "md-ticket-relied";
-    relied.appendChild(fieldName("Relied on by"));
+    const reliedBox = document.createElement("div");
+    reliedBox.className = "md-ticket-links";
     const reliedTickets = ticketList
       .filter((item) => item.id !== ticket.id && Array.isArray(item.depends) && item.depends.includes(ticket.id))
       .sort(compareTickets);
-    for (const other of reliedTickets) {
-      const button = plainButton("md-ticket-rely", other.title || other.id);
-      button.dataset.id = other.id;
-      button.addEventListener("click", (event) => {
-        if (event && typeof event.preventDefault === "function") event.preventDefault();
-        openDocument(`tickets/${other.id}.md`, null, true);
-      });
-      relied.appendChild(button);
+    if (reliedTickets.length === 0) {
+      reliedBox.textContent = "(none)";
+    } else {
+      for (const other of reliedTickets) {
+        const button = plainButton("md-ticket-rely", other.title || other.id);
+        button.dataset.id = other.id;
+        button.addEventListener("click", (event) => {
+          if (event && typeof event.preventDefault === "function") event.preventDefault();
+          openDocument(`tickets/${other.id}.md`, null, true);
+        });
+        reliedBox.appendChild(button);
+      }
     }
+    relied.append(fieldName("Blocks"), reliedBox);
 
     const fields = document.createElement("div");
     fields.className = "md-ticket-column";
@@ -3699,6 +3810,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function dismissTicketForm() {
     openTicket = null;
+    ticketPickers.length = 0;
     if (!ticketForm) return;
     hideElement(ticketForm);
     if (typeof ticketForm.replaceChildren === "function") ticketForm.replaceChildren();

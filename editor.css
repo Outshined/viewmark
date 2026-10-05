@@ -616,15 +616,20 @@ aside.comments {
 }
 
 .ticket-form .md-ticket-label {
+  flex: 0 0 8rem;
+  width: 8rem;
   font-weight: 700;
+  text-align: right;
 }
 
-.ticket-form .md-ticket-parent {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.55rem;
-  margin: 0 0 0.7rem;
+.ticket-form .md-ticket-parent,
+.md-ticket-depends,
+.md-ticket-children,
+.md-ticket-relied {
+  display: grid;
+  grid-template-columns: 8rem minmax(0, 1fr);
+  column-gap: 0.55rem;
+  align-items: start;
 }
 
 .ticket-form .md-ticket-picker {
@@ -638,6 +643,23 @@ aside.comments {
 .ticket-form .md-ticket-match {
   width: 14rem;
   max-width: 100%;
+  text-align: left;
+}
+
+.md-ticket-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 0;
+  gap: 0.35rem;
+  text-align: left;
+}
+
+.ticket-form .md-ticket-links {
+  height: 6.5rem;
+  overflow: auto;
+  border: 1px solid #4a463f;
+  text-align: left;
 }
 
 .ticket-form .md-ticket-menu {
@@ -656,12 +678,18 @@ aside.comments {
 
 .ticket-form button.md-ticket-add,
 .ticket-form button.md-ticket-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.7rem;
+  height: 1.7rem;
   background: #1c1b19;
-  border: 1px solid #4a463f;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
   color: inherit;
   font: inherit;
   cursor: pointer;
-  padding: 0 0.45rem;
+  padding: 0;
 }
 
 .ticket-form button.md-ticket-link,
@@ -701,10 +729,10 @@ aside.comments {
 }
 
 .ticket-form label,
+.ticket-form .md-ticket-parent,
 .md-ticket-depends,
 .md-ticket-children,
 .md-ticket-relied {
-  display: block;
   margin: 0 0 0.7rem;
 }
 
@@ -717,7 +745,8 @@ aside.comments {
 .md-ticket-reporter,
 .md-ticket-created,
 .md-ticket-fact-id {
-  color: #9c968c;
+  color: inherit;
+  text-align: left;
 }
 
 .editor {
@@ -1054,16 +1083,6 @@ a.md-link {
 
 .md-comment-card > button.icon-btn {
   margin: 0.35rem 0.35rem 0 0;
-}
-
-.md-comment-card button.icon-btn svg {
-  display: block;
-  width: 0.85rem;
-  height: 0.85rem;
-}
-
-.md-comment-card button.icon-btn.danger {
-  color: #ff7b72;
 }
 
 .md-comment-card button.icon-btn[hidden] {
