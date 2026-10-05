@@ -19,6 +19,17 @@ label,
   display: block;
 }
 
+button.icon-btn:not(.md-file):not(.md-dir-toggle) {
+  width: 1.75rem;
+  height: 1.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  box-sizing: border-box;
+  flex: none;
+}
+
 .icon-btn.danger {
   color: var(--danger);
 }
@@ -151,20 +162,12 @@ div.md-doc-menu-panel[hidden] {
 button.md-doc-commit {
   box-sizing: border-box;
   display: block;
-  width: 100%;
   margin: 0;
   padding: 0.35rem 0.7rem;
-  border: 0;
   border-radius: 0.25rem;
-  background: none;
   font: inherit;
   color: inherit;
-  text-align: left;
   cursor: pointer;
-}
-
-button.md-doc-commit:hover {
-  background: #2c3440;
 }
 
 button.md-doc-commit[hidden] {
@@ -174,20 +177,12 @@ button.md-doc-commit[hidden] {
 button.md-doc-link {
   box-sizing: border-box;
   display: block;
-  width: 100%;
   margin: 0;
   padding: 0.35rem 0.7rem;
-  border: 0;
   border-radius: 0.25rem;
-  background: none;
   font: inherit;
   color: inherit;
-  text-align: left;
   cursor: pointer;
-}
-
-button.md-doc-link:hover {
-  background: #2c3440;
 }
 
 button.md-doc-link[hidden] {
@@ -295,13 +290,10 @@ button.md-ticket-filter {
 }
 
 button.md-ticket-filter-all {
-  display: inline;
-  width: auto;
+  display: block;
   margin: 0 0 0.45rem;
   padding: 0;
-  border: 1px solid #c4b8a4;
   border-radius: 0.35rem;
-  background: none;
   font: inherit;
   color: inherit;
   cursor: pointer;
@@ -371,6 +363,12 @@ nav.files .md-ticket-filter-menu input {
   color: inherit;
   font: inherit;
   cursor: pointer;
+}
+
+/* The row's first track is 1.1em, so the chevron does not take the glyph button size. */
+.ticket-tree button.icon-btn.md-ticket-expand {
+  width: 1.1em;
+  height: 1.1em;
 }
 
 .ticket-tree button.md-ticket {
@@ -464,7 +462,6 @@ nav.files .md-ticket-filter-menu input {
   overflow: auto;
   scrollbar-gutter: stable;
   background: #1c1b19;
-  border: 1px solid #4a463f;
 }
 
 .md-ticket-drawer {
@@ -505,6 +502,18 @@ nav.files .md-ticket-filter-menu input {
 .md-ticket-drawer:not(.md-ticket-wide) .md-ticket-state,
 .md-ticket-drawer:not(.md-ticket-wide) .md-ticket-type {
   display: none;
+}
+
+.md-ticket-drawer:not(.md-ticket-wide) .md-ticket-columns {
+  display: none;
+}
+
+.md-ticket-drawer:not(.md-ticket-wide) .ticket-tree {
+  border: 0;
+}
+
+.md-ticket-wide .ticket-tree {
+  border: 1px solid #4a463f;
 }
 
 .md-ticket-drawer[hidden] {
@@ -734,8 +743,6 @@ aside.comments {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.7rem;
-  height: 1.7rem;
   background: #1c1b19;
   border: 1px solid #c4b8a4;
   border-radius: 0.35rem;
@@ -745,19 +752,36 @@ aside.comments {
   padding: 0;
 }
 
+button.md-doc-commit,
+button.md-doc-link,
+button.md-ticket-filter-all,
+.ticket-form button.md-ticket-link,
+.ticket-form button.md-ticket-option,
+.ticket-form button.md-ticket-rely {
+  border: 0;
+  background: none;
+  width: 100%;
+  text-align: left;
+}
+
+button.md-doc-commit:hover,
+button.md-doc-link:hover,
+button.md-ticket-filter-all:hover,
+.ticket-form button.md-ticket-link:hover,
+.ticket-form button.md-ticket-option:hover,
+.ticket-form button.md-ticket-rely:hover {
+  background: #2c3440;
+}
+
 .ticket-form button.md-ticket-link,
 .ticket-form button.md-ticket-option,
 .ticket-form button.md-ticket-rely {
   display: block;
-  width: 100%;
   margin: 0;
   padding: 0.15rem 0.2rem;
-  border: 1px solid #c4b8a4;
   border-radius: 0.35rem;
-  background: none;
   color: inherit;
   font: inherit;
-  text-align: left;
   cursor: pointer;
 }
 
@@ -806,13 +830,6 @@ aside.comments {
   display: flex;
   align-items: center;
   gap: 0.35rem;
-}
-
-button.md-ticket-delete {
-  flex: none;
-  width: 1.75rem;
-  height: 1.75rem;
-  padding: 0;
 }
 
 .editor {
@@ -1131,8 +1148,6 @@ a.md-link {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.25rem;
-  height: 1.25rem;
   padding: 0;
 }
 
@@ -1142,8 +1157,6 @@ a.md-link {
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 1.25rem;
-  height: 1.25rem;
   margin: 0;
   padding: 0;
 }

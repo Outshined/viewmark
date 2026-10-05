@@ -378,7 +378,7 @@ function ensureTicketColumns(tree) {
   if (columns) return columns;
   columns = document.createElement("div");
   columns.className = "md-ticket-columns";
-  // The first track is the expand control, so the labels share the field tracks.
+  // The leading track matches the row gutter, so the labels share the field tracks.
   columns.appendChild(document.createElement("span"));
   for (const column of TICKET_COLUMNS) {
     const button = document.createElement("button");
@@ -593,7 +593,7 @@ const ICON_PATHS = {
   folder: [
     "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
   ],
-  delete: ["M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"],
+  delete: ["M18 6 6 18M6 6l12 12"],
   filter: ["M22 3H2l8 9.46V19l4 2v-6.54L22 3z"],
 };
 
@@ -1885,7 +1885,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     ));
     card.appendChild(makeIconButton(
       "Delete",
-      "M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14",
+      ICON_PATHS.delete[0],
       "icon-btn danger",
       () => onDelete(comment.id),
     ));
@@ -2465,9 +2465,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function closeConfirm() {
     if (!confirmDialog) return;
-    confirmDialog.open = false;
+    // close() leaves the top layer only while the dialog is still open.
+    // Clearing open first makes Firefox keep ::backdrop, which then eats clicks.
     if (typeof confirmDialog.close === "function") confirmDialog.close();
-    else if (typeof confirmDialog.removeAttribute === "function") confirmDialog.removeAttribute("open");
+    else {
+      confirmDialog.open = false;
+      if (typeof confirmDialog.removeAttribute === "function") confirmDialog.removeAttribute("open");
+    }
   }
 
   function openConfirm() {
@@ -3294,28 +3298,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
-  function renderTicketNode(ticket, children, seen) {
-    if (seen.has(ticket.id)) return null;
-    seen.add(ticket.id);
-    const kids = children.get(ticket.id) || [];
+  function renderTicketNode(ticket) {
     const node = document.createElement("div");
     node.className = "md-ticket-node";
     node.dataset.id = ticket.id;
     const row = document.createElement("div");
     row.className = "md-ticket-row";
-    if (kids.length > 0) {
-      const expanded = expandedTickets.has(ticket.id);
-      const expand = iconButton(expanded ? "collapse" : "expand", "md-ticket-expand");
-      if (expanded) expand.classList.add("md-ticket-expanded");
-      expand.addEventListener("click", (event) => {
-        if (event && typeof event.preventDefault === "function") event.preventDefault();
-        if (event && typeof event.stopPropagation === "function") event.stopPropagation();
-        if (expandedTickets.has(ticket.id)) expandedTickets.delete(ticket.id);
-        else expandedTickets.add(ticket.id);
-        renderTicketTree();
-      });
-      row.appendChild(expand);
-    }
     const open = document.createElement("button");
     open.type = "button";
     open.className = "md-ticket";
@@ -3352,15 +3340,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
     row.appendChild(open);
     node.appendChild(row);
-    if (kids.length > 0 && expandedTickets.has(ticket.id)) {
-      const nest = document.createElement("div");
-      nest.className = "md-ticket-children";
-      for (const kid of kids) {
-        const child = renderTicketNode(kid, children, seen);
-        if (child) nest.appendChild(child);
-      }
-      node.appendChild(nest);
-    }
     return node;
   }
 
@@ -3404,13 +3383,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const tree = findTicketTree(filesNav());
     if (!tree || typeof tree.replaceChildren !== "function") return;
     const columns = syncTicketColumns(tree);
-    const forest = forestFrom(visibleTicketList(), ticketSort);
-    const seen = new Set();
+    const visible = visibleTicketList();
+    orderSiblings(visible, ticketSort);
     const nodes = [];
-    for (const ticket of forest.roots) {
-      const node = renderTicketNode(ticket, forest.children, seen);
-      if (node) nodes.push(node);
-    }
+    for (const ticket of visible) nodes.push(renderTicketNode(ticket));
     if (columns) tree.replaceChildren(columns, ...nodes);
     else tree.replaceChildren(...nodes);
   }
@@ -4038,6 +4014,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const extra = selectChromeGap(sized);
       if (extra > 0) paintSelectWidth(sized, selectWidth + extra);
     }
+    if (ticket.title === "New ticket") {
+      hideElement(heading);
+      showElement(titleInput);
+      if (typeof titleInput.focus === "function") titleInput.focus();
+    }
   }
 
   function revertTicketForm() {
@@ -4219,23 +4200,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     applyFilterDefaults(menu);
     hideElement(menu);
     const showAll = findClassChild(menu, "md-ticket-filter-all");
-    let field = findDeep(nav, "md-new-ticket-name");
-    if (!field) {
-      field = document.createElement("input");
-      field.type = "text";
-      field.className = "md-new-ticket-name";
-      field.value = "";
-      if (typeof field.setAttribute === "function") field.setAttribute("type", "text");
-      hideElement(field);
-    }
-    placeAfter(block, menu, field);
+    detachClass(nav, "md-new-ticket-name");
     let drawer = findClassChild(block, "md-ticket-drawer");
     if (!drawer) {
       drawer = document.createElement("div");
       drawer.className = "md-ticket-drawer";
     }
     showElement(drawer);
-    placeAfter(block, field, drawer);
+    placeAfter(block, menu, drawer);
     let tree = findClassChild(drawer, "ticket-tree") || findClassChild(block, "ticket-tree") || findDeep(nav, "ticket-tree");
     if (!tree) {
       tree = document.createElement("div");
@@ -4252,24 +4224,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     clearTicketBinding(previous);
     const onClick = (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
-      showElement(field);
-      if (typeof field.focus === "function") field.focus();
-    };
-    const onKey = (event) => {
-      if (!event) return;
-      if (event.key === "Escape") {
-        if (typeof event.preventDefault === "function") event.preventDefault();
-        field.value = "";
-        hideElement(field);
-        return;
-      }
-      if (event.key !== "Enter") return;
-      if (typeof event.preventDefault === "function") event.preventDefault();
-      const title = validTicketTitle(field.value);
-      if (title == null) return;
-      field.value = "";
-      hideElement(field);
-      emit({ type: "ticket.create", title });
+      emit({ type: "ticket.create", title: "New ticket" });
     };
     const onFilter = (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
@@ -4286,11 +4241,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     };
     const boxes = filterBoxes(menu);
     button.addEventListener("click", onClick);
-    field.addEventListener("keydown", onKey);
     filterButton.addEventListener("click", onFilter);
     for (const box of boxes) box.addEventListener("change", onChange);
     if (showAll && typeof showAll.addEventListener === "function") showAll.addEventListener("click", onShowAll);
-    const binding = { button, field, onClick, onKey, filterButton, onFilter, boxes, onChange, showAll, onShowAll };
+    const binding = { button, onClick, filterButton, onFilter, boxes, onChange, showAll, onShowAll };
     ticketBindings.set(button, binding);
     ticketChrome = binding;
   }
