@@ -567,6 +567,13 @@ const ICON_PATHS = {
     "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71",
     "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
   ],
+  file: [
+    "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z",
+    "M14 2v4a2 2 0 0 0 2 2h4",
+  ],
+  folder: [
+    "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+  ],
 };
 
 function strokePath(d) {
@@ -2374,12 +2381,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
   }
 
+  function appendIconLabel(button, action, label) {
+    const svg = iconSvg(action);
+    if (svg) button.appendChild(svg);
+    // textContent replaces every child, so the label stays a text node after the svg.
+    button.appendChild(document.createTextNode(label));
+  }
+
   function renderFileRow(file) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "md-file";
+    button.className = "md-file icon-btn";
     button.dataset.path = file.path;
-    button.textContent = fileLabel(file);
+    appendIconLabel(button, "file", fileLabel(file));
     bindDragSource(button, file.path, false);
     bindFileDrop(button, file.path);
     button.addEventListener("click", (event) => {
@@ -2401,9 +2415,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     wrap.className = "md-dir";
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "md-dir-toggle";
+    button.className = "md-dir-toggle icon-btn";
     button.dataset.dir = dir.path;
-    button.textContent = dir.name;
+    appendIconLabel(button, "folder", dir.name);
     const open = openDirs.has(dir.path);
     if (!open) wrap.classList.add("md-dir-collapsed");
     bindDragSource(wrap, dir.path, true);

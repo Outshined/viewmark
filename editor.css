@@ -499,7 +499,9 @@ nav.files .md-ticket-filter-menu input {
 }
 
 .file-tree button {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
   width: 100%;
   margin: 0;
   padding: 0.15rem 0.2rem;
@@ -512,26 +514,8 @@ nav.files .md-ticket-filter-menu input {
   cursor: pointer;
 }
 
-.file-tree button.md-file::before {
-  content: "";
-  display: inline-block;
-  width: 0.68em;
-  height: 0.88em;
-  margin-right: 0.4rem;
-  vertical-align: -0.12em;
-  background: currentColor;
-  clip-path: polygon(0 0, 68% 0, 100% 28%, 100% 100%, 0 100%);
-}
-
-.file-tree button.md-dir-toggle::before {
-  content: "";
-  display: inline-block;
-  width: 1.05em;
-  height: 0.78em;
-  margin-right: 0.4rem;
-  vertical-align: -0.02em;
-  background: currentColor;
-  clip-path: polygon(0 22%, 8% 22%, 14% 0, 48% 0, 54% 22%, 100% 22%, 100% 100%, 0 100%);
+.file-tree button svg {
+  flex: none;
 }
 
 .md-dir-children {

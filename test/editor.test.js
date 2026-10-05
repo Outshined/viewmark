@@ -3477,12 +3477,37 @@ test('files ["b.md","sub/a.md"] show b.md and a collapsed sub', () => {
   for (const block of css.match(/\.editor\s*\{[^}]*\}/g)) {
     assert.equal(/max-width:\s*46rem/.test(block), false);
   }
-  const fileMark = css.match(/\.file-tree button\.md-file::before\s*\{[^}]*\}/);
-  const dirMark = css.match(/\.file-tree button\.md-dir-toggle::before\s*\{[^}]*\}/);
-  assert.ok(fileMark);
-  assert.ok(dirMark);
-  assert.match(fileMark[0], /clip-path:\s*polygon\(0 0, 68% 0, 100% 28%, 100% 100%, 0 100%\)/);
-  assert.match(dirMark[0], /clip-path:\s*polygon\(0 22%, 8% 22%, 14% 0, 48% 0, 54% 22%, 100% 22%, 100% 100%, 0 100%\)/);
+  const filePaths = [
+    "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z",
+    "M14 2v4a2 2 0 0 0 2 2h4",
+  ];
+  const folderPath = [
+    "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+  ];
+  const treeButtons = css.match(/\.file-tree button\s*\{[^}]*\}/);
+  assert.ok(treeButtons);
+  assert.match(treeButtons[0], /display:\s*flex/);
+  assert.match(treeButtons[0], /align-items:\s*center/);
+  assert.match(treeButtons[0], /gap:\s*0\.4rem/);
+  assert.match(treeButtons[0], /width:\s*100%/);
+  assert.equal(/display:\s*block/.test(treeButtons[0]), false);
+  assert.match(css, /\.file-tree button svg\s*\{[^}]*flex:\s*none/);
+  assert.equal(/\.file-tree button\.md-file::before/.test(css), false);
+  assert.equal(/\.file-tree button\.md-dir-toggle::before/.test(css), false);
+  assert.equal(/polygon\(0 0, 68% 0, 100% 28%, 100% 100%, 0 100%\)/.test(css), false);
+  assert.equal(/polygon\(0 22%, 8% 22%, 14% 0, 48% 0, 54% 22%, 100% 22%, 100% 100%, 0 100%\)/.test(css), false);
+  const strokeIcon = (button) => {
+    const svg = button.childNodes[0];
+    assert.equal(svg.localName, "svg");
+    assert.equal(svg.getAttribute("viewBox"), "0 0 24 24");
+    assert.equal(svg.getAttribute("aria-hidden"), "true");
+    const path = svg.childNodes[0];
+    assert.equal(path.getAttribute("fill"), "none");
+    assert.equal(path.getAttribute("stroke"), "currentColor");
+    assert.equal(path.getAttribute("stroke-width"), "2");
+    assert.equal(path.getAttribute("stroke-linecap"), "round");
+    assert.equal(path.getAttribute("stroke-linejoin"), "round");
+  };
   const nav = document.createElement("nav");
   nav.className = "files";
   const input = document.createElement("input");
@@ -3501,6 +3526,18 @@ test('files ["b.md","sub/a.md"] show b.md and a collapsed sub', () => {
     assert.equal(labeled("a.md").length, 0);
     assert.equal(labeled("empty").length, 0);
     assert.equal(labeled("notes.txt").length, 0);
+    const fileButton = labeled("b.md")[0];
+    const dirButton = labeled("sub")[0];
+    assert.equal(fileButton.classList.contains("icon-btn"), true);
+    assert.equal(fileButton.classList.contains("md-file"), true);
+    assert.equal(fileButton.getAttribute("aria-label"), null);
+    assert.deepEqual(iconPaths(fileButton), filePaths);
+    strokeIcon(fileButton);
+    assert.equal(dirButton.classList.contains("icon-btn"), true);
+    assert.equal(dirButton.classList.contains("md-dir-toggle"), true);
+    assert.equal(dirButton.getAttribute("aria-label"), null);
+    assert.deepEqual(iconPaths(dirButton), folderPath);
+    strokeIcon(dirButton);
     assert.equal(nav.childNodes[0].classList.contains("md-repo-row"), true);
     assert.ok(nav.childNodes.indexOf(input) > 0);
     const before = transport.sent.length;
@@ -3508,6 +3545,9 @@ test('files ["b.md","sub/a.md"] show b.md and a collapsed sub', () => {
     assert.equal(transport.sent.length, before);
     assert.equal(labeled("a.md").length, 1);
     assert.equal(labeled("b.md").length, 1);
+    assert.deepEqual(iconPaths(labeled("a.md")[0]), filePaths);
+    assert.deepEqual(iconPaths(labeled("sub")[0]), folderPath);
+    strokeIcon(labeled("a.md")[0]);
     labeled("a.md")[0].listeners.click({ preventDefault() {} });
     const opened = transport.sent.filter((message) => message.type === "open");
     assert.deepEqual(opened.map((message) => message.path), ["sub/a.md"]);
