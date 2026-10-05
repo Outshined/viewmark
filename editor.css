@@ -247,7 +247,8 @@ nav.files .md-ticket-filter-menu input {
 
 .ticket-tree .md-ticket-row {
   display: grid;
-  grid-template-columns: 1.1em 5.5rem minmax(0, 1fr) 5.5rem 7.5rem 7.5rem;
+  grid-template-columns: 1.1em 8rem minmax(0, 1fr) 5.5rem 7.5rem 8.5rem;
+  column-gap: 0.75rem;
   align-items: center;
   min-width: 0;
   white-space: nowrap;
@@ -293,7 +294,8 @@ nav.files .md-ticket-filter-menu input {
   display: grid;
   grid-column: 2 / -1;
   grid-row: 1;
-  grid-template-columns: 5.5rem minmax(0, 1fr) 5.5rem 7.5rem 7.5rem;
+  grid-template-columns: 8rem minmax(0, 1fr) 5.5rem 7.5rem 8.5rem;
+  column-gap: 0.75rem;
   align-items: center;
   min-width: 0;
   width: auto;
@@ -318,7 +320,11 @@ nav.files .md-ticket-filter-menu input {
 
 .ticket-tree .md-ticket-id,
 .ticket-tree .md-ticket-priority,
+.ticket-tree .md-ticket-state,
 .ticket-tree .md-ticket-type {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -333,7 +339,8 @@ nav.files .md-ticket-filter-menu input {
   top: 0;
   z-index: 1;
   display: grid;
-  grid-template-columns: 1.1em 5.5rem minmax(0, 1fr) 5.5rem 7.5rem 7.5rem;
+  grid-template-columns: 1.1em 8rem minmax(0, 1fr) 5.5rem 7.5rem 8.5rem;
+  column-gap: 0.75rem;
   background: #242320;
   white-space: nowrap;
 }
@@ -346,6 +353,7 @@ nav.files .md-ticket-filter-menu input {
   box-sizing: border-box;
   height: 100%;
   overflow: auto;
+  scrollbar-gutter: stable;
   background: #242320;
   border: 1px solid #4a463f;
 }
@@ -358,6 +366,7 @@ nav.files .md-ticket-filter-menu input {
   z-index: 4;
   box-sizing: border-box;
   padding: 0.75rem 0;
+  background: #1c1b19;
   /* Nav content edge is 16rem − 0.8rem. The editor ends 21.5rem from the viewport's right. */
   width: calc(100vw - 36.7rem);
 }
