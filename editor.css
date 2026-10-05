@@ -982,6 +982,36 @@ a.md-link {
   height: 0.85rem;
 }
 
+.md-comment-card button.icon-btn {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  padding: 0;
+}
+
+.md-comment-card > button.icon-btn {
+  margin: 0.35rem 0.35rem 0 0;
+}
+
+.md-comment-card button.icon-btn svg {
+  display: block;
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.md-comment-card button.icon-btn.danger {
+  color: #ff7b72;
+}
+
+.md-comment-card button.icon-btn[hidden] {
+  display: none;
+}
+
 .md-comment-card button {
   font: inherit;
   font-size: 0.85rem;

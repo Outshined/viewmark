@@ -1154,7 +1154,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const unsavedThreads = new Set();
   const replyDrafts = new Map();
   const noteDrafts = new Map();
-  const authorDrafts = new Map();
   const editingNotes = new Set();
   // Chromium focuses the editing host during this assignment.
   const activeElement = typeof document !== "undefined" && document ? document.activeElement : null;
@@ -1494,9 +1493,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     for (const key of [...noteDrafts.keys()]) {
       if (!live.has(key.slice(0, key.indexOf("\t")))) noteDrafts.delete(key);
     }
-    for (const key of [...authorDrafts.keys()]) {
-      if (!live.has(key.slice(0, key.indexOf("\t")))) authorDrafts.delete(key);
-    }
     for (const key of [...editingNotes]) {
       if (!live.has(key.slice(0, key.indexOf("\t")))) editingNotes.delete(key);
     }
@@ -1548,6 +1544,39 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return button;
   }
 
+  function strokeIcon(d) {
+    if (typeof document === "undefined" || typeof document.createElementNS !== "function") return null;
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "2");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    path.setAttribute("d", d);
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function makeIconButton(label, d, className, onClick) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = className;
+    if (typeof button.setAttribute === "function") {
+      button.setAttribute("type", "button");
+      button.setAttribute("aria-label", label);
+    }
+    const icon = strokeIcon(d);
+    if (icon) button.appendChild(icon);
+    button.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      onClick();
+    });
+    return button;
+  }
+
   function threadById(id) {
     return commentThreads(state.doc).find((item) => item.id === id) || null;
   }
@@ -1560,15 +1589,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const notes = commentNotes(thread.body);
     if (box.dataset.reply === "true") notes.push(box.value);
     else notes[index] = box.value;
-    const parent = box.parentElement;
-    if (parent) {
-      for (const child of parent.childNodes || []) {
-        if (child.classList && child.classList.contains("md-comment-author")) {
-          authorDrafts.set(draftKey(id, index), child.value || "");
-          break;
-        }
-      }
-    }
     const body = notes.join("\n::\n");
     if (box.dataset.reply === "true") replyDrafts.delete(id);
     unsavedThreads.delete(id);
@@ -1588,7 +1608,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       unsavedThreads.delete(id);
       replyDrafts.delete(id);
       noteDrafts.delete(draftKey(id, index));
-      authorDrafts.delete(draftKey(id, index));
       if (currentCommentId === id) currentCommentId = null;
       commentFocus = null;
       emitEdit({ op: "comment.delete", id });
@@ -1596,7 +1615,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (box.dataset.reply === "true") {
       replyDrafts.delete(id);
-      authorDrafts.delete(draftKey(id, index));
       currentCommentId = id;
       commentFocus = null;
       render();
@@ -1652,17 +1670,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (cancel) parent.removeChild(cancel);
   }
 
-  function appendAuthor(parent, id, index) {
+  function appendAuthor(parent, id, index, withResolve) {
     const row = document.createElement("div");
     row.className = "md-comment-author-row";
-    const author = document.createElement("input");
-    author.type = "text";
+    const author = document.createElement("span");
     author.className = "md-comment-author";
-    author.placeholder = "Author";
-    author.value = authorDrafts.get(draftKey(id, index)) || "";
+    author.textContent = selfName();
+    row.appendChild(author);
+    if (withResolve) {
+      row.appendChild(makeIconButton("Resolve", "M20 6 9 17l-5-5", "icon-btn resolve", () => onResolve(id)));
+    }
     const link = document.createElement("button");
     link.type = "button";
-    link.className = "md-comment-link";
+    link.className = "md-comment-link icon-btn";
     const icon = linkIcon();
     if (icon) link.appendChild(icon);
     if (typeof link.setAttribute === "function") {
@@ -1674,7 +1694,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (event && typeof event.stopPropagation === "function") event.stopPropagation();
       copyCommentLink(id);
     });
-    row.appendChild(author);
     row.appendChild(link);
     parent.appendChild(row);
   }
@@ -1719,16 +1738,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (comment.id === currentCommentId) card.classList.add("md-comment-current");
     if (comment.resolved) card.dataset.resolved = "true";
     if (unsavedThreads.has(comment.id)) {
-      appendAuthor(card, comment.id, 0);
+      appendAuthor(card, comment.id, 0, false);
       appendBody(card, comment.id, 0, commentNotes(comment.body)[0] || "", "fresh");
+      if (comment.id !== currentCommentId) setCommentActions(card, false);
       return card;
     }
-    card.appendChild(makeCommentButton("Resolve", () => onResolve(comment.id)));
     const notes = commentNotes(comment.body);
     notes.forEach((text, index) => {
       const note = document.createElement("div");
       note.className = "md-comment-note";
-      appendAuthor(note, comment.id, index);
+      appendAuthor(note, comment.id, index, index === 0);
       const mode = editingNotes.has(draftKey(comment.id, index)) ? "edit" : "saved";
       appendBody(note, comment.id, index, text, mode);
       card.appendChild(note);
@@ -1737,12 +1756,23 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const note = document.createElement("div");
       note.className = "md-comment-note";
       const index = notes.length;
-      appendAuthor(note, comment.id, index);
+      appendAuthor(note, comment.id, index, false);
       appendBody(note, comment.id, index, "", "reply");
       card.appendChild(note);
     }
-    card.appendChild(makeCommentButton("Reply", () => onReply(comment.id)));
-    card.appendChild(makeCommentButton("Delete", () => onDelete(comment.id)));
+    card.appendChild(makeIconButton(
+      "Reply",
+      "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
+      "icon-btn",
+      () => onReply(comment.id),
+    ));
+    card.appendChild(makeIconButton(
+      "Delete",
+      "M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14",
+      "icon-btn danger",
+      () => onDelete(comment.id),
+    ));
+    if (comment.id !== currentCommentId) setCommentActions(card, false);
     return card;
   }
 
@@ -1987,7 +2017,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return found;
   }
 
-  // The author field has to stay the node that was clicked, so the class moves on the live cards.
+  function isCommentAction(node) {
+    if (!node || node.tagName !== "BUTTON" || typeof node.getAttribute !== "function") return false;
+    const label = node.getAttribute("aria-label");
+    return label === "Resolve" || label === "Reply" || label === "Delete" || label === "Copy link";
+  }
+
+  function setCommentActions(card, shown) {
+    const walk = (node) => {
+      if (!node) return;
+      if (isCommentAction(node)) {
+        if (shown) showElement(node);
+        else hideElement(node);
+      }
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(card);
+  }
+
+  // The clicked author node has to stay put, so the class and action buttons move on the live cards.
   function showCurrentCard(card) {
     if (!card || !card.dataset) return;
     currentCommentId = card.dataset.comment;
@@ -1995,8 +2043,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const walk = (node) => {
       if (!node) return;
       if (node.classList && node.classList.contains("md-comment-card")) {
-        if (node === card) node.classList.add("md-comment-current");
-        else node.classList.remove("md-comment-current");
+        if (node === card) {
+          node.classList.add("md-comment-current");
+          setCommentActions(node, true);
+        } else {
+          node.classList.remove("md-comment-current");
+          setCommentActions(node, false);
+        }
       }
       for (const child of node.childNodes || []) walk(child);
     };
@@ -2008,6 +2061,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!commentsAside) return;
     const walk = (node) => {
       if (!node) return;
+      if (node.classList && node.classList.contains("md-comment-card")) setCommentActions(node, false);
       if (node.classList && node.classList.contains("md-comment-current")) node.classList.remove("md-comment-current");
       for (const child of node.childNodes || []) walk(child);
     };
@@ -2400,7 +2454,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     unsavedThreads.add(id);
     replyDrafts.delete(id);
     noteDrafts.delete(draftKey(id, 0));
-    authorDrafts.delete(draftKey(id, 0));
     currentCommentId = id;
     commentFocus = { id, note: 0, start: 0, end: 0 };
   }
@@ -2928,23 +2981,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }, { signal: ac.signal });
     commentsAside.addEventListener("input", (event) => {
       const box = event.target;
-      if (!box || !box.classList) return;
-      if (box.classList.contains("md-comment-author")) {
-        const card = ancestorWithClass(box, "md-comment-card");
-        if (!card) return;
-        const note = ancestorWithClass(box, "md-comment-note");
-        const host = note || card;
-        let index = 0;
-        for (const child of host.childNodes || []) {
-          if (!child.classList || !child.dataset) continue;
-          if (child.classList.contains("md-comment-body") || child.classList.contains("md-comment-text")) {
-            index = Number(child.dataset.note);
-          }
-        }
-        authorDrafts.set(draftKey(card.dataset.comment, index), box.value);
-        return;
-      }
-      if (!box.classList.contains("md-comment-body")) return;
+      if (!box || !box.classList || !box.classList.contains("md-comment-body")) return;
       const id = box.dataset && box.dataset.comment;
       if (!id) return;
       const index = Number(box.dataset.note || 0);
@@ -3921,7 +3958,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     unsavedThreads.clear();
     replyDrafts.clear();
     noteDrafts.clear();
-    authorDrafts.clear();
     editingNotes.clear();
     live = false;
     waitingForFile = false;

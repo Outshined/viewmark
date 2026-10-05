@@ -2119,12 +2119,11 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.equal(box.focused, true);
     assert.equal(box.selectionStart, 0);
     const author = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-author"))[0];
-    assert.equal(author.tagName, "INPUT");
-    assert.equal(author.placeholder, "Author");
-    assert.equal(author.value, "");
+    assert.equal(author.tagName, "SPAN");
     assert.equal(author.textContent, "");
-    author.value = "Ada";
-    mounted.aside.listeners.input({ target: author });
+    assert.equal(mounted.findAll((node) => node.getAttribute && node.getAttribute("aria-label") === "Resolve").length, 0);
+    assert.equal(mounted.findAll((node) => node.getAttribute && node.getAttribute("aria-label") === "Reply").length, 0);
+    assert.equal(mounted.findAll((node) => node.getAttribute && node.getAttribute("aria-label") === "Delete").length, 0);
     assert.equal(mounted.findAll((node) => (node.textContent || "").includes("```comment")).length, 0);
 
     const mark = mounted.findAll((node) => node.classList && node.classList.contains("md-comment"))[0];
@@ -2161,16 +2160,20 @@ test("comment cards edit the thread and line up with the highlight", () => {
     const save = mounted.findAll((node) => node.tagName === "BUTTON" && node.textContent === "Save")[0];
     save.listeners.click({ target: save });
     assert.equal(view.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
-    assert.equal(view.getState().doc.includes("Ada"), false);
     const savedCard = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"))[0];
-    assert.equal(savedCard.childNodes[0].textContent, "Resolve");
-    const savedNote = savedCard.childNodes[1];
-    const savedAuthor = savedNote.childNodes[0].childNodes[0];
-    assert.equal(savedNote.childNodes[0].classList.contains("md-comment-author-row"), true);
-    assert.equal(savedAuthor.tagName, "INPUT");
-    assert.equal(savedAuthor.placeholder, "Author");
-    assert.equal(savedAuthor.value, "Ada");
+    const savedNote = savedCard.childNodes[0];
+    const savedRow = savedNote.childNodes[0];
+    const savedAuthor = savedRow.childNodes[0];
+    assert.equal(savedRow.classList.contains("md-comment-author-row"), true);
+    assert.equal(savedAuthor.tagName, "SPAN");
+    assert.equal(savedAuthor.textContent, "");
     assert.equal(savedAuthor.classList.contains("md-comment-author"), true);
+    assert.equal(savedRow.childNodes[1].getAttribute("aria-label"), "Resolve");
+    assert.equal(savedRow.childNodes[1].classList.contains("icon-btn"), true);
+    assert.equal(savedRow.childNodes[1].classList.contains("resolve"), true);
+    assert.equal(savedRow.childNodes[1].textContent, "");
+    assert.equal(savedRow.childNodes.at(-1).classList.contains("md-comment-link"), true);
+    assert.equal(savedRow.childNodes.length, 3);
     assert.equal(mounted.findAll((node) => node.tagName === "TEXTAREA").length, 0);
     const savedText = savedNote.childNodes[1];
     assert.equal(savedText.tagName, "DIV");
@@ -2283,7 +2286,10 @@ test("comment cards edit the thread and line up with the highlight", () => {
 
 test("comment cards save, reply, resolve, and discard without writing keystrokes", () => {
   const mounted = mountSheet();
-  const buttons = (label) => mounted.findAll((node) => node.tagName === "BUTTON" && node.textContent === label);
+  const matchesLabel = (node, label) => node && node.tagName === "BUTTON" && (
+    node.textContent === label || (typeof node.getAttribute === "function" && node.getAttribute("aria-label") === label)
+  );
+  const buttons = (label) => mounted.findAll((node) => matchesLabel(node, label));
   const press = (label) => {
     const button = buttons(label).at(-1);
     assert.ok(button, label);
@@ -2291,7 +2297,16 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     return button;
   };
   const pressIn = (parent, label) => {
-    const button = (parent.childNodes || []).find((node) => node.tagName === "BUTTON" && node.textContent === label);
+    const walk = (node) => {
+      if (!node) return null;
+      if (matchesLabel(node, label)) return node;
+      for (const child of node.childNodes || []) {
+        const found = walk(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const button = walk(parent);
     assert.ok(button, label);
     button.listeners.click({ target: button, preventDefault() {} });
     return button;
@@ -2347,13 +2362,13 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(buttons("Save").length, 1);
     assert.equal(buttons("Cancel").length, 1);
     const author = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-author"))[0];
-    author.value = "Ada";
+    assert.equal(author.tagName, "SPAN");
+    assert.equal(author.textContent, "");
     mounted.aside.listeners.input({ target: author });
     let box = areas()[0];
     box.value = "hi";
     mounted.aside.listeners.input({ target: box });
     assert.equal(fresh.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n");
-    assert.equal(fresh.getState().doc.includes("Ada"), false);
     press("Cancel");
     assert.equal(fresh.getState().doc, "hello fox two deer\n");
     assert.equal(fresh.getState().undo.length, 2);
@@ -2363,16 +2378,26 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     const opened = "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n";
     const saved = createEditor(mounted.root, opened, 0);
     let card = cards()[0];
-    assert.equal(card.childNodes[0].textContent, "Resolve");
-    assert.equal(card.childNodes[1].childNodes[0].classList.contains("md-comment-author-row"), true);
-    assert.equal(card.childNodes[1].childNodes[0].childNodes[0].tagName, "INPUT");
-    assert.equal(card.childNodes[1].childNodes[0].childNodes[0].placeholder, "Author");
-    assert.equal(card.childNodes[1].childNodes[0].childNodes[0].value, "");
-    assert.equal(card.childNodes.at(-2).textContent, "Reply");
-    assert.equal(card.childNodes.at(-1).textContent, "Delete");
+    const idleRow = card.childNodes[0].childNodes[0];
+    assert.equal(idleRow.classList.contains("md-comment-author-row"), true);
+    assert.equal(idleRow.childNodes[0].tagName, "SPAN");
+    assert.equal(idleRow.childNodes[0].textContent, "");
+    assert.equal(idleRow.childNodes[0].classList.contains("md-comment-author"), true);
+    assert.equal(idleRow.childNodes[1].getAttribute("aria-label"), "Resolve");
+    assert.equal(idleRow.childNodes[1].hidden, true);
+    assert.equal(idleRow.childNodes.at(-1).getAttribute("aria-label"), "Copy link");
+    assert.equal(idleRow.childNodes.at(-1).hidden, true);
+    assert.equal(idleRow.childNodes.length, 3);
+    assert.equal(card.childNodes.at(-2).getAttribute("aria-label"), "Reply");
+    assert.equal(card.childNodes.at(-2).textContent, "");
+    assert.equal(card.childNodes.at(-2).hidden, true);
+    assert.equal(card.childNodes.at(-1).getAttribute("aria-label"), "Delete");
+    assert.equal(card.childNodes.at(-1).classList.contains("danger"), true);
+    assert.equal(card.childNodes.at(-1).textContent, "");
+    assert.equal(card.childNodes.at(-1).hidden, true);
     assert.equal(buttons("Save").length, 0);
     assert.equal(areas().length, 0);
-    let text = card.childNodes[1].childNodes[1];
+    let text = card.childNodes[0].childNodes[1];
     assert.equal(text.tagName, "DIV");
     assert.equal(text.classList.contains("md-comment-text"), true);
     assert.equal(text.textContent, "");
@@ -2390,10 +2415,10 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     mounted.aside.listeners.input({ target: box });
     assert.equal(saved.getState().doc, opened);
     card = cards()[0];
-    pressIn(card.childNodes[1], "Cancel");
+    pressIn(card.childNodes[0], "Cancel");
     assert.equal(saved.getState().doc, opened);
     assert.equal(areas().length, 0);
-    text = cards()[0].childNodes[1].childNodes[1];
+    text = cards()[0].childNodes[0].childNodes[1];
     assert.equal(text.textContent, "");
     assert.equal(buttons("Save").length, 0);
     openText(text);
@@ -2404,7 +2429,7 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     mounted.aside.listeners.input({ target: box });
     const undoBefore = saved.getState().undo.length;
     card = cards()[0];
-    pressIn(card.childNodes[1], "Save");
+    pressIn(card.childNodes[0], "Save");
     assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
     assert.equal(saved.getState().doc.includes("Ada"), false);
     assert.equal(saved.getState().undo.length, undoBefore + 1);
@@ -2414,9 +2439,10 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     card = cards()[0];
     const reply = card.childNodes.at(-3);
     assert.equal(reply.childNodes[0].classList.contains("md-comment-author-row"), true);
-    assert.equal(reply.childNodes[0].childNodes[0].tagName, "INPUT");
-    assert.equal(reply.childNodes[0].childNodes[0].placeholder, "Author");
-    assert.equal(reply.childNodes[0].childNodes[0].value, "");
+    assert.equal(reply.childNodes[0].childNodes[0].tagName, "SPAN");
+    assert.equal(reply.childNodes[0].childNodes[0].textContent, "");
+    assert.equal(reply.childNodes[0].childNodes.length, 2);
+    assert.equal(reply.childNodes[0].childNodes.at(-1).getAttribute("aria-label"), "Copy link");
     assert.equal(reply.childNodes[1].tagName, "TEXTAREA");
     assert.equal(reply.childNodes[1].value, "");
     assert.equal(reply.childNodes[2].textContent, "Save");
@@ -2429,21 +2455,19 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     pressIn(card, "Reply");
     card = cards()[0];
     const replyAgain = card.childNodes.at(-3);
-    replyAgain.childNodes[0].childNodes[0].value = "Ada";
-    mounted.aside.listeners.input({ target: replyAgain.childNodes[0].childNodes[0] });
+    assert.equal(replyAgain.childNodes[0].childNodes[0].tagName, "SPAN");
     replyAgain.childNodes[1].value = "more";
     mounted.aside.listeners.input({ target: replyAgain.childNodes[1] });
     const undoReply = saved.getState().undo.length;
     pressIn(replyAgain, "Save");
     assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n::\nmore\n```\n");
-    assert.equal(saved.getState().doc.includes("Ada"), false);
     assert.equal(saved.getState().undo.length, undoReply + 1);
     assert.equal(areas().length, 0);
     assert.deepEqual(texts().map((item) => item.textContent), ["hi", "more"]);
     openText(texts()[1]);
     assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n::\nmore\n```\n");
-    assert.equal(cards()[0].childNodes[1].childNodes[1].textContent, "hi");
-    assert.equal(cards()[0].childNodes[1].childNodes[1].classList.contains("md-comment-text"), true);
+    assert.equal(cards()[0].childNodes[0].childNodes[1].textContent, "hi");
+    assert.equal(cards()[0].childNodes[0].childNodes[1].classList.contains("md-comment-text"), true);
     assert.equal(areas().length, 1);
     const second = areas()[0];
     assert.equal(second.value, "more");
@@ -2478,8 +2502,19 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     toggle.checked = false;
     toggle.listeners.change();
     assert.equal(cards().length, 1);
+    const undoDelete = saved.getState().undo.length;
     pressIn(cards()[0], "Delete");
+    assert.equal(saved.getState().undo.length, undoDelete + 1);
     assert.equal(saved.getState().doc, "hello fox two deer\n");
+    mounted.listeners.keydown({
+      key: "z",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+    });
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n::\nless\n```\n");
     saved.destroy();
     mounted.setSelection(null);
 
@@ -2601,7 +2636,19 @@ test("comment cards mark the thread being acted on", () => {
   const currentCards = () => cards().filter((card) => card.classList.contains("md-comment-current"));
   const editing = (id) => marks().filter((mark) => mark.dataset.comment === id && mark.classList.contains("md-comment-editing"));
   const pressIn = (parent, label) => {
-    const button = (parent.childNodes || []).find((node) => node.tagName === "BUTTON" && node.textContent === label);
+    const matches = (node) => node && node.tagName === "BUTTON" && (
+      node.textContent === label || (typeof node.getAttribute === "function" && node.getAttribute("aria-label") === label)
+    );
+    const walk = (node) => {
+      if (!node) return null;
+      if (matches(node)) return node;
+      for (const child of node.childNodes || []) {
+        const found = walk(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const button = walk(parent);
     assert.ok(button, label);
     button.listeners.click({ target: button, preventDefault() {} });
   };
@@ -2854,6 +2901,138 @@ function iconPaths(button) {
   if (!svg || !svg.childNodes) return [];
   return [...svg.childNodes].filter((node) => node && node.localName === "path").map((node) => node.getAttribute("d"));
 }
+
+test("comment actions stay hidden until the card is current", () => {
+  const mounted = mountSheet();
+  const knownDoc = "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n";
+  const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+  const labeled = (root, label) => {
+    const found = [];
+    const walk = (node) => {
+      if (!node) return;
+      if (node.tagName === "BUTTON" && typeof node.getAttribute === "function" && node.getAttribute("aria-label") === label) found.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(root);
+    return found;
+  };
+  const stroke = (button) => {
+    assert.equal(button.classList.contains("icon-btn"), true);
+    assert.equal(button.type, "button");
+    assert.equal(button.textContent, "");
+    const svg = button.childNodes[0];
+    assert.equal(svg.localName, "svg");
+    assert.equal(svg.getAttribute("viewBox"), "0 0 24 24");
+    assert.equal(svg.getAttribute("aria-hidden"), "true");
+    const path = svg.childNodes[0];
+    assert.equal(path.getAttribute("fill"), "none");
+    assert.equal(path.getAttribute("stroke"), "currentColor");
+    assert.equal(path.getAttribute("stroke-width"), "2");
+    assert.equal(path.getAttribute("stroke-linecap"), "round");
+    assert.equal(path.getAttribute("stroke-linejoin"), "round");
+    return path.getAttribute("d");
+  };
+  try {
+    const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    assert.match(css, /\.md-comment-card button\.icon-btn\[hidden\]\s*\{[^}]*display:\s*none/);
+
+    const adaTransport = holdingTransport();
+    adaTransport.username = "Ada";
+    const named = createEditor(mounted.root, knownDoc, 0, adaTransport);
+    const adaAuthor = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-author"))[0];
+    assert.equal(adaAuthor.tagName, "SPAN");
+    assert.equal(adaAuthor.textContent, "Ada");
+    assert.equal(named.getState().doc, knownDoc);
+    assert.equal(named.getState().doc.includes("Ada"), false);
+    named.destroy();
+
+    const view = createEditor(mounted.root, knownDoc, 0);
+    const card = cards()[0];
+    assert.equal(card.classList.contains("md-comment-current"), false);
+    const row = card.childNodes[0].childNodes[0];
+    const author = row.childNodes[0];
+    assert.equal(author.tagName, "SPAN");
+    assert.equal(author.classList.contains("md-comment-author"), true);
+    assert.equal(author.textContent, "");
+    const resolve = row.childNodes[1];
+    const link = row.childNodes.at(-1);
+    const reply = card.childNodes.at(-2);
+    const remove = card.childNodes.at(-1);
+    assert.equal(row.childNodes.length, 3);
+    assert.equal(resolve.getAttribute("aria-label"), "Resolve");
+    assert.equal(resolve.classList.contains("resolve"), true);
+    assert.equal(stroke(resolve), "M20 6 9 17l-5-5");
+    assert.equal(reply.getAttribute("aria-label"), "Reply");
+    assert.equal(stroke(reply), "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z");
+    assert.equal(remove.getAttribute("aria-label"), "Delete");
+    assert.equal(remove.classList.contains("danger"), true);
+    assert.equal(stroke(remove), "M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14");
+    assert.equal(link.classList.contains("md-comment-link"), true);
+    assert.equal(link.classList.contains("icon-btn"), true);
+    assert.equal(link.getAttribute("aria-label"), "Copy link");
+    assert.equal(link.childNodes[0].localName, "svg");
+    for (const button of [resolve, reply, remove, link]) assert.equal(button.hidden, true);
+
+    mounted.aside.listeners.click({ target: card, preventDefault() {} });
+    assert.equal(card.classList.contains("md-comment-current"), true);
+    for (const button of [resolve, reply, remove, link]) assert.equal(button.hidden, false);
+    assert.equal(row.childNodes[0], author);
+
+    const line = mounted.root.childNodes[0];
+    mounted.listeners.click({ target: line, clientX: 1, clientY: 1, preventDefault() {} });
+    assert.equal(card.classList.contains("md-comment-current"), false);
+    for (const button of [resolve, reply, remove, link]) assert.equal(button.hidden, true);
+
+    mounted.aside.listeners.click({ target: author, preventDefault() {} });
+    assert.equal(card.classList.contains("md-comment-current"), true);
+    for (const button of [resolve, reply, remove, link]) assert.equal(button.hidden, false);
+
+    const beforeDelete = view.getState().undo.length;
+    remove.listeners.click({ target: remove, preventDefault() {} });
+    assert.equal(view.getState().undo.length, beforeDelete + 1);
+    assert.equal(view.getState().doc, "hello fox two deer\n");
+    mounted.listeners.keydown({
+      key: "z",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+    });
+    assert.equal(view.getState().doc, knownDoc);
+
+    const restored = cards()[0];
+    mounted.aside.listeners.click({ target: restored, preventDefault() {} });
+    const restoredResolve = labeled(restored, "Resolve")[0];
+    const beforeResolve = view.getState().undo.length;
+    restoredResolve.listeners.click({ target: restoredResolve, preventDefault() {} });
+    assert.equal(view.getState().undo.length, beforeResolve + 1);
+    assert.equal(view.getState().doc.includes("```comment c1 resolved"), true);
+    view.destroy();
+
+    const first = addComment("alpha beta\n", 6, 10);
+    const second = addComment(first.doc, 0, 5);
+    const paired = createEditor(mounted.root, second.doc, 0);
+    const leading = cards().find((item) => item.dataset.comment === "c2");
+    const idle = cards().find((item) => item.dataset.comment === "c1");
+    mounted.aside.listeners.click({ target: leading, preventDefault() {} });
+    assert.equal(labeled(leading, "Resolve")[0].hidden, false);
+    assert.equal(labeled(leading, "Reply")[0].hidden, false);
+    assert.equal(labeled(leading, "Delete")[0].hidden, false);
+    assert.equal(labeled(leading, "Copy link").every((button) => button.hidden === false), true);
+    assert.equal(labeled(idle, "Resolve")[0].hidden, true);
+    assert.equal(labeled(idle, "Reply")[0].hidden, true);
+    assert.equal(labeled(idle, "Delete")[0].hidden, true);
+    assert.equal(labeled(idle, "Copy link").every((button) => button.hidden === true), true);
+    mounted.aside.listeners.click({ target: idle, preventDefault() {} });
+    assert.equal(labeled(leading, "Resolve")[0].hidden, true);
+    assert.equal(labeled(idle, "Resolve")[0].hidden, false);
+    assert.equal(labeled(idle, "Copy link").every((button) => button.hidden === false), true);
+    paired.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
 
 test("an insert renders only from the doc message", () => {
   const mounted = mountEditor();
@@ -6446,12 +6625,15 @@ test("T-deep-link", () => {
     assert.equal(card.scrolled, true);
     assert.equal(docMenuOf(mounted.aside).checkbox.checked, true);
     assert.equal(opens().length, 1);
-    const row = card.childNodes[1].childNodes[0];
+    const row = card.childNodes[0].childNodes[0];
     assert.equal(row.childNodes[0].classList.contains("md-comment-author"), true);
     const copy = row.childNodes.at(-1);
     assert.equal(copy.classList.contains("md-comment-link"), true);
+    assert.equal(copy.classList.contains("icon-btn"), true);
     assert.equal(copy.getAttribute("aria-label"), "Copy link");
-    assert.equal(row.childNodes.length, 2);
+    assert.equal(row.childNodes.length, 3);
+    assert.equal(row.childNodes[1].getAttribute("aria-label"), "Resolve");
+    assert.equal(row.childNodes[1].classList.contains("resolve"), true);
     assert.equal(row.childNodes.filter((node) => node.classList && node.classList.contains("md-comment-link")).length, 1);
     assert.equal(copy.childNodes.length, 1);
     assert.equal(copy.childNodes[0].localName, "svg");
