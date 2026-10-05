@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { start } from "../server.js";
 import { acceptKey, createParser, encodeFrame } from "../src/ws.js";
+import { commentThreads, parseCommentNotes } from "../src/doc.js";
 import { composeTicket, parseTicket } from "../src/ticket.js";
 import { validUsername } from "../cli.js";
 
@@ -44,6 +45,11 @@ const HELP_NEEDLES = [
   "ticket set",
   "ticket purge",
   "delete <path>",
+  "comment list <path>",
+  "comment show <path> <thread>",
+  "comment reply <path> <thread>",
+  "comment edit <path> <thread> <note> --rev N",
+  "--repo is required on list, show, create, edit, delete, comment, commit, and ticket.",
   "ticket delete",
   "--title",
   "--state",
@@ -2683,4 +2689,444 @@ test("T-cli-serve", async () => {
   } finally {
     await gate.close();
   }
+});
+
+const GROK_LINE = "@2026-10-05T04:14:24.392Z Grok";
+const THREAD_BODY = ["How?", "::", GROK_LINE, "Because."].join("\n");
+const THREAD_DOC = `See {c1}this{/c1}.\n\n\`\`\`comment c1\n${THREAD_BODY}\n\`\`\`\n`;
+const THREAD_REL = "notes/thread.md";
+const ORIGINAL_NOTE = `${GROK_LINE}\nBecause.`;
+
+function commentArgs(port, user, args) {
+  return ["--port", String(port), "--user", user, "--repo", "docs", "comment", ...args];
+}
+
+async function writeThread(dir) {
+  const full = path.join(dir, "notes", "thread.md");
+  await fs.writeFile(full, THREAD_DOC);
+  return full;
+}
+
+function notesOf(doc) {
+  const thread = commentThreads(doc).find((item) => item.id === "c1");
+  if (!thread) return null;
+  return parseCommentNotes(thread.body);
+}
+
+test("T-comment-reply", async () => {
+  await withDocs(async ({ dir, port }) => {
+    const full = await writeThread(dir);
+    await fs.writeFile(
+      path.join(dir, "notes", "done.md"),
+      "See {c2}that{/c2}.\n\n```comment c2 resolved\ndone\n```\n",
+    );
+
+    const plain = await run(commentArgs(port, "Grok", ["list", THREAD_REL]));
+    assert.equal(plain.code, 0);
+    assert.equal(plain.stdout, "c1\n");
+    assert.equal(plain.stderr, "");
+    assert.equal(await fs.readFile(full, "utf8"), THREAD_DOC);
+
+    const json = await run(["--json", ...commentArgs(port, "Grok", ["list", THREAD_REL])]);
+    assert.equal(json.code, 0);
+    assert.equal(json.stderr, "");
+    const listed = JSON.parse(json.stdout);
+    assert.deepEqual(Object.keys(listed), ["path", "rev", "threads"]);
+    assert.equal(listed.path, THREAD_REL);
+    assert.equal(listed.rev, 0);
+    assert.deepEqual(listed.threads, [{
+      id: "c1",
+      resolved: false,
+      notes: [
+        { id: 0, author: "", time: "", text: "How?" },
+        { id: 1, author: "Grok", time: "2026-10-05T04:14:24.392Z", text: "Because." },
+      ],
+    }]);
+    assert.deepEqual(listed.threads[0].notes.map((note) => note.id), [0, 1]);
+    assert.deepEqual(Object.keys(listed.threads[0]), ["id", "resolved", "notes"]);
+    assert.deepEqual(Object.keys(listed.threads[0].notes[0]), ["id", "author", "time", "text"]);
+
+    const resolved = await run(commentArgs(port, "Grok", ["list", "notes/done.md"]));
+    assert.equal(resolved.code, 0);
+    assert.equal(resolved.stdout, "c2 resolved\n");
+    assert.equal(resolved.stderr, "");
+
+    const shown = await run(commentArgs(port, "Grok", ["show", THREAD_REL, "c1"]));
+    assert.equal(shown.code, 0);
+    assert.equal(shown.stdout, `${THREAD_BODY}\n`);
+    assert.equal(shown.stderr, "rev 0\n");
+    const shownJson = await run(["--json", ...commentArgs(port, "Grok", ["show", THREAD_REL, "c1"])]);
+    assert.equal(shownJson.code, 0);
+    assert.equal(shownJson.stderr, "");
+    const one = JSON.parse(shownJson.stdout);
+    assert.deepEqual(one, {
+      path: THREAD_REL,
+      rev: 0,
+      id: "c1",
+      resolved: false,
+      notes: listed.threads[0].notes,
+    });
+
+    const empty = await run(commentArgs(port, "Grok", ["list", "hello.md"]));
+    assert.equal(empty.code, 0);
+    assert.equal(empty.stdout, "");
+    assert.equal(empty.stderr, "");
+
+    const separator = await run(commentArgs(port, "Grok", ["reply", THREAD_REL, "c1"]), {}, "Yes.\n::\nno");
+    assert.equal(separator.code, shellStatus(400));
+    assert.equal(separator.stdout, "");
+    assert.equal(separator.stderr, "error 400\n");
+    assert.equal(await fs.readFile(full, "utf8"), THREAD_DOC);
+
+    const watcher = await hello(port, "watcher");
+    try {
+      await openDoc(watcher, "watcher", THREAD_REL);
+      const replied = await run(commentArgs(port, "Grok", ["reply", THREAD_REL, "c1"]), {}, "Yes.\n");
+      assert.equal(replied.code, 0);
+      assert.equal(replied.stdout, "note 2\n");
+      assert.equal(replied.stderr, "rev 1\n");
+      const docMsg = await watcher.next((msg) => msg.type === "doc" && msg.path === THREAD_REL);
+      assert.equal(docMsg.type, "doc");
+      const live = notesOf(docMsg.text);
+      assert.equal(live[0].raw, "How?");
+      assert.equal(live[1].raw, ORIGINAL_NOTE);
+      assert.equal(live[2].id, 2);
+      assert.match(live[2].raw, /^@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z Grok\nYes\.\n$/);
+      const stored = notesOf(await fs.readFile(full, "utf8"));
+      assert.equal(stored[0].raw, "How?");
+      assert.equal(stored[1].raw, ORIGINAL_NOTE);
+      assert.equal(stored[2].raw, live[2].raw);
+
+      const replyJson = await run(
+        ["--json", ...commentArgs(port, "Grok", ["reply", THREAD_REL, "c1"])],
+        {},
+        "And.\n",
+      );
+      assert.equal(replyJson.code, 0);
+      assert.equal(replyJson.stderr, "");
+      assert.deepEqual(JSON.parse(replyJson.stdout), {
+        path: THREAD_REL,
+        id: "c1",
+        note: 3,
+        rev: 2,
+      });
+
+      const stale = await hello(port, "Grok");
+      try {
+        stale.send({
+          type: "comment.reply",
+          username: "Grok",
+          path: THREAD_REL,
+          id: "c1",
+          rev: 0,
+          text: "Later.\n",
+        });
+        const again = await stale.next((msg) => msg.type === "comment" || msg.type === "error");
+        assert.equal(again.type, "comment");
+        assert.equal(again.note, 4);
+        assert.equal(again.rev, 3);
+        const notes = notesOf(await fs.readFile(full, "utf8"));
+        assert.equal(notes[0].raw, "How?");
+        assert.equal(notes[1].raw, ORIGINAL_NOTE);
+      } finally {
+        stale.ws.close();
+      }
+    } finally {
+      watcher.ws.close();
+    }
+  });
+});
+
+test("T-comment-edit", async () => {
+  await withDocs(async ({ dir, port }) => {
+    const full = await writeThread(dir);
+    const grok = await hello(port, "Grok");
+    try {
+      grok.send({
+        type: "comment.edit",
+        username: "Grok",
+        path: THREAD_REL,
+        id: "c1",
+        note: "1",
+        rev: 99,
+        text: "Updated.",
+      });
+      const badNote = await grok.next((msg) => msg.type === "error" || msg.type === "comment");
+      assert.equal(badNote.status, 400);
+      grok.send({
+        type: "comment.edit",
+        username: "Grok",
+        path: THREAD_REL,
+        id: "c1",
+        note: -1,
+        rev: 0,
+        text: "Updated.",
+      });
+      const negative = await grok.next((msg) => msg.type === "error" || msg.type === "comment");
+      assert.equal(negative.status, 400);
+      assert.equal(await fs.readFile(full, "utf8"), THREAD_DOC);
+    } finally {
+      grok.ws.close();
+    }
+
+    const same = await run(
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "0"]),
+      {},
+      "Because.",
+    );
+    assert.equal(same.code, 0);
+    assert.equal(same.stdout, "note 1\n");
+    assert.equal(same.stderr, "rev 0\n");
+    assert.equal(await fs.readFile(full, "utf8"), THREAD_DOC);
+
+    const edited = await run(
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "0"]),
+      {},
+      "Updated.",
+    );
+    assert.equal(edited.code, 0);
+    assert.equal(edited.stdout, "note 1\n");
+    assert.equal(edited.stderr, "rev 1\n");
+    const notes = notesOf(await fs.readFile(full, "utf8"));
+    assert.equal(notes[0].raw, "How?");
+    assert.equal(notes[1].raw, `${GROK_LINE}\nUpdated.`);
+    assert.equal(notes[1].id, 1);
+    const changed = await fs.readFile(full, "utf8");
+
+    const again = await run(
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "1"]),
+      {},
+      "Updated.",
+    );
+    assert.equal(again.code, 0);
+    assert.equal(again.stdout, "note 1\n");
+    assert.equal(again.stderr, "rev 1\n");
+    assert.equal(await fs.readFile(full, "utf8"), changed);
+
+    const json = await run(
+      ["--json", ...commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "1"])],
+      {},
+      "Updated. again",
+    );
+    assert.equal(json.code, 0);
+    assert.equal(json.stderr, "");
+    assert.deepEqual(JSON.parse(json.stdout), { path: THREAD_REL, id: "c1", note: 1, rev: 2 });
+    assert.equal(notesOf(await fs.readFile(full, "utf8"))[1].raw, `${GROK_LINE}\nUpdated. again`);
+
+    const separator = await run(
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "2"]),
+      {},
+      "no\n::\n",
+    );
+    assert.equal(separator.code, shellStatus(400));
+    assert.equal(separator.stdout, "");
+    assert.equal(separator.stderr, "error 400\n");
+    assert.equal(notesOf(await fs.readFile(full, "utf8"))[1].raw, `${GROK_LINE}\nUpdated. again`);
+  });
+});
+
+test("T-comment-auth", async () => {
+  await withDocs(async ({ dir, port }) => {
+    const full = await writeThread(dir);
+    const watcher = await hello(port, "watcher");
+    try {
+      await openDoc(watcher, "watcher", THREAD_REL);
+      const ada = await run(
+        commentArgs(port, "Ada", ["edit", THREAD_REL, "c1", "1", "--rev", "0"]),
+        {},
+        "Updated.",
+      );
+      assert.equal(ada.code, shellStatus(403));
+      assert.equal(ada.stdout, "");
+      assert.equal(ada.stderr, "error 403\n");
+      const note0 = await run(
+        commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "0", "--rev", "0"]),
+        {},
+        "Updated.",
+      );
+      assert.equal(note0.code, shellStatus(403));
+      assert.equal(note0.stdout, "");
+      assert.equal(note0.stderr, "error 403\n");
+      assert.equal(await fs.readFile(full, "utf8"), THREAD_DOC);
+      await delay(50);
+      assert.equal(watcher.queue.some((msg) => msg.type === "doc"), false);
+    } finally {
+      watcher.ws.close();
+    }
+  });
+});
+
+test("T-comment-conflict", async () => {
+  await withDocs(async ({ dir, port }) => {
+    const full = await writeThread(dir);
+    const holder = await hello(port, "Ada");
+    const witness = await hello(port, "witness");
+    try {
+      await openDoc(witness, "witness", THREAD_REL);
+      const opened = await openDoc(holder, "Ada", THREAD_REL);
+      holder.send({
+        type: "lock",
+        username: "Ada",
+        path: THREAD_REL,
+        rev: opened.rev,
+        anchor: 0,
+        cursor: opened.text.length,
+      });
+      const locks = await holder.next((msg) => msg.type === "locks" && msg.path === THREAD_REL);
+      assert.ok(locks.lines.some((line) => line && line.username === "Ada" && line.index === 0));
+      const blocked = await run(commentArgs(port, "Grok", ["reply", THREAD_REL, "c1"]), {}, "Yes.\n");
+      assert.equal(blocked.code, shellStatus(409));
+      assert.equal(blocked.stdout, "");
+      assert.equal(blocked.stderr, "error 409\n");
+      assert.equal(await fs.readFile(full, "utf8"), THREAD_DOC);
+      await delay(50);
+      assert.equal(witness.queue.some((msg) => msg.type === "doc"), false);
+
+      const released = witness.next((msg) => (
+        msg.type === "locks" && msg.path === THREAD_REL && !msg.lines.some((line) => line && line.username === "Ada")
+      ));
+      holder.ws.close();
+      await released;
+    } finally {
+      holder.ws.close();
+      witness.ws.close();
+    }
+
+    const edited = await run(
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "0"]),
+      {},
+      "Updated.",
+    );
+    assert.equal(edited.code, 0);
+    assert.equal(edited.stderr, "rev 1\n");
+    const changed = await fs.readFile(full, "utf8");
+    assert.notEqual(changed, THREAD_DOC);
+    const stale = await run(
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "0"]),
+      {},
+      "Nope.",
+    );
+    assert.equal(stale.code, shellStatus(409));
+    assert.equal(stale.stdout, "");
+    assert.equal(stale.stderr, "error 409\n");
+    assert.equal(await fs.readFile(full, "utf8"), changed);
+  });
+});
+
+test("T-comment-usage", async () => {
+  const help = await run(["help"]);
+  assert.equal(help.code, 0);
+  assert.ok(help.stdout.includes("comment:"));
+  assert.ok(help.stdout.includes("comment list"));
+  assert.ok(help.stdout.includes("comment reply"));
+  for (const line of [
+    "comment list <path>",
+    "comment show <path> <thread>",
+    "comment reply <path> <thread>",
+    "comment edit <path> <thread> <note> --rev N",
+  ]) {
+    assert.ok(help.stdout.includes(line), line);
+  }
+  assert.match(help.stdout, /--repo is required on list, show, create, edit, delete, comment, commit, and ticket\./);
+
+  const gate = await trap();
+  try {
+    const noRepo = await run(["--port", String(gate.port), "--user", "Grok", "comment", "list", THREAD_REL]);
+    assert.equal(noRepo.code, 2);
+    assert.equal(noRepo.stdout, "");
+    assert.equal(noRepo.stderr, "viewmark: --repo is required\n");
+
+    const cases = [
+      [["comment", "list"], "path required"],
+      [["comment", "show"], "path required"],
+      [["comment", "reply"], "path required"],
+      [["comment", "edit"], "path required"],
+      [["comment", "list", "a.md", "b.md"], "unexpected argument"],
+      [["comment", "show", "a.md"], "unexpected argument"],
+      [["comment", "reply", "a.md", "c1", "extra"], "unexpected argument"],
+      [["comment", "edit", "a.md", "c1", "1", "extra", "--rev", "0"], "unexpected argument"],
+      [["comment", "nope", "a.md"], "unexpected argument"],
+      [["comment", "edit", "a.md", "c1"], "invalid note"],
+      [["comment", "edit", "a.md", "c1", "abc", "--rev", "0"], "invalid note"],
+      [["comment", "edit", "a.md", "c1", "1.5", "--rev", "0"], "invalid note"],
+      [["comment", "edit", "a.md", "c1", "1"], "edit requires integer --rev"],
+      [["comment", "edit", "a.md", "c1", "1", "--rev", "nope"], "edit requires integer --rev"],
+      [["comment", "edit", "a.md", "c1", "1", "--rev", "1.5"], "edit requires integer --rev"],
+      [["comment", "reply", "a.md", "c1", "--rev", "1"], "unexpected flag"],
+    ];
+    for (const [args, message] of cases) {
+      const res = await run(["--port", String(gate.port), "--user", "Grok", "--repo", "docs", ...args]);
+      assert.equal(res.code, 2, args.join(" "));
+      assert.equal(res.stdout, "", args.join(" "));
+      assert.equal(res.stderr, `viewmark: ${message}\n`, args.join(" "));
+    }
+
+    const negative = await run([
+      "--port", String(gate.port),
+      "--user", "Grok",
+      "--repo", "docs",
+      "comment", "edit",
+      THREAD_REL,
+      "c1",
+      "-1",
+      "--rev", "0",
+    ]);
+    assert.equal(negative.code, shellStatus(400));
+    assert.equal(negative.stdout, "");
+    assert.equal(negative.stderr, "error 400\n");
+    assert.equal(gate.hits.length, 0);
+  } finally {
+    await gate.close();
+  }
+
+  await withDocs(async ({ dir, port }) => {
+    const full = await writeThread(dir);
+    await fs.writeFile(path.join(dir, "notes", "keep.markdown"), "See {k}k{/k}.\n\n```comment k\nhi\n```\n");
+    const markdown = await run(commentArgs(port, "Grok", ["list", "notes/keep.markdown"]));
+    assert.equal(markdown.code, 0);
+    assert.equal(markdown.stdout, "k\n");
+
+    const missingThread = await run(commentArgs(port, "Grok", ["show", THREAD_REL, "missing"]));
+    assert.equal(missingThread.code, shellStatus(404));
+    assert.equal(missingThread.stdout, "");
+    assert.equal(missingThread.stderr, "error 404\n");
+    const missingReply = await run(commentArgs(port, "Grok", ["reply", THREAD_REL, "missing"]), {}, "Yes.\n");
+    assert.equal(missingReply.code, shellStatus(404));
+    assert.equal(missingReply.stderr, "error 404\n");
+    assert.equal(await fs.readFile(full, "utf8"), THREAD_DOC);
+
+    const badId = await run(commentArgs(port, "Grok", ["reply", THREAD_REL, "1c"]), {}, "Yes.\n");
+    assert.equal(badId.code, shellStatus(400));
+    assert.equal(badId.stderr, "error 400\n");
+
+    const ticket = await run(commentArgs(port, "Grok", ["list", "tickets/x.md"]));
+    assert.equal(ticket.code, shellStatus(400));
+    assert.equal(ticket.stdout, "");
+    assert.equal(ticket.stderr, "error 400\n");
+    const text = await run(commentArgs(port, "Grok", ["list", "skip.txt"]));
+    assert.equal(text.code, shellStatus(400));
+    assert.equal(text.stderr, "error 400\n");
+    const bare = await run(commentArgs(port, "Grok", ["reply", "hello", "c1"]), {}, "Yes.\n");
+    assert.equal(bare.code, shellStatus(400));
+    assert.equal(bare.stderr, "error 400\n");
+    const missing = await run(commentArgs(port, "Grok", ["list", "missing.md"]));
+    assert.equal(missing.code, shellStatus(404));
+    assert.equal(missing.stderr, "error 404\n");
+    const parent = await run(commentArgs(port, "Grok", ["list", "../hello.md"]));
+    assert.equal(parent.code, shellStatus(404));
+    assert.equal(parent.stderr, "error 404\n");
+    const rooted = await run(commentArgs(port, "Grok", ["show", "/hello.md", "c1"]));
+    assert.equal(rooted.code, shellStatus(404));
+    assert.equal(await fs.readFile(full, "utf8"), THREAD_DOC);
+
+    const alone = await hello(port, "Grok", null);
+    try {
+      alone.send({ type: "comment.threads", username: "Grok", path: "hello.md" });
+      const msg = await alone.next((item) => item.type === "error" || item.type === "comments");
+      assert.equal(msg.type, "error");
+      assert.equal(msg.status, 400);
+    } finally {
+      alone.ws.close();
+    }
+  });
 });

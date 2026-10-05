@@ -25,7 +25,7 @@ import {
   parseHash,
 } from "../src/editor.js";
 import { splitCommentNote } from "../src/doc.js";
-import { createMemoryTransport } from "../src/session.js";
+import { createMemoryTransport, createSocketTransport } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
 const B = "# Title\n\n";
@@ -2185,7 +2185,7 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.equal(view.getState().undo.length, 1);
     const save = mounted.findAll((node) => node.tagName === "BUTTON" && node.textContent === "Save")[0];
     save.listeners.click({ target: save });
-    assert.equal(view.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
+    assert.equal(view.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n```\n");
     const savedCard = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"))[0];
     const savedNote = savedCard.childNodes[0];
     const savedRow = savedNote.childNodes[0];
@@ -2209,6 +2209,7 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.equal(savedText.tagName, "DIV");
     assert.equal(savedText.classList.contains("md-comment-text"), true);
     assert.equal(savedText.textContent, "hi");
+    assert.equal(savedText.dataset.note, "0");
     assert.equal(mounted.findAll((node) => node.tagName === "BUTTON" && node.textContent === "Save").length, 0);
     assert.equal(mounted.findAll((node) => node.tagName === "BUTTON" && node.textContent === "Cancel").length, 0);
     assert.equal(view.getState().undo.length, 2);
@@ -2490,12 +2491,12 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     const undoBefore = saved.getState().undo.length;
     card = cards()[0];
     pressIn(card.childNodes[0], "Save");
-    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n```\n");
     assert.equal(saved.getState().doc.includes("Ada"), false);
     assert.equal(saved.getState().undo.length, undoBefore + 1);
     card = cards()[0];
     pressIn(card, "Reply");
-    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n```\n");
     card = cards()[0];
     const reply = card.childNodes.at(-3);
     assert.equal(reply.childNodes[0].classList.contains("md-comment-author-row"), true);
@@ -2511,7 +2512,7 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(reply.childNodes[2].textContent, "Save");
     assert.equal(reply.childNodes[3].textContent, "Cancel");
     pressIn(reply, "Cancel");
-    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n```\n");
     assert.equal(areas().length, 0);
     assert.equal(texts()[0].textContent, "hi");
     card = cards()[0];
@@ -2523,12 +2524,13 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     mounted.aside.listeners.input({ target: replyAgain.childNodes[1] });
     const undoReply = saved.getState().undo.length;
     pressIn(replyAgain, "Save");
-    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n::\nmore\n```\n");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n:: 1\nmore\n```\n");
     assert.equal(saved.getState().undo.length, undoReply + 1);
     assert.equal(areas().length, 0);
     assert.deepEqual(texts().map((item) => item.textContent), ["hi", "more"]);
+    assert.deepEqual(texts().map((item) => item.dataset.note), ["0", "1"]);
     openText(texts()[1]);
-    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n::\nmore\n```\n");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n:: 1\nmore\n```\n");
     assert.equal(cards()[0].childNodes[0].childNodes[1].textContent, "hi");
     assert.equal(cards()[0].childNodes[0].childNodes[1].classList.contains("md-comment-text"), true);
     assert.equal(areas().length, 1);
@@ -2537,14 +2539,14 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     second.value = "less";
     mounted.aside.listeners.input({ target: second });
     pressIn(second.parentElement, "Save");
-    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n::\nless\n```\n");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n:: 1\nmore\n```\n");
     assert.equal(areas().length, 0);
-    assert.deepEqual(texts().map((item) => item.textContent), ["hi", "less"]);
+    assert.deepEqual(texts().map((item) => item.textContent), ["hi", "more"]);
     card = cards()[0];
     const undoResolve = saved.getState().undo.length;
     pressIn(card, "Resolve");
     assert.equal(saved.getState().undo.length, undoResolve + 1);
-    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1 resolved\nhi\n::\nless\n```\n");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1 resolved\n:: 0\nhi\n:: 1\nmore\n```\n");
     assert.equal(saved.getState().doc.includes("{c1}fox{/c1}"), true);
     assert.equal(cards().length, 0);
     assert.ok(mounted.findAll((node) => node.classList && node.classList.contains("md-comment")).length > 0);
@@ -2558,9 +2560,9 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     toggle.listeners.change();
     assert.equal(cards().length, 1);
     assert.equal(areas().length, 0);
-    assert.deepEqual(texts().map((item) => item.textContent), ["hi", "less"]);
+    assert.deepEqual(texts().map((item) => item.textContent), ["hi", "more"]);
     pressIn(cards()[0], "Resolve");
-    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n::\nless\n```\n");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n:: 1\nmore\n```\n");
     assert.equal(cards().length, 1);
     toggle = docMenuOf(mounted.aside).checkbox;
     assert.equal(toggle.checked, true);
@@ -2580,7 +2582,7 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
       shiftKey: false,
       preventDefault() {},
     });
-    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n::\nless\n```\n");
+    assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n:: 1\nmore\n```\n");
     saved.destroy();
     mounted.setSelection(null);
 
@@ -2607,8 +2609,8 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     mounted.aside.listeners.input({ target: edit });
     pressIn(edit.parentElement, "Save");
     assert.equal(areas().length, 0);
-    assert.equal(texts()[0].textContent, "yo");
-    assert.equal(known.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nyo\n```\n");
+    assert.equal(texts()[0].textContent, "hi");
+    assert.equal(known.getState().doc, knownDoc);
     known.destroy();
     mounted.setSelection(null);
 
@@ -2622,7 +2624,7 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     added.childNodes[1].value = "more";
     mounted.aside.listeners.input({ target: added.childNodes[1] });
     pressIn(added, "Save");
-    assert.equal(notes.getState().doc, "Say {c1}fox{/c1} now.\n\n```comment c1\n**hi**\n::\nmore\n```\n");
+    assert.equal(notes.getState().doc, "Say {c1}fox{/c1} now.\n\n```comment c1\n:: 0\n**hi**\n:: 1\nmore\n```\n");
     assert.equal(areas().length, 0);
     assert.deepEqual(texts().map((item) => item.textContent), ["**hi**", "more"]);
     assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-strong")).length, 0);
@@ -2916,7 +2918,8 @@ test("comment cards mark the thread being acted on", () => {
     areas()[0].value = "yo";
     mounted.aside.listeners.input({ target: areas()[0] });
     pressIn(areas()[0].parentElement, "Save");
-    assert.equal(resolved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nyo\n```\n");
+    assert.equal(resolved.getState().doc, knownDoc);
+    assert.equal(texts()[0].textContent, "hi");
     assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c1"]);
     assert.equal(editing("c1").length, 0);
     assert.equal(areas().length, 0);
@@ -3226,6 +3229,7 @@ test("a comment note keeps the poster who saved it", () => {
     assert.equal(times()[2].textContent, stamped[1].replace("T", " ").slice(0, 16));
     assert.deepEqual(texts().map((node) => node.textContent), ["question", "reply", "thanks"]);
 
+    const beforeGrok = view.getState().doc;
     mounted.aside.listeners.click({ target: texts()[0], preventDefault() {} });
     const box = areas()[0];
     assert.equal(box.value, "question");
@@ -3233,15 +3237,28 @@ test("a comment note keeps the poster who saved it", () => {
     assert.equal(authors()[0].textContent, "Grok");
     box.value = "yo";
     press("Save");
-    const edited = view.getState().doc;
-    assert.equal(edited.includes("@2026-10-04T20:30:22.000Z Grok\nyo\n"), true);
-    assert.equal(edited.split("::")[0].includes("Ada"), false);
-    assert.equal(edited.includes("@2026-10-04T21:15:00.000Z Paul\nreply"), true);
-    assert.equal(edited.includes(`${stamped[1]} Ada\nthanks`), true);
+    assert.equal(view.getState().doc, beforeGrok);
+    assert.equal(texts()[0].textContent, "question");
     assert.equal(authors()[0].textContent, "Grok");
-    assert.equal(times()[0].textContent, "2026-10-04 20:30");
-    assert.equal(times()[0].getAttribute("datetime"), "2026-10-04T20:30:22.000Z");
-    assert.equal(texts()[0].textContent, "yo");
+    mounted.aside.listeners.click({ target: texts()[2], preventDefault() {} });
+    const adaBox = areas()[0];
+    assert.equal(adaBox.value, "thanks");
+    const undoSame = view.getState().undo.length;
+    press("Save");
+    assert.equal(view.getState().doc, beforeGrok);
+    assert.equal(view.getState().undo.length, undoSame);
+    assert.equal(texts()[2].textContent, "thanks");
+    mounted.aside.listeners.click({ target: texts()[2], preventDefault() {} });
+    areas()[0].value = "cheers";
+    press("Save");
+    const edited = view.getState().doc;
+    assert.equal(edited.includes(`${stamped[1]} Ada\ncheers`), true);
+    assert.equal(edited.includes("thanks"), false);
+    assert.equal(edited.includes("@2026-10-04T20:30:22.000Z Grok\nquestion"), true);
+    assert.equal(edited.includes("@2026-10-04T21:15:00.000Z Paul\nreply"), true);
+    assert.equal(authors()[2].textContent, "Ada");
+    assert.equal(times()[2].getAttribute("datetime"), stamped[1]);
+    assert.equal(texts()[2].textContent, "cheers");
     view.destroy();
 
     const plain = "See {c1}fox{/c1}.\n\n```comment c1\nhi\n```\n";
@@ -3253,8 +3270,9 @@ test("a comment note keeps the poster who saved it", () => {
     assert.equal(areas()[0].value, "hi");
     areas()[0].value = "yo";
     press("Save");
-    assert.equal(headerless.getState().doc, "See {c1}fox{/c1}.\n\n```comment c1\nyo\n```\n");
+    assert.equal(headerless.getState().doc, plain);
     assert.equal(headerless.getState().doc.includes("@"), false);
+    assert.equal(texts()[0].textContent, "hi");
     assert.equal(authors()[0].textContent, "");
     headerless.destroy();
 
@@ -3296,6 +3314,7 @@ test("a comment note keeps the poster who saved it", () => {
     const freshDoc = fresh.getState().doc;
     const freshStamp = freshDoc.match(/@(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z) Ada\nhello/);
     assert.ok(freshStamp);
+    assert.equal(freshDoc.includes(`:: 0\n@${freshStamp[1]} Ada\nhello`), true);
     assert.equal(authors()[0].textContent, "Ada");
     assert.equal(times().length, 1);
     assert.equal(times()[0].getAttribute("datetime"), freshStamp[1]);
@@ -3312,7 +3331,7 @@ test("a comment note keeps the poster who saved it", () => {
     unsaved.childNodes[1].value = "more";
     press("Save");
     assert.equal(fresh.getState().doc.includes(`${freshStamp[1]} Ada\nhello`), true);
-    assert.match(fresh.getState().doc, /@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z Ada\nmore/);
+    assert.match(fresh.getState().doc, /:: 1\n@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z Ada\nmore/);
     assert.deepEqual(authors().map((node) => node.textContent), ["Ada", "Ada"]);
     fresh.destroy();
     mounted.setSelection(null);
@@ -6476,11 +6495,116 @@ test("shift-arrow keeps the anchor and an unshifted arrow collapses", () => {
   }
 });
 
+test("comment notes use record ids and replies do not lock", () => {
+  const mounted = mountSheet();
+  const texts = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-text"));
+  const areas = () => mounted.findAll((node) => node.tagName === "TEXTAREA");
+  const press = (label) => {
+    const button = mounted.findAll((node) => node.tagName === "BUTTON" && (
+      node.textContent === label || (typeof node.getAttribute === "function" && node.getAttribute("aria-label") === label)
+    )).at(-1);
+    assert.ok(button, label);
+    button.listeners.click({ target: button, preventDefault() {} });
+  };
+  try {
+    const zero = "Say {c1}fox{/c1} now.\n\n```comment c1\n:: 0\nhi\n```\n";
+    const shown = createEditor(mounted.root, zero, 0);
+    assert.equal(texts().length, 1);
+    assert.equal(texts()[0].textContent, "hi");
+    assert.equal(texts()[0].dataset.note, "0");
+    assert.equal(texts()[0].textContent.includes("::"), false);
+    mounted.aside.listeners.click({ target: texts()[0], preventDefault() {} });
+    assert.equal(areas()[0].value, "hi");
+    assert.equal(areas()[0].dataset.note, "0");
+    press("Cancel");
+    shown.destroy();
+
+    const explicit = "Say {c1}fox{/c1} now.\n\n```comment c1\n:: 4\nonly\n```\n";
+    const memory = createMemoryTransport(explicit, 0);
+    const sent = [];
+    const send = memory.send.bind(memory);
+    memory.send = (message) => {
+      sent.push({ ...message });
+      send(message);
+    };
+    const next = createEditor(mounted.root, explicit, 0, memory);
+    assert.equal(texts().length, 1);
+    assert.equal(texts()[0].textContent, "only");
+    assert.equal(texts()[0].dataset.note, "4");
+    assert.equal(mounted.findAll((node) => node.textContent === ":: 4").length, 0);
+    press("Reply");
+    assert.equal(areas()[0].dataset.reply, "true");
+    assert.equal(areas()[0].dataset.note, "5");
+    areas()[0].value = "more";
+    press("Save");
+    const replies = sent.filter((message) => message.type === "comment.reply");
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].id, "c1");
+    assert.equal(replies[0].text, "more");
+    assert.equal(replies[0].path, "");
+    assert.equal("rev" in replies[0], false);
+    assert.equal("note" in replies[0], false);
+    assert.equal(sent.some((message) => message.type === "lock" || message.op === "comment.save"), false);
+    const replied = "Say {c1}fox{/c1} now.\n\n```comment c1\n:: 4\nonly\n:: 5\nmore\n```\n";
+    assert.equal(next.getState().doc, replied);
+    assert.deepEqual(texts().map((item) => item.dataset.note), ["4", "5"]);
+    assert.deepEqual(texts().map((item) => item.textContent), ["only", "more"]);
+    sent.length = 0;
+    mounted.aside.listeners.click({ target: texts()[0], preventDefault() {} });
+    assert.equal(areas()[0].value, "only");
+    areas()[0].value = "yo";
+    press("Save");
+    const edits = sent.filter((message) => message.type === "comment.edit");
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].id, "c1");
+    assert.equal(edits[0].note, 4);
+    assert.equal(edits[0].text, "yo");
+    assert.equal(edits[0].rev, 1);
+    assert.equal(edits[0].path, "");
+    assert.equal(next.getState().doc, replied);
+    assert.equal(texts()[0].textContent, "only");
+    next.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("the socket transport transmits comment messages", () => {
+  const sent = [];
+  let openHandler = null;
+  const transport = createSocketTransport({
+    username: "Ada",
+    socketFactory() {
+      return {
+        addEventListener(type, fn) {
+          if (type === "open") openHandler = fn;
+        },
+        removeEventListener() {},
+        send(data) {
+          sent.push(JSON.parse(data));
+        },
+        close() {},
+      };
+    },
+    location: { protocol: "http:", host: "viewmark.test" },
+  });
+  assert.equal(typeof openHandler, "function");
+  openHandler();
+  sent.length = 0;
+  transport.send({ type: "comment.reply", path: "a.md", id: "c1", text: "hi" });
+  transport.send({ type: "comment.edit", path: "a.md", id: "c1", note: 4, rev: 2, text: "yo" });
+  assert.deepEqual(sent, [
+    { type: "comment.reply", path: "a.md", id: "c1", text: "hi", username: "Ada" },
+    { type: "comment.edit", path: "a.md", id: "c1", note: 4, rev: 2, text: "yo", username: "Ada" },
+  ]);
+  transport.close();
+});
+
 test("ctrl-enter saves a comment body and enter does not", () => {
   const mounted = mountSheet();
   const doc = "hello {c1}fox{/c1} two\n\n```comment c1\nhi\n```\n";
   const transport = holdingTransport();
-  const saves = () => transport.sent.filter((message) => message.type === "edit" && message.op === "comment.save");
+  const saves = () => transport.sent.filter((message) => message.type === "comment.edit");
   const press = (target, extra) => {
     let prevented = false;
     mounted.aside.listeners.keydown({
@@ -6512,8 +6636,14 @@ test("ctrl-enter saves a comment body and enter does not", () => {
     assert.equal(box.value, "yo");
     assert.equal(press(box, { ctrlKey: true }), true);
     assert.equal(saves().length, 1);
+    assert.equal(saves()[0].type, "comment.edit");
     assert.equal(saves()[0].id, "c1");
-    assert.equal(saves()[0].body, "yo");
+    assert.equal(saves()[0].note, 0);
+    assert.equal(saves()[0].text, "yo");
+    assert.equal(saves()[0].path, "");
+    assert.equal(saves()[0].rev, 0);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(transport.sent.some((message) => message.op === "comment.save" || message.type === "lock"), false);
     view.destroy();
 
     const again = holdingTransport();
@@ -6534,10 +6664,14 @@ test("ctrl-enter saves a comment body and enter does not", () => {
         prevented = true;
       },
     });
-    const metaSaves = again.sent.filter((message) => message.type === "edit" && message.op === "comment.save");
+    const metaSaves = again.sent.filter((message) => message.type === "comment.edit");
     assert.equal(prevented, true);
     assert.equal(metaSaves.length, 1);
-    assert.equal(metaSaves[0].body, "via meta");
+    assert.equal(metaSaves[0].type, "comment.edit");
+    assert.equal(metaSaves[0].note, 0);
+    assert.equal(metaSaves[0].text, "via meta");
+    assert.equal(metaSaves[0].rev, 0);
+    assert.equal(meta.getState().doc, doc);
     meta.destroy();
   } finally {
     mounted.restore();

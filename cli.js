@@ -15,6 +15,10 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME create <path> [--file PATH]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME edit <path> --rev N --find TEXT --replace TEXT
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME delete <path>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment list <path>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment show <path> <thread>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment reply <path> <thread>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment edit <path> <thread> <note> --rev N
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME commit [--message TEXT]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket list [--closed]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket show <id>
@@ -32,7 +36,7 @@ Usage:
 --port or VIEWMARK_PORT, default 8765. --user or VIEWMARK_USER; the flag wins.
 Missing, empty, NUL, CR, LF, <, or > is rejected. There is no default name.
 --json is global. --help, help, or no args exits 0.
---repo is required on list, show, create, edit, delete, commit, and ticket.
+--repo is required on list, show, create, edit, delete, comment, commit, and ticket.
 serve keeps running. The default directory is \`state\` beside the program, and --user is not required.
 
 stdout and stderr:
@@ -76,6 +80,15 @@ ticket:
     show and set {id,path,rev,title,state,type,priority,parent,depends,reporter,created,text};
     create {id,path,rev:0,reporter,created}; purge {purged:[...]};
     conflict adds "error":"conflict".
+
+comment:
+  comment list <path> prints each thread id, or the id and resolved.
+  comment show <path> <thread> prints the stored body and rev N on stderr.
+  comment reply <path> <thread> reads the note text from stdin and prints note N. stderr is rev N.
+  comment edit <path> <thread> <note> --rev N reads stdin the same way. Reply with --rev is rejected.
+  A negative note exits 400 and does not open a socket. A stale rev exits 409 and does not write.
+  The same text exits 0 and does not write.
+  --json: list {path,rev,threads}; show {path,rev,id,resolved,notes}; reply and edit {path,id,note,rev}.
 
 delete:
   delete <path> removes that document. The path is sent unchanged. ticket delete <id> removes that ticket and clears it from other tickets' parent and depends. Another socket holding the file exits 409 and writes nothing. stdout is the removed path. --json is {path}.
@@ -297,7 +310,8 @@ function parseArgs(argv) {
       }
       continue;
     }
-    if (arg.startsWith("-") && arg !== "-") return null;
+    // A negative note index is a positional. Short flags are not otherwise accepted.
+    if (arg.startsWith("-") && arg !== "-" && !/^-\d+$/.test(arg)) return null;
     args.positionals.push(arg);
   }
   return args;
@@ -1094,6 +1108,189 @@ async function runCommit(hub, username, message, json) {
   return 0;
 }
 
+function commentNoteFields(notes) {
+  return notes.map((note) => ({
+    id: note.id,
+    author: note.author,
+    time: note.time,
+    text: note.text,
+  }));
+}
+
+function asCommentNote(raw) {
+  if (!raw || typeof raw.id !== "number" || !Number.isInteger(raw.id)) return null;
+  if (typeof raw.author !== "string" || typeof raw.time !== "string" || typeof raw.text !== "string") return null;
+  return { id: raw.id, author: raw.author, time: raw.time, text: raw.text };
+}
+
+function asCommentThread(raw) {
+  if (!raw || typeof raw.id !== "string" || typeof raw.resolved !== "boolean" || typeof raw.body !== "string") return null;
+  if (!Array.isArray(raw.notes)) return null;
+  const notes = [];
+  for (const item of raw.notes) {
+    const note = asCommentNote(item);
+    if (!note) return null;
+    notes.push(note);
+  }
+  return { id: raw.id, resolved: raw.resolved, body: raw.body, notes };
+}
+
+function asComments(msg) {
+  if (!msg || typeof msg.path !== "string" || typeof msg.rev !== "number" || !Array.isArray(msg.threads)) return null;
+  const threads = [];
+  for (const raw of msg.threads) {
+    const thread = asCommentThread(raw);
+    if (!thread) return null;
+    threads.push(thread);
+  }
+  return { path: msg.path, rev: msg.rev, threads };
+}
+
+function asCommentResult(msg) {
+  if (!msg || typeof msg.path !== "string" || typeof msg.id !== "string") return null;
+  if (typeof msg.note !== "number" || !Number.isInteger(msg.note) || typeof msg.rev !== "number") return null;
+  return { path: msg.path, id: msg.id, note: msg.note, rev: msg.rev };
+}
+
+function printCommentList(msg, json) {
+  if (json) {
+    writeJson({
+      path: msg.path,
+      rev: msg.rev,
+      threads: msg.threads.map((thread) => ({
+        id: thread.id,
+        resolved: thread.resolved,
+        notes: commentNoteFields(thread.notes),
+      })),
+    });
+    return 0;
+  }
+  if (msg.threads.length > 0) {
+    process.stdout.write(msg.threads.map((thread) => (
+      thread.resolved ? `${thread.id} resolved\n` : `${thread.id}\n`
+    )).join(""));
+  }
+  return 0;
+}
+
+function printCommentShow(msg, thread, json) {
+  if (json) {
+    writeJson({
+      path: msg.path,
+      rev: msg.rev,
+      id: thread.id,
+      resolved: thread.resolved,
+      notes: commentNoteFields(thread.notes),
+    });
+    return 0;
+  }
+  process.stdout.write(`${thread.body}\n`);
+  process.stderr.write(`rev ${msg.rev}\n`);
+  return 0;
+}
+
+function printCommentWrite(msg, json) {
+  if (json) {
+    writeJson({ path: msg.path, id: msg.id, note: msg.note, rev: msg.rev });
+    return 0;
+  }
+  process.stdout.write(`note ${msg.note}\n`);
+  process.stderr.write(`rev ${msg.rev}\n`);
+  return 0;
+}
+
+async function runCommentList(hub, username, docPath, json) {
+  hub.send({ type: "comment.threads", username, path: docPath });
+  const msg = await hub.next((item) => item.type === "comments" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  const parsed = asComments(msg);
+  if (!parsed) return 1;
+  return printCommentList(parsed, json);
+}
+
+async function runCommentShow(hub, username, docPath, id, json) {
+  hub.send({ type: "comment.threads", username, path: docPath });
+  const msg = await hub.next((item) => item.type === "comments" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  const parsed = asComments(msg);
+  if (!parsed) return 1;
+  const thread = parsed.threads.find((item) => item.id === id);
+  if (!thread) return serverError({ status: 404 });
+  return printCommentShow(parsed, thread, json);
+}
+
+async function runCommentReply(hub, username, docPath, id, text, json) {
+  hub.send({ type: "comment.reply", username, path: docPath, id, text });
+  const msg = await hub.next((item) => item.type === "comment" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  const parsed = asCommentResult(msg);
+  if (!parsed || parsed.path !== docPath || parsed.id !== id) return 1;
+  return printCommentWrite(parsed, json);
+}
+
+async function runCommentEdit(hub, username, docPath, id, note, rev, text, json) {
+  hub.send({ type: "comment.edit", username, path: docPath, id, note, rev, text });
+  const msg = await hub.next((item) => item.type === "comment" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  const parsed = asCommentResult(msg);
+  if (!parsed || parsed.path !== docPath || parsed.id !== id) return 1;
+  return printCommentWrite(parsed, json);
+}
+
+async function runComment(hub, username, command, text, json) {
+  if (command.sub === "list") return runCommentList(hub, username, command.path, json);
+  if (command.sub === "show") return runCommentShow(hub, username, command.path, command.id, json);
+  if (command.sub === "reply") return runCommentReply(hub, username, command.path, command.id, text, json);
+  if (command.sub === "edit") {
+    return runCommentEdit(hub, username, command.path, command.id, command.note, command.rev, text, json);
+  }
+  return 2;
+}
+
+function commentFlagRejected(args, sub) {
+  if (args.closed || args.findSet || args.replaceSet || args.titleSet || args.stateSet
+    || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet
+    || args.nameSet || args.descriptionSet || args.pathSet) {
+    return true;
+  }
+  return sub !== "edit" && args.revSet;
+}
+
+function parseNoteArg(raw) {
+  if (typeof raw !== "string" || !/^-?\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n)) return null;
+  return n;
+}
+
+function prepareComment(args, rest) {
+  const [sub, ...more] = rest;
+  if (commentFlagRejected(args, sub)) return { error: "unexpected flag" };
+  if (sub === "list") {
+    if (more.length === 0) return { error: "path required" };
+    if (more.length !== 1) return { error: "unexpected argument" };
+    return { sub, path: more[0] };
+  }
+  if (sub === "show" || sub === "reply") {
+    if (more.length === 0) return { error: "path required" };
+    if (more.length !== 2) return { error: "unexpected argument" };
+    return { sub, path: more[0], id: more[1] };
+  }
+  if (sub === "edit") {
+    if (more.length === 0) return { error: "path required" };
+    if (more.length > 3) return { error: "unexpected argument" };
+    if (more.length < 3) return { error: "invalid note" };
+    const note = parseNoteArg(more[2]);
+    if (note === null) return { error: "invalid note" };
+    if (note < 0) return { error: "negative note" };
+    if (!args.revSet) return { error: "edit requires integer --rev" };
+    const rev = parseRev(args.rev);
+    if (rev === null) return { error: "edit requires integer --rev" };
+    return { sub, path: more[0], id: more[1], note, rev };
+  }
+  return { error: "unexpected argument" };
+}
+
 function serveFlagRejected(args) {
   if (args.json || args.closed) return true;
   return args.revSet || args.findSet || args.replaceSet || args.titleSet
@@ -1238,7 +1435,7 @@ async function main() {
     return;
   }
 
-  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "ticket" && cmd !== "commit" && cmd !== "delete") {
+  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "delete" && cmd !== "comment" && cmd !== "ticket" && cmd !== "commit") {
     usage("unknown command");
     return;
   }
@@ -1279,6 +1476,22 @@ async function main() {
       }
     }
     await withHub(port, user, (hub) => runCommit(hub, user, message, args.json), args.repo);
+    return;
+  }
+  if (cmd === "comment") {
+    const command = prepareComment(args, rest);
+    if (command.error === "negative note") {
+      process.stderr.write("error 400\n");
+      process.exitCode = 400;
+      return;
+    }
+    if (command.error) {
+      usage(command.error);
+      return;
+    }
+    let text = "";
+    if (command.sub === "reply" || command.sub === "edit") text = await readStdin();
+    await withHub(port, user, (hub) => runComment(hub, user, command, text, args.json), args.repo);
     return;
   }
   if (rest.length === 0) {

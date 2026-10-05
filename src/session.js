@@ -13,6 +13,9 @@ import {
   removeCommentThread,
   setCommentResolved,
   replaceDocument,
+  commentThreads,
+  appendCommentReply,
+  reviseCommentNote,
 } from "./doc.js";
 
 function socketURL(location) {
@@ -53,7 +56,34 @@ export function createMemoryTransport(doc, cursor = 0) {
     return { ...state, cursor, anchor };
   }
 
-  return {
+  function commentAuthor(message) {
+    if (typeof message.username === "string") return message.username;
+    return typeof transport.username === "string" ? transport.username : "";
+  }
+
+  function writeComment(message) {
+    if (typeof message.text !== "string" || typeof message.id !== "string") return;
+    const thread = commentThreads(state.doc).find((item) => item.id === message.id);
+    if (!thread) return;
+    const author = commentAuthor(message);
+    let result;
+    if (message.type === "comment.reply") {
+      result = appendCommentReply(thread.body, message.text, author, new Date().toISOString());
+    } else {
+      if (typeof message.note !== "number" || !Number.isInteger(message.note) || message.note < 0) return;
+      result = reviseCommentNote(thread.body, message.note, message.text, author);
+    }
+    // A 403 still carries the previous body. Publishing it would look like a write.
+    if (!result || result.error || result.unchanged) return;
+    const base = selection(message);
+    const next = replaceCommentBody(base, message.id, result.body);
+    if (next === base) return;
+    const oldLength = base.doc.length;
+    state = next;
+    deliver(0, oldLength, state.doc, author);
+  }
+
+  const transport = {
     username: "",
     memory: true,
     send(message) {
@@ -66,6 +96,10 @@ export function createMemoryTransport(doc, cursor = 0) {
         if (next === state) return;
         state = next;
         deliver(0, before, state.doc, message.username);
+        return;
+      }
+      if (message.type === "comment.reply" || message.type === "comment.edit") {
+        writeComment(message);
         return;
       }
       if (message.type !== "edit") return;
@@ -112,6 +146,7 @@ export function createMemoryTransport(doc, cursor = 0) {
       return () => listeners.delete(fn);
     },
   };
+  return transport;
 }
 
 export function createSocketTransport({ username, socketFactory, location } = {}) {

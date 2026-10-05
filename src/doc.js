@@ -216,21 +216,40 @@ export function commentThreads(doc) {
   return threads;
 }
 
-// A note boundary is a line whose whole text is "::". A body with no such line
-// is one note, so markers inside the note stay text.
-export function commentNotes(body) {
-  const notes = [];
-  let current = [];
+// A boundary is a whole line "::", or "::" plus an id. ":: 01" and ":: 1 " stay
+// text, so a marker inside a note does not split it.
+const NOTE_SEPARATOR = /^::(?: (0|[1-9]\d*))?$/;
+
+// undefined: not a boundary. null: a bare "::". number: the id on the line.
+function separatorId(line) {
+  const match = NOTE_SEPARATOR.exec(line);
+  if (!match) return undefined;
+  if (match[1] === undefined) return null;
+  return Number(match[1]);
+}
+
+// explicit is undefined for prose before any boundary, null for a bare "::",
+// or the id written on that boundary. The leading "" is kept.
+function splitNoteSegments(body) {
+  const segments = [];
+  let lines = [];
+  let explicit = undefined;
   for (const line of body.split("\n")) {
-    if (line === "::") {
-      notes.push(current.join("\n"));
-      current = [];
-    } else {
-      current.push(line);
+    const id = separatorId(line);
+    if (id === undefined) {
+      lines.push(line);
+      continue;
     }
+    segments.push({ explicit, raw: lines.join("\n") });
+    lines = [];
+    explicit = id;
   }
-  notes.push(current.join("\n"));
-  return notes;
+  segments.push({ explicit, raw: lines.join("\n") });
+  return segments;
+}
+
+export function commentNotes(body) {
+  return splitNoteSegments(body).map((segment) => segment.raw);
 }
 
 const NOTE_HEADER = /^@(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z) (.+)$/;
@@ -247,6 +266,101 @@ export function splitCommentNote(note) {
     author: match[2],
     text: breakAt === -1 ? "" : raw.slice(breakAt + 1),
   };
+}
+
+function startsWithSeparator(body) {
+  const end = body.indexOf("\n");
+  const first = end === -1 ? body : body.slice(0, end);
+  return separatorId(first) !== undefined;
+}
+
+// A bare "::" is max(explicit ids seen so far) + 1, so later bares repeat that
+// address. With no explicit id yet, it takes the next ordinal. Prose before
+// the first boundary is ordinal 0 and is not an explicit id.
+function assignNoteIds(segments) {
+  const notes = [];
+  let highestExplicit = null;
+  let nextOrdinal = 0;
+  for (const segment of segments) {
+    let id;
+    if (typeof segment.explicit === "number") {
+      id = segment.explicit;
+      if (highestExplicit === null || id > highestExplicit) highestExplicit = id;
+    } else if (segment.explicit === undefined) {
+      id = 0;
+      nextOrdinal = 1;
+    } else if (highestExplicit !== null) {
+      id = highestExplicit + 1;
+    } else {
+      id = nextOrdinal;
+      nextOrdinal += 1;
+    }
+    notes.push({ id, raw: segment.raw });
+  }
+  return notes;
+}
+
+export function parseCommentNotes(body) {
+  if (body === "") return [];
+  const segments = splitNoteSegments(body);
+  if (startsWithSeparator(body)) segments.shift();
+  return assignNoteIds(segments);
+}
+
+export function formatCommentNotes(records) {
+  return records.map((record) => `:: ${record.id}\n${record.raw}`).join("\n");
+}
+
+function hasSeparatorLine(text) {
+  for (const line of text.split("\n")) {
+    if (separatorId(line) !== undefined) return true;
+  }
+  return false;
+}
+
+function highestNoteId(notes) {
+  let highest = notes[0].id;
+  for (let i = 1; i < notes.length; i++) {
+    if (notes[i].id > highest) highest = notes[i].id;
+  }
+  return highest;
+}
+
+export function appendCommentReply(body, text, author, time) {
+  if (text === "" || hasSeparatorLine(text)) return { error: 400 };
+  const notes = parseCommentNotes(body);
+  const id = notes.length === 0 ? 0 : highestNoteId(notes) + 1;
+  const raw = author === undefined || author === null || author === "" ? text : `@${time} ${author}\n${text}`;
+  const note = { id, raw };
+  notes.push(note);
+  return { body: formatCommentNotes(notes), note };
+}
+
+// The stored poster line is a prefix, not a value to rebuild.
+function replaceNoteText(raw, text) {
+  const breakAt = raw.indexOf("\n");
+  const header = breakAt === -1 ? raw : raw.slice(0, breakAt);
+  return `${header}\n${text}`;
+}
+
+export function reviseCommentNote(body, noteId, text, author) {
+  const notes = parseCommentNotes(body);
+  const indexes = [];
+  for (let i = 0; i < notes.length; i++) {
+    if (notes[i].id === noteId) indexes.push(i);
+  }
+  if (indexes.length === 0) return { error: 404 };
+  if (indexes.length > 1) return { error: 400 };
+  if (text === "" || hasSeparatorLine(text)) return { error: 400 };
+  const index = indexes[0];
+  const current = notes[index];
+  const parts = splitCommentNote(current.raw);
+  if (!parts.author || parts.author !== author) return { error: 403, body };
+  const raw = replaceNoteText(current.raw, text);
+  if (raw === current.raw) return { unchanged: true };
+  const next = notes.slice();
+  next[index] = { id: current.id, raw };
+  return { body: formatCommentNotes(next), note: next[index] };
 }
 
 function hiddenFenceRanges(doc) {

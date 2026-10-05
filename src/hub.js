@@ -4,14 +4,19 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   addComment,
+  appendCommentReply,
   backspace,
+  commentThreads,
   createState,
   deleteForward,
   insert,
   lineIndexAt,
+  parseCommentNotes,
   removeCommentThread,
   replaceCommentBody,
+  reviseCommentNote,
   setCommentResolved,
+  splitCommentNote,
 } from "./doc.js";
 import {
   TICKET_ALPHABET,
@@ -137,6 +142,25 @@ function baseName(rel) {
 
 function isTicketTree(rel) {
   return rel === "tickets" || rel.startsWith("tickets/");
+}
+
+function isMarkdownPath(rel) {
+  return rel.endsWith(".md") || rel.endsWith(".markdown");
+}
+
+const COMMENT_ID = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+function commentView(thread) {
+  return {
+    id: thread.id,
+    resolved: thread.resolved === true,
+    // Show prints this fence text. The split notes are the json view of it.
+    body: thread.body,
+    notes: parseCommentNotes(thread.body).map((note) => {
+      const parts = splitCommentNote(note.raw);
+      return { id: note.id, author: parts.author, time: parts.time, text: parts.text };
+    }),
+  };
 }
 
 function containsPath(rootDir, candidate) {
@@ -1496,6 +1520,80 @@ export async function createHub(stateDir, sourceRoot) {
     send(socket, { type: "commit", commits });
   }
 
+  // One-shot. Opening would subscribe this socket and leave it holding the document.
+  async function loadCommentFile(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return { error: 400 };
+    const rel = safeRel(msg.path);
+    if (!rel) return { error: 404 };
+    if (isTicketTree(rel) || !isMarkdownPath(rel)) return { error: 400 };
+    const file = await loadFile(repo, rel);
+    if (!file) return { error: 404 };
+    return { file };
+  }
+
+  function commentThread(file, id) {
+    if (typeof id !== "string" || !COMMENT_ID.test(id)) return { error: 400 };
+    const thread = commentThreads(file.text).find((item) => item.id === id);
+    if (!thread) return { error: 404 };
+    return { thread };
+  }
+
+  function sendComment(socket, file, threadId, noteId) {
+    send(socket, { type: "comment", path: file.rel, id: threadId, note: noteId, rev: file.rev });
+  }
+
+  async function applyCommentBody(socket, file, threadId, body, noteId) {
+    const produced = replaceCommentBody(createState(file.text), threadId, body);
+    const splice = coveringSplice(file.text, produced.doc);
+    if (splice == null) {
+      sendComment(socket, file, threadId, noteId);
+      return;
+    }
+    const wrote = await publish(socket, file, file.text, splice, { cursor: 0, anchor: 0 }, null, "comment");
+    if (!wrote) return fail(socket, 409);
+    sendComment(socket, file, threadId, noteId);
+  }
+
+  async function onCommentThreads(socket, msg) {
+    const loaded = await loadCommentFile(socket, msg);
+    if (loaded.error) return fail(socket, loaded.error);
+    send(socket, {
+      type: "comments",
+      path: loaded.file.rel,
+      rev: loaded.file.rev,
+      threads: commentThreads(loaded.file.text).map(commentView),
+    });
+  }
+
+  async function onCommentReply(socket, msg) {
+    const loaded = await loadCommentFile(socket, msg);
+    if (loaded.error) return fail(socket, loaded.error);
+    const found = commentThread(loaded.file, msg.id);
+    if (found.error) return fail(socket, found.error);
+    if (typeof msg.text !== "string") return fail(socket, 400);
+    const result = appendCommentReply(found.thread.body, msg.text, socket.session.username, new Date().toISOString());
+    if (result.error) return fail(socket, result.error);
+    await applyCommentBody(socket, loaded.file, msg.id, result.body, result.note.id);
+  }
+
+  async function onCommentEdit(socket, msg) {
+    const loaded = await loadCommentFile(socket, msg);
+    if (loaded.error) return fail(socket, loaded.error);
+    const found = commentThread(loaded.file, msg.id);
+    if (found.error) return fail(socket, found.error);
+    if (typeof msg.note !== "number" || !Number.isInteger(msg.note) || msg.note < 0) return fail(socket, 400);
+    if (typeof msg.rev !== "number" || msg.rev !== loaded.file.rev) return fail(socket, 409);
+    if (typeof msg.text !== "string") return fail(socket, 400);
+    const result = reviseCommentNote(found.thread.body, msg.note, msg.text, socket.session.username);
+    if (result.error) return fail(socket, result.error);
+    if (result.unchanged) {
+      sendComment(socket, loaded.file, msg.id, msg.note);
+      return;
+    }
+    await applyCommentBody(socket, loaded.file, msg.id, result.body, result.note.id);
+  }
+
   async function handleText(socket, payload) {
     if (socket.session?.gone || socket.session?.ending) return;
     let msg;
@@ -1528,6 +1626,9 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "repo.deregister") return onDeregister(socket, msg);
     if (msg.type === "repo") return onSelect(socket, msg);
     if (msg.type === "commit") return onCommit(socket, msg);
+    if (msg.type === "comment.threads") return onCommentThreads(socket, msg);
+    if (msg.type === "comment.reply") return onCommentReply(socket, msg);
+    if (msg.type === "comment.edit") return onCommentEdit(socket, msg);
     if (msg.type === "list") return onList(socket);
     if (msg.type === "move") return onMove(socket, msg);
     if (msg.type === "open") return onOpen(socket, msg);
