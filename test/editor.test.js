@@ -1453,6 +1453,98 @@ test("backspace at the visual start of a line joins it upward", () => {
   }
 });
 
+test("enter at the end of a line inserts a blank line below the caret", () => {
+  const mounted = mountEditor();
+  const press = (inputType) => {
+    mounted.listeners.beforeinput({
+      inputType,
+      preventDefault() {},
+    });
+  };
+  const lockReaches = (sent, offset) => sent.some((message) => {
+    if (message.type !== "lock") return false;
+    const lo = Math.min(message.anchor, message.cursor);
+    const hi = Math.max(message.anchor, message.cursor);
+    return lo <= offset && hi >= offset;
+  });
+  try {
+    const transport = holdingTransport();
+    const held = createEditor(mounted.root, "hello\nworld\n", 5, transport);
+    press("insertParagraph");
+    const edit = transport.sent.find((message) => message.type === "edit");
+    assert.equal(edit.op, "insert");
+    assert.equal(edit.text, "\n");
+    assert.equal(edit.cursor, 5);
+    assert.equal(edit.anchor, 5);
+    const lock = transport.sent.filter((message) => message.type === "lock").at(-1);
+    assert.equal(Math.min(lock.anchor, lock.cursor), 5);
+    assert.equal(Math.max(lock.anchor, lock.cursor), 6);
+    assert.ok(transport.sent.indexOf(lock) < transport.sent.indexOf(edit));
+    held.destroy();
+
+    const broken = holdingTransport();
+    const shiftEnter = createEditor(mounted.root, "hello\nworld\n", 5, broken);
+    press("insertLineBreak");
+    const breakEdit = broken.sent.find((message) => message.type === "edit");
+    assert.equal(breakEdit.op, "insert");
+    assert.equal(breakEdit.text, "\n");
+    assert.equal(breakEdit.cursor, 5);
+    assert.equal(breakEdit.anchor, 5);
+    const breakLock = broken.sent.filter((message) => message.type === "lock").at(-1);
+    assert.equal(Math.min(breakLock.anchor, breakLock.cursor), 5);
+    assert.equal(Math.max(breakLock.anchor, breakLock.cursor), 6);
+    assert.ok(broken.sent.indexOf(breakLock) < broken.sent.indexOf(breakEdit));
+    shiftEnter.destroy();
+
+    const view = createEditor(mounted.root, "hello\nworld\n", 5);
+    press("insertParagraph");
+    assert.equal(view.getState().doc, "hello\n\nworld\n");
+    assert.equal(view.getState().cursor, 6);
+    assert.equal(view.getState().anchor, 6);
+    view.destroy();
+
+    const middleTransport = holdingTransport();
+    const middleHeld = createEditor(mounted.root, "hello\nworld\n", 2, middleTransport);
+    press("insertParagraph");
+    const middleEdit = middleTransport.sent.find((message) => message.type === "edit");
+    assert.equal(middleEdit.op, "insert");
+    assert.equal(middleEdit.text, "\n");
+    assert.equal(middleEdit.cursor, 2);
+    assert.equal(middleEdit.anchor, 2);
+    assert.equal(lockReaches(middleTransport.sent, 6), false);
+    middleHeld.destroy();
+
+    const middle = createEditor(mounted.root, "hello\nworld\n", 2);
+    press("insertParagraph");
+    assert.equal(middle.getState().doc, "he\nllo\nworld\n");
+    assert.equal(middle.getState().cursor, 3);
+    assert.equal(middle.getState().anchor, 3);
+    middle.destroy();
+
+    const rejecting = {
+      username: "",
+      sent: [],
+      subscribe(fn) {
+        this.listener = fn;
+        return () => {};
+      },
+      send(message) {
+        this.sent.push(message);
+        if (message.type === "lock" && this.listener) this.listener({ type: "error", status: 409 });
+      },
+    };
+    const blocked = createEditor(mounted.root, "hello\nworld\n", 5, rejecting);
+    press("insertParagraph");
+    assert.equal(rejecting.sent.some((message) => message.type === "edit"), false);
+    assert.equal(blocked.getState().doc, "hello\nworld\n");
+    assert.equal(blocked.getState().cursor, 5);
+    assert.equal(blocked.getState().anchor, 5);
+    blocked.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("fence clicks open source", () => {
   const mounted = mountEditor();
   try {

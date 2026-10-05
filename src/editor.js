@@ -2651,6 +2651,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (type === "insertCompositionText" || type === "insertFromComposition") return;
     if (type === "insertParagraph" || type === "insertLineBreak") {
+      // A caret on the newline belongs to this line, but the inserted break
+      // splices the next one. The hub rejects that edit unless the next line is held.
+      if (state.anchor === state.cursor) {
+        const end = lineSpan(state.doc, state.cursor)[1];
+        if (end === state.cursor && end < state.doc.length) {
+          if (!claimLines(state.cursor, end + 1)) return;
+        }
+      }
       emitEdit({ op: "insert", text: "\n" });
       return;
     }
