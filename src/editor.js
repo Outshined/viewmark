@@ -1855,6 +1855,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       showResolved = checkbox.checked === true;
       render();
     });
+    const row = document.createElement("div");
+    row.className = "md-show-resolved";
+    row.appendChild(checkbox);
+    row.appendChild(label);
+    let anyResolved = false;
+    for (const comment of list) {
+      if (comment && comment.resolved === true) anyResolved = true;
+    }
+    if (anyResolved) showElement(row);
+    else hideElement(row);
     const visible = [];
     for (const comment of list) {
       if (comment.resolved && !showResolved) continue;
@@ -1867,34 +1877,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (child === docMenuButton || child === docMenuPanel) continue;
       detachNode(child);
     }
+    commentsAside.appendChild(row);
     for (const card of cards) commentsAside.appendChild(card);
-    if (!docMenuPanel) return;
-    const panelStale = [];
-    for (const child of docMenuPanel.childNodes || []) panelStale.push(child);
-    for (const child of panelStale) {
-      if (child === repoCommitButton || child === docLinkButton) continue;
-      detachNode(child);
-    }
-    const anchor = docLinkButton && docLinkButton.parentElement === docMenuPanel
-      ? docLinkButton
-      : (repoCommitButton && repoCommitButton.parentElement === docMenuPanel ? repoCommitButton : null);
-    if (anchor) {
-      placeNodeBefore(docMenuPanel, checkbox, anchor);
-      insertAfter(docMenuPanel, checkbox, label);
-    } else {
-      docMenuPanel.appendChild(checkbox);
-      docMenuPanel.appendChild(label);
-    }
-    if (docLinkButton && repoCommitButton && docLinkButton.parentElement === docMenuPanel && repoCommitButton.parentElement === docMenuPanel) {
-      // insertBefore on a node that is already in the panel duplicates it.
-      if (!isImmediatelyAfter(docMenuPanel, docLinkButton, repoCommitButton)) {
-        detachNode(docLinkButton);
-        placeNodeBefore(docMenuPanel, docLinkButton, repoCommitButton);
-      }
-    } else if (docLinkButton && docLinkButton.parentElement !== docMenuPanel) {
-      docMenuPanel.appendChild(docLinkButton);
-    }
-    if (repoCommitButton && repoCommitButton.parentElement !== docMenuPanel) docMenuPanel.appendChild(repoCommitButton);
     syncEntryLink();
   }
 
@@ -1945,9 +1929,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const asideRect = elementRect(commentsAside);
     if (!asideRect || typeof cards[0].getBoundingClientRect !== "function") return;
     const spans = findSpans(state.doc);
-    // The menu button is out of flow. The first card starts under it.
+    // The menu button is out of flow. A hidden row still reports offsetHeight, so it must not raise the floor.
     const menuHeight = docMenuButton && typeof docMenuButton.offsetHeight === "number" ? docMenuButton.offsetHeight : 0;
     let floor = menuHeight + COMMENT_CARD_GAP;
+    const resolvedRow = findClassChild(commentsAside, "md-show-resolved");
+    if (resolvedRow && !resolvedRow.hidden) {
+      const rowHeight = typeof resolvedRow.offsetHeight === "number" ? resolvedRow.offsetHeight : 0;
+      floor = Math.max(menuHeight, rowHeight) + COMMENT_CARD_GAP;
+    }
     for (const card of cards) {
       const id = card.dataset.comment;
       let rects = highlightRects(id);
@@ -3428,6 +3417,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function onTicketPointerDown(event) {
     const target = event && event.target;
     for (const picker of ticketPickers) picker.dismissOutside(target);
+    if (!docMenuPanel || docMenuPanel.hidden) return;
+    // Pointerdown on the button or inside the panel belongs to the click handler.
+    if (nodeWithin(docMenuPanel, target) || nodeWithin(docMenuButton, target)) return;
+    hideElement(docMenuPanel);
   }
 
   function bindTicketPointer() {
@@ -4630,6 +4623,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       repoCommitOnClick = (event) => {
         if (event && typeof event.preventDefault === "function") event.preventDefault();
+        if (docMenuPanel) hideElement(docMenuPanel);
         if (!activeRepo) return;
         // A checkpoint is not a conflict waiter and carries no rev.
         emit({ type: "commit" });
@@ -4642,12 +4636,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       docLinkOnClick = (event) => {
         if (event && typeof event.preventDefault === "function") event.preventDefault();
+        if (docMenuPanel) hideElement(docMenuPanel);
         copyEntryLink();
       };
       if (docLinkButton && typeof docLinkButton.addEventListener === "function") docLinkButton.addEventListener("click", docLinkOnClick);
       if (docLinkButton) docLinkBindings.set(docLinkButton, docLinkOnClick);
       docMenuBound = true;
     }
+    bindTicketPointer();
     syncRepoCommit();
   }
 
