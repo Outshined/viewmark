@@ -360,6 +360,7 @@ function normalizeTicket(ticket) {
   if (Array.isArray(ticket.depends)) {
     for (const item of ticket.depends) if (typeof item === "string") depends.push(item);
   }
+  const rev = typeof ticket.rev === "number" && Number.isFinite(ticket.rev) ? ticket.rev : 0;
   return {
     id,
     title: typeof ticket.title === "string" ? ticket.title : "",
@@ -370,6 +371,7 @@ function normalizeTicket(ticket) {
     depends,
     reporter: typeof ticket.reporter === "string" ? ticket.reporter : "",
     created: typeof ticket.created === "string" ? ticket.created : "",
+    rev,
   };
 }
 
@@ -425,18 +427,47 @@ function forestFrom(list) {
   return { roots, children };
 }
 
-function checkedDepends(container) {
-  const ids = [];
-  const walk = (node) => {
-    if (!node || node.nodeType !== 1) return;
-    if (node.classList && node.classList.contains("md-ticket-depend") && node.checked === true) {
-      ids.push(String(node.value));
+function optionWords(selects) {
+  const words = [];
+  for (const select of selects) {
+    for (const option of (select && select.childNodes) || []) {
+      const label = option && typeof option.textContent === "string" ? option.textContent : "";
+      for (const word of label.split(/\s+/)) if (word) words.push(word);
     }
-    for (const child of node.childNodes || []) walk(child);
-  };
-  walk(container);
-  ids.sort();
-  return ids;
+  }
+  return words;
+}
+
+function measureWord(word) {
+  if (typeof document === "undefined" || typeof document.createElement !== "function") return 0;
+  const host = document.body;
+  if (!host || typeof host.appendChild !== "function") return 0;
+  const probe = document.createElement("span");
+  probe.textContent = word;
+  if (probe.style && typeof probe.style.setProperty === "function") {
+    probe.style.setProperty("position", "absolute");
+    probe.style.setProperty("visibility", "hidden");
+    probe.style.setProperty("white-space", "nowrap");
+  }
+  host.appendChild(probe);
+  let width = 0;
+  if (typeof probe.offsetWidth === "number" && Number.isFinite(probe.offsetWidth) && probe.offsetWidth > 0) {
+    width = probe.offsetWidth;
+  } else if (typeof probe.getBoundingClientRect === "function") {
+    const rect = probe.getBoundingClientRect();
+    if (rect && typeof rect.width === "number" && Number.isFinite(rect.width)) width = rect.width;
+  }
+  if (typeof host.removeChild === "function") host.removeChild(probe);
+  return width;
+}
+
+function sharedSelectWidth(selects) {
+  let best = 0;
+  for (const word of optionWords(selects)) {
+    const width = measureWord(word);
+    if (width > best) best = width;
+  }
+  return best;
 }
 
 const newFileBindings = new WeakMap();
@@ -3021,27 +3052,188 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function sendTicketSet(fields) {
     if (!openTicket || !openPath) return;
+    const path = typeof fields.path === "string" && fields.path ? fields.path : openPath;
+    let target = openTicket;
+    if (path !== openPath) {
+      target = ticketList.find((item) => `tickets/${item.id}.md` === path) || null;
+      if (!target) return;
+    }
+    // A child update names that file's rev. The open document rev belongs only to this path.
+    const nextRev = typeof fields.rev === "number" ? fields.rev : (path === openPath ? rev : target.rev);
     if (Object.prototype.hasOwnProperty.call(fields, "title")) {
-      if (fields.title === openTicket.title) return;
+      if (fields.title === target.title) return;
     } else if (Object.prototype.hasOwnProperty.call(fields, "state")) {
-      if (fields.state === openTicket.state) return;
+      if (fields.state === target.state) return;
     } else if (Object.prototype.hasOwnProperty.call(fields, "parent")) {
-      if ((fields.parent || "") === (openTicket.parent || "")) return;
+      if ((fields.parent || "") === (target.parent || "")) return;
     } else if (Object.prototype.hasOwnProperty.call(fields, "depends")) {
-      if (sameSet(fields.depends, openTicket.depends)) return;
+      if (sameSet(fields.depends, target.depends)) return;
     } else if (Object.prototype.hasOwnProperty.call(fields, "type")) {
-      if (fields.type === openTicket.type) return;
+      if (fields.type === target.type) return;
     } else if (Object.prototype.hasOwnProperty.call(fields, "priority")) {
-      if (fields.priority === openTicket.priority) return;
+      if (fields.priority === target.priority) return;
     } else {
       return;
     }
     // Frame `type` is the command, so the ticket type travels as ticketType.
     if (Object.prototype.hasOwnProperty.call(fields, "type")) {
-      emit({ type: "ticket.set", path: openPath, rev, ticketType: fields.type });
+      emit({ type: "ticket.set", path, rev: nextRev, ticketType: fields.type });
       return;
     }
-    emit({ type: "ticket.set", path: openPath, rev, ...fields });
+    const payload = { type: "ticket.set", path, rev: nextRev };
+    if (Object.prototype.hasOwnProperty.call(fields, "title")) payload.title = fields.title;
+    else if (Object.prototype.hasOwnProperty.call(fields, "state")) payload.state = fields.state;
+    else if (Object.prototype.hasOwnProperty.call(fields, "parent")) payload.parent = fields.parent || "";
+    else if (Object.prototype.hasOwnProperty.call(fields, "depends")) payload.depends = fields.depends;
+    else if (Object.prototype.hasOwnProperty.call(fields, "priority")) payload.priority = fields.priority;
+    else return;
+    emit(payload);
+  }
+
+  function typedQuery(input) {
+    const value = String(input.value || "");
+    const start = Number(input.selectionStart);
+    const end = Number(input.selectionEnd);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start && start >= 0 && start <= value.length) {
+      return value.slice(0, start);
+    }
+    return value;
+  }
+
+  function selectInput(input, start, end) {
+    input.selectionStart = start;
+    input.selectionEnd = end;
+    if (typeof input.setSelectionRange === "function") input.setSelectionRange(start, end);
+  }
+
+  function matchingTickets(query) {
+    const typed = String(query || "");
+    if (!typed || !openTicket) return [];
+    const needle = typed.toLowerCase();
+    const matches = [];
+    for (const ticket of ticketList) {
+      if (!ticket || ticket.id === openTicket.id) continue;
+      const title = typeof ticket.title === "string" ? ticket.title : "";
+      const id = typeof ticket.id === "string" ? ticket.id : "";
+      let text = null;
+      if (title.toLowerCase().startsWith(needle)) text = title;
+      else if (id.toLowerCase().startsWith(needle)) text = id;
+      if (text != null) matches.push({ ticket, text });
+    }
+    matches.sort((a, b) => compareTickets(a.ticket, b.ticket));
+    return matches.slice(0, 5);
+  }
+
+  function plainButton(className, text) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = className;
+    button.textContent = text;
+    if (typeof button.setAttribute === "function") button.setAttribute("type", "button");
+    return button;
+  }
+
+  function buildTicketPicker(onAdd, onRemove) {
+    const picker = document.createElement("div");
+    picker.className = "md-ticket-picker";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "md-ticket-match";
+    input.value = "";
+    if (typeof input.setAttribute === "function") input.setAttribute("type", "text");
+    const add = plainButton("md-ticket-add", "+");
+    const remove = plainButton("md-ticket-remove", "-");
+    const menu = document.createElement("div");
+    menu.className = "md-ticket-menu";
+    hideElement(menu);
+    const state = { chosen: null };
+    let applying = false;
+
+    function clearMatch() {
+      state.chosen = null;
+      input.value = "";
+      selectInput(input, 0, 0);
+      menu.replaceChildren();
+      hideElement(menu);
+    }
+
+    function showMatches() {
+      if (applying) return;
+      applying = true;
+      const query = typedQuery(input);
+      const matches = matchingTickets(query);
+      menu.replaceChildren();
+      if (!query || matches.length === 0) {
+        state.chosen = null;
+        hideElement(menu);
+        applying = false;
+        return;
+      }
+      state.chosen = matches[0].ticket;
+      const completion = matches[0].text;
+      if (input.value !== completion) input.value = completion;
+      selectInput(input, query.length, completion.length);
+      for (const match of matches) {
+        const option = plainButton("md-ticket-option", match.ticket.title || match.text);
+        option.dataset.id = match.ticket.id;
+        // mousedown would blur the field and drop the click before it chooses the row.
+        option.addEventListener("mousedown", (event) => {
+          if (event && typeof event.preventDefault === "function") event.preventDefault();
+        });
+        option.addEventListener("click", (event) => {
+          if (event && typeof event.preventDefault === "function") event.preventDefault();
+          state.chosen = match.ticket;
+          input.value = match.text;
+          selectInput(input, match.text.length, match.text.length);
+          hideElement(menu);
+        });
+        menu.appendChild(option);
+      }
+      showElement(menu);
+      applying = false;
+    }
+
+    input.addEventListener("input", showMatches);
+    add.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      const ticket = state.chosen;
+      if (!ticket) return;
+      clearMatch();
+      onAdd(ticket);
+    });
+    remove.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      onRemove();
+    });
+    picker.append(input, add, remove, menu);
+    return picker;
+  }
+
+  function buildLinkList(tickets, onRemove) {
+    let selected = null;
+    const links = document.createElement("div");
+    links.className = "md-ticket-links";
+    for (const ticket of tickets) {
+      const row = plainButton("md-ticket-link", ticket.title || ticket.id);
+      row.dataset.id = ticket.id;
+      row.addEventListener("click", (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        selected = ticket;
+        for (const child of links.childNodes) {
+          if (!child.classList || !child.classList.contains("md-ticket-link")) continue;
+          if (child === row) child.classList.add("md-ticket-selected");
+          else child.classList.remove("md-ticket-selected");
+        }
+      });
+      links.appendChild(row);
+    }
+    return {
+      links,
+      removeSelected() {
+        if (!selected) return;
+        onRemove(selected);
+      },
+    };
   }
 
   function renderTicketForm() {
@@ -3049,7 +3241,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!form || !openTicket || typeof document === "undefined" || typeof document.createElement !== "function") return;
     const ticket = openTicket;
     showElement(form);
-    const others = ticketList.filter((item) => item.id !== ticket.id).sort(compareTickets);
     const heading = document.createElement("div");
     heading.className = "md-ticket-heading";
     heading.textContent = ticket.title;
@@ -3118,117 +3309,150 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       commitTitle();
     });
 
-    const stateLabel = document.createElement("label");
-    stateLabel.className = "md-ticket-field";
-    stateLabel.appendChild(document.createTextNode("State"));
-    const stateSelect = document.createElement("select");
-    stateSelect.className = "md-ticket-state";
-    for (const state of TICKET_STATES) {
-      const option = document.createElement("option");
-      option.value = state;
-      option.textContent = state;
-      stateSelect.appendChild(option);
+    function fieldName(text) {
+      const name = document.createElement("span");
+      name.className = "md-ticket-label";
+      name.textContent = text;
+      return name;
     }
-    stateSelect.value = ticket.state;
-    stateSelect.addEventListener("change", () => {
-      sendTicketSet({ state: stateSelect.value });
-    });
-    stateLabel.appendChild(stateSelect);
 
-    const typeLabel = document.createElement("label");
-    typeLabel.className = "md-ticket-field";
-    typeLabel.appendChild(document.createTextNode("Type"));
-    const typeSelect = document.createElement("select");
-    typeSelect.className = "md-ticket-type";
-    for (const type of TICKET_TYPES) {
-      const option = document.createElement("option");
-      option.value = type;
-      option.textContent = type;
-      typeSelect.appendChild(option);
+    function selectField(labelText, className, values, current, onChange) {
+      const label = document.createElement("label");
+      label.className = "md-ticket-field";
+      const select = document.createElement("select");
+      select.className = className;
+      for (const value of values) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        select.appendChild(option);
+      }
+      select.value = current;
+      select.addEventListener("change", () => onChange(select.value));
+      label.append(fieldName(labelText), select);
+      return { label, select };
     }
-    typeSelect.value = ticket.type;
-    typeSelect.addEventListener("change", () => {
-      sendTicketSet({ type: typeSelect.value });
-    });
-    typeLabel.appendChild(typeSelect);
 
-    const priorityLabel = document.createElement("label");
-    priorityLabel.className = "md-ticket-field";
-    priorityLabel.appendChild(document.createTextNode("Priority"));
-    const prioritySelect = document.createElement("select");
-    prioritySelect.className = "md-ticket-priority";
-    for (const priority of TICKET_PRIORITIES) {
-      const option = document.createElement("option");
-      option.value = priority;
-      option.textContent = priority;
-      prioritySelect.appendChild(option);
-    }
-    prioritySelect.value = ticket.priority;
-    prioritySelect.addEventListener("change", () => {
-      sendTicketSet({ priority: prioritySelect.value });
+    const stateField = selectField("State", "md-ticket-state", TICKET_STATES, ticket.state, (value) => {
+      sendTicketSet({ state: value });
     });
-    priorityLabel.appendChild(prioritySelect);
+    const typeField = selectField("Type", "md-ticket-type", TICKET_TYPES, ticket.type, (value) => {
+      sendTicketSet({ type: value });
+    });
+    const priorityField = selectField("Priority", "md-ticket-priority", TICKET_PRIORITIES, ticket.priority, (value) => {
+      sendTicketSet({ priority: value });
+    });
+    const sized = [stateField.select, typeField.select, priorityField.select];
+    const selectWidth = sharedSelectWidth(sized);
+    if (selectWidth > 0) {
+      const px = `${selectWidth}px`;
+      for (const select of sized) {
+        if (!select.style || typeof select.style.setProperty !== "function") continue;
+        select.style.setProperty("width", px);
+        select.style.setProperty("max-width", px);
+        select.style.setProperty("flex", "none");
+      }
+    }
 
-    const parentLabel = document.createElement("label");
-    parentLabel.className = "md-ticket-field";
-    parentLabel.appendChild(document.createTextNode("Parent"));
-    const parentSelect = document.createElement("select");
-    parentSelect.className = "md-ticket-parent";
-    const none = document.createElement("option");
-    none.value = "";
-    none.textContent = "none";
-    parentSelect.appendChild(none);
-    for (const other of others) {
-      const option = document.createElement("option");
-      option.value = other.id;
-      option.textContent = other.title;
-      parentSelect.appendChild(option);
+    const parentField = document.createElement("div");
+    parentField.className = "md-ticket-field md-ticket-parent";
+    const parentTicket = ticket.parent ? ticketList.find((item) => item.id === ticket.parent) : null;
+    const parentValue = document.createElement("span");
+    parentValue.className = "md-ticket-parent-value";
+    parentValue.textContent = ticket.parent ? (parentTicket ? (parentTicket.title || parentTicket.id) : ticket.parent) : "";
+    const parentPicker = buildTicketPicker(
+      (chosen) => sendTicketSet({ parent: chosen.id }),
+      () => sendTicketSet({ parent: "" }),
+    );
+    parentField.append(fieldName("Parent"), parentPicker, parentValue);
+
+    function knownTicket(id) {
+      return ticketList.find((item) => item.id === id) || {
+        id,
+        title: id,
+        created: "",
+        parent: "",
+        depends: [],
+        rev: 0,
+      };
     }
-    parentSelect.value = ticket.parent || "";
-    parentSelect.addEventListener("change", () => {
-      sendTicketSet({ parent: parentSelect.value || "" });
-    });
-    parentLabel.appendChild(parentSelect);
 
     const depends = document.createElement("div");
     depends.className = "md-ticket-depends";
-    const dependsName = document.createElement("div");
-    dependsName.textContent = "Depends";
-    depends.appendChild(dependsName);
-    const selected = new Set(ticket.depends || []);
-    for (const other of others) {
-      const label = document.createElement("label");
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.className = "md-ticket-depend";
-      box.value = other.id;
-      box.checked = selected.has(other.id);
-      if (typeof box.setAttribute === "function") box.setAttribute("type", "checkbox");
-      label.appendChild(box);
-      label.appendChild(document.createTextNode(other.title));
-      depends.appendChild(label);
-      box.addEventListener("change", () => {
-        sendTicketSet({ depends: checkedDepends(depends) });
+    const dependList = buildLinkList((ticket.depends || []).map(knownTicket), (selected) => {
+      sendTicketSet({ depends: (ticket.depends || []).filter((id) => id !== selected.id) });
+    });
+    const dependPicker = buildTicketPicker(
+      (chosen) => {
+        const ids = (ticket.depends || []).slice();
+        if (!ids.includes(chosen.id)) ids.push(chosen.id);
+        sendTicketSet({ depends: ids });
+      },
+      () => dependList.removeSelected(),
+    );
+    depends.append(fieldName("Depends"), dependPicker, dependList.links);
+
+    const children = document.createElement("div");
+    children.className = "md-ticket-children";
+    const childTickets = ticketList
+      .filter((item) => item.parent === ticket.id && item.id !== ticket.id)
+      .sort(compareTickets);
+    const childList = buildLinkList(childTickets, (selected) => {
+      sendTicketSet({
+        path: `tickets/${selected.id}.md`,
+        rev: selected.rev,
+        parent: "",
       });
+    });
+    const childPicker = buildTicketPicker(
+      (chosen) => {
+        sendTicketSet({
+          path: `tickets/${chosen.id}.md`,
+          rev: chosen.rev,
+          parent: ticket.id,
+        });
+      },
+      () => childList.removeSelected(),
+    );
+    children.append(fieldName("Children"), childPicker, childList.links);
+
+    function factRow(labelText, valueClass, value) {
+      const row = document.createElement("div");
+      row.className = "md-ticket-fact";
+      const valueNode = document.createElement("div");
+      valueNode.className = valueClass;
+      valueNode.textContent = value;
+      row.append(fieldName(labelText), valueNode);
+      return row;
     }
 
-    const reporterName = document.createElement("div");
-    reporterName.textContent = "Reporter";
-    const reporter = document.createElement("div");
-    reporter.className = "md-ticket-reporter";
-    reporter.textContent = ticket.reporter;
-    const createdName = document.createElement("div");
-    createdName.textContent = "Created";
-    const created = document.createElement("div");
-    created.className = "md-ticket-created";
-    created.textContent = ticket.created;
+    const relied = document.createElement("div");
+    relied.className = "md-ticket-relied";
+    relied.appendChild(fieldName("Relied on by"));
+    const reliedTickets = ticketList
+      .filter((item) => item.id !== ticket.id && Array.isArray(item.depends) && item.depends.includes(ticket.id))
+      .sort(compareTickets);
+    for (const other of reliedTickets) {
+      const button = plainButton("md-ticket-rely", other.title || other.id);
+      button.dataset.id = other.id;
+      button.addEventListener("click", (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        openDocument(`tickets/${other.id}.md`, null, true);
+      });
+      relied.appendChild(button);
+    }
 
     const fields = document.createElement("div");
     fields.className = "md-ticket-column";
-    fields.append(heading, titleInput, stateLabel, typeLabel, priorityLabel, parentLabel, depends);
+    fields.append(heading, titleInput, stateField.label, typeField.label, priorityField.label, parentField, depends, children);
     const facts = document.createElement("div");
     facts.className = "md-ticket-column";
-    facts.append(reporterName, reporter, createdName, created);
+    facts.append(
+      factRow("Id", "md-ticket-fact-id", ticket.id),
+      factRow("Reporter", "md-ticket-reporter", ticket.reporter),
+      factRow("Created", "md-ticket-created", ticket.created),
+      relied,
+    );
     form.replaceChildren(fields, facts);
   }
 
@@ -3282,7 +3506,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       clearOpenTicket();
       return;
     }
-    if (openTicket) seedTicketAncestors(openTicket.id);
+    if (openTicket) {
+      seedTicketAncestors(openTicket.id);
+      renderTicketForm();
+    }
     renderTicketTree();
   }
 
@@ -3300,6 +3527,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       depends: message.depends,
       reporter: message.reporter,
       created: message.created,
+      rev: Number.isFinite(nextRev) ? nextRev : openTicket.rev,
     });
     if (!next) return;
     openTicket = next;
@@ -3312,7 +3540,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function syncFileTicket(message) {
     if (message.ticket && typeof message.ticket === "object") {
-      const next = normalizeTicket(message.ticket);
+      const revField = typeof message.ticket.rev === "number" ? message.ticket.rev : message.rev;
+      const next = normalizeTicket({ ...message.ticket, rev: revField });
       if (next) {
         openTicket = next;
         seedTicketAncestors(next.id);

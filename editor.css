@@ -545,8 +545,80 @@ aside.comments {
   gap: 0.55rem;
 }
 
-.ticket-form label.md-ticket-field select {
-  flex: 1 1 auto;
+.ticket-form .md-ticket-label {
+  font-weight: 700;
+}
+
+.ticket-form .md-ticket-parent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0 0 0.7rem;
+}
+
+.ticket-form .md-ticket-picker {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.ticket-form .md-ticket-match {
+  width: 14rem;
+  max-width: 100%;
+}
+
+.ticket-form .md-ticket-menu {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  z-index: 2;
+  min-width: 100%;
+  background: #1c1b19;
+  border: 1px solid #4a463f;
+}
+
+.ticket-form .md-ticket-menu[hidden] {
+  display: none;
+}
+
+.ticket-form button.md-ticket-add,
+.ticket-form button.md-ticket-remove {
+  background: #1c1b19;
+  border: 1px solid #4a463f;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0 0.45rem;
+}
+
+.ticket-form button.md-ticket-link,
+.ticket-form button.md-ticket-option,
+.ticket-form button.md-ticket-rely {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0.15rem 0.2rem;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ticket-form button.md-ticket-link.md-ticket-selected {
+  background: #3d5a80;
+}
+
+.md-ticket-fact {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 0.55rem;
+  margin: 0 0 0.7rem;
 }
 
 .md-ticket-column {
@@ -558,7 +630,9 @@ aside.comments {
 }
 
 .ticket-form label,
-.md-ticket-depends {
+.md-ticket-depends,
+.md-ticket-children,
+.md-ticket-relied {
   display: block;
   margin: 0 0 0.7rem;
 }
@@ -570,9 +644,9 @@ aside.comments {
 }
 
 .md-ticket-reporter,
-.md-ticket-created {
+.md-ticket-created,
+.md-ticket-fact-id {
   color: #9c968c;
-  font-size: 0.85rem;
 }
 
 .editor {

@@ -899,7 +899,7 @@ test("T-create", async () => {
   }
 });
 
-const TICKET_KEYS = ["created", "depends", "id", "parent", "priority", "reporter", "state", "title", "type"];
+const TICKET_KEYS = ["created", "depends", "id", "parent", "priority", "reporter", "rev", "state", "title", "type"];
 
 function assertTicketEntry(ticket) {
   assert.deepEqual(Object.keys(ticket).sort(), TICKET_KEYS);
@@ -1059,6 +1059,7 @@ test("T-ticket-hide", async () => {
       depends: [],
       reporter: "indexer",
       created: "2020-01-01T00:00:00.000Z",
+      rev: 0,
     });
     assert.equal(await readDoc(dir, "tickets/bbbbbbbb.md"), older);
 
@@ -1228,8 +1229,9 @@ test("T-priority", async () => {
     const plain = await createTicket(a, "A", "Plain");
     assert.equal(plain.file.ticket.priority, "medium");
     assert.deepEqual(Object.keys(plain.file.ticket), [
-      "id", "title", "state", "type", "priority", "parent", "depends", "reporter", "created",
+      "id", "title", "state", "type", "priority", "parent", "depends", "reporter", "created", "rev",
     ]);
+    assert.equal(plain.file.ticket.rev, 0);
     const plainPath = plain.file.path;
     const plainDisk = await readDoc(dir, plainPath);
     assert.equal(parseTicket(plain.file.ticket.id, plainDisk).priority, "medium");
@@ -1260,6 +1262,8 @@ test("T-priority", async () => {
     assert.equal(meta.rev, 1);
     assert.equal(parseTicket(high.file.ticket.id, await readDoc(dir, highPath)).priority, "low");
     assert.equal(listed.tickets.find((ticket) => ticket.id === high.file.ticket.id).priority, "low");
+    assert.equal(listed.tickets.find((ticket) => ticket.id === high.file.ticket.id).rev, 1);
+    assert.equal(listed.tickets.find((ticket) => ticket.id === plain.file.ticket.id).rev, 0);
     for (const ticket of listed.tickets) assertTicketEntry(ticket);
 
     a.send({ type: "ticket.set", username: "A", path: plainPath, rev: 0, priority: "nope" });

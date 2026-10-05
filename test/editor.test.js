@@ -5041,7 +5041,7 @@ test("T-ticket-fields", () => {
     const form = byClass(mounted.root.parentElement, "ticket-form")[0];
     const state = () => byClass(form, "md-ticket-state")[0];
     const parent = () => byClass(form, "md-ticket-parent")[0];
-    const depend = (id) => byClass(form, "md-ticket-depend").find((node) => node.value === id);
+    const dependRow = (id) => byClass(byClass(form, "md-ticket-depends")[0], "md-ticket-link").find((node) => node.dataset.id === id);
     assert.deepEqual(
       state().childNodes.map((option) => option.textContent),
       ["new", "triaged", "in progress", "closed"],
@@ -5050,14 +5050,9 @@ test("T-ticket-fields", () => {
       state().childNodes.map((option) => option.value),
       ["new", "triaged", "in progress", "closed"],
     );
-    assert.equal(parent().childNodes[0].value, "");
-    assert.equal(parent().childNodes[0].textContent, "none");
-    assert.deepEqual(
-      parent().childNodes.slice(1).map((option) => option.value),
-      ["bbbbbbbb", "cccccccc"],
-    );
-    assert.equal(depend("bbbbbbbb").checked, true);
-    assert.equal(depend("cccccccc").checked, false);
+    assert.equal(byClass(parent(), "md-ticket-parent-value")[0].textContent, "Bravo");
+    assert.equal(dependRow("bbbbbbbb").textContent, "Bravo");
+    assert.equal(dependRow("cccccccc"), undefined);
     assert.equal(byClass(form, "md-ticket-reporter")[0].textContent, "Ada");
     assert.equal(byClass(form, "md-ticket-reporter")[0].tagName, "DIV");
     assert.equal(byClass(form, "md-ticket-created")[0].textContent, T0);
@@ -5076,17 +5071,22 @@ test("T-ticket-fields", () => {
     assert.equal(view.getState().cursor, 7);
     assert.equal(view.getState().doc, "hello\nnext\n");
     assert.equal(state().value, "new");
-    assert.equal(parent().value, "bbbbbbbb");
-    assert.equal(depend("cccccccc").checked, false);
+    assert.equal(byClass(parent(), "md-ticket-parent-value")[0].textContent, "Bravo");
+    assert.equal(dependRow("cccccccc"), undefined);
     state().value = "new";
     state().listeners.change();
     assert.equal(sets().length, 1);
     state().value = "in progress";
     state().listeners.change();
-    parent().value = "";
-    parent().listeners.change();
-    depend("cccccccc").checked = true;
-    depend("cccccccc").listeners.change();
+    byClass(parent(), "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    const depends = byClass(form, "md-ticket-depends")[0];
+    const dependMatch = byClass(depends, "md-ticket-match")[0];
+    dependMatch.value = "ce";
+    dependMatch.listeners.input();
+    assert.equal(dependMatch.value, "Cedar");
+    assert.equal(dependMatch.selectionStart, 2);
+    assert.equal(dependMatch.selectionEnd, "Cedar".length);
+    byClass(depends, "md-ticket-add")[0].listeners.click({ preventDefault() {} });
     assert.deepEqual(sets().slice(1), [
       { type: "ticket.set", path: "tickets/aaaaaaaa.md", rev: 6, state: "in progress", username: "" },
       { type: "ticket.set", path: "tickets/aaaaaaaa.md", rev: 6, parent: "", username: "" },
@@ -5100,7 +5100,7 @@ test("T-ticket-fields", () => {
     assert.equal(typeSelect().parentElement.childNodes[0].textContent, "Type");
     const fieldColumn = () => state().parentElement.parentElement;
     assert.equal(fieldColumn().childNodes.indexOf(typeSelect().parentElement), fieldColumn().childNodes.indexOf(state().parentElement) + 1);
-    assert.ok(fieldColumn().childNodes.indexOf(typeSelect().parentElement) < fieldColumn().childNodes.indexOf(parent().parentElement));
+    assert.ok(fieldColumn().childNodes.indexOf(typeSelect().parentElement) < fieldColumn().childNodes.indexOf(parent()));
     const beforeType = sets().length;
     typeSelect().value = "task";
     typeSelect().listeners.change();
@@ -5128,7 +5128,7 @@ test("T-ticket-fields", () => {
       fieldColumn().childNodes.indexOf(prioritySelect().parentElement),
       fieldColumn().childNodes.indexOf(typeSelect().parentElement) + 1,
     );
-    assert.ok(fieldColumn().childNodes.indexOf(prioritySelect().parentElement) < fieldColumn().childNodes.indexOf(parent().parentElement));
+    assert.ok(fieldColumn().childNodes.indexOf(prioritySelect().parentElement) < fieldColumn().childNodes.indexOf(parent()));
     const beforePriority = sets().length;
     prioritySelect().value = "medium";
     prioritySelect().listeners.change();
@@ -5751,7 +5751,15 @@ test("the state select and the reporter sit in different columns", () => {
   assert.match(css, /\.ticket-form\s*\{[^}]*display:\s*grid;/);
   assert.match(css, /\.ticket-form\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*1fr\)/);
   assert.match(css, /\.ticket-form label\.md-ticket-field\s*\{[^}]*display:\s*flex;/);
-  assert.match(css, /\.ticket-form label\.md-ticket-field select\s*\{[^}]*flex:\s*1 1 auto;/);
+  assert.equal(/\.ticket-form label\.md-ticket-field select\s*\{[^}]*flex:\s*1 1 auto;/.test(css), false);
+  assert.match(css, /\.ticket-form \.md-ticket-label\s*\{[^}]*font-weight:\s*700;/);
+  const factRule = css.match(/\.md-ticket-fact\s*\{[^}]*\}/);
+  assert.ok(factRule);
+  assert.match(factRule[0], /display:\s*flex;/);
+  assert.match(factRule[0], /flex-direction:\s*row;/);
+  const reporterRule = css.match(/\.md-ticket-reporter,\s*\.md-ticket-created,\s*\.md-ticket-fact-id\s*\{[^}]*\}/);
+  assert.ok(reporterRule);
+  assert.equal(/font-size:\s*0\.85rem/.test(reporterRule[0]), false);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.ticket-form\s*\{[^}]*display:\s*block;/);
   const transport = holdingTransport();
   try {
@@ -5773,7 +5781,7 @@ test("the state select and the reporter sit in different columns", () => {
     const state = byClass(form, "md-ticket-state")[0];
     const reporter = byClass(form, "md-ticket-reporter")[0];
     const left = state.parentElement.parentElement;
-    const right = reporter.parentElement;
+    const right = reporter.parentElement.parentElement;
     assert.notEqual(left, right);
     assert.equal(left.classList.contains("md-ticket-column"), true);
     assert.equal(right.classList.contains("md-ticket-column"), true);
@@ -5785,27 +5793,41 @@ test("the state select and the reporter sit in different columns", () => {
       "md-ticket-field",
       "md-ticket-field",
       "md-ticket-field",
-      "md-ticket-field",
+      "md-ticket-field md-ticket-parent",
       "md-ticket-depends",
+      "md-ticket-children",
     ]);
     assert.deepEqual(
       left.childNodes.filter((node) => node.classList.contains("md-ticket-field")).map((node) => node.childNodes[0].textContent),
       ["State", "Type", "Priority", "Parent"],
     );
-    for (const label of left.childNodes) {
-      if (!label.classList.contains("md-ticket-field")) continue;
+    for (const name of ["State", "Type", "Priority"]) {
+      const label = left.childNodes.find((node) => node.classList.contains("md-ticket-field") && node.childNodes[0].textContent === name);
       assert.equal(label.childNodes[1].tagName, "SELECT");
+      assert.equal(label.childNodes[0].classList.contains("md-ticket-label"), true);
     }
-    assert.equal(byClass(left, "md-ticket-depend")[0].type, "checkbox");
+    assert.equal(byClass(left, "md-ticket-depend").length, 0);
+    assert.equal(byClass(byClass(left, "md-ticket-depends")[0], "md-ticket-link")[0].textContent, "Bravo");
     assert.equal(byClass(right, "md-ticket-state").length, 0);
-    assert.equal(byClass(right, "md-ticket-depend").length, 0);
+    assert.equal(byClass(right, "md-ticket-link").length, 0);
     assert.equal(byClass(right, "md-ticket-heading").length, 0);
-    assert.deepEqual(right.childNodes.map((node) => node.className || node.textContent), [
-      "Reporter",
-      "md-ticket-reporter",
-      "Created",
-      "md-ticket-created",
+    assert.deepEqual(right.childNodes.map((node) => node.className), [
+      "md-ticket-fact",
+      "md-ticket-fact",
+      "md-ticket-fact",
+      "md-ticket-relied",
     ]);
+    assert.deepEqual(
+      right.childNodes.slice(0, 3).map((node) => [node.childNodes[0].textContent, node.childNodes[1].className]),
+      [
+        ["Id", "md-ticket-fact-id"],
+        ["Reporter", "md-ticket-reporter"],
+        ["Created", "md-ticket-created"],
+      ],
+    );
+    assert.equal(right.childNodes[0].childNodes[1].textContent, "aaaaaaaa");
+    assert.equal(reporter.parentElement.classList.contains("md-ticket-fact"), true);
+    assert.equal(byClass(right, "md-ticket-relied")[0].childNodes[0].textContent, "Relied on by");
     const heading = byClass(form, "md-ticket-heading")[0];
     const input = byClass(form, "md-ticket-title-input")[0];
     assert.equal(input.hidden, true);
@@ -5814,8 +5836,271 @@ test("the state select and the reporter sit in different columns", () => {
     input.value = "Beta";
     input.listeners.blur();
     assert.equal(transport.sent.filter((message) => message.type === "ticket.set").at(-1).title, "Beta");
+    const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
+    assert.match(src, /split\(\/\\s\+\/\)/);
+    const width = byClass(form, "md-ticket-state")[0].styleProps.width;
+    assert.equal(width, "20px");
+    for (const name of ["md-ticket-state", "md-ticket-type", "md-ticket-priority"]) {
+      const select = byClass(form, name)[0];
+      assert.equal(select.styleProps.width, width);
+      assert.equal(select.styleProps["max-width"], width);
+      assert.equal(select.styleProps.flex, "none");
+    }
     view.destroy();
   } finally {
+    mounted.restore();
+  }
+});
+
+test("ticket parent, depends, and children share a completion control", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  const previousHistory = globalThis.history;
+  const previousLocation = globalThis.location;
+  const storage = {
+    data: { "viewmark.repo": "viewmark" },
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
+    },
+    setItem(key, value) {
+      this.data[key] = String(value);
+    },
+    removeItem(key) {
+      delete this.data[key];
+    },
+  };
+  globalThis.history = {
+    replaceState() {},
+  };
+  globalThis.location = { pathname: "/app", search: "", hash: "" };
+  const Q0 = "2026-08-01T00:00:00.000Z";
+  const Q1 = "2026-08-02T00:00:00.000Z";
+  const Q2 = "2026-08-03T00:00:00.000Z";
+  const Q3 = "2026-08-04T00:00:00.000Z";
+  const Q4 = "2026-08-05T00:00:00.000Z";
+  const Q5 = "2026-08-06T00:00:00.000Z";
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport, storage);
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0, "bbbbbbbb", ["bbbbbbbb"]);
+    const bravo = ticketFixture("bbbbbbbb", "Bravo", "triaged", T1);
+    const cedar = { ...ticketFixture("cccccccc", "Cedar", "new", T2, "aaaaaaaa"), rev: 0 };
+    const delta = { ...ticketFixture("dddddddd", "Delta", "new", T3), rev: 4 };
+    const echo = ticketFixture("eeeeeeee", "Echo", "new", "2026-09-01T00:00:00.000Z", "", ["aaaaaaaa"]);
+    const extra = ticketFixture("nnnnnnnn", "bravo extra", "new", "2026-10-05T00:00:00.000Z");
+    const quests = [
+      ticketFixture("ffffffff", "Quest", "new", Q0),
+      ticketFixture("gggggggg", "Queen", "new", Q1),
+      ticketFixture("hhhhhhhh", "Quill", "new", Q2),
+      ticketFixture("jjjjjjjj", "Quote", "new", Q3),
+      ticketFixture("kkkkkkkk", "Quick", "new", Q4),
+      ticketFixture("mmmmmmmm", "Quiet", "new", Q5),
+    ];
+    const tickets = [alpha, bravo, cedar, delta, echo, extra, ...quests];
+    transport.deliver({ type: "tickets", tickets });
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      text: "hello\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    const sets = () => transport.sent.filter((message) => message.type === "ticket.set");
+    const block = (className) => byClass(form, className)[0];
+    const parent = block("md-ticket-parent");
+    const depends = block("md-ticket-depends");
+    const children = block("md-ticket-children");
+    assert.deepEqual(
+      ["State", "Type", "Priority", "Parent", "Depends", "Children"].map((label) => (
+        byClass(form, "md-ticket-label").some((node) => node.textContent === label)
+      )),
+      [true, true, true, true, true, true],
+    );
+    assert.equal(byClass(parent, "md-ticket-parent-value")[0].textContent, "Bravo");
+    assert.equal(byClass(parent, "md-ticket-add")[0].textContent, "+");
+    assert.equal(byClass(parent, "md-ticket-remove")[0].textContent, "-");
+    assert.equal(byClass(depends, "md-ticket-match")[0].tagName, "INPUT");
+    assert.equal(block("md-ticket-menu").hidden, true);
+    assert.deepEqual(
+      byClass(depends, "md-ticket-link").map((node) => node.dataset.id),
+      ["bbbbbbbb"],
+    );
+    assert.deepEqual(
+      byClass(children, "md-ticket-link").map((node) => node.textContent),
+      ["Cedar"],
+    );
+    assert.deepEqual(
+      byClass(block("md-ticket-relied"), "md-ticket-rely").map((node) => node.textContent),
+      ["Echo"],
+    );
+
+    const before = sets().length;
+    byClass(depends, "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    assert.equal(sets().length, before);
+    byClass(depends, "md-ticket-link")[0].listeners.click({ preventDefault() {} });
+    assert.equal(byClass(depends, "md-ticket-link")[0].classList.contains("md-ticket-selected"), true);
+    byClass(depends, "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      depends: [],
+      username: "",
+    });
+
+    const dependMatch = byClass(depends, "md-ticket-match")[0];
+    dependMatch.value = "rav";
+    dependMatch.listeners.input();
+    assert.equal(dependMatch.value, "rav");
+    assert.equal(byClass(depends, "md-ticket-menu")[0].hidden, true);
+    dependMatch.value = "aaaaaaaa";
+    dependMatch.listeners.input();
+    assert.equal(dependMatch.value, "aaaaaaaa");
+    assert.equal(byClass(depends, "md-ticket-menu")[0].hidden, true);
+    const beforeSelf = sets().length;
+    byClass(depends, "md-ticket-add")[0].listeners.click({ preventDefault() {} });
+    assert.equal(sets().length, beforeSelf);
+
+    dependMatch.value = "BRA";
+    dependMatch.listeners.input();
+    assert.equal(dependMatch.value, "Bravo");
+    assert.equal(dependMatch.selectionStart, 3);
+    assert.equal(dependMatch.selectionEnd, "Bravo".length);
+    assert.deepEqual(
+      byClass(byClass(depends, "md-ticket-menu")[0], "md-ticket-option").map((node) => node.dataset.id),
+      ["bbbbbbbb", "nnnnnnnn"],
+    );
+    dependMatch.value = "bravo e";
+    dependMatch.selectionStart = "bravo e".length;
+    dependMatch.selectionEnd = "bravo e".length;
+    dependMatch.listeners.input();
+    assert.equal(dependMatch.value, "bravo extra");
+    assert.equal(dependMatch.selectionStart, "bravo e".length);
+    assert.equal(dependMatch.selectionEnd, "bravo extra".length);
+    assert.deepEqual(
+      byClass(byClass(depends, "md-ticket-menu")[0], "md-ticket-option").map((node) => node.dataset.id),
+      ["nnnnnnnn"],
+    );
+    dependMatch.value = "b";
+    dependMatch.selectionStart = 0;
+    dependMatch.selectionEnd = 0;
+    dependMatch.listeners.input();
+    const options = byClass(byClass(depends, "md-ticket-menu")[0], "md-ticket-option");
+    assert.equal(options[1].textContent, "bravo extra");
+    options[1].listeners.click({ preventDefault() {} });
+    assert.equal(dependMatch.value, "bravo extra");
+    assert.equal(byClass(depends, "md-ticket-menu")[0].hidden, true);
+    byClass(depends, "md-ticket-add")[0].listeners.click({ preventDefault() {} });
+    assert.equal(dependMatch.value, "");
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      depends: ["bbbbbbbb", "nnnnnnnn"],
+      username: "",
+    });
+
+    dependMatch.value = "q";
+    dependMatch.listeners.input();
+    assert.equal(dependMatch.value, "Quest");
+    assert.equal(dependMatch.selectionStart, 1);
+    assert.deepEqual(
+      byClass(byClass(depends, "md-ticket-menu")[0], "md-ticket-option").map((node) => node.dataset.id),
+      ["ffffffff", "gggggggg", "hhhhhhhh", "jjjjjjjj", "kkkkkkkk"],
+    );
+    dependMatch.value = "ggg";
+    dependMatch.selectionStart = 0;
+    dependMatch.selectionEnd = 0;
+    dependMatch.listeners.input();
+    assert.equal(dependMatch.value, "gggggggg");
+    assert.equal(dependMatch.selectionStart, 3);
+    assert.equal(dependMatch.selectionEnd, "gggggggg".length);
+    assert.equal(byClass(byClass(depends, "md-ticket-menu")[0], "md-ticket-option")[0].textContent, "Queen");
+
+    byClass(parent, "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      parent: "",
+      username: "",
+    });
+    const parentMatch = byClass(parent, "md-ticket-match")[0];
+    parentMatch.value = "de";
+    parentMatch.listeners.input();
+    assert.equal(parentMatch.value, "Delta");
+    byClass(parent, "md-ticket-add")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      parent: "dddddddd",
+      username: "",
+    });
+
+    const childRow = byClass(children, "md-ticket-link")[0];
+    childRow.listeners.click({ preventDefault() {} });
+    byClass(children, "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/cccccccc.md",
+      rev: 0,
+      parent: "",
+      username: "",
+    });
+    const childMatch = byClass(children, "md-ticket-match")[0];
+    childMatch.value = "de";
+    childMatch.listeners.input();
+    byClass(children, "md-ticket-add")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/dddddddd.md",
+      rev: 4,
+      parent: "aaaaaaaa",
+      username: "",
+    });
+    assert.equal(sets().every((message) => message.path !== "tickets/aaaaaaaa.md" || message.rev === 6), true);
+
+    const next = tickets.map((ticket) => (
+      ticket.id === "dddddddd" ? { ...ticket, parent: "aaaaaaaa", rev: 5 } : ticket
+    ));
+    transport.deliver({ type: "tickets", tickets: next });
+    const refreshed = byClass(byClass(form, "md-ticket-children")[0], "md-ticket-link");
+    assert.deepEqual(refreshed.map((node) => node.dataset.id), ["cccccccc", "dddddddd"]);
+    refreshed[1].listeners.click({ preventDefault() {} });
+    byClass(byClass(form, "md-ticket-children")[0], "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/dddddddd.md",
+      rev: 5,
+      parent: "",
+      username: "",
+    });
+
+    transport.deliver({
+      type: "repos",
+      repos: [{ name: "viewmark", description: "Viewmark" }],
+    });
+    const rely = byClass(form, "md-ticket-rely")[0];
+    assert.equal(rely.tagName, "BUTTON");
+    assert.equal(rely.textContent, "Echo");
+    rely.listeners.click({ preventDefault() {} });
+    assert.deepEqual(transport.sent.at(-1), {
+      type: "open",
+      path: "tickets/eeeeeeee.md",
+      rev: 6,
+      username: "",
+    });
+    assert.equal(globalThis.location.hash, "#viewmark/ticket/eeeeeeee");
+    view.destroy();
+  } finally {
+    if (previousHistory === undefined) delete globalThis.history;
+    else globalThis.history = previousHistory;
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
     mounted.restore();
   }
 });

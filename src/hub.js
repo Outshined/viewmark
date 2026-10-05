@@ -363,7 +363,9 @@ function validTitle(value) {
   return title;
 }
 
-function ticketView(ticket) {
+function ticketView(ticket, rev) {
+  // The list has to carry the file rev. A child ticket.set names that file, not the open one.
+  const fileRev = typeof rev === "number" && Number.isFinite(rev) ? rev : 0;
   return {
     id: ticket.id,
     title: ticket.title,
@@ -374,6 +376,7 @@ function ticketView(ticket) {
     depends: [...ticket.depends],
     reporter: ticket.reporter,
     created: ticket.created,
+    rev: fileRev,
   };
 }
 
@@ -729,7 +732,7 @@ export async function createHub(stateDir, sourceRoot) {
         full: real,
         rev: 0,
         text: parsed.body,
-        ticket: ticketView(parsed),
+        ticket: ticketView(parsed, 0),
         subscribers: new Set(),
         locks: new Map(),
       };
@@ -760,7 +763,7 @@ export async function createHub(stateDir, sourceRoot) {
       if (!id) continue;
       const cached = files.get(rel);
       if (cached) {
-        if (cached.ticket) tickets.push(ticketView(cached.ticket));
+        if (cached.ticket) tickets.push(ticketView(cached.ticket, cached.rev));
         continue;
       }
       let raw;
@@ -771,7 +774,7 @@ export async function createHub(stateDir, sourceRoot) {
       }
       const parsed = parseTicket(id, raw);
       if (!parsed) continue;
-      tickets.push(ticketView(parsed));
+      tickets.push(ticketView(parsed, 0));
     }
     tickets.sort((a, b) => {
       if (a.created < b.created) return -1;
@@ -829,7 +832,7 @@ export async function createHub(stateDir, sourceRoot) {
       text: file.text,
       locks: lockSnapshot(file),
     };
-    if (file.ticket) message.ticket = ticketView(file.ticket);
+    if (file.ticket) message.ticket = ticketView(file.ticket, file.rev);
     return message;
   }
 
@@ -953,7 +956,7 @@ export async function createHub(stateDir, sourceRoot) {
       text: file.text,
       locks: lockSnapshot(file),
     };
-    if (file.ticket) message.ticket = ticketView(file.ticket);
+    if (file.ticket) message.ticket = ticketView(file.ticket, file.rev);
     send(socket, message);
   }
 
@@ -1094,8 +1097,8 @@ export async function createHub(stateDir, sourceRoot) {
     const current = composeTicket({ ...file.ticket, body: file.text });
     if (composed === current) return;
     await writeAtomic(file.full, composed);
-    file.ticket = ticketView(parsed);
     file.rev += 1;
+    file.ticket = ticketView(parsed, file.rev);
     mark(repo, file.rel, socket.session.username);
     await broadcastTickets(repo);
     broadcast(file, ticketNotice(file));
@@ -1112,8 +1115,8 @@ export async function createHub(stateDir, sourceRoot) {
       const current = composeTicket({ ...cached.ticket, body: cached.text });
       if (composed == null || composed === current) return;
       await writeAtomic(cached.full, composed);
-      cached.ticket = ticketView(next);
       cached.rev += 1;
+      cached.ticket = ticketView(next, cached.rev);
       broadcast(cached, ticketNotice(cached));
       mark(repo, rel, username);
       return;
