@@ -1366,6 +1366,90 @@ function mountEditor(options = {}) {
   };
 }
 
+test("backspace at the visual start of a line joins it upward", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const press = () => {
+    mounted.listeners.beforeinput({
+      inputType: "deleteContentBackward",
+      preventDefault() {},
+    });
+  };
+  const caret = (node, offset) => {
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: node,
+      anchorOffset: offset,
+      focusNode: node,
+      focusOffset: offset,
+      removeAllRanges() {},
+      addRange() {},
+      getRangeAt() {
+        return {
+          startContainer: node,
+          startOffset: offset,
+          endContainer: node,
+          endOffset: offset,
+          collapsed: true,
+        };
+      },
+    });
+  };
+  const lineText = (text) => mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.textContent === text)[0];
+  try {
+    const transport = holdingTransport();
+    const held = createEditor(mounted.root, "hello\nworld\n", 0, transport);
+    caret(lineText("world"), 0);
+    press();
+    const edit = transport.sent.find((message) => message.type === "edit");
+    assert.equal(edit.op, "backspace");
+    assert.equal(edit.cursor, 6);
+    assert.equal(edit.anchor, 6);
+    const lock = transport.sent.filter((message) => message.type === "lock").at(-1);
+    assert.equal(Math.min(lock.anchor, lock.cursor), 5);
+    assert.equal(Math.max(lock.anchor, lock.cursor), 6);
+    held.destroy();
+
+    const view = createEditor(mounted.root, "hello\nworld\n", 0);
+    caret(lineText("world"), 0);
+    press();
+    assert.equal(view.getState().doc, "helloworld\n");
+    assert.equal(view.getState().cursor, 5);
+    assert.equal(view.getState().anchor, 5);
+    press();
+    assert.equal(view.getState().doc, "hellworld\n");
+    assert.equal(view.getState().cursor, 4);
+    view.destroy();
+
+    const word = createEditor(mounted.root, "hello\nworld\n", 0);
+    const inside = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "world")[0];
+    caret(inside, 1);
+    press();
+    assert.equal(word.getState().doc, "hello\norld\n");
+    assert.equal(word.getState().cursor, 6);
+    word.destroy();
+
+    const empty = createEditor(mounted.root, "hello\n\nworld", 0);
+    const blank = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.dataset.start === node.dataset.end && node.textContent === "")[0];
+    caret(blank, 0);
+    press();
+    assert.equal(empty.getState().doc, "hello\nworld");
+    assert.equal(empty.getState().cursor, 5);
+    assert.equal(empty.getState().anchor, 5);
+    empty.destroy();
+
+    const heading = createEditor(mounted.root, "hello\n# Title\n", 0);
+    const title = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "Title")[0];
+    caret(title, 0);
+    press();
+    assert.equal(heading.getState().doc, "hello# Title\n");
+    assert.equal(heading.getState().cursor, 5);
+    heading.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("fence clicks open source", () => {
   const mounted = mountEditor();
   try {

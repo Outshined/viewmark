@@ -2309,6 +2309,86 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     else if (anchor !== next || next !== landed) placeCaret();
   }
 
+  function lineElementOf(node) {
+    let el = node && node.nodeType === 3 ? node.parentElement : node;
+    while (el && el !== root) {
+      if (hasClass(el, "md-line")) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function textLength(node) {
+    if (!node || node.nodeType !== 3) return 0;
+    if (typeof node.length === "number") return node.length;
+    return typeof node.textContent === "string" ? node.textContent.length : 0;
+  }
+
+  function hasEarlierContent(line, target) {
+    let earlier = false;
+    const visit = (node) => {
+      if (node === target) return true;
+      if (node.nodeType === 3) {
+        if (textLength(node) > 0) earlier = true;
+        return false;
+      }
+      if (hasClass(node, "md-atom")) {
+        earlier = true;
+        return false;
+      }
+      for (const child of node.childNodes || []) {
+        if (visit(child)) return true;
+      }
+      return false;
+    };
+    visit(line);
+    return earlier;
+  }
+
+  function atVisualLineStart(node, offset) {
+    const line = lineElementOf(node);
+    if (!line || hasEarlierContent(line, node)) return false;
+    if (isBreak(node)) return true;
+    return offset === 0;
+  }
+
+  function collapsedCaret() {
+    const sel = typeof window !== "undefined" && window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.rangeCount === 0) return null;
+    let node = sel.focusNode || null;
+    let offset = node ? sel.focusOffset : 0;
+    if (!node && typeof sel.getRangeAt === "function") {
+      const range = sel.getRangeAt(0);
+      if (!range || range.collapsed === false) return null;
+      if (range.startContainer !== range.endContainer || range.startOffset !== range.endOffset) return null;
+      node = range.startContainer;
+      offset = range.startOffset;
+    }
+    if (!node || !root.contains(node)) return null;
+    if (sel.anchorNode && (sel.anchorNode !== node || sel.anchorOffset !== offset)) return null;
+    return { node, offset: offset || 0 };
+  }
+
+  // A rendered line hides its marker, so the caret at the visual start is not
+  // the source line start. The newline sits on the previous line; the hub
+  // rejects the splice unless that line is held too.
+  function prepareBackwardDelete() {
+    const caret = collapsedCaret();
+    if (caret && atVisualLineStart(caret.node, caret.offset)) {
+      const mapped = mapOffset(caret.node, caret.offset);
+      if (Number.isFinite(mapped)) {
+        const start = lineSpan(state.doc, mapped)[0];
+        if (start !== state.cursor || start !== state.anchor) {
+          state = { ...state, anchor: start, cursor: start };
+        }
+      }
+    }
+    if (state.anchor === state.cursor && state.cursor > 0 && state.doc[state.cursor - 1] === "\n") {
+      return claimLines(state.cursor - 1, state.cursor);
+    }
+    return true;
+  }
+
   listen("beforeinput", (event) => {
     commentFocus = null;
     event.preventDefault();
@@ -2335,6 +2415,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     if (type === "deleteContentBackward") {
+      if (!prepareBackwardDelete()) return;
       emitEdit({ op: "backspace" });
       return;
     }
