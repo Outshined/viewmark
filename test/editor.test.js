@@ -7060,6 +7060,11 @@ test("T-file-delete", () => {
   assert.match(confirmRule[0], /color:\s*#e7e2d8/);
   assert.match(confirmRule[0], /border:\s*1px solid #3f3c37/);
   assert.match(confirmRule[0], /border-radius:\s*6px/);
+  assert.match(confirmRule[0], /width:\s*18rem/);
+  const actionsRule = css.match(/dialog\.md-confirm \.md-confirm-actions\s*\{[^}]*\}/);
+  assert.ok(actionsRule);
+  assert.match(actionsRule[0], /display:\s*flex/);
+  assert.match(actionsRule[0], /gap:\s*0\.5rem/);
   const nav = document.createElement("nav");
   nav.className = "files";
   const sheet = document.createElement("div");
@@ -7095,7 +7100,14 @@ test("T-file-delete", () => {
     const dialog = confirm();
     assert.equal(walkNodes(sheet, (node) => node.classList && node.classList.contains("md-confirm")).length, 1);
     assert.equal(dialog.open, true);
-    assert.equal(byClass(dialog, "md-confirm-text")[0].textContent, "Delete b.md?");
+    assert.equal(dialog.getAttribute("open"), "");
+    const question = byClass(dialog, "md-confirm-text")[0];
+    const actions = byClass(dialog, "md-confirm-actions")[0];
+    assert.equal(question.textContent, "Delete b.md?");
+    assert.equal(question.parentElement, dialog);
+    assert.equal(actions.parentElement, dialog);
+    assert.ok(dialog.childNodes.indexOf(question) < dialog.childNodes.indexOf(actions));
+    assert.deepEqual(actions.childNodes.map((node) => node.textContent), ["Cancel", "Delete"]);
     const named = (text) => walkNodes(dialog, (node) => node.tagName === "BUTTON" && node.textContent === text)[0];
     assert.equal(named("Cancel").textContent, "Cancel");
     assert.equal(named("Delete").textContent, "Delete");
@@ -7122,6 +7134,28 @@ test("T-file-delete", () => {
     assert.equal(dialog.open, true);
     named("Cancel").listeners.click({ preventDefault() {} });
     assert.equal(transport.sent.length, before);
+
+    const trace = [];
+    dialog.close = () => {
+      trace.push("close");
+      dialog.open = false;
+    };
+    dialog.showModal = () => {
+      trace.push(dialog.open ? "show-open" : "show-closed");
+      if (dialog.open) throw new Error("already open");
+      dialog.open = true;
+    };
+    clickTrash();
+    assert.deepEqual(trace, ["show-open", "close", "show-closed"]);
+    assert.equal(dialog.open, true);
+    named("Cancel").listeners.click({ preventDefault() {} });
+    assert.equal(transport.sent.length, before);
+    dialog.listeners.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(transport.sent.length, before);
+    clickTrash();
+    dialog.listeners.cancel({ preventDefault() {} });
+    assert.equal(transport.sent.length, before);
+    assert.equal(dialog.open, false);
 
     let openAtSend = null;
     const send = transport.send.bind(transport);

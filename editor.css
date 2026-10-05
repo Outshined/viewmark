@@ -228,6 +228,12 @@ dialog.md-confirm {
   border: 1px solid #3f3c37;
   border-radius: 6px;
   padding: 1rem 1.1rem;
+  width: 18rem;
+}
+
+dialog.md-confirm .md-confirm-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 
 .md-new-file {

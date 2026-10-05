@@ -2414,13 +2414,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function openConfirm() {
     if (!confirmDialog) return;
-    const wasOpen = confirmDialog.open === true;
-    confirmDialog.open = true;
-    if (typeof confirmDialog.showModal === "function") {
-      if (!wasOpen) confirmDialog.showModal();
-      return;
+    const dialog = confirmDialog;
+    dialog.open = true;
+    if (typeof dialog.showModal === "function") {
+      try {
+        dialog.showModal();
+      } catch {
+        // The open property is non-modal, and showModal throws while the dialog is open.
+        // Only a modal dialog paints ::backdrop.
+        if (typeof dialog.close === "function") dialog.close();
+        try {
+          dialog.showModal();
+        } catch {
+          dialog.open = true;
+        }
+      }
+    } else if (typeof dialog.setAttribute === "function") {
+      dialog.setAttribute("open", "");
     }
-    if (typeof confirmDialog.setAttribute === "function") confirmDialog.setAttribute("open", "");
   }
 
   function ensureConfirm() {
@@ -2440,6 +2451,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     yes.type = "button";
     yes.textContent = "Delete";
     if (typeof yes.setAttribute === "function") yes.setAttribute("type", "button");
+    const actions = document.createElement("div");
+    actions.className = "md-confirm-actions";
+    actions.append(cancel, yes);
     cancel.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       confirmSend = null;
@@ -2462,7 +2476,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (!event || event.key !== "Escape") return;
       dismiss(event);
     });
-    dialog.append(text, cancel, yes);
+    dialog.append(text, actions);
     parent.appendChild(dialog);
     confirmDialog = dialog;
     confirmText = text;
