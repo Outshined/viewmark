@@ -57,8 +57,8 @@ select.md-repo {
 
 button.md-doc-menu {
   position: absolute;
-  top: 0;
-  right: 0;
+  top: 0.45rem;
+  right: 0.45rem;
   z-index: 5;
   box-sizing: border-box;
   display: flex;
@@ -84,8 +84,9 @@ button.md-doc-menu .md-doc-menu-bar {
 
 div.md-doc-menu-panel {
   position: absolute;
-  top: 1.75rem;
-  right: 0;
+  /* 0.45rem inset plus the 1.75rem button, so the panel stays under it. */
+  top: 2.2rem;
+  right: 0.45rem;
   z-index: 6;
   box-sizing: border-box;
   min-width: 10rem;
@@ -405,6 +406,10 @@ aside.comments {
 
 .ticket-form {
   box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 1.5rem;
+  align-items: start;
   min-width: 0;
   padding: 1rem 1.4rem 0.4rem;
   grid-column: 2;
@@ -429,7 +434,6 @@ aside.comments {
   box-sizing: border-box;
 }
 
-.ticket-form select,
 .ticket-form .md-ticket-title-input {
   width: 100%;
   margin-top: 0.2rem;
@@ -437,6 +441,23 @@ aside.comments {
 
 .ticket-form select {
   display: block;
+  width: auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.ticket-form label.md-ticket-field {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.ticket-form label.md-ticket-field select {
+  flex: 1 1 auto;
+}
+
+.md-ticket-column {
+  min-width: 0;
 }
 
 .ticket-form .md-ticket-title-input[hidden] {
@@ -693,18 +714,18 @@ a.md-link {
 }
 
 .md-comment {
-  background: #e6c36a;
-  color: #1c1b19;
+  background: #6b5e45;
+  color: #e7e2d8;
   border-radius: 2px;
 }
 
 .md-comment .md-syntax {
-  color: #5c5346;
+  color: #c4b8a4;
 }
 
 .md-comment.md-comment-editing {
-  background: #8eb4f0;
-  color: #1c1b19;
+  background: #3d5270;
+  color: #e7e2d8;
 }
 
 .md-add-comment {
@@ -822,5 +843,9 @@ a.md-link {
     position: static;
     width: 100%;
     top: auto;
+  }
+
+  .ticket-form {
+    display: block;
   }
 }

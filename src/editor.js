@@ -761,6 +761,36 @@ function wordEdges(doc, cursor, direction) {
   return [cursor, index];
 }
 
+// A caret sits between characters. Take the word touching that boundary, or
+// stay put when both sides are whitespace.
+function wordSpan(doc, offset) {
+  const at = Math.max(0, Math.min(doc.length, offset));
+  if (at > 0 && !/\s/.test(doc[at - 1])) {
+    let start = at;
+    let end = at;
+    while (start > 0 && !/\s/.test(doc[start - 1])) start -= 1;
+    while (end < doc.length && !/\s/.test(doc[end])) end += 1;
+    return [start, end];
+  }
+  if (at < doc.length && !/\s/.test(doc[at])) {
+    let end = at;
+    while (end < doc.length && !/\s/.test(doc[end])) end += 1;
+    return [at, end];
+  }
+  return [at, at];
+}
+
+// The source line, not the visual wrap. The newline stays outside the range,
+// so an empty line is a caret at its start.
+function lineSpan(doc, offset) {
+  const at = Math.max(0, Math.min(doc.length, offset));
+  let start = at;
+  let end = at;
+  while (start > 0 && doc[start - 1] !== "\n") start -= 1;
+  while (end < doc.length && doc[end] !== "\n") end += 1;
+  return [start, end];
+}
+
 function setStyle(el, name, value) {
   if (!el || !el.style) return;
   if (typeof el.style.setProperty === "function") el.style.setProperty(name, value);
@@ -2231,22 +2261,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
   }
 
-  function moveCaret(direction, granularity) {
+  function moveCaret(direction, granularity, extend) {
     const sel = window.getSelection();
     if (!sel) return;
     if (sel.rangeCount === 0) placeCaret();
     const beforeCursor = state.cursor;
+    const beforeAnchor = state.anchor;
     const before = lineIndexAt(state.doc, beforeCursor);
     sel.modify("move", direction, granularity);
     if (sel.rangeCount === 0) return;
     const range = sel.getRangeAt(0);
     const landed = mapOffset(range.startContainer, range.startOffset);
     const next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
-    state = { ...state, cursor: next, anchor: next };
-    if (!claimLines(next, next)) return;
+    const anchor = extend ? beforeAnchor : next;
+    state = { ...state, cursor: next, anchor };
+    if (!claimLines(anchor, next)) return;
     const after = lineIndexAt(state.doc, state.cursor);
     if (before !== after) render();
-    else if (next !== landed) placeCaret();
+    else if (anchor !== next || next !== landed) placeCaret();
   }
 
   listen("beforeinput", (event) => {
@@ -2348,14 +2380,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       emitHistory("redo");
       return;
     }
-    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
       event.preventDefault();
-      moveCaret(event.key === "ArrowRight" ? "forward" : "backward", "character");
-      return;
-    }
-    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-      event.preventDefault();
-      moveCaret(event.key === "ArrowDown" ? "forward" : "backward", "line");
+      const extend = event.shiftKey === true && !event.ctrlKey && !event.altKey && !event.metaKey;
+      const horizontal = event.key === "ArrowLeft" || event.key === "ArrowRight";
+      const forward = event.key === "ArrowRight" || event.key === "ArrowDown";
+      moveCaret(forward ? "forward" : "backward", horizontal ? "character" : "line", extend);
     }
   });
 
@@ -2430,8 +2460,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const pos = document.caretPositionFromPoint(event.clientX, event.clientY);
     if (!pos) return;
     const offset = mapOffset(pos.offsetNode, pos.offset);
-    state = { ...state, cursor: offset, anchor: offset };
-    if (!claimLines(offset, offset)) return;
+    let anchor = offset;
+    let cursor = offset;
+    if (event.detail === 2) {
+      const span = wordSpan(state.doc, offset);
+      anchor = span[0];
+      cursor = span[1];
+    } else if (event.detail === 3) {
+      const span = lineSpan(state.doc, offset);
+      anchor = span[0];
+      cursor = span[1];
+    }
+    state = { ...state, anchor, cursor };
+    if (!claimLines(anchor, cursor)) return;
     render();
   });
 
@@ -2492,6 +2533,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const box = event.target;
       if (!box || !box.classList || !box.classList.contains("md-comment-body")) return;
       const mod = event.ctrlKey || event.metaKey;
+      if (mod && !event.altKey && event.key === "Enter") {
+        event.preventDefault();
+        onSave(box);
+        return;
+      }
       if (!mod || event.altKey) return;
       const key = event.key;
       if (key !== "z" && key !== "Z" && key !== "y" && key !== "Y") return;
@@ -2705,6 +2751,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
 
     const stateLabel = document.createElement("label");
+    stateLabel.className = "md-ticket-field";
     stateLabel.appendChild(document.createTextNode("State"));
     const stateSelect = document.createElement("select");
     stateSelect.className = "md-ticket-state";
@@ -2721,6 +2768,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     stateLabel.appendChild(stateSelect);
 
     const typeLabel = document.createElement("label");
+    typeLabel.className = "md-ticket-field";
     typeLabel.appendChild(document.createTextNode("Type"));
     const typeSelect = document.createElement("select");
     typeSelect.className = "md-ticket-type";
@@ -2737,6 +2785,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     typeLabel.appendChild(typeSelect);
 
     const priorityLabel = document.createElement("label");
+    priorityLabel.className = "md-ticket-field";
     priorityLabel.appendChild(document.createTextNode("Priority"));
     const prioritySelect = document.createElement("select");
     prioritySelect.className = "md-ticket-priority";
@@ -2753,6 +2802,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     priorityLabel.appendChild(prioritySelect);
 
     const parentLabel = document.createElement("label");
+    parentLabel.className = "md-ticket-field";
     parentLabel.appendChild(document.createTextNode("Parent"));
     const parentSelect = document.createElement("select");
     parentSelect.className = "md-ticket-parent";
@@ -2805,19 +2855,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     created.className = "md-ticket-created";
     created.textContent = ticket.created;
 
-    form.replaceChildren(
-      heading,
-      titleInput,
-      stateLabel,
-      typeLabel,
-      priorityLabel,
-      parentLabel,
-      depends,
-      reporterName,
-      reporter,
-      createdName,
-      created,
-    );
+    const fields = document.createElement("div");
+    fields.className = "md-ticket-column";
+    fields.append(heading, titleInput, stateLabel, typeLabel, priorityLabel, parentLabel, depends);
+    const facts = document.createElement("div");
+    facts.className = "md-ticket-column";
+    facts.append(reporterName, reporter, createdName, created);
+    form.replaceChildren(fields, facts);
   }
 
   function revertTicketForm() {

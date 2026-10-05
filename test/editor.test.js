@@ -1883,15 +1883,15 @@ test("comment cards edit the thread and line up with the highlight", () => {
     const menuRule = css.match(/button\.md-doc-menu\s*\{[^}]*\}/);
     assert.ok(menuRule);
     assert.match(menuRule[0], /position:\s*absolute/);
-    assert.match(menuRule[0], /top:\s*0/);
-    assert.match(menuRule[0], /right:\s*0/);
+    assert.match(menuRule[0], /top:\s*0\.45rem/);
+    assert.match(menuRule[0], /right:\s*0\.45rem/);
     assert.match(menuRule[0], /z-index:\s*5/);
     assert.match(menuRule[0], /height:\s*1\.75rem/);
     const panelRule = css.match(/div\.md-doc-menu-panel\s*\{[^}]*\}/);
     assert.ok(panelRule);
     assert.match(panelRule[0], /position:\s*absolute/);
-    assert.match(panelRule[0], /top:\s*1\.75rem/);
-    assert.match(panelRule[0], /right:\s*0/);
+    assert.match(panelRule[0], /top:\s*2\.2rem/);
+    assert.match(panelRule[0], /right:\s*0\.45rem/);
     assert.match(panelRule[0], /z-index:\s*6/);
     assert.match(css, /div\.md-doc-menu-panel\[hidden\]\s*\{[^}]*display:\s*none/);
     assert.equal(/button\.md-commit\s*\{/.test(css), false);
@@ -2425,8 +2425,11 @@ test("comment cards mark the thread being acted on", () => {
   };
   try {
     const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
-    assert.match(css, /\.md-comment\s*\{[^}]*background:\s*#e6c36a;/);
-    assert.match(css, /\.md-comment\.md-comment-editing\s*\{[^}]*background:\s*#8eb4f0;/);
+    assert.match(css, /\.md-comment\s*\{[^}]*background:\s*#6b5e45;/);
+    assert.match(css, /\.md-comment\s*\{[^}]*color:\s*#e7e2d8;/);
+    assert.match(css, /\.md-comment \.md-syntax\s*\{[^}]*color:\s*#c4b8a4;/);
+    assert.match(css, /\.md-comment\.md-comment-editing\s*\{[^}]*background:\s*#3d5270;/);
+    assert.match(css, /\.md-comment\.md-comment-editing\s*\{[^}]*color:\s*#e7e2d8;/);
     assert.match(css, /\.md-comment-card\s*\{[^}]*border:\s*1px solid #3f3c37;/);
     assert.match(css, /\.md-comment-card\.md-comment-current\s*\{[^}]*border:\s*2px solid #e7e2d8;/);
     const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
@@ -4799,8 +4802,9 @@ test("T-ticket-fields", () => {
     assert.deepEqual(typeSelect().childNodes.map((option) => option.value), ["bug", "enhancement", "task"]);
     assert.equal(typeSelect().value, "task");
     assert.equal(typeSelect().parentElement.childNodes[0].textContent, "Type");
-    assert.equal(form.childNodes.indexOf(typeSelect().parentElement), form.childNodes.indexOf(state().parentElement) + 1);
-    assert.ok(form.childNodes.indexOf(typeSelect().parentElement) < form.childNodes.indexOf(parent().parentElement));
+    const fieldColumn = () => state().parentElement.parentElement;
+    assert.equal(fieldColumn().childNodes.indexOf(typeSelect().parentElement), fieldColumn().childNodes.indexOf(state().parentElement) + 1);
+    assert.ok(fieldColumn().childNodes.indexOf(typeSelect().parentElement) < fieldColumn().childNodes.indexOf(parent().parentElement));
     const beforeType = sets().length;
     typeSelect().value = "task";
     typeSelect().listeners.change();
@@ -4825,10 +4829,10 @@ test("T-ticket-fields", () => {
     assert.equal(prioritySelect().value, "medium");
     assert.equal(prioritySelect().parentElement.childNodes[0].textContent, "Priority");
     assert.equal(
-      form.childNodes.indexOf(prioritySelect().parentElement),
-      form.childNodes.indexOf(typeSelect().parentElement) + 1,
+      fieldColumn().childNodes.indexOf(prioritySelect().parentElement),
+      fieldColumn().childNodes.indexOf(typeSelect().parentElement) + 1,
     );
-    assert.ok(form.childNodes.indexOf(prioritySelect().parentElement) < form.childNodes.indexOf(parent().parentElement));
+    assert.ok(fieldColumn().childNodes.indexOf(prioritySelect().parentElement) < fieldColumn().childNodes.indexOf(parent().parentElement));
     const beforePriority = sets().length;
     prioritySelect().value = "medium";
     prioritySelect().listeners.change();
@@ -5164,6 +5168,315 @@ test("file titles and move drops", () => {
     assert.notEqual(ticketButton.draggable, true);
     assert.equal(ticketButton.getAttribute("draggable"), null);
     assert.equal(ticketButton.listeners.dragstart, undefined);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("shift-arrow keeps the anchor and an unshifted arrow collapses", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const textOf = (value) => mounted.findAll((node) => node.nodeType === 3 && node.textContent === value)[0];
+  try {
+    const view = createEditor(mounted.root, "hello fox", 0);
+    const text = textOf("hello fox");
+    assert.equal(text.textContent, "hello fox");
+    let offset = 0;
+    const sel = {
+      rangeCount: 1,
+      modify(_action, direction) {
+        offset += direction === "forward" ? 1 : -1;
+      },
+      getRangeAt() {
+        return { startContainer: text, startOffset: offset, collapsed: true };
+      },
+    };
+    globalThis.window.getSelection = () => sel;
+    const press = (key, extra = {}) => {
+      mounted.listeners.keydown({
+        key,
+        shiftKey: false,
+        ctrlKey: false,
+        altKey: false,
+        metaKey: false,
+        ...extra,
+        preventDefault() {},
+      });
+    };
+    press("ArrowRight", { shiftKey: true });
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, 1);
+    press("ArrowRight", { shiftKey: true });
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, 2);
+    press("ArrowLeft", { shiftKey: true });
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, 1);
+    press("ArrowRight");
+    assert.equal(view.getState().anchor, 2);
+    assert.equal(view.getState().cursor, 2);
+    press("ArrowRight", { shiftKey: true, ctrlKey: true });
+    assert.equal(view.getState().anchor, 3);
+    assert.equal(view.getState().cursor, 3);
+    press("ArrowRight", { shiftKey: true, altKey: true });
+    assert.equal(view.getState().anchor, 4);
+    assert.equal(view.getState().cursor, 4);
+    press("ArrowRight", { shiftKey: true, metaKey: true });
+    assert.equal(view.getState().anchor, 5);
+    assert.equal(view.getState().cursor, 5);
+    view.destroy();
+
+    const lines = createEditor(mounted.root, "hello fox\nnext\n", 0);
+    const first = textOf("hello fox");
+    const second = textOf("next");
+    let node = first;
+    const lineSel = {
+      rangeCount: 1,
+      modify(_action, direction, granularity) {
+        if (granularity === "line") node = direction === "forward" ? second : first;
+      },
+      getRangeAt() {
+        return { startContainer: node, startOffset: 0, collapsed: true };
+      },
+    };
+    globalThis.window.getSelection = () => lineSel;
+    mounted.listeners.keydown({
+      key: "ArrowDown",
+      shiftKey: true,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      preventDefault() {},
+    });
+    assert.equal(lines.getState().anchor, 0);
+    assert.equal(lines.getState().cursor, 10);
+    assert.equal(selectedSlice(lines.getState()), "hello fox\n");
+    lines.destroy();
+
+    const down = createEditor(mounted.root, "hello fox\nnext\n", 0);
+    node = textOf("hello fox");
+    globalThis.window.getSelection = () => lineSel;
+    mounted.listeners.keydown({
+      key: "ArrowDown",
+      shiftKey: false,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      preventDefault() {},
+    });
+    assert.equal(down.getState().anchor, 10);
+    assert.equal(down.getState().cursor, 10);
+    down.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("ctrl-enter saves a comment body and enter does not", () => {
+  const mounted = mountSheet();
+  const doc = "hello {c1}fox{/c1} two\n\n```comment c1\nhi\n```\n";
+  const transport = holdingTransport();
+  const saves = () => transport.sent.filter((message) => message.type === "edit" && message.op === "comment.save");
+  const press = (target, extra) => {
+    let prevented = false;
+    mounted.aside.listeners.keydown({
+      key: "Enter",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      target,
+      ...extra,
+      preventDefault() {
+        prevented = true;
+      },
+    });
+    return prevented;
+  };
+  try {
+    const view = createEditor(mounted.root, doc, 0, transport);
+    const note = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-text"))[0];
+    mounted.aside.listeners.click({ target: note, preventDefault() {} });
+    const box = mounted.findAll((node) => node.tagName === "TEXTAREA")[0];
+    const author = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-author"))[0];
+    assert.equal(box.classList.contains("md-comment-body"), true);
+    box.value = "yo";
+    assert.equal(press(author, { ctrlKey: true }), false);
+    assert.equal(saves().length, 0);
+    assert.equal(press(box), false);
+    assert.equal(saves().length, 0);
+    assert.equal(box.value, "yo");
+    assert.equal(press(box, { ctrlKey: true }), true);
+    assert.equal(saves().length, 1);
+    assert.equal(saves()[0].id, "c1");
+    assert.equal(saves()[0].body, "yo");
+    view.destroy();
+
+    const again = holdingTransport();
+    const meta = createEditor(mounted.root, doc, 0, again);
+    const metaNote = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-text"))[0];
+    mounted.aside.listeners.click({ target: metaNote, preventDefault() {} });
+    const metaBox = mounted.findAll((node) => node.tagName === "TEXTAREA")[0];
+    metaBox.value = "via meta";
+    let prevented = false;
+    mounted.aside.listeners.keydown({
+      key: "Enter",
+      ctrlKey: false,
+      metaKey: true,
+      altKey: false,
+      shiftKey: false,
+      target: metaBox,
+      preventDefault() {
+        prevented = true;
+      },
+    });
+    const metaSaves = again.sent.filter((message) => message.type === "edit" && message.op === "comment.save");
+    assert.equal(prevented, true);
+    assert.equal(metaSaves.length, 1);
+    assert.equal(metaSaves[0].body, "via meta");
+    meta.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("detail 2 selects the word and detail 3 selects the line", () => {
+  const mounted = mountSheet();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const textOf = (value) => mounted.findAll((node) => node.nodeType === 3 && node.textContent === value)[0];
+  const click = (target, detail) => {
+    mounted.listeners.click({
+      target,
+      clientX: 4,
+      clientY: 4,
+      detail,
+      preventDefault() {},
+    });
+  };
+  try {
+    const view = createEditor(mounted.root, "hello fox two", 0);
+    const text = textOf("hello fox two");
+    assert.equal(text.textContent, "hello fox two");
+    mounted.listeners.mousedown({ clientX: 0, clientY: 0 });
+    mounted.setSelection({
+      rangeCount: 1,
+      anchorNode: text,
+      anchorOffset: 0,
+      focusNode: text,
+      focusOffset: 5,
+      getRangeAt() {
+        return { collapsed: false, commonAncestorContainer: text };
+      },
+    });
+    mounted.listeners.mouseup({ clientX: 24, clientY: 0 });
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, 5);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: text, offset: 7 });
+    click(text, 2);
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, 5);
+    click(text, 2);
+    assert.equal(view.getState().anchor, 6);
+    assert.equal(view.getState().cursor, 9);
+    assert.equal(selectedSlice(view.getState()), "fox");
+    click(text, 1);
+    assert.equal(view.getState().anchor, 7);
+    assert.equal(view.getState().cursor, 7);
+    view.destroy();
+
+    const lined = createEditor(mounted.root, "hello fox two\nnext\n", 0);
+    const lineText = textOf("hello fox two");
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: lineText, offset: 7 });
+    click(lineText, 3);
+    assert.equal(lined.getState().anchor, 0);
+    assert.equal(lined.getState().cursor, 13);
+    assert.equal(selectedSlice(lined.getState()), "hello fox two");
+    lined.destroy();
+
+    const blank = createEditor(mounted.root, "hello\n\nfox\n", 0);
+    const empty = mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.dataset.start === node.parentElement.dataset.end)[0];
+    const at = Number(empty.parentElement.dataset.start);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: empty, offset: 0 });
+    click(empty, 3);
+    assert.equal(blank.getState().anchor, at);
+    assert.equal(blank.getState().cursor, at);
+    assert.equal(selectedSlice(blank.getState()), "");
+    blank.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("the state select and the reporter sit in different columns", () => {
+  const mounted = mountTicketPage();
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(css, /\.ticket-form\s*\{[^}]*display:\s*grid;/);
+  assert.match(css, /\.ticket-form\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(0,\s*1fr\)/);
+  assert.match(css, /\.ticket-form label\.md-ticket-field\s*\{[^}]*display:\s*flex;/);
+  assert.match(css, /\.ticket-form label\.md-ticket-field select\s*\{[^}]*flex:\s*1 1 auto;/);
+  assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.ticket-form\s*\{[^}]*display:\s*block;/);
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0, "bbbbbbbb", ["bbbbbbbb"]);
+    const bravo = ticketFixture("bbbbbbbb", "Bravo", "triaged", T1);
+    transport.deliver({ type: "tickets", tickets: [bravo, alpha] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 1,
+      text: "hello\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    const state = byClass(form, "md-ticket-state")[0];
+    const reporter = byClass(form, "md-ticket-reporter")[0];
+    const left = state.parentElement.parentElement;
+    const right = reporter.parentElement;
+    assert.notEqual(left, right);
+    assert.equal(left.classList.contains("md-ticket-column"), true);
+    assert.equal(right.classList.contains("md-ticket-column"), true);
+    assert.equal(left.parentElement, form);
+    assert.equal(right.parentElement, form);
+    assert.deepEqual(left.childNodes.map((node) => node.className), [
+      "md-ticket-heading",
+      "md-ticket-title-input",
+      "md-ticket-field",
+      "md-ticket-field",
+      "md-ticket-field",
+      "md-ticket-field",
+      "md-ticket-depends",
+    ]);
+    assert.deepEqual(
+      left.childNodes.filter((node) => node.classList.contains("md-ticket-field")).map((node) => node.childNodes[0].textContent),
+      ["State", "Type", "Priority", "Parent"],
+    );
+    for (const label of left.childNodes) {
+      if (!label.classList.contains("md-ticket-field")) continue;
+      assert.equal(label.childNodes[1].tagName, "SELECT");
+    }
+    assert.equal(byClass(left, "md-ticket-depend")[0].type, "checkbox");
+    assert.equal(byClass(right, "md-ticket-state").length, 0);
+    assert.equal(byClass(right, "md-ticket-depend").length, 0);
+    assert.equal(byClass(right, "md-ticket-heading").length, 0);
+    assert.deepEqual(right.childNodes.map((node) => node.className || node.textContent), [
+      "Reporter",
+      "md-ticket-reporter",
+      "Created",
+      "md-ticket-created",
+    ]);
+    const heading = byClass(form, "md-ticket-heading")[0];
+    const input = byClass(form, "md-ticket-title-input")[0];
+    assert.equal(input.hidden, true);
+    heading.listeners.click();
+    assert.equal(input.hidden, false);
+    input.value = "Beta";
+    input.listeners.blur();
+    assert.equal(transport.sent.filter((message) => message.type === "ticket.set").at(-1).title, "Beta");
     view.destroy();
   } finally {
     mounted.restore();
