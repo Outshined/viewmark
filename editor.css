@@ -954,6 +954,19 @@ a.md-link {
 .md-comment-author-row > button.md-comment-link {
   flex: none;
   margin: 0;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+}
+
+.md-comment-author-row > button.md-comment-link svg {
+  display: block;
+  width: 0.85rem;
+  height: 0.85rem;
 }
 
 .md-comment-card button {

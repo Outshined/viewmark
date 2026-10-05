@@ -1335,6 +1335,7 @@ function mountEditor(options = {}) {
   const previousWindow = globalThis.window;
   globalThis.document = {
     createElement: (tag) => makeElement(tag),
+    createElementNS: (_ns, tag) => makeElement(tag),
     createTextNode: (text) => ({ nodeType: 3, textContent: text, length: String(text).length, parentElement: null, childNodes: [] }),
     createTreeWalker: () => ({ nextNode: () => null }),
     createRange: () => ({
@@ -1883,6 +1884,7 @@ function mountSheet() {
   globalThis.document = {
     body,
     createElement: (tag) => makeElement(tag),
+    createElementNS: (_ns, tag) => makeElement(tag),
     createTextNode: (text) => ({ nodeType: 3, textContent: text, length: String(text).length, parentElement: null, childNodes: [] }),
     createTreeWalker: () => ({ nextNode: () => null }),
     createRange: () => ({
@@ -5852,6 +5854,75 @@ test("the state select and the reporter sit in different columns", () => {
   }
 });
 
+test("a clipped ticket select grows by the scroll gap and the three widths stay equal", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  const word = "enhancement".length;
+  const border = 2;
+  const typeContent = word + 4;
+  const gap = typeContent - (word - border);
+  const fitted = `${word + gap}px`;
+  const phrase = word + 29;
+  const create = document.createElement;
+  document.createElement = (tag) => {
+    const el = create(tag);
+    const kind = String(tag).toLowerCase();
+    if (kind === "span") {
+      el.getBoundingClientRect = () => {
+        const text = typeof el.textContent === "string" ? el.textContent : "";
+        const width = text.includes(" ") ? phrase : text.length;
+        return { top: 0, left: 0, right: width, bottom: 10, width, height: 10 };
+      };
+    }
+    if (kind === "select") {
+      Object.defineProperty(el, "clientWidth", {
+        get() {
+          const width = Number.parseFloat(el.styleProps.width);
+          if (!Number.isFinite(width)) return 0;
+          return width - border;
+        },
+      });
+      Object.defineProperty(el, "scrollWidth", {
+        get() {
+          const client = el.clientWidth;
+          if (el.classList.contains("md-ticket-type")) return Math.max(client, typeContent);
+          return client;
+        },
+      });
+    }
+    return el;
+  };
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0);
+    transport.deliver({ type: "tickets", tickets: [alpha] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 1,
+      text: "hello\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    const selects = ["md-ticket-state", "md-ticket-type", "md-ticket-priority"].map((name) => byClass(form, name)[0]);
+    assert.deepEqual(selects.map((select) => select.styleProps.width), [fitted, fitted, fitted]);
+    for (const select of selects) {
+      assert.equal(select.styleProps["max-width"], fitted);
+      assert.equal(select.styleProps.flex, "none");
+      assert.equal(select.scrollWidth <= select.clientWidth, true);
+    }
+    assert.notEqual(fitted, `${phrase}px`);
+    const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    assert.equal(/\.ticket-form label\.md-ticket-field select\s*\{[^}]*flex:\s*1 1 auto;/.test(css), false);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("ticket parent, depends, and children share a completion control", () => {
   const mounted = mountTicketPage();
   const transport = holdingTransport();
@@ -6235,6 +6306,11 @@ test("T-deep-link", () => {
     const copy = row.childNodes.at(-1);
     assert.equal(copy.classList.contains("md-comment-link"), true);
     assert.equal(copy.getAttribute("aria-label"), "Copy link");
+    assert.equal(row.childNodes.length, 2);
+    assert.equal(row.childNodes.filter((node) => node.classList && node.classList.contains("md-comment-link")).length, 1);
+    assert.equal(copy.childNodes.length, 1);
+    assert.equal(copy.childNodes[0].localName, "svg");
+    assert.equal(copy.textContent.includes("Copy link"), false);
     copy.listeners.click({ target: copy, preventDefault() {}, stopPropagation() {} });
     mounted.aside.listeners.click({ target: copy, preventDefault() {} });
     assert.deepEqual(writes, [`https://viewmark.test/app${formatHash({ repo: "viewmark", kind: "comment", path: "docs/a.md", id: "c1" })}`]);

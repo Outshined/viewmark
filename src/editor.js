@@ -470,6 +470,49 @@ function sharedSelectWidth(selects) {
   return best;
 }
 
+function paintSelectWidth(selects, width) {
+  const px = `${width}px`;
+  for (const select of selects) {
+    if (!select || !select.style || typeof select.style.setProperty !== "function") continue;
+    select.style.setProperty("width", px);
+    select.style.setProperty("max-width", px);
+    select.style.setProperty("flex", "none");
+  }
+}
+
+// The measured word is the text. A border-box select is shorter inside the border, so the closed control clips it.
+function selectChromeGap(selects) {
+  let extra = 0;
+  for (const select of selects) {
+    if (!select) continue;
+    const scroll = select.scrollWidth;
+    const client = select.clientWidth;
+    if (typeof scroll !== "number" || typeof client !== "number") continue;
+    if (!Number.isFinite(scroll) || !Number.isFinite(client) || scroll <= client) continue;
+    const gap = scroll - client;
+    if (gap > extra) extra = gap;
+  }
+  return extra;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function linkIcon() {
+  if (typeof document === "undefined" || typeof document.createElementNS !== "function") return null;
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "2");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  path.setAttribute("d", "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71");
+  svg.appendChild(path);
+  return svg;
+}
+
 const newFileBindings = new WeakMap();
 const ticketBindings = new WeakMap();
 const repoBindings = new WeakMap();
@@ -1558,7 +1601,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const link = document.createElement("button");
     link.type = "button";
     link.className = "md-comment-link";
-    link.textContent = "Copy link";
+    const icon = linkIcon();
+    if (icon) link.appendChild(icon);
     if (typeof link.setAttribute === "function") {
       link.setAttribute("type", "button");
       link.setAttribute("aria-label", "Copy link");
@@ -3344,15 +3388,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
     const sized = [stateField.select, typeField.select, priorityField.select];
     const selectWidth = sharedSelectWidth(sized);
-    if (selectWidth > 0) {
-      const px = `${selectWidth}px`;
-      for (const select of sized) {
-        if (!select.style || typeof select.style.setProperty !== "function") continue;
-        select.style.setProperty("width", px);
-        select.style.setProperty("max-width", px);
-        select.style.setProperty("flex", "none");
-      }
-    }
+    if (selectWidth > 0) paintSelectWidth(sized, selectWidth);
 
     const parentField = document.createElement("div");
     parentField.className = "md-ticket-field md-ticket-parent";
@@ -3454,6 +3490,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       relied,
     );
     form.replaceChildren(fields, facts);
+    if (selectWidth > 0) {
+      const extra = selectChromeGap(sized);
+      if (extra > 0) paintSelectWidth(sized, selectWidth + extra);
+    }
   }
 
   function revertTicketForm() {
