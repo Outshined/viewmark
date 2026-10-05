@@ -4866,7 +4866,8 @@ test("T-ticket-rows", () => {
   assert.match(css, /\.ticket-tree\s*\{[^}]*height:\s*100%/);
   assert.match(css, /\.ticket-tree\s*\{[^}]*overflow:\s*auto/);
   assert.match(css, /\.ticket-tree\s*\{[^}]*scrollbar-gutter:\s*stable/);
-  assert.match(css, /\.ticket-tree\s*\{[^}]*background:\s*#242320/);
+  assert.match(css, /\.ticket-tree\s*\{[^}]*background:\s*#1c1b19/);
+  assert.match(css, /\.ticket-tree \.md-ticket-columns\s*\{[^}]*background:\s*#1c1b19/);
   assert.match(css, /\.ticket-tree\s*\{[^}]*border:\s*1px solid #4a463f/);
   const gutterTracks = /grid-template-columns:\s*1\.1em 8rem minmax\(0,\s*1fr\) 5\.5rem 7\.5rem 8\.5rem/;
   const fieldTracks = /grid-template-columns:\s*8rem minmax\(0,\s*1fr\) 5\.5rem 7\.5rem 8\.5rem/;

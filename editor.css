@@ -425,7 +425,7 @@ nav.files .md-ticket-filter-menu input {
   display: grid;
   grid-template-columns: 1.1em 8rem minmax(0, 1fr) 5.5rem 7.5rem 8.5rem;
   column-gap: 0.75rem;
-  background: #242320;
+  background: #1c1b19;
   white-space: nowrap;
 }
 
@@ -463,7 +463,7 @@ nav.files .md-ticket-filter-menu input {
   height: 100%;
   overflow: auto;
   scrollbar-gutter: stable;
-  background: #242320;
+  background: #1c1b19;
   border: 1px solid #4a463f;
 }
 
