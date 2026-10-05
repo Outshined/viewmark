@@ -22,6 +22,7 @@ import {
   findSpans,
   commentThreads,
   commentNotes,
+  splitCommentNote,
   orderVisibleComments,
   lineIndexAt,
 } from "./doc.js";
@@ -1595,7 +1596,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!id) return;
     const index = Number(text.dataset.note || 0);
     const thread = threadById(id);
-    const stored = thread ? (commentNotes(thread.body)[index] || "") : "";
+    const stored = thread ? splitCommentNote(commentNotes(thread.body)[index] || "").text : "";
     noteDrafts.delete(draftKey(id, index));
     editingNotes.add(draftKey(id, index));
     currentCommentId = id;
@@ -1659,14 +1660,34 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return commentThreads(state.doc).find((item) => item.id === id) || null;
   }
 
+  function stampedNote(text) {
+    const name = selfName();
+    if (!name) return text;
+    return `@${new Date().toISOString()} ${name}\n${text}`;
+  }
+
+  function editedNote(existing, text) {
+    const prior = splitCommentNote(existing);
+    if (!prior.time || !prior.author) return text;
+    return `@${prior.time} ${prior.author}\n${text}`;
+  }
+
+  // The card shows the minute. Seconds stay on the datetime attribute.
+  function formatCommentTime(iso) {
+    return String(iso).replace("T", " ").slice(0, 16);
+  }
+
   function onSave(box) {
     const id = box.dataset.comment;
     const index = Number(box.dataset.note);
     const thread = threadById(id);
     if (!thread) return;
     const notes = commentNotes(thread.body);
-    if (box.dataset.reply === "true") notes.push(box.value);
-    else notes[index] = box.value;
+    const text = typeof box.value === "string" ? box.value : "";
+    const stamp = box.dataset.fresh === "true" || box.dataset.reply === "true";
+    const note = stamp ? stampedNote(text) : editedNote(notes[index] || "", text);
+    if (box.dataset.reply === "true") notes.push(note);
+    else notes[index] = note;
     const body = notes.join("\n::\n");
     if (box.dataset.reply === "true") replyDrafts.delete(id);
     unsavedThreads.delete(id);
@@ -1748,13 +1769,23 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (cancel) parent.removeChild(cancel);
   }
 
-  function appendAuthor(parent, id, index, withResolve) {
+  function appendAuthor(parent, id, index, withResolve, name, time) {
     const row = document.createElement("div");
     row.className = "md-comment-author-row";
+    const by = document.createElement("div");
+    by.className = "md-comment-by";
     const author = document.createElement("span");
     author.className = "md-comment-author";
-    author.textContent = selfName();
-    row.appendChild(author);
+    author.textContent = name || "";
+    by.appendChild(author);
+    if (time) {
+      const clock = document.createElement("time");
+      clock.className = "md-comment-time";
+      if (typeof clock.setAttribute === "function") clock.setAttribute("datetime", time);
+      clock.textContent = formatCommentTime(time);
+      by.appendChild(clock);
+    }
+    row.appendChild(by);
     if (withResolve) {
       row.appendChild(makeIconButton("Resolve", "M20 6 9 17l-5-5", "icon-btn resolve", () => onResolve(id)));
     }
@@ -1816,25 +1847,26 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (comment.id === currentCommentId) card.classList.add("md-comment-current");
     if (comment.resolved) card.dataset.resolved = "true";
     if (unsavedThreads.has(comment.id)) {
-      appendAuthor(card, comment.id, 0, false);
-      appendBody(card, comment.id, 0, commentNotes(comment.body)[0] || "", "fresh");
+      appendAuthor(card, comment.id, 0, false, selfName(), "");
+      appendBody(card, comment.id, 0, splitCommentNote(commentNotes(comment.body)[0] || "").text, "fresh");
       if (comment.id !== currentCommentId) setCommentActions(card, false);
       return card;
     }
     const notes = commentNotes(comment.body);
-    notes.forEach((text, index) => {
+    notes.forEach((raw, index) => {
+      const parts = splitCommentNote(raw);
       const note = document.createElement("div");
       note.className = "md-comment-note";
-      appendAuthor(note, comment.id, index, index === 0);
+      appendAuthor(note, comment.id, index, index === 0, parts.author, parts.time);
       const mode = editingNotes.has(draftKey(comment.id, index)) ? "edit" : "saved";
-      appendBody(note, comment.id, index, text, mode);
+      appendBody(note, comment.id, index, parts.text, mode);
       card.appendChild(note);
     });
     if (replyDrafts.has(comment.id)) {
       const note = document.createElement("div");
       note.className = "md-comment-note";
       const index = notes.length;
-      appendAuthor(note, comment.id, index, false);
+      appendAuthor(note, comment.id, index, false, selfName(), "");
       appendBody(note, comment.id, index, "", "reply");
       card.appendChild(note);
     }

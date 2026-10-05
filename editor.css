@@ -1095,26 +1095,33 @@ a.md-link {
   margin: 0 0 0.35rem;
 }
 
-.md-comment-author {
-  display: block;
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 1.25em;
-  margin: 0 0 0.35rem;
-  font: inherit;
-  line-height: 1.45;
-  color: inherit;
-  background: #1c1b19;
-  border: 1px solid #4a463f;
-  border-radius: 4px;
-  padding: 0.15rem 0.45rem;
+.md-comment-author-row > .md-comment-by {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
 
-.md-comment-author-row .md-comment-author {
-  flex: 1 1 auto;
-  width: auto;
-  min-width: 0;
+.md-comment-author {
+  display: block;
+  width: 100%;
+  min-height: 1.25em;
   margin: 0;
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  line-height: 1.45;
+  color: inherit;
+}
+
+.md-comment-time {
+  display: block;
+  margin: 0;
+  padding: 0;
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.2;
 }
 
 .md-comment-author-row > button.md-comment-link {

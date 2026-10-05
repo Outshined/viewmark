@@ -233,6 +233,22 @@ export function commentNotes(body) {
   return notes;
 }
 
+const NOTE_HEADER = /^@(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z) (.+)$/;
+
+// A poster line is only the first line. A later @ line is note text.
+export function splitCommentNote(note) {
+  const raw = typeof note === "string" ? note : "";
+  const breakAt = raw.indexOf("\n");
+  const first = breakAt === -1 ? raw : raw.slice(0, breakAt);
+  const match = NOTE_HEADER.exec(first);
+  if (!match) return { time: "", author: "", text: raw };
+  return {
+    time: match[1],
+    author: match[2],
+    text: breakAt === -1 ? "" : raw.slice(breakAt + 1),
+  };
+}
+
 function hiddenFenceRanges(doc) {
   return fenceContentRanges(doc).map((fence) => ({ start: fence.start, end: fence.contentEnd }));
 }

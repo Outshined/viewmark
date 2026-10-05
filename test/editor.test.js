@@ -24,6 +24,8 @@ import {
   formatHash,
   parseHash,
 } from "../src/editor.js";
+import { splitCommentNote } from "../src/doc.js";
+import { createMemoryTransport } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
 const B = "# Title\n\n";
@@ -2054,7 +2056,12 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.match(css, /dialog\.md-login button\[type="submit"\]\s*\{[^}]*background:\s*#2a2826/);
     assert.match(css, /dialog\.md-login button\[type="submit"\]\s*\{[^}]*color:\s*#e7e2d8/);
     assert.match(css, /dialog\.md-login::backdrop\s*\{[^}]*background:\s*rgba\(0,\s*0,\s*0,\s*0\.55\)/);
-    assert.match(css, /\.md-comment-author\s*\{[^}]*min-height:\s*1\.25em;/);
+    const authorRule = css.match(/\.md-comment-author\s*\{[^}]*\}/);
+    assert.ok(authorRule);
+    assert.match(authorRule[0], /min-height:\s*1\.25em/);
+    assert.match(authorRule[0], /font-weight:\s*700/);
+    assert.equal(authorRule[0].includes("background"), false);
+    assert.equal(authorRule[0].includes("border"), false);
     assert.match(css, /\.md-comment-text\s*\{[^}]*white-space:\s*pre-wrap;/);
     assert.match(css, /\.md-comment-text\s*\{[^}]*overflow-wrap:\s*anywhere;/);
     assert.match(css, /\.md-comment-text\s*\{[^}]*cursor:\s*text;/);
@@ -2182,8 +2189,12 @@ test("comment cards edit the thread and line up with the highlight", () => {
     const savedCard = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"))[0];
     const savedNote = savedCard.childNodes[0];
     const savedRow = savedNote.childNodes[0];
-    const savedAuthor = savedRow.childNodes[0];
+    const savedBy = savedRow.childNodes[0];
+    const savedAuthor = savedBy.childNodes[0];
     assert.equal(savedRow.classList.contains("md-comment-author-row"), true);
+    assert.equal(savedBy.tagName, "DIV");
+    assert.equal(savedBy.classList.contains("md-comment-by"), true);
+    assert.equal(savedBy.childNodes.length, 1);
     assert.equal(savedAuthor.tagName, "SPAN");
     assert.equal(savedAuthor.textContent, "");
     assert.equal(savedAuthor.classList.contains("md-comment-author"), true);
@@ -2426,9 +2437,12 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     let card = cards()[0];
     const idleRow = card.childNodes[0].childNodes[0];
     assert.equal(idleRow.classList.contains("md-comment-author-row"), true);
-    assert.equal(idleRow.childNodes[0].tagName, "SPAN");
-    assert.equal(idleRow.childNodes[0].textContent, "");
-    assert.equal(idleRow.childNodes[0].classList.contains("md-comment-author"), true);
+    assert.equal(idleRow.childNodes[0].tagName, "DIV");
+    assert.equal(idleRow.childNodes[0].classList.contains("md-comment-by"), true);
+    assert.equal(idleRow.childNodes[0].childNodes.length, 1);
+    assert.equal(idleRow.childNodes[0].childNodes[0].tagName, "SPAN");
+    assert.equal(idleRow.childNodes[0].childNodes[0].textContent, "");
+    assert.equal(idleRow.childNodes[0].childNodes[0].classList.contains("md-comment-author"), true);
     assert.equal(idleRow.childNodes[1].getAttribute("aria-label"), "Resolve");
     assert.equal(idleRow.childNodes[1].hidden, true);
     assert.equal(idleRow.childNodes.at(-1).getAttribute("aria-label"), "Copy link");
@@ -2485,8 +2499,11 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     card = cards()[0];
     const reply = card.childNodes.at(-3);
     assert.equal(reply.childNodes[0].classList.contains("md-comment-author-row"), true);
-    assert.equal(reply.childNodes[0].childNodes[0].tagName, "SPAN");
-    assert.equal(reply.childNodes[0].childNodes[0].textContent, "");
+    assert.equal(reply.childNodes[0].childNodes[0].tagName, "DIV");
+    assert.equal(reply.childNodes[0].childNodes[0].classList.contains("md-comment-by"), true);
+    assert.equal(reply.childNodes[0].childNodes[0].childNodes[0].tagName, "SPAN");
+    assert.equal(reply.childNodes[0].childNodes[0].childNodes[0].textContent, "");
+    assert.equal(reply.childNodes[0].childNodes[0].childNodes.length, 1);
     assert.equal(reply.childNodes[0].childNodes.length, 2);
     assert.equal(reply.childNodes[0].childNodes.at(-1).getAttribute("aria-label"), "Copy link");
     assert.equal(reply.childNodes[1].tagName, "TEXTAREA");
@@ -2501,7 +2518,7 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     pressIn(card, "Reply");
     card = cards()[0];
     const replyAgain = card.childNodes.at(-3);
-    assert.equal(replyAgain.childNodes[0].childNodes[0].tagName, "SPAN");
+    assert.equal(replyAgain.childNodes[0].childNodes[0].childNodes[0].tagName, "SPAN");
     replyAgain.childNodes[1].value = "more";
     mounted.aside.listeners.input({ target: replyAgain.childNodes[1] });
     const undoReply = saved.getState().undo.length;
@@ -2998,7 +3015,7 @@ test("comment actions stay hidden until the card is current", () => {
     const named = createEditor(mounted.root, knownDoc, 0, adaTransport);
     const adaAuthor = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-author"))[0];
     assert.equal(adaAuthor.tagName, "SPAN");
-    assert.equal(adaAuthor.textContent, "Ada");
+    assert.equal(adaAuthor.textContent, "");
     assert.equal(named.getState().doc, knownDoc);
     assert.equal(named.getState().doc.includes("Ada"), false);
     named.destroy();
@@ -3007,7 +3024,11 @@ test("comment actions stay hidden until the card is current", () => {
     const card = cards()[0];
     assert.equal(card.classList.contains("md-comment-current"), false);
     const row = card.childNodes[0].childNodes[0];
-    const author = row.childNodes[0];
+    const by = row.childNodes[0];
+    const author = by.childNodes[0];
+    assert.equal(by.tagName, "DIV");
+    assert.equal(by.classList.contains("md-comment-by"), true);
+    assert.equal(by.childNodes.length, 1);
     assert.equal(author.tagName, "SPAN");
     assert.equal(author.classList.contains("md-comment-author"), true);
     assert.equal(author.textContent, "");
@@ -3033,7 +3054,8 @@ test("comment actions stay hidden until the card is current", () => {
     mounted.aside.listeners.click({ target: card, preventDefault() {} });
     assert.equal(card.classList.contains("md-comment-current"), true);
     for (const button of [resolve, reply, remove, link]) assert.equal(button.hidden, false);
-    assert.equal(row.childNodes[0], author);
+    assert.equal(row.childNodes[0], by);
+    assert.equal(by.childNodes[0], author);
 
     const line = mounted.root.childNodes[0];
     mounted.listeners.click({ target: line, clientX: 1, clientY: 1, preventDefault() {} });
@@ -3086,6 +3108,214 @@ test("comment actions stay hidden until the card is current", () => {
     assert.equal(labeled(idle, "Resolve")[0].hidden, false);
     assert.equal(labeled(idle, "Copy link").every((button) => button.hidden === false), true);
     paired.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a comment note keeps the poster who saved it", () => {
+  assert.deepEqual(splitCommentNote("hi"), { time: "", author: "", text: "hi" });
+  assert.deepEqual(splitCommentNote(""), { time: "", author: "", text: "" });
+  assert.deepEqual(splitCommentNote(null), { time: "", author: "", text: "" });
+  assert.deepEqual(splitCommentNote("@2026-10-04T20:30:22.000Z Grok\nquestion"), {
+    time: "2026-10-04T20:30:22.000Z",
+    author: "Grok",
+    text: "question",
+  });
+  assert.deepEqual(splitCommentNote("@2026-10-04T20:30:22.000Z Ada Lovelace\nquestion\nmore"), {
+    time: "2026-10-04T20:30:22.000Z",
+    author: "Ada Lovelace",
+    text: "question\nmore",
+  });
+  assert.deepEqual(splitCommentNote("@2026-10-04T20:30:22.000Z Grok"), {
+    time: "2026-10-04T20:30:22.000Z",
+    author: "Grok",
+    text: "",
+  });
+  assert.deepEqual(splitCommentNote("@2026-10-04T20:30:22.000Z Grok\n"), {
+    time: "2026-10-04T20:30:22.000Z",
+    author: "Grok",
+    text: "",
+  });
+  assert.deepEqual(splitCommentNote("question\n@2026-10-04T20:30:22.000Z Grok"), {
+    time: "",
+    author: "",
+    text: "question\n@2026-10-04T20:30:22.000Z Grok",
+  });
+  assert.deepEqual(splitCommentNote("@2026-10-04T20:30:22.000Z"), {
+    time: "",
+    author: "",
+    text: "@2026-10-04T20:30:22.000Z",
+  });
+  assert.deepEqual(splitCommentNote("@2026-10-04T20:30:22Z Grok\nquestion"), {
+    time: "",
+    author: "",
+    text: "@2026-10-04T20:30:22Z Grok\nquestion",
+  });
+
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const timeRule = css.match(/\.md-comment-time\s*\{[^}]*\}/);
+  assert.ok(timeRule);
+  assert.match(timeRule[0], /font-size:\s*0\.75rem/);
+  assert.match(timeRule[0], /font-weight:\s*400/);
+  assert.equal(timeRule[0].includes("background"), false);
+  assert.equal(timeRule[0].includes("border"), false);
+
+  const mounted = mountSheet();
+  const authors = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-author"));
+  const times = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-time"));
+  const texts = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-text"));
+  const areas = () => mounted.findAll((node) => node.tagName === "TEXTAREA");
+  const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+  const press = (label) => {
+    const button = mounted.findAll((node) => node.tagName === "BUTTON" && (
+      node.textContent === label || (typeof node.getAttribute === "function" && node.getAttribute("aria-label") === label)
+    )).at(-1);
+    assert.ok(button, label);
+    button.listeners.click({ target: button, preventDefault() {} });
+  };
+  const named = (doc, name) => {
+    const memory = createMemoryTransport(doc, 0);
+    memory.username = name;
+    return createEditor(mounted.root, doc, 0, memory);
+  };
+  try {
+    globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+    const grok = "@2026-10-04T20:30:22.000Z Grok\nquestion";
+    const paul = "@2026-10-04T21:15:00.000Z Paul\nreply";
+    const doc = `See {c1}fox{/c1}.\n\n\`\`\`comment c1\n${grok}\n::\n${paul}\n\`\`\`\n`;
+    const view = named(doc, "Ada");
+    assert.deepEqual(authors().map((node) => node.textContent), ["Grok", "Paul"]);
+    assert.deepEqual(times().map((node) => node.tagName), ["TIME", "TIME"]);
+    assert.deepEqual(times().map((node) => node.textContent), ["2026-10-04 20:30", "2026-10-04 21:15"]);
+    assert.deepEqual(times().map((node) => node.getAttribute("datetime")), [
+      "2026-10-04T20:30:22.000Z",
+      "2026-10-04T21:15:00.000Z",
+    ]);
+    assert.deepEqual(texts().map((node) => node.textContent), ["question", "reply"]);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().doc.includes("Ada"), false);
+    const firstBy = cards()[0].childNodes[0].childNodes[0].childNodes[0];
+    assert.equal(firstBy.classList.contains("md-comment-by"), true);
+    assert.equal(firstBy.childNodes[0].classList.contains("md-comment-author"), true);
+    assert.equal(firstBy.childNodes[1].classList.contains("md-comment-time"), true);
+    const firstRow = firstBy.parentElement;
+    assert.equal(firstRow.childNodes[0], firstBy);
+    assert.equal(firstRow.childNodes[1].getAttribute("aria-label"), "Resolve");
+    assert.equal(firstRow.childNodes.at(-1).getAttribute("aria-label"), "Copy link");
+
+    press("Reply");
+    assert.equal(view.getState().doc, doc);
+    const reply = cards()[0].childNodes.at(-3);
+    const replyBy = reply.childNodes[0].childNodes[0];
+    assert.equal(replyBy.classList.contains("md-comment-by"), true);
+    assert.equal(replyBy.childNodes.length, 1);
+    assert.equal(replyBy.childNodes[0].textContent, "Ada");
+    assert.equal(authors()[0].textContent, "Grok");
+    assert.equal(authors()[1].textContent, "Paul");
+    assert.equal(times().length, 2);
+    reply.childNodes[1].value = "thanks";
+    press("Save");
+    const saved = view.getState().doc;
+    const stamped = saved.match(/@(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z) Ada\nthanks/);
+    assert.ok(stamped);
+    assert.equal(saved.includes("@2026-10-04T20:30:22.000Z Grok\nquestion"), true);
+    assert.equal(saved.includes("@2026-10-04T21:15:00.000Z Paul\nreply"), true);
+    assert.deepEqual(authors().map((node) => node.textContent), ["Grok", "Paul", "Ada"]);
+    assert.equal(times()[2].getAttribute("datetime"), stamped[1]);
+    assert.equal(times()[2].textContent, stamped[1].replace("T", " ").slice(0, 16));
+    assert.deepEqual(texts().map((node) => node.textContent), ["question", "reply", "thanks"]);
+
+    mounted.aside.listeners.click({ target: texts()[0], preventDefault() {} });
+    const box = areas()[0];
+    assert.equal(box.value, "question");
+    assert.equal(box.value.includes("@"), false);
+    assert.equal(authors()[0].textContent, "Grok");
+    box.value = "yo";
+    press("Save");
+    const edited = view.getState().doc;
+    assert.equal(edited.includes("@2026-10-04T20:30:22.000Z Grok\nyo\n"), true);
+    assert.equal(edited.split("::")[0].includes("Ada"), false);
+    assert.equal(edited.includes("@2026-10-04T21:15:00.000Z Paul\nreply"), true);
+    assert.equal(edited.includes(`${stamped[1]} Ada\nthanks`), true);
+    assert.equal(authors()[0].textContent, "Grok");
+    assert.equal(times()[0].textContent, "2026-10-04 20:30");
+    assert.equal(times()[0].getAttribute("datetime"), "2026-10-04T20:30:22.000Z");
+    assert.equal(texts()[0].textContent, "yo");
+    view.destroy();
+
+    const plain = "See {c1}fox{/c1}.\n\n```comment c1\nhi\n```\n";
+    const headerless = named(plain, "Ada");
+    assert.equal(authors()[0].textContent, "");
+    assert.equal(times().length, 0);
+    assert.equal(headerless.getState().doc.includes("Ada"), false);
+    mounted.aside.listeners.click({ target: texts()[0], preventDefault() {} });
+    assert.equal(areas()[0].value, "hi");
+    areas()[0].value = "yo";
+    press("Save");
+    assert.equal(headerless.getState().doc, "See {c1}fox{/c1}.\n\n```comment c1\nyo\n```\n");
+    assert.equal(headerless.getState().doc.includes("@"), false);
+    assert.equal(authors()[0].textContent, "");
+    headerless.destroy();
+
+    const laterDoc = "See {c1}fox{/c1}.\n\n```comment c1\nhi\n@2026-10-04T20:30:22.000Z Grok\n```\n";
+    const later = named(laterDoc, "Ada");
+    assert.equal(authors()[0].textContent, "");
+    assert.equal(times().length, 0);
+    assert.equal(texts()[0].textContent, "hi\n@2026-10-04T20:30:22.000Z Grok");
+    assert.equal(later.getState().doc, laterDoc);
+    later.destroy();
+
+    const fresh = named("hello fox two deer\n", "Ada");
+    const text = mounted.root.childNodes[0].childNodes[0].childNodes[0];
+    mounted.listeners.mousedown({ clientX: 0, clientY: 0 });
+    mounted.setSelection({
+      rangeCount: 1,
+      anchorNode: text,
+      anchorOffset: 6,
+      focusNode: text,
+      focusOffset: 9,
+      getRangeAt() {
+        return {
+          collapsed: false,
+          commonAncestorContainer: text,
+          getClientRects() {
+            return [{ top: 12, left: 0, right: 40, bottom: 28, width: 40, height: 16 }];
+          },
+        };
+      },
+    });
+    mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
+    const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    add.listeners.mousedown({ preventDefault() {} });
+    assert.equal(authors()[0].textContent, "Ada");
+    assert.equal(times().length, 0);
+    assert.equal(areas()[0].value, "");
+    areas()[0].value = "hello";
+    press("Save");
+    const freshDoc = fresh.getState().doc;
+    const freshStamp = freshDoc.match(/@(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z) Ada\nhello/);
+    assert.ok(freshStamp);
+    assert.equal(authors()[0].textContent, "Ada");
+    assert.equal(times().length, 1);
+    assert.equal(times()[0].getAttribute("datetime"), freshStamp[1]);
+    assert.equal(times()[0].textContent, freshStamp[1].replace("T", " ").slice(0, 16));
+    assert.equal(texts()[0].textContent, "hello");
+    press("Reply");
+    const unsaved = cards()[0].childNodes.at(-3);
+    const unsavedBy = unsaved.childNodes[0].childNodes[0];
+    assert.equal(unsavedBy.childNodes[0].textContent, "Ada");
+    assert.equal(unsavedBy.childNodes.length, 1);
+    assert.equal(authors()[0].textContent, "Ada");
+    assert.equal(times().length, 1);
+    assert.equal(fresh.getState().doc, freshDoc);
+    unsaved.childNodes[1].value = "more";
+    press("Save");
+    assert.equal(fresh.getState().doc.includes(`${freshStamp[1]} Ada\nhello`), true);
+    assert.match(fresh.getState().doc, /@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z Ada\nmore/);
+    assert.deepEqual(authors().map((node) => node.textContent), ["Ada", "Ada"]);
+    fresh.destroy();
+    mounted.setSelection(null);
   } finally {
     mounted.restore();
   }
@@ -7030,7 +7260,8 @@ test("T-deep-link", () => {
     assert.equal(docMenuOf(mounted.aside).checkbox.checked, true);
     assert.equal(opens().length, 1);
     const row = card.childNodes[0].childNodes[0];
-    assert.equal(row.childNodes[0].classList.contains("md-comment-author"), true);
+    assert.equal(row.childNodes[0].classList.contains("md-comment-by"), true);
+    assert.equal(row.childNodes[0].childNodes[0].classList.contains("md-comment-author"), true);
     const copy = row.childNodes.at(-1);
     assert.equal(copy.classList.contains("md-comment-link"), true);
     assert.equal(copy.classList.contains("icon-btn"), true);
