@@ -3423,7 +3423,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       showTicketDrawer();
       const drawer = ticketDrawerEl();
       // Fixed positioning replaces the pane box, so read it before the wide class.
-      // Width is 100% until then. Pin the measured pixels first, or 80vw transitions from 100vw.
+      // Width is 100% until then. One frame still paints nothing, so 80vw waits
+      // for the frame after the measured pixels or the transition starts at 100vw.
       const rect = drawer && typeof drawer.getBoundingClientRect === "function" ? drawer.getBoundingClientRect() : null;
       if (rect) {
         setStyle(drawer, "top", `${rect.top}px`);
@@ -3434,7 +3435,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (drawer && drawer.classList) drawer.classList.add("md-ticket-wide");
       if (!drawer || alreadyWide) return;
       const widen = () => setStyle(drawer, "width", "80vw");
-      if (typeof globalThis.requestAnimationFrame === "function") globalThis.requestAnimationFrame(widen);
+      const raf = globalThis.requestAnimationFrame;
+      if (typeof raf === "function") raf(() => raf(widen));
       else widen();
     };
     ticketDrawerLeave = () => {

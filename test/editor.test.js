@@ -4981,6 +4981,11 @@ test("T-ticket-rows", () => {
       assert.equal(drawer.styleProps.height, "10px");
       assert.equal(drawer.styleProps.width, "20px");
       assert.equal(typeof frame, "function");
+      const queued = frame;
+      frame();
+      assert.notEqual(frame, queued);
+      assert.equal(typeof frame, "function");
+      assert.equal(drawer.styleProps.width, "20px");
       frame();
       assert.equal(drawer.styleProps.width, "80vw");
       frame = null;
