@@ -4967,37 +4967,18 @@ test("T-ticket-rows", () => {
       assert.equal(button.type, "button");
       assert.equal(button.childNodes.some((node) => String(node.tagName || "").toLowerCase() === "svg"), false);
     }
-    const previousFrame = globalThis.requestAnimationFrame;
-    let frame = null;
-    globalThis.requestAnimationFrame = (cb) => {
-      frame = cb;
-    };
-    try {
-      block.listeners.pointerenter();
-      assert.equal(drawer.hidden, false);
-      assert.equal(drawer.hasAttribute("hidden"), false);
-      assert.equal(drawer.classList.contains("md-ticket-wide"), true);
-      assert.equal(drawer.styleProps.top, "0px");
-      assert.equal(drawer.styleProps.height, "10px");
-      assert.equal(drawer.styleProps.width, "20px");
-      assert.equal(typeof frame, "function");
-      const queued = frame;
-      frame();
-      assert.notEqual(frame, queued);
-      assert.equal(typeof frame, "function");
-      assert.equal(drawer.styleProps.width, "20px");
-      frame();
-      assert.equal(drawer.styleProps.width, "80vw");
-      frame = null;
-      drawer.styleProps.width = "12px";
-      block.listeners.pointerenter();
-      assert.equal(frame, null);
-      assert.equal(drawer.styleProps.width, "12px");
-      drawer.styleProps.width = "80vw";
-    } finally {
-      if (previousFrame === undefined) delete globalThis.requestAnimationFrame;
-      else globalThis.requestAnimationFrame = previousFrame;
-    }
+    block.listeners.pointerenter();
+    assert.equal(drawer.hidden, false);
+    assert.equal(drawer.hasAttribute("hidden"), false);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
+    assert.equal(drawer.styleProps.top, "0px");
+    assert.equal(drawer.styleProps.height, "10px");
+    assert.equal(drawer.styleProps.width, "80vw");
+    assert.equal(drawer.styleProps.transition, "");
+    drawer.styleProps.width = "12px";
+    block.listeners.pointerenter();
+    assert.equal(drawer.styleProps.width, "12px");
+    assert.equal(drawer.styleProps.transition, "");
     assert.equal(drawer.hasAttribute("hidden"), false);
     const plus = byClass(mounted.nav, "md-new-ticket")[0];
     assert.equal(plus.parentElement, head);
@@ -5097,11 +5078,13 @@ test("T-ticket-rows", () => {
       assert.equal(pending.length, 1);
       assert.equal(pending[0].ms, 200);
       const hide = pending.pop();
+      drawer.styleProps.transition = "none";
       hide.fn();
       assert.equal(drawer.classList.contains("md-ticket-wide"), false);
       assert.equal(drawer.styleProps.top, "");
       assert.equal(drawer.styleProps.height, "");
       assert.equal(drawer.styleProps.width, "");
+      assert.equal(drawer.styleProps.transition, "");
     } finally {
       globalThis.setTimeout = realSetTimeout;
       globalThis.clearTimeout = realClearTimeout;
@@ -5238,6 +5221,7 @@ test("T-ticket-drawer", () => {
     assert.equal(drawer.styleProps.top, "");
     assert.equal(drawer.styleProps.height, "");
     assert.equal(drawer.styleProps.width, "");
+    assert.equal(drawer.styleProps.transition, "");
     block.listeners.pointerenter();
     assert.equal(drawer.hidden, false);
     assert.equal(drawer.classList.contains("md-ticket-wide"), true);

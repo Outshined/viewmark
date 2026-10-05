@@ -3380,6 +3380,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       setStyle(drawer, "top", "");
       setStyle(drawer, "height", "");
       setStyle(drawer, "width", "");
+      setStyle(drawer, "transition", "");
     }, 200);
   }
 
@@ -3422,24 +3423,23 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     ticketDrawerEnter = () => {
       showTicketDrawer();
       const drawer = ticketDrawerEl();
-      // Fixed positioning replaces the pane box, so read it before the wide class.
-      // Width is 100% until then. One frame still paints nothing, so 80vw waits
-      // for the frame after the measured pixels or the transition starts at 100vw.
-      const rect = drawer && typeof drawer.getBoundingClientRect === "function" ? drawer.getBoundingClientRect() : null;
+      if (!drawer) return;
+      const alreadyWide = Boolean(drawer.classList && drawer.classList.contains("md-ticket-wide"));
+      // Fixed positioning replaces the pane box, so read that box before the wide class.
+      // An inline width while transition is on starts from 100%. Once fixed, that
+      // 100% is the viewport, so commit the measured width with the transition off.
+      const rect = typeof drawer.getBoundingClientRect === "function" ? drawer.getBoundingClientRect() : null;
       if (rect) {
         setStyle(drawer, "top", `${rect.top}px`);
         setStyle(drawer, "height", `${rect.height}px`);
       }
-      const alreadyWide = Boolean(drawer && drawer.classList && drawer.classList.contains("md-ticket-wide"));
-      if (!alreadyWide && rect) setStyle(drawer, "width", `${rect.width}px`);
-      if (drawer && drawer.classList) drawer.classList.add("md-ticket-wide");
-      if (!drawer || alreadyWide) return;
-      const widen = () => setStyle(drawer, "width", "80vw");
-      if (typeof globalThis.requestAnimationFrame === "function") {
-        globalThis.requestAnimationFrame(() => {
-          globalThis.requestAnimationFrame(widen);
-        });
-      } else widen();
+      if (alreadyWide) return;
+      setStyle(drawer, "transition", "none");
+      if (rect) setStyle(drawer, "width", `${rect.width}px`);
+      if (drawer.classList) drawer.classList.add("md-ticket-wide");
+      void drawer.offsetWidth;
+      setStyle(drawer, "transition", "");
+      setStyle(drawer, "width", "80vw");
     };
     ticketDrawerLeave = () => {
       scheduleHideTicketDrawer();
