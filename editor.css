@@ -472,7 +472,7 @@ nav.files .md-ticket-filter-menu input {
   position: fixed;
   left: 0;
   z-index: 4;
-  width: 100vw;
+  width: 80vw;
   transition: width 0.5s, left 0.5s;
 }
 

@@ -4847,7 +4847,7 @@ test("T-ticket-rows", () => {
   const wideRule = css.match(/\.md-ticket-wide\s*\{[^}]*\}/)[0];
   assert.match(wideRule, /position:\s*fixed/);
   assert.match(wideRule, /left:\s*0/);
-  assert.match(wideRule, /width:\s*100vw/);
+  assert.match(wideRule, /width:\s*80vw/);
   assert.match(wideRule, /z-index:\s*4/);
   assert.match(wideRule, /transition:\s*width 0\.5s,\s*left 0\.5s/);
   assert.equal(/top:\s*0/.test(wideRule), false);
