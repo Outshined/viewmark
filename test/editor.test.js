@@ -5182,14 +5182,50 @@ test("shift-arrow keeps the anchor and an unshifted arrow collapses", () => {
     const view = createEditor(mounted.root, "hello fox", 0);
     const text = textOf("hello fox");
     assert.equal(text.textContent, "hello fox");
-    let offset = 0;
+    text.parentElement.scrollIntoView = () => {};
+    const yieldNone = globalThis.document.createTreeWalker;
+    globalThis.document.createTreeWalker = () => {
+      let pending = text;
+      return {
+        nextNode() {
+          const node = pending;
+          pending = null;
+          return node;
+        },
+      };
+    };
+    let anchorNode = text;
+    let anchorOffset = 0;
+    let focusNode = text;
+    let focusOffset = 0;
+    const samePoint = () => anchorNode === focusNode && anchorOffset === focusOffset;
     const sel = {
       rangeCount: 1,
-      modify(_action, direction) {
-        offset += direction === "forward" ? 1 : -1;
+      collapse(node, offset) {
+        anchorNode = focusNode = node;
+        anchorOffset = focusOffset = offset;
+      },
+      setBaseAndExtent(baseNode, baseOffset, extentNode, extentOffset) {
+        anchorNode = baseNode;
+        anchorOffset = baseOffset;
+        focusNode = extentNode;
+        focusOffset = extentOffset;
+      },
+      removeAllRanges() {},
+      addRange() {},
+      modify(action, direction) {
+        if (action === "move" && !samePoint()) {
+          anchorNode = focusNode;
+          anchorOffset = focusOffset;
+          return;
+        }
+        const step = direction === "forward" ? 1 : -1;
+        focusOffset += step;
+        anchorOffset = focusOffset;
+        anchorNode = focusNode;
       },
       getRangeAt() {
-        return { startContainer: text, startOffset: offset, collapsed: true };
+        return { startContainer: focusNode, startOffset: focusOffset, collapsed: samePoint() };
       },
     };
     globalThis.window.getSelection = () => sel;
@@ -5226,6 +5262,7 @@ test("shift-arrow keeps the anchor and an unshifted arrow collapses", () => {
     assert.equal(view.getState().anchor, 5);
     assert.equal(view.getState().cursor, 5);
     view.destroy();
+    globalThis.document.createTreeWalker = yieldNone;
 
     const lines = createEditor(mounted.root, "hello fox\nnext\n", 0);
     const first = textOf("hello fox");
@@ -5233,6 +5270,8 @@ test("shift-arrow keeps the anchor and an unshifted arrow collapses", () => {
     let node = first;
     const lineSel = {
       rangeCount: 1,
+      collapse() {},
+      setBaseAndExtent() {},
       modify(_action, direction, granularity) {
         if (granularity === "line") node = direction === "forward" ? second : first;
       },

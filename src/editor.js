@@ -2268,6 +2268,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const beforeCursor = state.cursor;
     const beforeAnchor = state.anchor;
     const before = lineIndexAt(state.doc, beforeCursor);
+    // modify("move") on an extended range collapses to the focus and does not advance.
+    const caretPoint = pointFor(state.cursor);
+    if (caretPoint) sel.collapse(caretPoint.node, caretPoint.offset);
     sel.modify("move", direction, granularity);
     if (sel.rangeCount === 0) return;
     const range = sel.getRangeAt(0);
