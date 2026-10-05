@@ -43,6 +43,8 @@ const HELP_NEEDLES = [
   "ticket create",
   "ticket set",
   "ticket purge",
+  "delete <path>",
+  "ticket delete",
   "--title",
   "--state",
   "--type",
@@ -448,6 +450,7 @@ test("T-cli-commit", async () => {
       ["show", "hello.md", "--message", "hi"],
       ["create", "a.md", "--message", "hi"],
       ["edit", "hello.md", "--rev", "0", "--find", "a", "--replace", "b", "--message", "hi"],
+      ["delete", "hello.md", "--message", "hi"],
       ["ticket", "list", "--message", "hi"],
       ["repo", "list", "--message", "hi"],
     ]) {
@@ -638,6 +641,108 @@ test("T-cli-show", async () => {
   });
 });
 
+test("T-cli-delete", async () => {
+  const gate = await trap();
+  try {
+    const noRepo = await run(["--port", String(gate.port), "--user", "user", "delete", "hello.md"]);
+    assert.equal(noRepo.code, 2);
+    assert.equal(noRepo.stdout, "");
+    assert.equal(noRepo.stderr, "viewmark: --repo is required\n");
+
+    const missingPath = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "delete"]);
+    assert.equal(missingPath.code, 2);
+    assert.equal(missingPath.stdout, "");
+    assert.equal(missingPath.stderr, "viewmark: path required\n");
+
+    const two = await run([
+      "--port", String(gate.port),
+      "--user", "user",
+      "--repo", "docs",
+      "delete",
+      "hello.md",
+      "notes/draft.md",
+    ]);
+    assert.equal(two.code, 2);
+    assert.equal(two.stdout, "");
+    assert.equal(two.stderr, "viewmark: unexpected argument\n");
+    assert.equal(gate.hits.length, 0);
+  } finally {
+    await gate.close();
+  }
+
+  await withDocs(async ({ dir, port }) => {
+    const holder = await hello(port, "Ada");
+    await openDoc(holder, "Ada", "hello.md");
+    const held = await run(["--port", String(port), "--user", "user", "--repo", "docs", "delete", "hello.md"]);
+    assert.equal(held.code, shellStatus(409));
+    assert.equal(held.stdout, "");
+    assert.equal(held.stderr, "error 409\n");
+    assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
+    const witness = await hello(port, "Bea");
+    await openDoc(witness, "Bea", "hello.md");
+    const released = witness.next((msg) => msg.type === "locks" && msg.path === "hello.md");
+    holder.ws.close();
+    await released;
+    await openDoc(witness, "Bea", "notes/draft.md");
+
+    const bare = await run(["--port", String(port), "--user", "user", "--repo", "docs", "delete", "hello"]);
+    assert.equal(bare.code, shellStatus(404));
+    assert.equal(bare.stdout, "");
+    assert.equal(bare.stderr, "error 404\n");
+    assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
+
+    const rooted = await run(["--port", String(port), "--user", "user", "--repo", "docs", "delete", "/hello.md"]);
+    assert.equal(rooted.code, shellStatus(404));
+    assert.equal(rooted.stdout, "");
+    assert.equal(rooted.stderr, "error 404\n");
+    assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
+
+    const padded = await run(["--port", String(port), "--user", "user", "--repo", "docs", "delete", " notes/draft.md"]);
+    assert.equal(padded.code, shellStatus(404));
+    assert.equal(padded.stdout, "");
+    assert.equal(padded.stderr, "error 404\n");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), DRAFT);
+
+    const removed = await run(["--port", String(port), "--user", "user", "--repo", "docs", "delete", "hello.md"]);
+    assert.equal(removed.code, 0);
+    assert.equal(removed.stdout, "hello.md\n");
+    assert.equal(removed.stderr, "");
+    await assert.rejects(() => fs.lstat(path.join(dir, "hello.md")));
+
+    const missing = await run(["--port", String(port), "--user", "user", "--repo", "docs", "delete", "missing.md"]);
+    assert.equal(missing.code, shellStatus(404));
+    assert.equal(missing.stdout, "");
+    assert.equal(missing.stderr, "error 404\n");
+
+    const ticketPath = await run([
+      "--port", String(port),
+      "--user", "user",
+      "--repo", "docs",
+      "delete",
+      "tickets/aaaaaaaa.md",
+    ]);
+    assert.equal(ticketPath.code, shellStatus(400));
+    assert.equal(ticketPath.stdout, "");
+    assert.equal(ticketPath.stderr, "error 400\n");
+
+    await fs.writeFile(path.join(dir, "other.md"), "other\n");
+    await openDoc(witness, "Bea", "other.md");
+    const json = await run([
+      "--json",
+      "--port", String(port),
+      "--user", "user",
+      "--repo", "docs",
+      "delete",
+      "notes/draft.md",
+    ]);
+    assert.equal(json.code, 0);
+    assert.equal(json.stderr, "");
+    assert.equal(json.stdout, `${JSON.stringify({ path: "notes/draft.md" })}\n`);
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes", "draft.md")));
+    witness.ws.close();
+  });
+});
+
 test("T-cli-create", async () => {
   const gate = await trap();
   try {
@@ -649,6 +754,7 @@ test("T-cli-create", async () => {
       ["list", "--file", "x"],
       ["show", "hello.md", "--file", "x"],
       ["edit", "hello.md", "--rev", "0", "--find", "a", "--replace", "b", "--file", "x"],
+      ["delete", "hello.md", "--file", "x"],
       ["commit", "--file", "x"],
       ["ticket", "list", "--file", "x"],
       ["repo", "list", "--file", "x"],
@@ -2178,6 +2284,83 @@ test("T-cli-ticket-purge", async () => {
     const left = await runFast(ticketArgs(port, ["ticket", "list", "--closed"]));
     assert.equal(left.stdout, `${B}\t${T0}\tnew\ttask\tmedium\tBeta\n${E}\t${T2}\tnew\ttask\tmedium\tEe\n`);
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
+  });
+});
+
+test("T-cli-ticket-delete", async () => {
+  const gate = await trap();
+  try {
+    const bad = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "ticket", "delete", "nope"]);
+    assert.equal(bad.code, 2);
+    assert.equal(bad.stdout, "");
+    assert.equal(bad.stderr, "viewmark: invalid id\n");
+    const missingId = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "ticket", "delete"]);
+    assert.equal(missingId.code, 2);
+    assert.equal(missingId.stdout, "");
+    assert.equal(missingId.stderr, "viewmark: id required\n");
+    const extra = await run([
+      "--port", String(gate.port),
+      "--user", "user",
+      "--repo", "docs",
+      "ticket",
+      "delete",
+      A,
+      "extra",
+    ]);
+    assert.equal(extra.code, 2);
+    assert.equal(extra.stdout, "");
+    assert.equal(extra.stderr, "viewmark: unexpected argument\n");
+    assert.equal(gate.hits.length, 0);
+  } finally {
+    await gate.close();
+  }
+
+  await withHub(async ({ dir, port }) => {
+    const parentText = await writeTicket(dir, { id: B, title: "Beta", created: T0, body: "beta\n" });
+    await writeTicket(dir, { id: C, title: "See", created: T1, body: "see\n" });
+    await writeTicket(dir, { id: E, title: "Ee", created: T2, body: "ee\n" });
+    const linked = await runFast(ticketArgs(port, [
+      "ticket", "set", C, "--rev", "0", "--parent", B, "--depends", B,
+    ]));
+    assert.equal(linked.code, 0);
+    assert.equal(parseTicket(C, await fs.readFile(path.join(dir, "tickets", `${C}.md`), "utf8")).parent, B);
+
+    const absent = await runFast(ticketArgs(port, ["ticket", "delete", A]));
+    assert.equal(absent.code, shellStatus(404));
+    assert.equal(absent.stdout, "");
+    assert.equal(absent.stderr, "error 404\n");
+
+    const holder = await hello(port, "Ada");
+    await openDoc(holder, "Ada", `tickets/${B}.md`);
+    const held = await runFast(ticketArgs(port, ["ticket", "delete", B]));
+    assert.equal(held.code, shellStatus(409));
+    assert.equal(held.stdout, "");
+    assert.equal(held.stderr, "error 409\n");
+    assert.equal(await fs.readFile(path.join(dir, "tickets", `${B}.md`), "utf8"), parentText);
+    const witness = await hello(port, "Bea");
+    await openDoc(witness, "Bea", `tickets/${B}.md`);
+    const released = witness.next((msg) => msg.type === "locks" && msg.path === `tickets/${B}.md`);
+    holder.ws.close();
+    await released;
+    await openDoc(witness, "Bea", `tickets/${C}.md`);
+
+    const removed = await runFast(ticketArgs(port, ["ticket", "delete", B]));
+    assert.equal(removed.code, 0);
+    assert.equal(removed.stdout, `tickets/${B}.md\n`);
+    assert.equal(removed.stderr, "");
+    await assert.rejects(() => fs.lstat(path.join(dir, "tickets", `${B}.md`)));
+    const child = parseTicket(C, await fs.readFile(path.join(dir, "tickets", `${C}.md`), "utf8"));
+    assert.equal(child.parent, "");
+    assert.deepEqual(child.depends, []);
+    assert.equal(child.body, "see\n");
+
+    await openDoc(witness, "Bea", `tickets/${E}.md`);
+    const json = await runFast(["--json", ...ticketArgs(port, ["ticket", "delete", C])]);
+    assert.equal(json.code, 0);
+    assert.equal(json.stderr, "");
+    assert.equal(json.stdout, `${JSON.stringify({ path: `tickets/${C}.md` })}\n`);
+    await assert.rejects(() => fs.lstat(path.join(dir, "tickets", `${C}.md`)));
+    witness.ws.close();
   });
 });
 

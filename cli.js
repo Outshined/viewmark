@@ -14,11 +14,13 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME show <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME create <path> [--file PATH]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME edit <path> --rev N --find TEXT --replace TEXT
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME delete <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME commit [--message TEXT]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket list [--closed]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket show <id>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket set <id> --rev N [--title TEXT] [--state STATE] [--type TYPE] [--priority PRIORITY] [--parent ID] [--depends IDS]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket delete <id>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket purge
   viewmark [--port PORT] [--user NAME] [--json] repo list
   viewmark [--port PORT] [--user NAME] [--json] repo register --name NAME --description TEXT --path PATH
@@ -30,7 +32,7 @@ Usage:
 --port or VIEWMARK_PORT, default 8765. --user or VIEWMARK_USER; the flag wins.
 Missing, empty, NUL, CR, LF, <, or > is rejected. There is no default name.
 --json is global. --help, help, or no args exits 0.
---repo is required on list, show, create, edit, commit, and ticket.
+--repo is required on list, show, create, edit, delete, commit, and ticket.
 serve keeps running. The default directory is \`state\` beside the program, and --user is not required.
 
 stdout and stderr:
@@ -62,7 +64,7 @@ commit:
   The message is trimmed and must be 1–200 characters. CR, LF, tab, and NUL are rejected.
 
 ticket:
-  list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY], set <id> --rev N, purge.
+  list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY], set <id> --rev N, delete <id>, purge.
   --rev, --title, --state, --type, --priority, --parent, --depends, --closed.
   --parent none clears. --depends none clears. --state is new, triaged, in progress, or closed.
   --type is bug, enhancement, or task. An omitted type is task.
@@ -74,6 +76,9 @@ ticket:
     show and set {id,path,rev,title,state,type,priority,parent,depends,reporter,created,text};
     create {id,path,rev:0,reporter,created}; purge {purged:[...]};
     conflict adds "error":"conflict".
+
+delete:
+  delete <path> removes that document. The path is sent unchanged. ticket delete <id> removes that ticket and clears it from other tickets' parent and depends. Another socket holding the file exits 409 and writes nothing. stdout is the removed path. --json is {path}.
 
 Exit codes: 0, 1, 2, 400, 404, 409.
   0 success, help, or find equal to replace
@@ -547,6 +552,23 @@ async function runShow(hub, username, path, json) {
   return 0;
 }
 
+function printDeleted(msg, json) {
+  if (typeof msg.path !== "string") return 1;
+  if (json) {
+    writeJson({ path: msg.path });
+    return 0;
+  }
+  process.stdout.write(`${msg.path}\n`);
+  return 0;
+}
+
+async function runDelete(hub, username, docPath, json) {
+  hub.send({ type: "delete", username, path: docPath });
+  const msg = await hub.next((item) => item.type === "deleted" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  return printDeleted(msg, json);
+}
+
 async function runCreate(hub, username, path, json, text) {
   hub.send({ type: "create", username, path, text });
   const msg = await hub.next((item) => item.type === "file" || item.type === "error");
@@ -705,6 +727,12 @@ function prepareTicket(args, rest) {
     }
     if (Object.keys(fields).length === 0) return { error: "set requires --title, --state, --type, --priority, --parent, or --depends" };
     return { sub, id: more[0], rev, fields };
+  }
+  if (sub === "delete") {
+    if (more.length === 0) return { error: "id required" };
+    if (more.length !== 1) return { error: "unexpected argument" };
+    if (!validTicketId(more[0])) return { error: "invalid id" };
+    return { sub, id: more[0] };
   }
   if (sub === "purge") {
     if (more.length !== 0) return { error: "unexpected argument" };
@@ -947,6 +975,17 @@ async function runTicketSet(hub, username, command, json) {
   return 0;
 }
 
+async function runTicketDelete(hub, username, id, json) {
+  hub.send({ type: "ticket.delete", username, id });
+  const msg = await hub.next((item) => item.type === "deleted" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  // Parent and depends are cleared after deleted. tickets is that rewrite finishing.
+  const listed = await hub.next((item) => item.type === "tickets" || item.type === "error");
+  if (listed.type === "error") return serverError(listed);
+  if (!Array.isArray(listed.tickets)) return 1;
+  return printDeleted(msg, json);
+}
+
 async function runTicketPurge(hub, username, json) {
   hub.send({ type: "tickets", username });
   const before = await hub.next((item) => item.type === "tickets" || item.type === "error");
@@ -975,6 +1014,7 @@ async function runTicket(hub, username, args, command) {
   if (command.sub === "show") return runTicketShow(hub, username, command.id, args.json);
   if (command.sub === "create") return runTicketCreate(hub, username, command, args.json);
   if (command.sub === "set") return runTicketSet(hub, username, command, args.json);
+  if (command.sub === "delete") return runTicketDelete(hub, username, command.id, args.json);
   if (command.sub === "purge") return runTicketPurge(hub, username, args.json);
   return 2;
 }
@@ -1198,7 +1238,7 @@ async function main() {
     return;
   }
 
-  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "ticket" && cmd !== "commit") {
+  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "ticket" && cmd !== "commit" && cmd !== "delete") {
     usage("unknown command");
     return;
   }
@@ -1263,6 +1303,10 @@ async function main() {
     const body = await createBody(args);
     if (body === null) return;
     await withHub(port, user, (hub) => runCreate(hub, user, docPath, args.json, body), args.repo);
+    return;
+  }
+  if (cmd === "delete") {
+    await withHub(port, user, (hub) => runDelete(hub, user, rest[0], args.json), args.repo);
     return;
   }
 
