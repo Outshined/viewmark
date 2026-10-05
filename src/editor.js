@@ -3435,9 +3435,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (drawer && drawer.classList) drawer.classList.add("md-ticket-wide");
       if (!drawer || alreadyWide) return;
       const widen = () => setStyle(drawer, "width", "80vw");
-      const raf = globalThis.requestAnimationFrame;
-      if (typeof raf === "function") raf(() => raf(widen));
-      else widen();
+      if (typeof globalThis.requestAnimationFrame === "function") {
+        globalThis.requestAnimationFrame(() => {
+          globalThis.requestAnimationFrame(widen);
+        });
+      } else widen();
     };
     ticketDrawerLeave = () => {
       scheduleHideTicketDrawer();
