@@ -4850,6 +4850,8 @@ test("T-ticket-rows", () => {
   assert.match(wideRule, /width:\s*100vw/);
   assert.match(wideRule, /z-index:\s*4/);
   assert.match(wideRule, /transition:\s*width 0\.5s,\s*left 0\.5s/);
+  assert.equal(/top:\s*0/.test(wideRule), false);
+  assert.equal(/bottom:\s*0/.test(wideRule), false);
   assert.match(css, /\.ticket-tree \.md-ticket-row:hover\s*\{[^}]*background:\s*#2c3440/);
   assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.ticket-tree \.md-ticket-row[^{]*\{[^}]*grid-template-columns:\s*1\.1em 7rem minmax\(0,\s*1fr\);/);
   assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*button\.md-ticket[^{]*\{[^}]*grid-template-columns:\s*7rem minmax\(0,\s*1fr\);/);
@@ -4968,6 +4970,8 @@ test("T-ticket-rows", () => {
     assert.equal(drawer.hidden, false);
     assert.equal(drawer.hasAttribute("hidden"), false);
     assert.equal(drawer.classList.contains("md-ticket-wide"), true);
+    assert.equal(drawer.styleProps.top, "0px");
+    assert.equal(drawer.styleProps.height, "10px");
     assert.equal(drawer.hasAttribute("hidden"), false);
     const plus = byClass(mounted.nav, "md-new-ticket")[0];
     assert.equal(plus.parentElement, head);
@@ -5050,6 +5054,31 @@ test("T-ticket-rows", () => {
     assert.deepEqual(transport.sent.at(-1), { type: "open", path: "tickets/bbbbbbbb.md", rev: 0, username: "" });
     assert.equal(drawer.hidden, false);
     assert.equal(drawer.classList.contains("md-ticket-wide"), true);
+    const pending = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    globalThis.setTimeout = (fn, ms) => {
+      const handle = { fn, ms };
+      pending.push(handle);
+      return handle;
+    };
+    globalThis.clearTimeout = (handle) => {
+      const index = pending.indexOf(handle);
+      if (index >= 0) pending.splice(index, 1);
+    };
+    try {
+      block.listeners.pointerleave();
+      assert.equal(pending.length, 1);
+      assert.equal(pending[0].ms, 200);
+      const hide = pending.pop();
+      hide.fn();
+      assert.equal(drawer.classList.contains("md-ticket-wide"), false);
+      assert.equal(drawer.styleProps.top, "");
+      assert.equal(drawer.styleProps.height, "");
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+    }
     view.destroy();
     assert.equal(plus.listeners.click, undefined);
   } finally {
@@ -5176,6 +5205,8 @@ test("T-ticket-drawer", () => {
     assert.equal(drawer.hidden, false);
     assert.equal(drawer.hasAttribute("hidden"), false);
     assert.equal(drawer.classList.contains("md-ticket-wide"), false);
+    assert.equal(drawer.styleProps.top, "");
+    assert.equal(drawer.styleProps.height, "");
     block.listeners.pointerenter();
     assert.equal(drawer.hidden, false);
     assert.equal(drawer.classList.contains("md-ticket-wide"), true);

@@ -3383,6 +3383,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       ticketDrawerTimer = null;
       const drawer = ticketDrawerEl();
       if (drawer && drawer.classList) drawer.classList.remove("md-ticket-wide");
+      setStyle(drawer, "top", "");
+      setStyle(drawer, "height", "");
     }, 200);
   }
 
@@ -3425,6 +3427,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     ticketDrawerEnter = () => {
       showTicketDrawer();
       const drawer = ticketDrawerEl();
+      // Fixed positioning replaces the pane box, so read that height first.
+      if (drawer && typeof drawer.getBoundingClientRect === "function") {
+        const rect = drawer.getBoundingClientRect();
+        setStyle(drawer, "top", `${rect.top}px`);
+        setStyle(drawer, "height", `${rect.height}px`);
+      }
       if (drawer && drawer.classList) drawer.classList.add("md-ticket-wide");
     };
     ticketDrawerLeave = () => {
