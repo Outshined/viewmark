@@ -21,6 +21,8 @@ import {
   cut,
   sampleDocument,
   initialCursor,
+  formatHash,
+  parseHash,
 } from "../src/editor.js";
 
 const A = "**hello**\nnext\n";
@@ -2069,10 +2071,12 @@ test("comment cards edit the thread and line up with the highlight", () => {
     const savedCard = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"))[0];
     assert.equal(savedCard.childNodes[0].textContent, "Resolve");
     const savedNote = savedCard.childNodes[1];
-    assert.equal(savedNote.childNodes[0].tagName, "INPUT");
-    assert.equal(savedNote.childNodes[0].placeholder, "Author");
-    assert.equal(savedNote.childNodes[0].value, "Ada");
-    assert.equal(savedNote.childNodes[0].classList.contains("md-comment-author"), true);
+    const savedAuthor = savedNote.childNodes[0].childNodes[0];
+    assert.equal(savedNote.childNodes[0].classList.contains("md-comment-author-row"), true);
+    assert.equal(savedAuthor.tagName, "INPUT");
+    assert.equal(savedAuthor.placeholder, "Author");
+    assert.equal(savedAuthor.value, "Ada");
+    assert.equal(savedAuthor.classList.contains("md-comment-author"), true);
     assert.equal(mounted.findAll((node) => node.tagName === "TEXTAREA").length, 0);
     const savedText = savedNote.childNodes[1];
     assert.equal(savedText.tagName, "DIV");
@@ -2262,9 +2266,10 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     const saved = createEditor(mounted.root, opened, 0);
     let card = cards()[0];
     assert.equal(card.childNodes[0].textContent, "Resolve");
-    assert.equal(card.childNodes[1].childNodes[0].tagName, "INPUT");
-    assert.equal(card.childNodes[1].childNodes[0].placeholder, "Author");
-    assert.equal(card.childNodes[1].childNodes[0].value, "");
+    assert.equal(card.childNodes[1].childNodes[0].classList.contains("md-comment-author-row"), true);
+    assert.equal(card.childNodes[1].childNodes[0].childNodes[0].tagName, "INPUT");
+    assert.equal(card.childNodes[1].childNodes[0].childNodes[0].placeholder, "Author");
+    assert.equal(card.childNodes[1].childNodes[0].childNodes[0].value, "");
     assert.equal(card.childNodes.at(-2).textContent, "Reply");
     assert.equal(card.childNodes.at(-1).textContent, "Delete");
     assert.equal(buttons("Save").length, 0);
@@ -2310,9 +2315,10 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\nhi\n```\n");
     card = cards()[0];
     const reply = card.childNodes.at(-3);
-    assert.equal(reply.childNodes[0].tagName, "INPUT");
-    assert.equal(reply.childNodes[0].placeholder, "Author");
-    assert.equal(reply.childNodes[0].value, "");
+    assert.equal(reply.childNodes[0].classList.contains("md-comment-author-row"), true);
+    assert.equal(reply.childNodes[0].childNodes[0].tagName, "INPUT");
+    assert.equal(reply.childNodes[0].childNodes[0].placeholder, "Author");
+    assert.equal(reply.childNodes[0].childNodes[0].value, "");
     assert.equal(reply.childNodes[1].tagName, "TEXTAREA");
     assert.equal(reply.childNodes[1].value, "");
     assert.equal(reply.childNodes[2].textContent, "Save");
@@ -2325,8 +2331,8 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     pressIn(card, "Reply");
     card = cards()[0];
     const replyAgain = card.childNodes.at(-3);
-    replyAgain.childNodes[0].value = "Ada";
-    mounted.aside.listeners.input({ target: replyAgain.childNodes[0] });
+    replyAgain.childNodes[0].childNodes[0].value = "Ada";
+    mounted.aside.listeners.input({ target: replyAgain.childNodes[0].childNodes[0] });
     replyAgain.childNodes[1].value = "more";
     mounted.aside.listeners.input({ target: replyAgain.childNodes[1] });
     const undoReply = saved.getState().undo.length;
@@ -5810,6 +5816,208 @@ test("the state select and the reporter sit in different columns", () => {
     assert.equal(transport.sent.filter((message) => message.type === "ticket.set").at(-1).title, "Beta");
     view.destroy();
   } finally {
+    mounted.restore();
+  }
+});
+
+test("T-hash-grammar", () => {
+  assert.deepEqual(parseHash("#viewmark/ticket/mp27ndxf"), { repo: "viewmark", kind: "ticket", id: "mp27ndxf" });
+  assert.equal(formatHash({ repo: "viewmark", kind: "ticket", id: "mp27ndxf" }), "#viewmark/ticket/mp27ndxf");
+  const comment = { repo: "viewmark", kind: "comment", path: "docs/a.md", id: "c 1" };
+  assert.equal(formatHash(comment), "#viewmark/comment/docs%2Fa.md/c%201");
+  assert.deepEqual(parseHash(formatHash(comment)), comment);
+  assert.equal(formatHash({ repo: "viewmark", kind: "doc", path: "docs/a.md" }), "#viewmark/doc/docs%2Fa.md");
+  assert.deepEqual(parseHash("#viewmark/doc/docs%2Fa.md"), { repo: "viewmark", kind: "doc", path: "docs/a.md" });
+  assert.equal(parseHash("#viewmark/comment/docs/a.md/c1"), null);
+  assert.equal(parseHash("#viewmark/nope/a"), null);
+  assert.equal(parseHash("#viewmark/doc/%"), null);
+  assert.equal(parseHash("#"), null);
+  assert.equal(parseHash("#_no/doc/a"), null);
+  const max = "a".repeat(64);
+  assert.equal(parseHash(`#${max}/doc/a`).repo, max);
+  assert.equal(parseHash(`#${"b".repeat(65)}/doc/a`), null);
+  assert.equal(formatHash({ repo: "bad repo", kind: "doc", path: "a" }), "");
+  assert.equal(formatHash({ repo: "viewmark", kind: "ticket", id: "a/b" }), "");
+});
+
+test("T-deep-link", () => {
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(css, /\.md-comment-author-row\s*\{[^}]*display:\s*flex/);
+  assert.match(css, /\.md-comment-author-row\s*\{[^}]*justify-content:\s*space-between/);
+  assert.match(css, /button\.md-doc-link\s*\{[^}]*text-align:\s*left/);
+  assert.match(css, /button\.md-doc-link\[hidden\]\s*\{[^}]*display:\s*none/);
+  const mounted = mountTicketPage();
+  const create = document.createElement;
+  document.createElement = (tag) => {
+    const el = create(tag);
+    el.scrollIntoView = function scrollIntoView() {
+      this.scrolled = true;
+    };
+    return el;
+  };
+  const windowListeners = {};
+  window.addEventListener = (type, fn, options) => {
+    const bucket = windowListeners[type] || (windowListeners[type] = []);
+    bucket.push(fn);
+    const signal = options && options.signal;
+    if (signal && typeof signal.addEventListener === "function") {
+      signal.addEventListener("abort", () => {
+        const index = bucket.indexOf(fn);
+        if (index >= 0) bucket.splice(index, 1);
+      });
+    }
+  };
+  const fireHash = () => {
+    for (const fn of windowListeners.hashchange || []) fn();
+  };
+  const previousHistory = globalThis.history;
+  const previousLocation = globalThis.location;
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const urls = [];
+  const writes = [];
+  globalThis.history = {
+    replaceState(_state, _title, url) {
+      urls.push(url);
+    },
+  };
+  globalThis.location = {
+    origin: "https://viewmark.test",
+    pathname: "/app",
+    search: "",
+    hash: "#viewmark/comment/docs%2Fa.md/c1",
+  };
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    writable: true,
+    value: {
+      clipboard: {
+        writeText(text) {
+          writes.push(text);
+          return Promise.resolve();
+        },
+      },
+    },
+  });
+  const storage = {
+    data: { "viewmark.repo": "other" },
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
+    },
+    setItem(key, value) {
+      this.data[key] = String(value);
+    },
+    removeItem(key) {
+      delete this.data[key];
+    },
+  };
+  const transport = holdingTransport();
+  const opens = () => transport.sent.filter((message) => message.type === "open");
+  const entryLink = () => walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-doc-link"))[0];
+  try {
+    const view = createEditor(mounted.root, "", 0, transport, storage);
+    assert.equal(entryLink().hidden, true);
+    assert.equal(entryLink().textContent, "link to this entry");
+    assert.equal(transport.sent.length, 0);
+    transport.deliver({
+      type: "repos",
+      repos: [
+        { name: "other", description: "Other" },
+        { name: "viewmark", description: "Viewmark" },
+      ],
+    });
+    const select = walkNodes(mounted.nav, (node) => node.classList && node.classList.contains("md-repo"))[0];
+    assert.equal(select.value, "viewmark");
+    assert.equal(storage.data["viewmark.repo"], "viewmark");
+    assert.deepEqual(transport.sent.slice(0, 4).map((message) => message.type), ["repo", "list", "tickets", "open"]);
+    assert.equal(transport.sent[0].name, "viewmark");
+    assert.equal(opens()[0].path, "docs/a.md");
+    assert.equal(urls.length, 0);
+    assert.equal(entryLink().hidden, false);
+    const menu = docMenuOf(mounted.aside);
+    assert.deepEqual(menu.panel.childNodes.map((node) => node.textContent), ["", "show resolved", "link to this entry", "Commit repo"]);
+    fireHash();
+    assert.equal(opens().length, 1);
+    const commentDoc = "See {c1}fox{/c1}.\n\n```comment c1 resolved\nhi\n```\n";
+    transport.deliver({ type: "file", rev: 1, text: commentDoc, path: "docs/a.md", cursor: 0, anchor: 0 });
+    const card = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"))[0];
+    assert.equal(card.dataset.comment, "c1");
+    assert.equal(card.classList.contains("md-comment-current"), true);
+    assert.equal(card.scrolled, true);
+    assert.equal(docMenuOf(mounted.aside).checkbox.checked, true);
+    assert.equal(opens().length, 1);
+    const row = card.childNodes[1].childNodes[0];
+    assert.equal(row.childNodes[0].classList.contains("md-comment-author"), true);
+    const copy = row.childNodes.at(-1);
+    assert.equal(copy.classList.contains("md-comment-link"), true);
+    assert.equal(copy.getAttribute("aria-label"), "Copy link");
+    copy.listeners.click({ target: copy, preventDefault() {}, stopPropagation() {} });
+    mounted.aside.listeners.click({ target: copy, preventDefault() {} });
+    assert.deepEqual(writes, [`https://viewmark.test/app${formatHash({ repo: "viewmark", kind: "comment", path: "docs/a.md", id: "c1" })}`]);
+    assert.equal(view.getState().doc, commentDoc);
+    assert.equal(mounted.findAll((node) => node.tagName === "TEXTAREA").length, 0);
+    entryLink().listeners.click({ preventDefault() {} });
+    assert.equal(writes.at(-1), `https://viewmark.test/app${formatHash({ repo: "viewmark", kind: "doc", path: "docs/a.md" })}`);
+    assert.equal(view.getState().doc, commentDoc);
+    transport.deliver({ type: "docs", files: ["docs/a.md", "other.md"] });
+    const other = walkNodes(mounted.nav, (node) => node.dataset && node.dataset.path === "other.md")[0];
+    other.listeners.click({ preventDefault() {} });
+    assert.equal(opens().at(-1).path, "other.md");
+    assert.equal(globalThis.location.hash, "#viewmark/doc/other.md");
+    assert.equal(urls.at(-1), "/app#viewmark/doc/other.md");
+    const opened = opens().length;
+    fireHash();
+    assert.equal(opens().length, opened);
+    const linked = "Go [ticket](#viewmark/ticket/mp27ndxf) now.\n\n";
+    transport.deliver({ type: "file", rev: 2, text: linked, path: "other.md", cursor: linked.length, anchor: linked.length });
+    const anchor = mounted.findAll((node) => node.tagName === "A")[0];
+    assert.equal(anchor.href, "#viewmark/ticket/mp27ndxf");
+    mounted.listeners.click({ target: anchor, clientX: 1, clientY: 1, preventDefault() {} });
+    assert.equal(opens().at(-1).path, "tickets/mp27ndxf.md");
+    assert.equal(globalThis.location.hash, "#viewmark/ticket/mp27ndxf");
+    assert.equal(urls.at(-1), "/app#viewmark/ticket/mp27ndxf");
+    fireHash();
+    assert.equal(opens().filter((message) => message.path === "tickets/mp27ndxf.md").length, 1);
+    entryLink().listeners.click({ preventDefault() {} });
+    assert.equal(writes.at(-1), "https://viewmark.test/app#viewmark/ticket/mp27ndxf");
+    const marked = transport.sent.length;
+    globalThis.location.hash = "#other/doc/b.md";
+    fireHash();
+    assert.equal(select.value, "other");
+    assert.equal(transport.sent[marked].type, "repo");
+    assert.equal(transport.sent[marked].name, "other");
+    assert.equal(opens().at(-1).path, "b.md");
+    const afterSwitch = opens().length;
+    fireHash();
+    assert.equal(opens().length, afterSwitch);
+    select.value = "viewmark";
+    select.listeners.change();
+    assert.equal(entryLink().hidden, true);
+    assert.equal(opens().length, afterSwitch);
+    view.destroy();
+
+    globalThis.location.hash = "#viewmark/ticket/mp27ndxf";
+    const transport2 = holdingTransport();
+    const again = createEditor(mounted.root, "", 0, transport2, storage);
+    fireHash();
+    globalThis.location.hash = "#other/doc/b.md";
+    transport2.deliver({
+      type: "repos",
+      repos: [
+        { name: "other", description: "Other" },
+        { name: "viewmark", description: "Viewmark" },
+      ],
+    });
+    const secondOpens = transport2.sent.filter((message) => message.type === "open");
+    assert.equal(secondOpens.length, 1);
+    assert.equal(secondOpens[0].path, "tickets/mp27ndxf.md");
+    assert.equal(transport2.sent[0].name, "viewmark");
+    again.destroy();
+  } finally {
+    if (previousHistory === undefined) delete globalThis.history;
+    else globalThis.history = previousHistory;
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
+    if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
     mounted.restore();
   }
 });

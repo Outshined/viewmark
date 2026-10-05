@@ -142,6 +142,24 @@ button.md-doc-commit[hidden] {
   display: none;
 }
 
+button.md-doc-link {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  margin: 0.55rem 0 0;
+  padding: 0.15rem 0.45rem;
+  background: #1c1b19;
+  border: 1px solid #4a463f;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.md-doc-link[hidden] {
+  display: none;
+}
+
 dialog.md-login {
   background: #242320;
   color: #e7e2d8;
@@ -829,6 +847,14 @@ a.md-link {
   border: 2px solid #e7e2d8;
 }
 
+.md-comment-author-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  margin: 0 0 0.35rem;
+}
+
 .md-comment-author {
   display: block;
   box-sizing: border-box;
@@ -842,6 +868,18 @@ a.md-link {
   border: 1px solid #4a463f;
   border-radius: 4px;
   padding: 0.15rem 0.45rem;
+}
+
+.md-comment-author-row .md-comment-author {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.md-comment-author-row > button.md-comment-link {
+  flex: none;
+  margin: 0;
 }
 
 .md-comment-card button {

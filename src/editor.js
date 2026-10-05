@@ -444,7 +444,119 @@ const ticketBindings = new WeakMap();
 const repoBindings = new WeakMap();
 const docMenuBindings = new WeakMap();
 const docCommitBindings = new WeakMap();
+const docLinkBindings = new WeakMap();
 const REPO_KEY = "viewmark.repo";
+const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+function decodeHashSegment(segment) {
+  if (typeof segment !== "string" || segment === "") return null;
+  let value = "";
+  try {
+    value = decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+  if (value === "") return null;
+  return value;
+}
+
+// The path is one segment so a slash inside it survives the hash.
+export function formatHash(target) {
+  if (!target || typeof target !== "object") return "";
+  const repo = target.repo;
+  if (typeof repo !== "string" || !REPO_NAME.test(repo)) return "";
+  if (target.kind === "doc") {
+    if (typeof target.path !== "string" || target.path === "") return "";
+    return `#${repo}/doc/${encodeURIComponent(target.path)}`;
+  }
+  if (target.kind === "ticket") {
+    if (typeof target.id !== "string" || target.id === "" || target.id.includes("/") || target.id.includes("\\")) return "";
+    return `#${repo}/ticket/${encodeURIComponent(target.id)}`;
+  }
+  if (target.kind === "comment") {
+    if (typeof target.path !== "string" || target.path === "") return "";
+    if (typeof target.id !== "string" || target.id === "") return "";
+    return `#${repo}/comment/${encodeURIComponent(target.path)}/${encodeURIComponent(target.id)}`;
+  }
+  return "";
+}
+
+export function parseHash(raw) {
+  if (typeof raw !== "string" || raw.length < 2) return null;
+  const body = raw.charAt(0) === "#" ? raw.slice(1) : raw;
+  if (!body || body.includes("#")) return null;
+  const parts = body.split("/");
+  if (parts.length < 3) return null;
+  const repo = parts[0];
+  const kind = parts[1];
+  if (!REPO_NAME.test(repo)) return null;
+  if (kind === "doc" || kind === "ticket") {
+    if (parts.length !== 3) return null;
+    const value = decodeHashSegment(parts[2]);
+    if (value == null) return null;
+    if (kind === "ticket") {
+      if (value.includes("/") || value.includes("\\")) return null;
+      return { repo, kind, id: value };
+    }
+    return { repo, kind, path: value };
+  }
+  if (kind === "comment") {
+    if (parts.length !== 4) return null;
+    const path = decodeHashSegment(parts[2]);
+    const id = decodeHashSegment(parts[3]);
+    if (path == null || id == null) return null;
+    return { repo, kind, path, id };
+  }
+  return null;
+}
+
+function ticketIdFromPath(path) {
+  const prefix = "tickets/";
+  const suffix = ".md";
+  if (typeof path !== "string" || !path.startsWith(prefix) || !path.endsWith(suffix)) return "";
+  const id = path.slice(prefix.length, -suffix.length);
+  if (!id || id.includes("/") || id.includes("\\")) return "";
+  return id;
+}
+
+function hashFromHref(href) {
+  if (typeof href !== "string" || href === "") return "";
+  const index = href.indexOf("#");
+  if (index < 0) return "";
+  return href.slice(index);
+}
+
+function readLocation() {
+  if (typeof globalThis.location === "object" && globalThis.location) return globalThis.location;
+  const win = typeof globalThis.window === "object" ? globalThis.window : null;
+  if (win && typeof win.location === "object" && win.location) return win.location;
+  return null;
+}
+
+function readHash() {
+  const loc = readLocation();
+  if (!loc || typeof loc.hash !== "string") return "";
+  return loc.hash;
+}
+
+function absoluteHash(hash) {
+  const loc = readLocation() || {};
+  const origin = typeof loc.origin === "string" ? loc.origin : "";
+  const pathname = typeof loc.pathname === "string" ? loc.pathname : "";
+  return `${origin}${pathname}${hash}`;
+}
+
+function writeClipboard(text) {
+  const nav = globalThis.navigator;
+  const clipboard = nav && nav.clipboard;
+  if (!text || !clipboard || typeof clipboard.writeText !== "function") return;
+  try {
+    const result = clipboard.writeText(text);
+    if (result && typeof result.catch === "function") result.catch(() => {});
+  } catch {
+    // Clipboard permission is optional.
+  }
+}
 
 // A directory exists only when some markdown file is stored under it.
 function buildFileTree(files) {
@@ -867,9 +979,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let docMenuButton = null;
   let docMenuPanel = null;
   let repoCommitButton = null;
+  let docLinkButton = null;
   let docMenuOnClick = null;
   let repoCommitOnClick = null;
+  let docLinkOnClick = null;
   let docMenuBound = false;
+  let repoNames = new Set();
+  let sawRepos = false;
+  let suppressHash = null;
+  let appliedHash = null;
+  let pendingHash = null;
+  let hashComment = null;
+  let pinnedComment = null;
+  let scrollCommentId = null;
+  let writingHash = false;
+  let closed = false;
   const repoStorage = storage || null;
   // Create is answered by its own error or by the file from onOpen.
   // A 409 for that create is not a rejected caret grant.
@@ -1393,12 +1517,29 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function appendAuthor(parent, id, index) {
+    const row = document.createElement("div");
+    row.className = "md-comment-author-row";
     const author = document.createElement("input");
     author.type = "text";
     author.className = "md-comment-author";
     author.placeholder = "Author";
     author.value = authorDrafts.get(draftKey(id, index)) || "";
-    parent.appendChild(author);
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "md-comment-link";
+    link.textContent = "Copy link";
+    if (typeof link.setAttribute === "function") {
+      link.setAttribute("type", "button");
+      link.setAttribute("aria-label", "Copy link");
+    }
+    link.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      copyCommentLink(id);
+    });
+    row.appendChild(author);
+    row.appendChild(link);
+    parent.appendChild(row);
   }
 
   function appendStaticNote(parent, id, index, stored) {
@@ -1507,17 +1648,30 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const panelStale = [];
     for (const child of docMenuPanel.childNodes || []) panelStale.push(child);
     for (const child of panelStale) {
-      if (child === repoCommitButton) continue;
+      if (child === repoCommitButton || child === docLinkButton) continue;
       detachNode(child);
     }
-    if (repoCommitButton && repoCommitButton.parentElement === docMenuPanel) {
-      placeNodeBefore(docMenuPanel, checkbox, repoCommitButton);
+    const anchor = docLinkButton && docLinkButton.parentElement === docMenuPanel
+      ? docLinkButton
+      : (repoCommitButton && repoCommitButton.parentElement === docMenuPanel ? repoCommitButton : null);
+    if (anchor) {
+      placeNodeBefore(docMenuPanel, checkbox, anchor);
       insertAfter(docMenuPanel, checkbox, label);
     } else {
       docMenuPanel.appendChild(checkbox);
       docMenuPanel.appendChild(label);
-      if (repoCommitButton) docMenuPanel.appendChild(repoCommitButton);
     }
+    if (docLinkButton && repoCommitButton && docLinkButton.parentElement === docMenuPanel && repoCommitButton.parentElement === docMenuPanel) {
+      // insertBefore on a node that is already in the panel duplicates it.
+      if (!isImmediatelyAfter(docMenuPanel, docLinkButton, repoCommitButton)) {
+        detachNode(docLinkButton);
+        placeNodeBefore(docMenuPanel, docLinkButton, repoCommitButton);
+      }
+    } else if (docLinkButton && docLinkButton.parentElement !== docMenuPanel) {
+      docMenuPanel.appendChild(docLinkButton);
+    }
+    if (repoCommitButton && repoCommitButton.parentElement !== docMenuPanel) docMenuPanel.appendChild(repoCommitButton);
+    syncEntryLink();
   }
 
   function elementRect(el) {
@@ -1756,6 +1910,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (commentFocus) focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
     else placeCaret();
     updateCommentButton();
+    if (scrollCommentId) {
+      const card = findCommentCard(scrollCommentId);
+      scrollCommentId = null;
+      if (card && typeof card.scrollIntoView === "function") card.scrollIntoView();
+    }
   }
 
   function filesNav() {
@@ -1984,10 +2143,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     bindFileDrop(button, file.path);
     button.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
+      hashComment = null;
+      pinnedComment = null;
       openPath = file.path;
       seedOpen(openPath);
       waitingForFile = true;
       emit({ type: "open", path: file.path });
+      publishHash();
+      syncEntryLink();
     });
     return button;
   }
@@ -2147,7 +2310,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const lines = lineSet(state.anchor, state.cursor);
     sentLines = lines;
     noteFreshComment(previousDoc, message);
+    if (message.type === "file") focusHashedComment(message.path, text);
     render();
+    if (message.type === "file") publishHash();
     if (!live) return;
     if (message.type === "file" || !sameLines(lines, previousLines)) {
       emit({ type: "lock", anchor: state.anchor, cursor: state.cursor }, false);
@@ -2532,6 +2697,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       didDrag = false;
       return;
     }
+    if (link && root.contains(link)) {
+      const parsed = parseHash(hashFromHref(link.href));
+      if (parsed) {
+        activateHash(parsed);
+        return;
+      }
+    }
     const highlighted = target?.closest?.(".md-comment");
     let keepCurrent = false;
     if (highlighted && highlighted.dataset && highlighted.dataset.comment) {
@@ -2661,6 +2833,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     window.addEventListener("resize", () => layoutComments(), { signal: ac.signal });
+    window.addEventListener("hashchange", () => onHashChange(), { signal: ac.signal });
   }
 
   function visibleTicketList() {
@@ -2733,6 +2906,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (openPath === path) row.classList.add("md-ticket-current");
     open.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
+      hashComment = null;
+      pinnedComment = null;
       openPath = path;
       seedTicketAncestors(ticket.id);
       waitingForFile = true;
@@ -2740,6 +2915,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       // The open frame can rebuild the list. Mark whatever row is on screen now.
       markOpenTicket();
       showTicketDrawer();
+      publishHash();
+      syncEntryLink();
     });
     row.appendChild(open);
     node.appendChild(row);
@@ -3078,9 +3255,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     dropPendingEdits();
     expectNewComment = false;
     commentFocus = null;
+    hashComment = null;
+    pinnedComment = null;
+    scrollCommentId = null;
     live = false;
     waitingForFile = true;
     openPath = "";
+    clearHashForActiveRepo();
     state = createState("");
     sentLines = lineSet(state.anchor, state.cursor);
     outstandingLock = null;
@@ -3397,6 +3578,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     expectNewComment = false;
     commentFocus = null;
     currentCommentId = null;
+    hashComment = null;
+    pinnedComment = null;
+    scrollCommentId = null;
     unsavedThreads.clear();
     replyDrafts.clear();
     noteDrafts.clear();
@@ -3432,13 +3616,238 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     emit({ type: "tickets" });
   }
 
+  function hashForEntry() {
+    if (!activeRepo || !openPath) return "";
+    const ticketId = ticketIdFromPath(openPath);
+    if (ticketId) return formatHash({ repo: activeRepo, kind: "ticket", id: ticketId });
+    return formatHash({ repo: activeRepo, kind: "doc", path: openPath });
+  }
+
+  function hashForOpen() {
+    if (pinnedComment && pinnedComment.path === openPath && pinnedComment.id) {
+      const hash = formatHash({ repo: activeRepo, kind: "comment", path: openPath, id: pinnedComment.id });
+      if (hash) return hash;
+    }
+    return hashForEntry();
+  }
+
+  function writeBrowserHash(hash) {
+    // The value we just wrote is not a navigation. A later hashchange for it must not open again.
+    suppressHash = hash;
+    appliedHash = hash;
+    const loc = readLocation();
+    const history = globalThis.history;
+    const pathname = loc && typeof loc.pathname === "string" ? loc.pathname : "";
+    const search = loc && typeof loc.search === "string" ? loc.search : "";
+    const url = pathname ? `${pathname}${search}${hash}` : hash;
+    writingHash = true;
+    try {
+      if (history && typeof history.replaceState === "function") {
+        try {
+          history.replaceState(null, "", url);
+        } catch {
+          // A missing session history still leaves the hash for the next read.
+        }
+      }
+      // replaceState updates a real Location. Assigning it would fire hashchange.
+      if (loc && typeof loc === "object" && typeof loc.assign !== "function") loc.hash = hash;
+    } finally {
+      writingHash = false;
+    }
+  }
+
+  function publishHash() {
+    if (closed || !activeRepo || !openPath) return;
+    const next = hashForOpen();
+    if (!next) return;
+    if (readHash() === next) {
+      suppressHash = next;
+      appliedHash = next;
+      return;
+    }
+    writeBrowserHash(next);
+  }
+
+  function clearHashForActiveRepo() {
+    const parsed = parseHash(readHash());
+    if (!parsed || parsed.repo !== activeRepo) return;
+    writeBrowserHash("");
+  }
+
+  function hashSelection(names) {
+    if (pendingHash && names.has(pendingHash.repo)) return pendingHash.repo;
+    const hash = readHash();
+    if (!hash || hash === suppressHash) return "";
+    const parsed = parseHash(hash);
+    if (!parsed || !names.has(parsed.repo)) return "";
+    return parsed.repo;
+  }
+
+  function copyCommentLink(id) {
+    if (!activeRepo || !openPath || !id) return;
+    const hash = formatHash({ repo: activeRepo, kind: "comment", path: openPath, id });
+    if (!hash) return;
+    writeClipboard(absoluteHash(hash));
+  }
+
+  function copyEntryLink() {
+    const hash = hashForEntry();
+    if (!hash) return;
+    writeClipboard(absoluteHash(hash));
+  }
+
+  function focusHashedComment(path, text) {
+    if (!hashComment) return;
+    if (path !== hashComment.path) {
+      hashComment = null;
+      return;
+    }
+    const id = hashComment.id;
+    hashComment = null;
+    const thread = commentThreads(typeof text === "string" ? text : "").find((item) => item && item.id === id);
+    if (thread && thread.resolved) showResolved = true;
+    currentCommentId = id;
+    scrollCommentId = id;
+  }
+
+  function hashTargetOpen(parsed) {
+    if (!parsed) return false;
+    if (parsed.kind === "ticket") return openPath === `tickets/${parsed.id}.md`;
+    if (parsed.kind === "doc") return openPath === parsed.path && !pinnedComment;
+    if (parsed.kind === "comment") {
+      return openPath === parsed.path && !!pinnedComment && pinnedComment.id === parsed.id && pinnedComment.path === parsed.path;
+    }
+    return false;
+  }
+
+  function openDocument(path, commentId, ticket) {
+    if (closed || typeof path !== "string" || path === "") return;
+    const comment = typeof commentId === "string" && commentId ? commentId : "";
+    const same = openPath === path && live && !waitingForFile;
+    if (comment) {
+      hashComment = { path, id: comment };
+      pinnedComment = { path, id: comment };
+    } else {
+      hashComment = null;
+      pinnedComment = null;
+    }
+    if (same) {
+      if (comment) {
+        const thread = commentThreads(state.doc).find((item) => item && item.id === comment);
+        if (thread && thread.resolved) showResolved = true;
+        currentCommentId = comment;
+        scrollCommentId = comment;
+        render();
+      }
+      publishHash();
+      syncEntryLink();
+      return;
+    }
+    openPath = path;
+    if (ticket) {
+      const id = ticketIdFromPath(path);
+      if (id) seedTicketAncestors(id);
+    } else seedOpen(path);
+    waitingForFile = true;
+    emit({ type: "open", path });
+    if (ticket) {
+      markOpenTicket();
+      showTicketDrawer();
+    }
+    publishHash();
+    syncEntryLink();
+  }
+
+  function openParsed(parsed) {
+    if (!parsed || parsed.repo !== activeRepo) return;
+    if (parsed.kind === "ticket") {
+      openDocument(`tickets/${parsed.id}.md`, null, true);
+      return;
+    }
+    if (parsed.kind === "doc") {
+      openDocument(parsed.path, null, false);
+      return;
+    }
+    if (parsed.kind === "comment") openDocument(parsed.path, parsed.id, false);
+  }
+
+  function activateHash(parsed) {
+    if (closed || !parsed) return;
+    if (sawRepos && !repoNames.has(parsed.repo)) return;
+    const hash = formatHash(parsed);
+    if (!sawRepos) {
+      pendingHash = parsed;
+      return;
+    }
+    if (hash && hash === appliedHash && hashTargetOpen(parsed)) return;
+    if (hash) appliedHash = hash;
+    if (parsed.repo !== activeRepo) {
+      pendingHash = parsed;
+      chooseRepo(parsed.repo);
+      return;
+    }
+    openParsed(parsed);
+  }
+
+  function onHashChange() {
+    if (writingHash || closed) return;
+    const hash = readHash();
+    if (!hash || hash === suppressHash) return;
+    const parsed = parseHash(hash);
+    if (!parsed) return;
+    if (!sawRepos || !repoNames.has(parsed.repo)) {
+      pendingHash = parsed;
+      return;
+    }
+    if (hash === appliedHash && hashTargetOpen(parsed)) return;
+    appliedHash = hash;
+    if (parsed.repo !== activeRepo) {
+      pendingHash = parsed;
+      chooseRepo(parsed.repo);
+      return;
+    }
+    openParsed(parsed);
+  }
+
+  function followArrivedHash() {
+    if (pendingHash) {
+      if (repoNames.has(pendingHash.repo)) {
+        const parsed = pendingHash;
+        pendingHash = null;
+        if (parsed.repo !== activeRepo) {
+          pendingHash = parsed;
+          chooseRepo(parsed.repo);
+          return;
+        }
+        openParsed(parsed);
+        return;
+      }
+      pendingHash = null;
+    }
+    const hash = readHash();
+    if (!hash || hash === suppressHash || hash === appliedHash) return;
+    const parsed = parseHash(hash);
+    if (!parsed || !repoNames.has(parsed.repo)) return;
+    if (parsed.repo !== activeRepo) {
+      pendingHash = parsed;
+      chooseRepo(parsed.repo);
+      return;
+    }
+    openParsed(parsed);
+  }
+
   function chooseRepo(name) {
     if (typeof name !== "string" || name === "" || name === activeRepo) return;
+    const follow = pendingHash && pendingHash.repo === name ? pendingHash : null;
+    pendingHash = null;
+    if (!follow) clearHashForActiveRepo();
     writeStoredRepo(name);
     activeRepo = name;
     blankEditor();
+    if (repoSelect) markRepoSelected(repoSelect, name);
     syncRepoCommit();
     sendRepoFrames(name);
+    if (follow) openParsed(follow);
   }
 
   function markRepoSelected(select, name) {
@@ -3484,30 +3893,35 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       names.add(repo.name);
     }
     if (typeof select.replaceChildren === "function") select.replaceChildren(...options);
+    repoNames = names;
+    sawRepos = true;
     if (activeRepo && !names.has(activeRepo)) {
+      clearHashForActiveRepo();
       blankEditor();
       deleteStoredRepo();
       activeRepo = "";
       clearRepoSelection(select);
       syncRepoCommit();
-      return;
     }
-    if (activeRepo) {
+    if (!activeRepo) {
+      const stored = readStoredRepo();
+      const pick = hashSelection(names) || (stored && names.has(stored) ? stored : "");
+      if (pick) {
+        markRepoSelected(select, pick);
+        activeRepo = pick;
+        if (pick !== stored) writeStoredRepo(pick);
+        syncRepoCommit();
+        sendRepoFrames(pick);
+      } else {
+        if (stored) deleteStoredRepo();
+        clearRepoSelection(select);
+        syncRepoCommit();
+      }
+    } else {
       markRepoSelected(select, activeRepo);
       syncRepoCommit();
-      return;
     }
-    const stored = readStoredRepo();
-    if (stored && names.has(stored)) {
-      markRepoSelected(select, stored);
-      activeRepo = stored;
-      syncRepoCommit();
-      sendRepoFrames(stored);
-      return;
-    }
-    if (stored) deleteStoredRepo();
-    clearRepoSelection(select);
-    syncRepoCommit();
+    followArrivedHash();
   }
 
   function unbindRepoSelect() {
@@ -3523,9 +3937,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function syncRepoCommit() {
-    if (!repoCommitButton) return;
-    if (activeRepo) showElement(repoCommitButton);
-    else hideElement(repoCommitButton);
+    if (repoCommitButton) {
+      if (activeRepo) showElement(repoCommitButton);
+      else hideElement(repoCommitButton);
+    }
+    syncEntryLink();
+  }
+
+  function syncEntryLink() {
+    if (!docLinkButton) return;
+    if (activeRepo && openPath) showElement(docLinkButton);
+    else hideElement(docLinkButton);
   }
 
   function unbindDocMenu() {
@@ -3543,8 +3965,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       if (binding === repoCommitOnClick) docCommitBindings.delete(repoCommitButton);
     }
+    if (docLinkButton && docLinkOnClick) {
+      const binding = docLinkBindings.get(docLinkButton);
+      if (binding === docLinkOnClick && typeof docLinkButton.removeEventListener === "function") {
+        docLinkButton.removeEventListener("click", docLinkOnClick);
+      }
+      if (binding === docLinkOnClick) docLinkBindings.delete(docLinkButton);
+    }
     docMenuOnClick = null;
     repoCommitOnClick = null;
+    docLinkOnClick = null;
     docMenuBound = false;
   }
 
@@ -3593,6 +4023,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       docMenuPanel.appendChild(commit);
       repoCommitButton = commit;
     }
+    if (!docLinkButton || docLinkButton.parentElement !== docMenuPanel) {
+      docLinkButton = findClassChild(docMenuPanel, "md-doc-link");
+    }
+    if (!docLinkButton) {
+      const entry = document.createElement("button");
+      entry.type = "button";
+      entry.className = "md-doc-link";
+      entry.textContent = "link to this entry";
+      if (typeof entry.setAttribute === "function") entry.setAttribute("type", "button");
+      hideElement(entry);
+      if (repoCommitButton && repoCommitButton.parentElement === docMenuPanel) placeNodeBefore(docMenuPanel, entry, repoCommitButton);
+      else docMenuPanel.appendChild(entry);
+      docLinkButton = entry;
+    }
     if (!docMenuBound) {
       const previousMenu = docMenuBindings.get(docMenuButton);
       if (previousMenu && typeof docMenuButton.removeEventListener === "function") {
@@ -3618,6 +4062,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       };
       if (typeof repoCommitButton.addEventListener === "function") repoCommitButton.addEventListener("click", repoCommitOnClick);
       docCommitBindings.set(repoCommitButton, repoCommitOnClick);
+      const previousLink = docLinkBindings.get(docLinkButton);
+      if (previousLink && docLinkButton && typeof docLinkButton.removeEventListener === "function") {
+        docLinkButton.removeEventListener("click", previousLink);
+      }
+      docLinkOnClick = (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        copyEntryLink();
+      };
+      if (docLinkButton && typeof docLinkButton.addEventListener === "function") docLinkButton.addEventListener("click", docLinkOnClick);
+      if (docLinkButton) docLinkBindings.set(docLinkButton, docLinkOnClick);
       docMenuBound = true;
     }
     syncRepoCommit();
@@ -3685,6 +4139,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       placeCaret();
     },
     destroy() {
+      closed = true;
       unsubscribe();
       unbindRepoSelect();
       unbindDocMenu();
