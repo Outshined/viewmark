@@ -969,6 +969,11 @@ export async function createHub(stateDir, sourceRoot) {
     if (!rel) return fail(socket, 404);
     if (rel === "tickets" || rel.startsWith("tickets/")) return fail(socket, 400);
     if (!rel.endsWith(".md") && !rel.endsWith(".markdown")) return fail(socket, 400);
+    let text = "";
+    if (Object.prototype.hasOwnProperty.call(msg, "text")) {
+      if (typeof msg.text !== "string") return fail(socket, 400);
+      text = msg.text;
+    }
     if (files.has(rel)) return fail(socket, 409);
     const full = path.resolve(docsDir, rel);
     if (await existsPath(full)) return fail(socket, 409);
@@ -989,8 +994,8 @@ export async function createHub(stateDir, sourceRoot) {
     const dest = path.join(parentReal, path.basename(rel));
     if (!inside(docsDir, dest)) return fail(socket, 404);
     if (await existsPath(dest)) return fail(socket, 409);
-    await writeAtomic(dest, "");
-    files.set(rel, { rel, full: dest, rev: 0, text: "", subscribers: new Set(), locks: new Map() });
+    await writeAtomic(dest, text);
+    files.set(rel, { rel, full: dest, rev: 0, text, subscribers: new Set(), locks: new Map() });
     mark(repo, rel, socket.session.username);
     broadcastDocs(repo, await docsPayload(repo));
     await onOpen(socket, { path: rel });

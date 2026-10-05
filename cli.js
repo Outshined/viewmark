@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { realpathSync, writeSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { start } from "./server.js";
@@ -11,7 +12,7 @@ const HELP = `viewmark talks to the document hub, one command, then exit.
 Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME list
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME show <path>
-  viewmark [--port PORT] [--user NAME] [--json] --repo NAME create <path>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME create <path> [--file PATH]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME edit <path> --rev N --find TEXT --replace TEXT
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME commit [--message TEXT]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket list [--closed]
@@ -52,6 +53,9 @@ stdout and stderr:
 
 Example of one copy-paste edit:
   viewmark --user alice --repo docs edit hello.md --rev 0 --find "hello" --replace "hi"
+
+create:
+  The body is stdin when stdin is not a terminal. A terminal sends an empty body. --file PATH reads that file instead and does not read stdin.
 
 commit:
   --message TEXT is optional. An omitted message lets the hub choose the subject.
@@ -96,6 +100,7 @@ const VALUE_FLAGS = new Set([
   "description",
   "path",
   "message",
+  "file",
 ]);
 
 // Same rejection the hub uses, so a bad name never opens a socket.
@@ -133,6 +138,26 @@ function readStdin() {
     process.stdin.on("end", () => resolve(chunks.join("")));
     process.stdin.on("error", reject);
   });
+}
+
+// --file is the whole body. A failure here must not open a socket.
+async function createBody(args) {
+  if (!args.fileSet) return readStdin();
+  if (args.file.length === 0) {
+    usage("empty file");
+    return null;
+  }
+  try {
+    const info = await stat(args.file);
+    if (!info.isFile()) {
+      usage(`cannot read ${args.file}`);
+      return null;
+    }
+    return await readFile(args.file, "utf8");
+  } catch {
+    usage(`cannot read ${args.file}`);
+    return null;
+  }
 }
 
 function help() {
@@ -176,6 +201,8 @@ function parseArgs(argv) {
     path: "",
     messageSet: false,
     message: "",
+    fileSet: false,
+    file: "",
     closed: false,
     positionals: [],
   };
@@ -259,6 +286,9 @@ function parseArgs(argv) {
       } else if (name === "message") {
         args.messageSet = true;
         args.message = value;
+      } else if (name === "file") {
+        args.fileSet = true;
+        args.file = value;
       }
       continue;
     }
@@ -517,8 +547,8 @@ async function runShow(hub, username, path, json) {
   return 0;
 }
 
-async function runCreate(hub, username, path, json) {
-  hub.send({ type: "create", username, path });
+async function runCreate(hub, username, path, json, text) {
+  hub.send({ type: "create", username, path, text });
   const msg = await hub.next((item) => item.type === "file" || item.type === "error");
   if (msg.type === "error") return serverError(msg);
   const doc = asDoc(msg);
@@ -1029,7 +1059,7 @@ function serveFlagRejected(args) {
   return args.revSet || args.findSet || args.replaceSet || args.titleSet
     || args.stateSet || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet
     || args.repoSet || args.nameSet || args.descriptionSet || args.pathSet
-    || args.messageSet;
+    || args.messageSet || args.fileSet;
 }
 
 function defaultStateDir() {
@@ -1102,6 +1132,10 @@ async function main() {
   }
 
   if (args.messageSet && cmd !== "commit") {
+    usage("unexpected flag");
+    return;
+  }
+  if (args.fileSet && cmd !== "create") {
     usage("unexpected flag");
     return;
   }
@@ -1221,12 +1255,14 @@ async function main() {
     return;
   }
   if (cmd === "create") {
-    const path = normalizeCreate(rest[0]);
-    if (!path) {
+    const docPath = normalizeCreate(rest[0]);
+    if (!docPath) {
       usage("empty path");
       return;
     }
-    await withHub(port, user, (hub) => runCreate(hub, user, path, args.json), args.repo);
+    const body = await createBody(args);
+    if (body === null) return;
+    await withHub(port, user, (hub) => runCreate(hub, user, docPath, args.json, body), args.repo);
     return;
   }
 

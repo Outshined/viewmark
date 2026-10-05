@@ -880,6 +880,30 @@ test("T-create", async () => {
       a.send({ type: "create", username: "A", path: "out/x.md" });
       assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 404 });
       await assert.rejects(() => fs.lstat(path.join(outside, "x.md")));
+      a.send({ type: "create", username: "A", path: "notes/body.md", text: "Body\n" });
+      const bodyFile = await a.next((msg) => msg.type === "file" && msg.path === "notes/body.md");
+      assert.equal(bodyFile.text, "Body\n");
+      assert.equal(bodyFile.rev, 0);
+      assert.equal(await readDoc(dir, "notes/body.md"), "Body\n");
+      a.send({ type: "create", username: "A", path: "notes/empty-text.md", text: "" });
+      const emptyText = await a.next((msg) => msg.type === "file" && msg.path === "notes/empty-text.md");
+      assert.equal(emptyText.text, "");
+      assert.equal(emptyText.rev, 0);
+      assert.equal(await readDoc(dir, "notes/empty-text.md"), "");
+      a.send({ type: "create", username: "A", path: "notes/plain.md" });
+      const plain = await a.next((msg) => msg.type === "file" && msg.path === "notes/plain.md");
+      assert.equal(plain.text, "");
+      assert.equal(plain.rev, 0);
+      assert.equal(await readDoc(dir, "notes/plain.md"), "");
+      const badTexts = [1, null, false, {}, []];
+      for (let i = 0; i < badTexts.length; i += 1) {
+        const rel = `fresh/bad-${i}.md`;
+        a.send({ type: "create", username: "A", path: rel, text: badTexts[i] });
+        assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+        await assert.rejects(() => fs.lstat(path.join(dir, rel)));
+      }
+      await assert.rejects(() => fs.lstat(path.join(dir, "fresh")));
+      await openDoc(a, "A", "notes/idea.md");
       await syncLock(a, [], "A", "notes/idea.md", 0, 0);
       a.send({ type: "edit", username: "A", path: "notes/idea.md", rev: 0, op: "insert", text: "Hi" });
       const doc = await takeDoc(a);

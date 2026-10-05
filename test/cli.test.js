@@ -54,6 +54,8 @@ const HELP_NEEDLES = [
   "--closed",
   "reporter",
   "create reads the body from stdin when stdin is not a terminal.",
+  "create <path> [--file PATH]",
+  "The body is stdin when stdin is not a terminal. A terminal sends an empty body. --file PATH reads that file instead and does not read stdin.",
   "serve",
   "keeps running",
   "beside the program",
@@ -643,6 +645,23 @@ test("T-cli-create", async () => {
       const empty = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "create", pathArg]);
       assert.equal(empty.code, 2, JSON.stringify(pathArg));
     }
+    for (const args of [
+      ["list", "--file", "x"],
+      ["show", "hello.md", "--file", "x"],
+      ["edit", "hello.md", "--rev", "0", "--find", "a", "--replace", "b", "--file", "x"],
+      ["commit", "--file", "x"],
+      ["ticket", "list", "--file", "x"],
+      ["repo", "list", "--file", "x"],
+    ]) {
+      const flagged = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", ...args]);
+      assert.equal(flagged.code, 2, args.join(" "));
+      assert.equal(flagged.stdout, "");
+      assert.equal(flagged.stderr, "viewmark: unexpected flag\n");
+    }
+    const served = await run(["serve", "--file", "x"], { VIEWMARK_PORT: String(gate.port) });
+    assert.equal(served.code, 2);
+    assert.equal(served.stdout, "");
+    assert.equal(served.stderr, "viewmark: unexpected flag\n");
     assert.equal(gate.hits.length, 0);
   } finally {
     await gate.close();
@@ -680,6 +699,117 @@ test("T-cli-create", async () => {
     assert.equal(markdown.stdout, `${JSON.stringify({ path: "notes/keep.markdown", rev: 0 })}\n`);
     assert.equal(await fs.readFile(path.join(dir, "notes", "keep.markdown"), "utf8"), "");
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
+
+    const piped = await run(
+      ["--port", String(port), "--user", "user", "--repo", "docs", "create", "notes/piped"],
+      {},
+      "Piped.\n",
+    );
+    assert.equal(piped.code, 0);
+    assert.equal(piped.stdout, "notes/piped.md\n");
+    assert.equal(piped.stderr, "rev 0\n");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "piped.md"), "utf8"), "Piped.\n");
+
+    const jsonBody = await run(
+      ["--json", "--port", String(port), "--user", "user", "--repo", "docs", "create", "notes/json-body"],
+      {},
+      "Json.\n",
+    );
+    assert.equal(jsonBody.code, 0);
+    assert.equal(jsonBody.stderr, "");
+    assert.equal(jsonBody.stdout, `${JSON.stringify({ path: "notes/json-body.md", rev: 0 })}\n`);
+    assert.equal(Object.hasOwn(JSON.parse(jsonBody.stdout), "text"), false);
+    assert.equal(await fs.readFile(path.join(dir, "notes", "json-body.md"), "utf8"), "Json.\n");
+
+    const disk = path.join(dir, "from-disk.txt");
+    await fs.writeFile(disk, "From disk.\n");
+    const fromFile = await run(
+      ["--port", String(port), "--user", "user", "--repo", "docs", "create", "notes/from-disk", "--file", disk],
+      {},
+      "Ignored.\n",
+    );
+    assert.equal(fromFile.code, 0);
+    assert.equal(fromFile.stdout, "notes/from-disk.md\n");
+    assert.equal(fromFile.stderr, "rev 0\n");
+    assert.equal(fromFile.stdout.includes("From disk."), false);
+    assert.equal(await fs.readFile(path.join(dir, "notes", "from-disk.md"), "utf8"), "From disk.\n");
+
+    const blank = path.join(dir, "blank-body.txt");
+    await fs.writeFile(blank, "");
+    const blankDoc = await run(
+      ["--port", String(port), "--user", "user", "--repo", "docs", "create", "notes/blank-body", "--file", blank],
+      {},
+      "Ignored.\n",
+    );
+    assert.equal(blankDoc.code, 0);
+    assert.equal(await fs.readFile(path.join(dir, "notes", "blank-body.md"), "utf8"), "");
+
+    const gate = await trap();
+    try {
+      const missingFile = path.join(dir, "no-such-body.txt");
+      const missing = await run([
+        "--port", String(gate.port),
+        "--user", "user",
+        "--repo", "docs",
+        "create",
+        "notes/missing-body",
+        "--file",
+        missingFile,
+      ]);
+      assert.equal(missing.code, 2);
+      assert.equal(missing.stdout, "");
+      assert.equal(missing.stderr, `viewmark: cannot read ${missingFile}\n`);
+      await assert.rejects(() => fs.lstat(path.join(dir, "notes", "missing-body.md")));
+
+      const asDir = await run([
+        "--port", String(gate.port),
+        "--user", "user",
+        "--repo", "docs",
+        "create",
+        "notes/dir-body",
+        "--file",
+        dir,
+      ]);
+      assert.equal(asDir.code, 2);
+      assert.equal(asDir.stdout, "");
+      assert.equal(asDir.stderr, `viewmark: cannot read ${dir}\n`);
+      await assert.rejects(() => fs.lstat(path.join(dir, "notes", "dir-body.md")));
+
+      const secret = path.join(dir, "secret-body.txt");
+      await fs.writeFile(secret, "nope\n");
+      await fs.chmod(secret, 0);
+      try {
+        const denied = await run([
+          "--port", String(gate.port),
+          "--user", "user",
+          "--repo", "docs",
+          "create",
+          "notes/secret-body",
+          "--file",
+          secret,
+        ]);
+        assert.equal(denied.code, 2);
+        assert.equal(denied.stdout, "");
+        assert.equal(denied.stderr, `viewmark: cannot read ${secret}\n`);
+      } finally {
+        await fs.chmod(secret, 0o644);
+      }
+      await assert.rejects(() => fs.lstat(path.join(dir, "notes", "secret-body.md")));
+
+      for (const fileArg of ["", "--file="]) {
+        const args = ["--port", String(gate.port), "--user", "user", "--repo", "docs", "create", "notes/empty-flag"];
+        if (fileArg === "") args.push("--file", "");
+        else args.push(fileArg);
+        const emptyFile = await run(args);
+        assert.equal(emptyFile.code, 2, JSON.stringify(fileArg));
+        assert.equal(emptyFile.stdout, "");
+        assert.equal(emptyFile.stderr, "viewmark: empty file\n");
+      }
+      await assert.rejects(() => fs.lstat(path.join(dir, "notes", "empty-flag.md")));
+      assert.equal(gate.hits.length, 0);
+    } finally {
+      await gate.close();
+    }
   });
 });
 
