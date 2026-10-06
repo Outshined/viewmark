@@ -3000,6 +3000,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return true;
   }
 
+  // coveringSplice keeps a shared run of newlines in the prefix, so the
+  // inserted break lands after that run. Hold every line the splice touches.
+  function claimFollowingBreaks() {
+    if (state.anchor !== state.cursor) return true;
+    let at = state.cursor;
+    while (at < state.doc.length && state.doc[at] === "\n") at += 1;
+    if (at === state.cursor) return true;
+    return claimLines(state.cursor, at);
+  }
+
   listen("beforeinput", (event) => {
     commentFocus = null;
     event.preventDefault();
@@ -3017,19 +3027,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (edits && !adoptDomSelection()) return;
     if (type === "insertText") {
       if (event.data === "\t") return;
+      if (event.data === "\n") {
+        if (event.data === composed) return;
+        if (!claimFollowingBreaks()) return;
+        emitEdit({ op: "insert", text: "\n" });
+        return;
+      }
       if (event.data && event.data !== composed) emitEdit({ op: "insert", text: event.data });
       return;
     }
     if (type === "insertCompositionText" || type === "insertFromComposition") return;
     if (type === "insertParagraph" || type === "insertLineBreak") {
-      // A caret on the newline belongs to this line, but the inserted break
-      // splices the next one. The hub rejects that edit unless the next line is held.
-      if (state.anchor === state.cursor) {
-        const end = lineSpan(state.doc, state.cursor)[1];
-        if (end === state.cursor && end < state.doc.length) {
-          if (!claimLines(state.cursor, end + 1)) return;
-        }
-      }
+      if (!claimFollowingBreaks()) return;
       emitEdit({ op: "insert", text: "\n" });
       return;
     }
@@ -3039,6 +3048,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     if (type === "deleteContentForward") {
+      if (state.anchor === state.cursor) {
+        const [start, end] = lineSpan(state.doc, state.cursor);
+        if (start === end) {
+          // The normalized splice deletes the later newline and the next line.
+          // Backspace the preceding break and hold that line. A leading empty
+          // line still deletes forward, but the next line has to be held.
+          if (state.cursor > 0) {
+            const through = Math.min(state.doc.length, state.cursor + 1);
+            if (!claimLines(state.cursor - 1, through)) return;
+            emitEdit({ op: "backspace" });
+            return;
+          }
+          if (!claimLines(0, 1)) return;
+        }
+      }
       emitEdit({ op: "delete" });
       return;
     }

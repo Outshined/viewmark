@@ -1547,6 +1547,262 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
   }
 });
 
+test("enter before a blank line inserts one newline and holds the run", () => {
+  const mounted = mountEditor();
+  const press = (inputType, data) => {
+    mounted.listeners.beforeinput({
+      inputType,
+      data,
+      preventDefault() {},
+    });
+  };
+  const caret = (node, offset) => {
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: node,
+      anchorOffset: offset,
+      focusNode: node,
+      focusOffset: offset,
+      removeAllRanges() {},
+      addRange() {},
+      getRangeAt() {
+        return {
+          startContainer: node,
+          startOffset: offset,
+          endContainer: node,
+          endOffset: offset,
+          collapsed: true,
+        };
+      },
+    });
+  };
+  const helloEnd = () => {
+    const node = mounted.findAll((item) => item.nodeType === 3 && item.textContent === "hello")[0];
+    assert.ok(node);
+    caret(node, node.length);
+  };
+  const covers = (sent, offset) => {
+    const lock = sent.filter((message) => message.type === "lock").at(-1);
+    assert.ok(lock);
+    const lo = Math.min(lock.anchor, lock.cursor);
+    const hi = Math.max(lock.anchor, lock.cursor);
+    assert.ok(lo <= offset && hi >= offset);
+    return lock;
+  };
+  const rejecting = () => ({
+    username: "",
+    sent: [],
+    subscribe(fn) {
+      this.listener = fn;
+      return () => {};
+    },
+    send(message) {
+      this.sent.push(message);
+      if (message.type === "lock" && this.listener) this.listener({ type: "error", status: 409 });
+    },
+  });
+  const events = [
+    { inputType: "insertParagraph" },
+    { inputType: "insertLineBreak" },
+    { inputType: "insertText", data: "\n" },
+  ];
+  try {
+    for (const event of events) {
+      const transport = holdingTransport();
+      const held = createEditor(mounted.root, "hello\n\nworld\n", 0, transport);
+      helloEnd();
+      press(event.inputType, event.data);
+      const edit = transport.sent.find((message) => message.type === "edit");
+      assert.equal(edit.op, "insert");
+      assert.equal(edit.text, "\n");
+      assert.equal(edit.cursor, 5);
+      assert.equal(edit.anchor, 5);
+      const lock = covers(transport.sent, 7);
+      assert.equal(Math.min(lock.anchor, lock.cursor), 5);
+      assert.equal(Math.max(lock.anchor, lock.cursor), 7);
+      assert.ok(transport.sent.indexOf(lock) < transport.sent.indexOf(edit));
+      held.destroy();
+
+      const view = createEditor(mounted.root, "hello\n\nworld\n", 0);
+      helloEnd();
+      press(event.inputType, event.data);
+      assert.equal(view.getState().doc, "hello\n\n\nworld\n");
+      assert.equal(view.getState().cursor, 6);
+      assert.equal(view.getState().anchor, 6);
+      view.destroy();
+
+      const blockedTransport = rejecting();
+      const blocked = createEditor(mounted.root, "hello\n\nworld\n", 0, blockedTransport);
+      helloEnd();
+      press(event.inputType, event.data);
+      assert.equal(blockedTransport.sent.some((message) => message.type === "edit"), false);
+      assert.equal(blocked.getState().doc, "hello\n\nworld\n");
+      blocked.destroy();
+    }
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("delete on an empty line removes that line", () => {
+  const mounted = mountEditor();
+  const press = () => {
+    mounted.listeners.beforeinput({
+      inputType: "deleteContentForward",
+      preventDefault() {},
+    });
+  };
+  const caret = (node, offset) => {
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: node,
+      anchorOffset: offset,
+      focusNode: node,
+      focusOffset: offset,
+      removeAllRanges() {},
+      addRange() {},
+      getRangeAt() {
+        return {
+          startContainer: node,
+          startOffset: offset,
+          endContainer: node,
+          endOffset: offset,
+          collapsed: true,
+        };
+      },
+    });
+  };
+  const emptyBr = (start) => {
+    const br = mounted.findAll((node) => {
+      if (node.tagName !== "BR") return false;
+      const line = node.parentElement;
+      return line && line.dataset && line.dataset.start === start && line.dataset.start === line.dataset.end;
+    })[0];
+    assert.ok(br);
+    return br;
+  };
+  const covers = (sent, offset) => {
+    const lock = sent.filter((message) => message.type === "lock").at(-1);
+    assert.ok(lock);
+    const lo = Math.min(lock.anchor, lock.cursor);
+    const hi = Math.max(lock.anchor, lock.cursor);
+    assert.ok(lo <= offset && hi >= offset);
+    return lock;
+  };
+  const rejecting = () => ({
+    username: "",
+    sent: [],
+    subscribe(fn) {
+      this.listener = fn;
+      return () => {};
+    },
+    send(message) {
+      this.sent.push(message);
+      if (message.type === "lock" && this.listener) this.listener({ type: "error", status: 409 });
+    },
+  });
+  try {
+    const transport = holdingTransport();
+    const held = createEditor(mounted.root, "hello\n\nworld", 0, transport);
+    caret(emptyBr("6"), 0);
+    press();
+    const edit = transport.sent.find((message) => message.type === "edit");
+    assert.equal(edit.op, "backspace");
+    assert.equal(edit.cursor, 6);
+    assert.equal(edit.anchor, 6);
+    const lock = covers(transport.sent, 7);
+    assert.equal(Math.min(lock.anchor, lock.cursor), 5);
+    assert.equal(Math.max(lock.anchor, lock.cursor), 7);
+    assert.ok(transport.sent.indexOf(lock) < transport.sent.indexOf(edit));
+    held.destroy();
+
+    const view = createEditor(mounted.root, "hello\n\nworld", 0);
+    caret(emptyBr("6"), 0);
+    press();
+    assert.equal(view.getState().doc, "hello\nworld");
+    assert.equal(view.getState().cursor, 5);
+    assert.equal(view.getState().anchor, 5);
+    view.destroy();
+
+    const trailingTransport = holdingTransport();
+    const trailingHeld = createEditor(mounted.root, "hello\n", 0, trailingTransport);
+    caret(emptyBr("6"), 0);
+    press();
+    const trailingEdit = trailingTransport.sent.find((message) => message.type === "edit");
+    assert.equal(trailingEdit.op, "backspace");
+    assert.equal(trailingEdit.cursor, 6);
+    assert.equal(trailingEdit.anchor, 6);
+    trailingHeld.destroy();
+
+    const trailing = createEditor(mounted.root, "hello\n", 0);
+    caret(emptyBr("6"), 0);
+    press();
+    assert.equal(trailing.getState().doc, "hello");
+    assert.equal(trailing.getState().cursor, 5);
+    assert.equal(trailing.getState().anchor, 5);
+    trailing.destroy();
+
+    const leadingTransport = holdingTransport();
+    const leadingHeld = createEditor(mounted.root, "\nworld", 0, leadingTransport);
+    caret(emptyBr("0"), 0);
+    press();
+    const leadingEdit = leadingTransport.sent.find((message) => message.type === "edit");
+    assert.equal(leadingEdit.op, "delete");
+    assert.equal(leadingEdit.cursor, 0);
+    assert.equal(leadingEdit.anchor, 0);
+    const leadingLock = covers(leadingTransport.sent, 1);
+    assert.equal(Math.min(leadingLock.anchor, leadingLock.cursor), 0);
+    assert.equal(Math.max(leadingLock.anchor, leadingLock.cursor), 1);
+    assert.ok(leadingTransport.sent.indexOf(leadingLock) < leadingTransport.sent.indexOf(leadingEdit));
+    leadingHeld.destroy();
+
+    const leading = createEditor(mounted.root, "\nworld", 0);
+    caret(emptyBr("0"), 0);
+    press();
+    assert.equal(leading.getState().doc, "world");
+    assert.equal(leading.getState().cursor, 0);
+    assert.equal(leading.getState().anchor, 0);
+    leading.destroy();
+
+    const insideTransport = holdingTransport();
+    const insideHeld = createEditor(mounted.root, "hello\nworld", 0, insideTransport);
+    const inside = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "world")[0];
+    caret(inside, 1);
+    press();
+    const insideEdit = insideTransport.sent.find((message) => message.type === "edit");
+    assert.equal(insideEdit.op, "delete");
+    assert.equal(insideEdit.cursor, 7);
+    insideHeld.destroy();
+
+    const word = createEditor(mounted.root, "hello\nworld", 0);
+    const wordText = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "world")[0];
+    caret(wordText, 1);
+    press();
+    assert.equal(word.getState().doc, "hello\nwrld");
+    assert.equal(word.getState().cursor, 7);
+    word.destroy();
+
+    const end = createEditor(mounted.root, "ab", 0);
+    const letters = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "ab")[0];
+    caret(letters, letters.length);
+    press();
+    assert.equal(end.getState().doc, "ab");
+    assert.equal(end.getState().cursor, 2);
+    assert.equal(end.getState().anchor, 2);
+    end.destroy();
+
+    const blockedTransport = rejecting();
+    const blocked = createEditor(mounted.root, "hello\n\nworld", 0, blockedTransport);
+    caret(emptyBr("6"), 0);
+    press();
+    assert.equal(blockedTransport.sent.some((message) => message.type === "edit"), false);
+    assert.equal(blocked.getState().doc, "hello\n\nworld");
+    blocked.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("fence clicks open source", () => {
   const mounted = mountEditor();
   try {
