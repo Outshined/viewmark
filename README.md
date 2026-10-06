@@ -1,8 +1,10 @@
 # Viewmark
 
-Viewmark is a live editor for a directory of markdown files. One Node process holds each open document. The browser is for reading and writing. The CLI is for scripts. Both talk to that same process, and both see the same bytes.
+Viewmark is specifically designed for interacting with agents across multiple projects. One hub holds the open documents. Each project is its own directory of markdown, registered by name. An agent uses the CLI to list, show, edit, comment, and file tickets. The browser shows those same documents to a person. Both see the same bytes.
 
 The markdown is the dialect used by GitHub, GitLab, and Obsidian. A fenced block tagged `mermaid` is drawn as a diagram. HTML in the document is stored as text and is not rendered.
+
+In the age of vibe coding, Viewmark is like a Pet Rock. This is my Pet Rock, and I'm quite pleased with it.
 
 ## Run
 
