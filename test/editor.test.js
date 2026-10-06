@@ -1145,8 +1145,8 @@ test("prism keyword joins", () => {
   assert.match(css, /:root\s*\{[^}]*color-scheme:\s*dark;/);
   assert.match(css, /body\s*\{[^}]*background:\s*#1c1b19;[^}]*color:\s*#e7e2d8;/);
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-  assert.match(readme, /The markdown is GitHub, GitLab, and Obsidian markdown\. A mermaid fence is a diagram\./);
-  assert.match(readme, /HTML is not allowed in the document\./);
+  assert.match(readme, /The markdown is the dialect used by GitHub, GitLab, and Obsidian\. A fenced block tagged `mermaid` is drawn as a diagram\./);
+  assert.match(readme, /HTML in the document is stored as text and is not rendered\./);
 });
 
 function nodeListView(kids) {

@@ -68,6 +68,47 @@ function git(docsDir, args, username) {
   });
 }
 
+async function copyStock(source, dest) {
+  try {
+    await fs.lstat(dest);
+    return;
+  } catch (err) {
+    if (!err || err.code !== "ENOENT") throw err;
+  }
+  try {
+    await fs.copyFile(source, dest);
+  } catch (err) {
+    if (err && err.code === "ENOENT") return;
+    throw err;
+  }
+}
+
+// git init adds .git, so emptiness is the work tree from before that command.
+async function seedEmptyWorkTree(real, sourceRoot) {
+  await copyStock(path.join(sourceRoot, "samples", "welcome.md"), path.join(real, "welcome.md"));
+  const dest = path.join(real, "tickets", "seedmark.md");
+  try {
+    await fs.lstat(dest);
+    return;
+  } catch (err) {
+    if (!err || err.code !== "ENOENT") throw err;
+  }
+  const source = path.join(sourceRoot, "samples", "tickets", "seedmark.md");
+  try {
+    await fs.lstat(source);
+  } catch (err) {
+    if (err && err.code === "ENOENT") return;
+    throw err;
+  }
+  await fs.mkdir(path.join(real, "tickets"));
+  try {
+    await fs.copyFile(source, dest);
+  } catch (err) {
+    if (err && err.code === "ENOENT") return;
+    throw err;
+  }
+}
+
 export async function ensureDocsRepo(docsDir, sourceRoot) {
   await fs.mkdir(docsDir, { recursive: true });
   const real = await fs.realpath(docsDir);
@@ -82,6 +123,7 @@ export async function ensureDocsRepo(docsDir, sourceRoot) {
     hasGit = false;
   }
   if (!hasGit) {
+    const entries = await fs.readdir(real);
     const env = gitEnv(real);
     delete env.GIT_DIR;
     delete env.GIT_WORK_TREE;
@@ -95,6 +137,7 @@ export async function ensureDocsRepo(docsDir, sourceRoot) {
         resolve(stdout);
       });
     });
+    if (entries.length === 0) await seedEmptyWorkTree(real, sourceRoot);
   }
   return real;
 }

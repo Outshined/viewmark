@@ -269,6 +269,59 @@ test("T-init", async () => {
   }
 });
 
+test("T-seed-missing", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-seed-"));
+  const state = path.join(parent, "state");
+  const docs = path.join(parent, "missing");
+  const server = await start(0, state);
+  try {
+    await registerRepo(server.address().port, "docs", "Docs", docs);
+    const welcome = await fs.readFile(path.join(docs, "welcome.md"));
+    const ticket = await fs.readFile(path.join(docs, "tickets", "seedmark.md"));
+    assert.deepEqual(welcome, await fs.readFile(path.join(repoRoot, "samples", "welcome.md")));
+    assert.deepEqual(ticket, await fs.readFile(path.join(repoRoot, "samples", "tickets", "seedmark.md")));
+    assert.ok(parseTicket("seedmark", ticket.toString("utf8")));
+    await assert.rejects(() => git(docs, ["rev-parse", "HEAD"]));
+  } finally {
+    await close(server);
+    await fs.rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("T-seed-occupied", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-seed-"));
+  const state = path.join(parent, "state");
+  const docs = path.join(parent, "kept");
+  await fs.mkdir(docs);
+  await fs.writeFile(path.join(docs, "keep.md"), "keep\n");
+  const server = await start(0, state);
+  try {
+    await registerRepo(server.address().port, "docs", "Docs", docs);
+    assert.equal((await fs.stat(path.join(docs, ".git"))).isDirectory(), true);
+    assert.equal(await fs.readFile(path.join(docs, "keep.md"), "utf8"), "keep\n");
+    await assert.rejects(() => fs.lstat(path.join(docs, "welcome.md")));
+  } finally {
+    await close(server);
+    await fs.rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("T-seed-git", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-seed-"));
+  const state = path.join(parent, "state");
+  const docs = path.join(parent, "empty-git");
+  await fs.mkdir(docs);
+  await git(docs, ["init", "--quiet"]);
+  const server = await start(0, state);
+  try {
+    await registerRepo(server.address().port, "docs", "Docs", docs);
+    await assert.rejects(() => fs.lstat(path.join(docs, "welcome.md")));
+  } finally {
+    await close(server);
+    await fs.rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("T-list", async () => {
   await withDocs(async ({ port, dir }) => {
     await fs.writeFile(path.join(dir, "a.md"), "a\n");
@@ -280,8 +333,8 @@ test("T-list", async () => {
     client.send({ type: "list", username: "A" });
     assert.deepEqual(await client.next((msg) => msg.type === "docs"), {
       type: "docs",
-      files: ["a.md", "sub/b.markdown"],
-      titles: {},
+      files: ["a.md", "sub/b.markdown", "welcome.md"],
+      titles: { "welcome.md": "Welcome" },
     });
     const raw = await get(port, "/raw/docs/a.md");
     assert.equal(raw.status, 200);
@@ -310,7 +363,11 @@ test("T-auth", async () => {
     a.send({ type: "list", username: "B" });
     assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 403 });
     a.send({ type: "list", username: "A" });
-    assert.deepEqual(await a.next((msg) => msg.type === "docs"), { type: "docs", files: ["a.md"], titles: {} });
+    assert.deepEqual(await a.next((msg) => msg.type === "docs"), {
+      type: "docs",
+      files: ["a.md", "welcome.md"],
+      titles: { "welcome.md": "Welcome" },
+    });
 
     const a2 = await hello(port, "A");
     const rev = (await openDoc(a, "A", "a.md")).rev;
@@ -824,7 +881,11 @@ test("T-frame", async () => {
     parts.write(encodeFrame(0x1, Buffer.from('{"type":"list","username":"A"}'), { mask: true }));
     const deadline = Date.now() + 2000;
     while (!messages.some((msg) => msg.type === "docs") && Date.now() < deadline) await delay(20);
-    assert.deepEqual(messages.find((msg) => msg.type === "docs"), { type: "docs", files: [], titles: {} });
+    assert.deepEqual(messages.find((msg) => msg.type === "docs"), {
+      type: "docs",
+      files: ["welcome.md"],
+      titles: { "welcome.md": "Welcome" },
+    });
     parts.end();
   });
 });
@@ -1047,8 +1108,8 @@ test("T-ticket-hide", async () => {
     client.send({ type: "list", username: "A" });
     assert.deepEqual(await client.next((msg) => msg.type === "docs"), {
       type: "docs",
-      files: ["a.md", "notes/tickets/c.md", "sub/b.markdown", "tickets.md"],
-      titles: {},
+      files: ["a.md", "notes/tickets/c.md", "sub/b.markdown", "tickets.md", "welcome.md"],
+      titles: { "welcome.md": "Welcome" },
     });
 
     for (const rel of [
@@ -1094,7 +1155,7 @@ test("T-ticket-hide", async () => {
 
     client.send({ type: "tickets", username: "A" });
     const listed = await client.next((msg) => msg.type === "tickets");
-    assert.deepEqual(listed.tickets.map((ticket) => ticket.id), ["bbbbbbbb", "aaaaaaaa", "dddddddd", "eeeeeeee"]);
+    assert.deepEqual(listed.tickets.map((ticket) => ticket.id), ["bbbbbbbb", "aaaaaaaa", "dddddddd", "eeeeeeee", "seedmark"]);
     assert.deepEqual(listed.tickets, sortedTickets(listed.tickets));
     for (const ticket of listed.tickets) assertTicketEntry(ticket);
     assert.equal(listed.tickets.some((ticket) => ticket.state === "closed"), true);
@@ -1103,7 +1164,7 @@ test("T-ticket-hide", async () => {
     await fs.writeFile(path.join(dir, "tickets", "eeeeeeee.md"), "garbage\n");
     client.send({ type: "tickets", username: "A" });
     const cached = await client.next((msg) => msg.type === "tickets");
-    assert.deepEqual(cached.tickets.map((ticket) => ticket.id), ["bbbbbbbb", "aaaaaaaa", "dddddddd"]);
+    assert.deepEqual(cached.tickets.map((ticket) => ticket.id), ["bbbbbbbb", "aaaaaaaa", "dddddddd", "seedmark"]);
     assert.equal(cached.tickets[0].title, "Older");
     assert.equal(cached.tickets.find((ticket) => ticket.id === "dddddddd").title, "Dee");
     const still = await openDoc(client, "A", "tickets/bbbbbbbb.md");
@@ -1120,7 +1181,8 @@ test("T-ticket-hide", async () => {
     await assert.rejects(() => fs.lstat(path.join(dir, "tickets", "foo.txt")));
     client.send({ type: "create", username: "A", path: "notes/idea.md" });
     const docs = await client.next((msg) => msg.type === "docs");
-    assert.deepEqual(docs.files, ["a.md", "notes/idea.md", "notes/tickets/c.md", "sub/b.markdown", "tickets.md"]);
+    assert.deepEqual(docs.files, ["a.md", "notes/idea.md", "notes/tickets/c.md", "sub/b.markdown", "tickets.md", "welcome.md"]);
+    assert.equal(docs.titles["welcome.md"], "Welcome");
     assert.equal(docs.files.some((rel) => rel.startsWith("tickets/")), false);
     client.ws.close();
   });
@@ -1188,14 +1250,15 @@ test("T-ticket-create", async () => {
     assertTicketEntry(created);
     assert.deepEqual(first.listed, seen);
     assert.deepEqual(first.listed.tickets, sortedTickets(first.listed.tickets));
-    assert.deepEqual(first.listed.tickets.map((ticket) => ticket.id), ["bbbbbbbb", created.id]);
-    assert.deepEqual(first.listed.tickets[1], created);
+    assert.deepEqual(first.listed.tickets.map((ticket) => ticket.id), ["bbbbbbbb", "seedmark", created.id]);
+    assert.deepEqual(first.listed.tickets[2], created);
     assert.equal(await readDoc(dir, first.file.path), ticketText({ ...created, body: "" }));
     assert.equal(await readDoc(dir, "tickets/bbbbbbbb.md"), olderDisk);
     assert.equal(a.all.some((msg) => msg.type === "docs"), false);
     a.send({ type: "list", username: "A" });
     const docs = await a.next((msg) => msg.type === "docs");
-    assert.deepEqual(docs.files, []);
+    assert.deepEqual(docs.files, ["welcome.md"]);
+    assert.deepEqual(docs.titles, { "welcome.md": "Welcome" });
     assert.equal(a.all.some((msg) => msg.type === "docs" || msg.type === "tickets"), false);
 
     const second = await createTicket(a, "A", "Next", "triaged");
@@ -1454,7 +1517,7 @@ test("T-ticket-stale", async () => {
     const meta = await a.next((msg) => msg.type === "ticket");
     assert.equal(meta.rev, 1);
     assert.equal(meta.title, "Kept");
-    assert.equal(listed.tickets[0].title, "Kept");
+    assert.equal(listed.tickets.find((ticket) => ticket.id === id).title, "Kept");
     const written = await readDoc(dir, path);
     assert.equal(parseTicket(id, written).title, "Kept");
     assert.notEqual(written, original);
@@ -1605,7 +1668,7 @@ test("T-ticket-body", async () => {
     assert.equal(meta.rev, redone.rev + 1);
     assert.equal(meta.state, "triaged");
     assert.equal(a.all.some((msg) => msg.type === "doc"), false);
-    assert.equal(listed.tickets[0].title, "Body 2");
+    assert.equal(listed.tickets.find((ticket) => ticket.id === id).title, "Body 2");
     const after = parseTicket(id, await readDoc(dir, rel));
     assert.equal(after.title, "Body 2");
     assert.equal(after.body, inserted);
@@ -1650,8 +1713,10 @@ test("T-ticket-purge", async () => {
   await withDocs(async ({ server, port, dir }) => {
     const idle = await hello(port, "Idle");
     idle.send({ type: "ticket.purge", username: "Idle" });
-    assert.deepEqual(await idle.next((msg) => msg.type === "tickets"), { type: "tickets", tickets: [] });
-    await assert.rejects(() => fs.lstat(path.join(dir, "tickets")));
+    const seeded = await idle.next((msg) => msg.type === "tickets");
+    assert.deepEqual(seeded.tickets.map((ticket) => ticket.id), ["seedmark"]);
+    assert.equal(seeded.tickets[0].state, "new");
+    assert.equal((await fs.lstat(path.join(dir, "tickets"))).isDirectory(), true);
 
     const T0 = "2020-01-01T00:00:00.000Z";
     const T1 = "2020-01-01T00:00:01.000Z";
@@ -1738,7 +1803,7 @@ test("T-ticket-purge", async () => {
     assert.deepEqual(keepList, survivors);
     assert.deepEqual(byeList, survivors);
     assert.deepEqual(idleList, survivors);
-    assert.deepEqual(survivors.tickets.map((ticket) => ticket.id), ["bbbbbbbb", "aaaaaaaa", "eeeeeeee", "dddddddd"]);
+    assert.deepEqual(survivors.tickets.map((ticket) => ticket.id), ["bbbbbbbb", "aaaaaaaa", "eeeeeeee", "dddddddd", "seedmark"]);
     assert.equal(survivors.tickets.find((ticket) => ticket.id === "aaaaaaaa").parent, "");
     assert.deepEqual(survivors.tickets.find((ticket) => ticket.id === "aaaaaaaa").depends, ["bbbbbbbb"]);
     assert.deepEqual(survivors.tickets.find((ticket) => ticket.id === "eeeeeeee").depends, []);
@@ -1772,7 +1837,11 @@ test("T-ticket-purge", async () => {
     bye.send({ type: "open", username: "Bye", path: "tickets/cccccccc.md" });
     assert.deepEqual(await bye.next((msg) => msg.type === "error"), { type: "error", status: 404 });
     bye.send({ type: "list", username: "Bye" });
-    assert.deepEqual(await bye.next((msg) => msg.type === "docs"), { type: "docs", files: ["doc.md"], titles: {} });
+    assert.deepEqual(await bye.next((msg) => msg.type === "docs"), {
+      type: "docs",
+      files: ["doc.md", "welcome.md"],
+      titles: { "welcome.md": "Welcome" },
+    });
 
     idle.send({ type: "ticket.purge", username: "Idle" });
     const second = await sub.next((msg) => msg.type === "tickets" || msg.type === "ticket");
@@ -1975,7 +2044,9 @@ test("T-repo-isolate", async () => {
     assert.equal(opened.text, "alpha\n");
     client.send({ type: "ticket.create", username: "A", title: "Only one" });
     const created = await client.next((msg) => msg.type === "tickets");
-    assert.equal(created.tickets.length, 1);
+    assert.equal(created.tickets.length, 2);
+    const made = created.tickets.find((ticket) => ticket.id !== "seedmark");
+    assert.equal(made.title, "Only one");
     await client.next((msg) => msg.type === "file");
 
     client.send({ type: "repo", username: "A", name: "two" });
@@ -1985,7 +2056,8 @@ test("T-repo-isolate", async () => {
     assert.equal(other.text, "beta\n");
     client.send({ type: "tickets", username: "A" });
     const listed = await client.next((msg) => msg.type === "tickets");
-    assert.deepEqual(listed.tickets, []);
+    assert.deepEqual(listed.tickets.map((ticket) => ticket.id), ["seedmark"]);
+    assert.equal(listed.tickets.some((ticket) => ticket.id === made.id), false);
     client.ws.close();
   } finally {
     await close(server);
@@ -2467,6 +2539,7 @@ test("T-move", async () => {
       "notes/sub/deep.md",
       "plain.md",
       "second.md",
+      "welcome.md",
     ]);
     assert.equal(listed.files.every((file) => typeof file === "string"), true);
     assert.deepEqual(listed.titles, {
@@ -2475,6 +2548,7 @@ test("T-move", async () => {
       "cached.md": "Disk",
       "elsewhere/plain.md": "Elsewhere",
       "notes/sub/deep.md": "Deep",
+      "welcome.md": "Welcome",
     });
     assert.equal(listed.titles["notes/idea.md"], undefined);
     assert.equal(listed.titles["second.md"], undefined);

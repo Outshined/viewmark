@@ -1366,6 +1366,20 @@ const T0 = "2020-01-01T00:00:00.000Z";
 const T1 = "2020-01-01T00:00:01.000Z";
 const T2 = "2020-01-01T00:00:02.000Z";
 const T3 = "2020-01-01T00:00:03.000Z";
+const SEED_ID = "seedmark";
+const SEED_CREATED = "2026-10-05T00:00:00.000Z";
+const SEED_TICKET = {
+  id: SEED_ID,
+  title: "Markdown in a ticket",
+  state: "new",
+  type: "task",
+  priority: "medium",
+  parent: "",
+  depends: [],
+  reporter: "Viewmark",
+  created: SEED_CREATED,
+};
+const SEED_LINE = `${SEED_ID}\t${SEED_CREATED}\tnew\ttask\tmedium\tMarkdown in a ticket\n`;
 const BODY = "Keep me\n\ntitle: not a header\n";
 
 function ticketErr(fields, conflict = false) {
@@ -1540,12 +1554,12 @@ test("T-cli-ticket-list", async () => {
   await withHub(async ({ dir, port }) => {
     const empty = await runFast(ticketArgs(port, ["ticket", "list"]));
     assert.equal(empty.code, 0);
-    assert.equal(empty.stdout, "");
+    assert.equal(empty.stdout, SEED_LINE);
     assert.equal(empty.stderr, "");
     const emptyJson = await runFast(["--json", ...ticketArgs(port, ["ticket", "list", "--closed"])]);
     assert.equal(emptyJson.code, 0);
     assert.equal(emptyJson.stderr, "");
-    assert.equal(emptyJson.stdout, `${JSON.stringify({ tickets: [] })}\n`);
+    assert.equal(emptyJson.stdout, `${JSON.stringify({ tickets: [SEED_TICKET] })}\n`);
 
     await writeTicket(dir, { id: Z, title: "Has spaces", state: "in progress", created: T3 });
     await writeTicket(dir, { id: A, title: "Alpha", state: "closed", created: T0 });
@@ -1562,7 +1576,7 @@ test("T-cli-ticket-list", async () => {
 
     const docs = await runFast(ticketArgs(port, ["list"]));
     assert.equal(docs.code, 0);
-    assert.equal(docs.stdout, "");
+    assert.equal(docs.stdout, "welcome.md\n");
     assert.equal(docs.stderr, "");
 
     const listed = await runFast(ticketArgs(port, ["ticket", "list"]));
@@ -1572,6 +1586,7 @@ test("T-cli-ticket-list", async () => {
       `${B}\t${T0}\tnew\ttask\tmedium\tBeta\n`,
       `${C}\t${T1}\ttriaged\ttask\tmedium\tSee\n`,
       `${Z}\t${T3}\tin progress\ttask\tmedium\tHas spaces\n`,
+      SEED_LINE,
     ].join(""));
 
     const closed = await runFast(ticketArgs(port, ["--closed", "ticket", "list"]));
@@ -1582,6 +1597,7 @@ test("T-cli-ticket-list", async () => {
       `${B}\t${T0}\tnew\ttask\tmedium\tBeta\n`,
       `${C}\t${T1}\ttriaged\ttask\tmedium\tSee\n`,
       `${Z}\t${T3}\tin progress\ttask\tmedium\tHas spaces\n`,
+      SEED_LINE,
     ].join(""));
 
     const json = await runFast(["--json", ...ticketArgs(port, ["ticket", "list"])]);
@@ -1613,6 +1629,7 @@ test("T-cli-ticket-list", async () => {
           reporter: "indexer",
           created: T3,
         },
+        SEED_TICKET,
       ],
     });
     for (const ticket of open.tickets) {
@@ -1622,7 +1639,7 @@ test("T-cli-ticket-list", async () => {
     const all = await runFast(ticketArgs(port, ["ticket", "--json", "list", "--closed"]));
     assert.equal(all.stderr, "");
     const parsed = JSON.parse(all.stdout);
-    assert.deepEqual(parsed.tickets.map((ticket) => ticket.id), [A, B, C, Z]);
+    assert.deepEqual(parsed.tickets.map((ticket) => ticket.id), [A, B, C, Z, SEED_ID]);
     assert.equal(parsed.tickets[0].state, "closed");
     assert.deepEqual(parsed.tickets[1].depends, []);
     assert.deepEqual(parsed.tickets[2].depends, [A, Z]);
@@ -2272,7 +2289,7 @@ test("T-cli-ticket-purge", async () => {
       created: T2,
     }));
     const remain = await runFast(ticketArgs(port, ["ticket", "list", "--closed"]));
-    assert.equal(remain.stdout, `${B}\t${T0}\tnew\ttask\tmedium\tBeta\n${E}\t${T2}\tnew\ttask\tmedium\tEe\n`);
+    assert.equal(remain.stdout, `${B}\t${T0}\tnew\ttask\tmedium\tBeta\n${E}\t${T2}\tnew\ttask\tmedium\tEe\n${SEED_LINE}`);
 
     const betaBefore = await fs.readFile(path.join(dir, "tickets", `${B}.md`), "utf8");
     const again = await runFast(ticketArgs(port, ["ticket", "purge"]));
@@ -2288,7 +2305,7 @@ test("T-cli-ticket-purge", async () => {
     assert.equal(json.stderr, "");
     assert.equal(json.stdout, `${JSON.stringify({ purged: [C, "ffffffff"] })}\n`);
     const left = await runFast(ticketArgs(port, ["ticket", "list", "--closed"]));
-    assert.equal(left.stdout, `${B}\t${T0}\tnew\ttask\tmedium\tBeta\n${E}\t${T2}\tnew\ttask\tmedium\tEe\n`);
+    assert.equal(left.stdout, `${B}\t${T0}\tnew\ttask\tmedium\tBeta\n${E}\t${T2}\tnew\ttask\tmedium\tEe\n${SEED_LINE}`);
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
   });
 });

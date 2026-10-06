@@ -34,7 +34,7 @@ A repo is a directory of `.md` and `.markdown` files. Register it once:
 viewmark --user ada repo register --name notes --description "Lab notes" --path /home/ada/notes
 ```
 
-Registration creates a git repository in that directory when `.git` is not already there. Checkpoints are commits in that repository. Viewmark makes one about an hour after the last change, and also when you switch repos, when you run `commit`, and when the hub shuts down cleanly. It commits only inside the registered directory, and it will not commit a surrounding repository.
+Registration creates a git repository in that directory when `.git` is not already there. When that directory is empty, registration copies `welcome.md` and `tickets/seedmark.md` into it. Checkpoints are commits in that repository. Viewmark makes one about an hour after the last change, and also when you switch repos, when you run `commit`, and when the hub shuts down cleanly. It commits only inside the registered directory, and it will not commit a surrounding repository.
 
 The Viewmark source tree cannot be registered as a repo. A directory that was registered without its own git repository is not initialized when the hub starts. Create the repository in that directory yourself.
 
