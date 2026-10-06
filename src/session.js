@@ -149,23 +149,39 @@ export function createMemoryTransport(doc, cursor = 0) {
   return transport;
 }
 
-export function createSocketTransport({ username, socketFactory, location } = {}) {
+function clamp(value, lo, hi) {
+  const number = Number(value);
+  if (number < lo) return lo;
+  if (number > hi) return hi;
+  return number;
+}
+
+export function retryDelay(attempt, roll) {
+  const factor = 0.5 + 0.5 * clamp(roll, 0, 1);
+  return Math.round(Math.min(30000, 500 * 2 ** attempt) * factor);
+}
+
+export function createSocketTransport({ username, socketFactory, location, random, schedule } = {}) {
   const url = socketURL(location);
   const factory = socketFactory || ((address) => new WebSocket(address));
-  const socket = factory(url);
+  const roll = typeof random === "function" ? random : Math.random;
+  const later = typeof schedule === "function" ? schedule : setTimeout;
+  const defaultTimer = later === setTimeout;
   const listeners = new Set();
   let buffer = [];
+  let socket = null;
   let socketOpen = false;
   let closed = false;
+  let attempt = 0;
+  let openedThisSocket = false;
+  let sawOpen = false;
+  let timer = null;
   const name = typeof username === "string" ? username : "";
-  // Queued before open so the wire order is hello, then repos, then anything else.
-  const outbound = [JSON.stringify({ type: "repos", username: name })];
 
   function transmit(message) {
-    if (closed) return;
-    const data = JSON.stringify({ ...message, username: name });
-    if (socketOpen) socket.send(data);
-    else outbound.push(data);
+    // A dropped socket does not queue. The next open sends hello and repos only.
+    if (closed || !socketOpen || !socket || typeof socket.send !== "function") return;
+    socket.send(JSON.stringify({ ...message, username: name }));
   }
 
   function deliver(message) {
@@ -176,14 +192,44 @@ export function createSocketTransport({ username, socketFactory, location } = {}
     for (const fn of [...listeners]) fn(message);
   }
 
+  function detach() {
+    if (!socket || typeof socket.removeEventListener !== "function") return;
+    socket.removeEventListener("open", onOpen);
+    socket.removeEventListener("message", onMessage);
+    socket.removeEventListener("close", onClose);
+  }
+
+  function bind(next) {
+    detach();
+    socket = next;
+    socketOpen = false;
+    openedThisSocket = false;
+    if (socket && typeof socket.addEventListener === "function") {
+      socket.addEventListener("open", onOpen);
+      socket.addEventListener("message", onMessage);
+      socket.addEventListener("close", onClose);
+    }
+  }
+
+  function cancelTimer() {
+    const pending = timer;
+    timer = null;
+    if (!pending) return;
+    pending.alive = false;
+    if (defaultTimer && pending.handle != null) clearTimeout(pending.handle);
+  }
+
   function onOpen() {
     // close() can run before the handshake finishes.
     if (closed) return;
-    socketOpen = true;
-    // Hello is the first frame. Anything queued while connecting follows it.
     socket.send(JSON.stringify({ type: "hello", username: name }));
-    for (const data of outbound) socket.send(data);
-    outbound.length = 0;
+    socket.send(JSON.stringify({ type: "repos", username: name }));
+    socketOpen = true;
+    attempt = 0;
+    openedThisSocket = true;
+    const again = sawOpen;
+    sawOpen = true;
+    if (again) deliver({ type: "reconnect" });
   }
 
   function onMessage(event) {
@@ -202,10 +248,26 @@ export function createSocketTransport({ username, socketFactory, location } = {}
     deliver(message);
   }
 
-  if (socket && typeof socket.addEventListener === "function") {
-    socket.addEventListener("open", onOpen);
-    socket.addEventListener("message", onMessage);
+  function onClose() {
+    if (closed) return;
+    detach();
+    socketOpen = false;
+    if (timer) return;
+    const failed = !openedThisSocket;
+    openedThisSocket = false;
+    const delay = retryDelay(attempt, roll());
+    if (failed) attempt += 1;
+    const pending = { alive: true, handle: null };
+    timer = pending;
+    pending.handle = later(() => {
+      if (timer === pending) timer = null;
+      if (closed || pending.alive === false) return;
+      bind(factory(url));
+    }, delay);
+    if (pending.handle && typeof pending.handle.unref === "function") pending.handle.unref();
   }
+
+  bind(factory(url));
 
   return {
     username: name,
@@ -225,13 +287,10 @@ export function createSocketTransport({ username, socketFactory, location } = {}
     close() {
       closed = true;
       socketOpen = false;
+      cancelTimer();
       listeners.clear();
       buffer = [];
-      outbound.length = 0;
-      if (socket && typeof socket.removeEventListener === "function") {
-        socket.removeEventListener("open", onOpen);
-        socket.removeEventListener("message", onMessage);
-      }
+      detach();
       if (socket && typeof socket.close === "function") socket.close();
     },
   };

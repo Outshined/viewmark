@@ -102,13 +102,22 @@ async function handleRequest(req, res, hub) {
       res.end();
       return;
     }
-    await serveStatic(req, res, repoPath, rest.slice(slash), false);
+    await serveStatic(req, res, repoPath, rest.slice(slash), false, "");
     return;
   }
-  await serveStatic(req, res, root, req.url ?? "", true);
+  await serveStatic(req, res, root, req.url ?? "", true, hub.build);
 }
 
-async function serveStatic(req, res, rootDir, url, index) {
+function stampIndex(body, stamp) {
+  const text = body.toString("utf8");
+  const marker = '<meta charset="utf-8">';
+  const at = text.indexOf(marker);
+  if (at < 0) return body;
+  const next = `${text.slice(0, at + marker.length)}\n  <meta name="viewmark-build" content="${stamp}">${text.slice(at + marker.length)}`;
+  return Buffer.from(next);
+}
+
+async function serveStatic(req, res, rootDir, url, index, stamp) {
   if (req.method !== "GET" && req.method !== "HEAD") {
     res.writeHead(405);
     res.end();
@@ -137,7 +146,17 @@ async function serveStatic(req, res, rootDir, url, index) {
     return;
   }
 
-  const body = await fs.readFile(real);
+  let body = await fs.readFile(real);
+  // Stamp the served page only. index.html on disk stays unchanged, and /raw is not a page.
+  if (stamp && index) {
+    let indexReal = "";
+    try {
+      indexReal = await fs.realpath(path.join(rootDir, "index.html"));
+    } catch {
+      indexReal = "";
+    }
+    if (indexReal && real === indexReal) body = stampIndex(body, stamp);
+  }
   const type = types[path.extname(filePath).toLowerCase()] ?? "application/octet-stream";
   res.writeHead(200, {
     "Content-Type": type,

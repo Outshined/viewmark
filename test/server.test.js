@@ -10,6 +10,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { start } from "../server.js";
+import { readBuild } from "../src/hub.js";
 import { TICKET_ALPHABET, composeTicket, parseTicket } from "../src/ticket.js";
 import { createParser, encodeFrame } from "../src/ws.js";
 
@@ -163,6 +164,8 @@ async function hello(port, username, repo = "docs") {
   const client = connect(port);
   await client.ready;
   client.send({ type: "hello", username });
+  const greeted = await client.next((msg) => msg.type === "hello" || msg.type === "error");
+  if (greeted.type !== "hello") throw new Error(`hello failed ${JSON.stringify(greeted)}`);
   if (repo) client.send({ type: "repo", username, name: repo });
   return client;
 }
@@ -2708,4 +2711,76 @@ test("T-move", async () => {
     a.ws.close();
     b.ws.close();
   });
+});
+
+test("the served build matches git HEAD", async () => {
+  const env = { ...process.env };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, env, encoding: "utf8" }).trim();
+  assert.match(head, /^[0-9a-f]{40}$/);
+  const disk = await fs.readFile(path.join(repoRoot, "index.html"), "utf8");
+  assert.equal(disk.includes("viewmark-build"), false);
+  await withDocs(async ({ port, dir }) => {
+    const page = await get(port, "/");
+    assert.equal(page.status, 200);
+    const match = page.body.match(/<meta name="viewmark-build" content="([^"]*)">/);
+    assert.ok(match);
+    assert.equal(match[1], head);
+    const charset = page.body.indexOf('<meta charset="utf-8">');
+    const stamped = page.body.indexOf('<meta name="viewmark-build"');
+    const viewport = page.body.indexOf('<meta name="viewport"');
+    assert.ok(charset !== -1 && charset < stamped && stamped < viewport);
+    const direct = await get(port, "/index.html");
+    assert.equal(direct.body.includes(`content="${head}"`), true);
+    await fs.writeFile(path.join(dir, "index.html"), "<meta charset=\"utf-8\">\n<p>raw</p>\n");
+    const raw = await get(port, "/raw/docs/index.html");
+    assert.equal(raw.status, 200);
+    assert.equal(raw.body.includes("viewmark-build"), false);
+    const client = connect(port);
+    await client.ready;
+    client.send({ type: "hello", username: "Ada" });
+    const greeted = await client.next((msg) => msg.type === "hello" || msg.type === "error");
+    assert.deepEqual(greeted, { type: "hello", build: head });
+    client.ws.close();
+  });
+});
+
+test("readBuild hashes a directory that is not a git toplevel", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-build-"));
+  const prev = {
+    GIT_DIR: process.env.GIT_DIR,
+    GIT_WORK_TREE: process.env.GIT_WORK_TREE,
+    GIT_INDEX_FILE: process.env.GIT_INDEX_FILE,
+  };
+  process.env.GIT_DIR = path.join(repoRoot, ".git");
+  process.env.GIT_WORK_TREE = dir;
+  process.env.GIT_INDEX_FILE = path.join(dir, "no-index");
+  try {
+    await fs.writeFile(path.join(dir, "index.html"), "<meta charset=\"utf-8\">\n");
+    await fs.writeFile(path.join(dir, "editor.css"), "body{}\n");
+    await fs.mkdir(path.join(dir, "src"));
+    await fs.mkdir(path.join(dir, "vendor"));
+    await fs.writeFile(path.join(dir, "src", "a.js"), "a\n");
+    await fs.writeFile(path.join(dir, "vendor", "v.js"), "v\n");
+    await fs.writeFile(path.join(dir, "README.md"), "nope\n");
+    const first = await readBuild(dir);
+    const second = await readBuild(dir);
+    assert.match(first, /^[0-9a-f]{64}$/);
+    assert.equal(second, first);
+    await fs.writeFile(path.join(dir, "README.md"), "still nope\n");
+    assert.equal(await readBuild(dir), first);
+    await fs.writeFile(path.join(dir, "src", "a.js"), "b\n");
+    const third = await readBuild(dir);
+    assert.match(third, /^[0-9a-f]{64}$/);
+    assert.notEqual(third, first);
+    assert.equal(await readBuild(path.join(dir, "src", "a.js")), "");
+  } finally {
+    for (const key of Object.keys(prev)) {
+      if (prev[key] === undefined) delete process.env[key];
+      else process.env[key] = prev[key];
+    }
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

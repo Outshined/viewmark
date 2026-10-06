@@ -25,7 +25,7 @@ import {
   parseHash,
 } from "../src/editor.js";
 import { splitCommentNote } from "../src/doc.js";
-import { createMemoryTransport, createSocketTransport } from "../src/session.js";
+import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
 const B = "# Title\n\n";
@@ -8140,6 +8140,212 @@ test("T-ticket-delete", () => {
     assert.equal(byClass(mounted.nav, "md-ticket").length > 0, true);
     view.destroy();
   } finally {
+    mounted.restore();
+  }
+});
+
+test("a dropped socket retries until close", () => {
+  assert.equal(retryDelay(0, 0), 250);
+  assert.equal(retryDelay(0, 1), 500);
+  assert.equal(retryDelay(1, 0), 500);
+  assert.equal(retryDelay(6, 1), 30000);
+  assert.equal(retryDelay(7, 1), 30000);
+
+  function install(random) {
+    const sockets = [];
+    const timers = [];
+    function factory(url) {
+      const handlers = {};
+      const socket = {
+        url,
+        sent: [],
+        closed: false,
+        addEventListener(type, fn) {
+          handlers[type] = fn;
+        },
+        removeEventListener(type, fn) {
+          if (handlers[type] === fn) delete handlers[type];
+        },
+        send(data) {
+          this.sent.push(JSON.parse(data));
+        },
+        close() {
+          this.closed = true;
+        },
+        emit(type, event) {
+          const fn = handlers[type];
+          if (fn) fn(event);
+        },
+      };
+      sockets.push(socket);
+      return socket;
+    }
+    const transport = createSocketTransport({
+      username: "Ada",
+      socketFactory: factory,
+      location: { protocol: "http:", host: "viewmark.test" },
+      random,
+      schedule(fn, ms) {
+        const timer = { fn, ms };
+        timers.push(timer);
+        return timer;
+      },
+    });
+    return { sockets, timers, transport };
+  }
+
+  const seen = [];
+  const dropped = install(() => 0);
+  dropped.transport.subscribe((message) => seen.push(message));
+  assert.equal(dropped.sockets.length, 1);
+  dropped.sockets[0].emit("error");
+  assert.equal(dropped.timers.length, 0);
+  dropped.sockets[0].emit("open");
+  assert.deepEqual(dropped.sockets[0].sent, [
+    { type: "hello", username: "Ada" },
+    { type: "repos", username: "Ada" },
+  ]);
+  assert.deepEqual(seen, []);
+  dropped.sockets[0].emit("close");
+  assert.equal(dropped.timers.length, 1);
+  assert.equal(dropped.timers[0].ms, 250);
+  dropped.transport.send({ type: "list" });
+  dropped.timers[0].fn();
+  assert.equal(dropped.sockets.length, 2);
+  dropped.transport.send({ type: "tickets" });
+  dropped.sockets[1].emit("open");
+  assert.deepEqual(dropped.sockets[1].sent, [
+    { type: "hello", username: "Ada" },
+    { type: "repos", username: "Ada" },
+  ]);
+  assert.deepEqual(seen, [{ type: "reconnect" }]);
+  const scheduled = dropped.timers.length;
+  dropped.transport.close();
+  assert.equal(dropped.sockets[1].closed, true);
+  dropped.sockets[1].emit("close");
+  assert.equal(dropped.timers.length, scheduled);
+  dropped.timers[0].fn();
+  assert.equal(dropped.sockets.length, 2);
+
+  const early = install(() => 0);
+  const earlySeen = [];
+  early.transport.subscribe((message) => earlySeen.push(message));
+  early.sockets[0].emit("close");
+  assert.equal(early.timers[0].ms, 250);
+  early.timers[0].fn();
+  early.sockets[1].emit("close");
+  assert.equal(early.timers[1].ms, 500);
+  early.timers[1].fn();
+  early.sockets[2].emit("open");
+  assert.deepEqual(early.sockets[2].sent.map((message) => message.type), ["hello", "repos"]);
+  assert.deepEqual(earlySeen, []);
+  early.sockets[2].emit("close");
+  assert.equal(early.timers[2].ms, 250);
+  early.transport.close();
+  early.timers[2].fn();
+  assert.equal(early.sockets.length, 3);
+});
+
+test("reconnect keeps the open document and sends no edit", () => {
+  const mounted = mountEditor();
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const sheet = document.createElement("div");
+  sheet.append(nav, mounted.root);
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "", 0, transport);
+    const select = nav.childNodes[0].childNodes[1];
+    transport.deliver({ type: "repos", repos: [{ name: "docs", description: "Docs" }] });
+    select.value = "docs";
+    select.listeners.change();
+    transport.sent.length = 0;
+    transport.deliver({ type: "file", rev: 4, text: "ab", cursor: 1, anchor: 1, path: "b.md" });
+    assert.equal(mounted.root.textContent, "ab");
+    assert.equal(view.getState().doc, "ab");
+    transport.sent.length = 0;
+    transport.deliver({ type: "reconnect" });
+    assert.deepEqual(transport.sent.map((message) => message.type), ["repo", "list", "tickets", "open"]);
+    assert.equal(transport.sent[0].name, "docs");
+    assert.equal(transport.sent[3].path, "b.md");
+    assert.equal(mounted.root.textContent, "ab");
+    assert.equal(view.getState().doc, "ab");
+    const before = transport.sent.length;
+    mounted.listeners.beforeinput({
+      inputType: "insertText",
+      data: "Q",
+      preventDefault() {},
+    });
+    assert.equal(transport.sent.length, before);
+    assert.equal(transport.sent.some((message) => message.type === "edit"), false);
+    assert.equal(mounted.root.textContent, "ab");
+    assert.equal(view.getState().doc, "ab");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a different hello build reloads the page", () => {
+  const mounted = mountEditor();
+  const previousLocation = globalThis.location;
+  let content = "aaa";
+  globalThis.document.querySelector = (selector) => {
+    if (selector !== 'meta[name="viewmark-build"]') return null;
+    if (content == null) return null;
+    return {
+      getAttribute(name) {
+        if (name === "content") return content;
+        if (name === "name") return "viewmark-build";
+        return null;
+      },
+    };
+  };
+  const reloads = [];
+  globalThis.location = {
+    reload() {
+      reloads.push("reload");
+    },
+  };
+  const transport = holdingTransport();
+  let closes = 0;
+  transport.close = () => {
+    closes += 1;
+  };
+  try {
+    const view = createEditor(mounted.root, "ab", 0, transport);
+    content = "bbb";
+    transport.deliver({ type: "hello", build: "aaa" });
+    transport.deliver({ type: "hello", build: "" });
+    transport.deliver({ type: "hello", build: "aaa" });
+    assert.equal(reloads.length, 0);
+    assert.equal(closes, 0);
+    assert.equal(view.getState().doc, "ab");
+    transport.deliver({ type: "hello", build: "bbb" });
+    assert.deepEqual(reloads, ["reload"]);
+    assert.equal(closes, 1);
+    view.destroy();
+
+    content = null;
+    const again = holdingTransport();
+    let againCloses = 0;
+    again.close = () => {
+      againCloses += 1;
+    };
+    const second = createEditor(mounted.root, "ab", 0, again);
+    again.deliver({ type: "hello", build: "ccc" });
+    again.deliver({ type: "hello", build: "ccc" });
+    again.deliver({ type: "hello", build: "" });
+    assert.equal(reloads.length, 1);
+    assert.equal(againCloses, 0);
+    again.deliver({ type: "hello", build: "ddd" });
+    assert.deepEqual(reloads, ["reload", "reload"]);
+    assert.equal(againCloses, 1);
+    assert.equal(second.getState().doc, "ab");
+    second.destroy();
+  } finally {
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
     mounted.restore();
   }
 });

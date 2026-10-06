@@ -1157,9 +1157,40 @@ function buttonHost() {
 
 const COMMENT_CARD_GAP = 12;
 
+function metaBuild(node) {
+  if (!node || node.nodeType !== 1) return null;
+  if (String(node.tagName || "").toUpperCase() === "META") {
+    const name = typeof node.getAttribute === "function" ? node.getAttribute("name") : "";
+    if (name === "viewmark-build") {
+      const content = node.getAttribute("content");
+      return typeof content === "string" ? content : "";
+    }
+  }
+  for (const child of node.childNodes || []) {
+    const found = metaBuild(child);
+    if (found != null) return found;
+  }
+  return null;
+}
+
+function readPageBuild() {
+  const doc = globalThis.document;
+  if (!doc) return "";
+  if (typeof doc.querySelector === "function") {
+    const meta = doc.querySelector('meta[name="viewmark-build"]');
+    if (!meta) return "";
+    const content = typeof meta.getAttribute === "function" ? meta.getAttribute("content") : meta.content;
+    return typeof content === "string" ? content : "";
+  }
+  const found = metaBuild(doc.head) ?? metaBuild(doc.documentElement) ?? metaBuild(doc.body);
+  return found == null ? "" : found;
+}
+
 export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const external = arguments.length >= 4 && transport != null;
   const active = external ? transport : createMemoryTransport(doc, cursor);
+  // Read once. An empty meta adopts the first hello; later hellos compare to that.
+  let seenBuild = readPageBuild();
   let state = createState(doc, cursor);
   let rev = 0;
   // A supplied document is already the mirror. The page starts empty and waits for file.
@@ -2749,6 +2780,32 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function onMessage(message) {
     if (!message || typeof message !== "object") return;
+    if (message.type === "hello") {
+      const build = typeof message.build === "string" ? message.build : "";
+      if (!build || !seenBuild) {
+        if (build) seenBuild = build;
+        return;
+      }
+      if (build === seenBuild) return;
+      if (typeof active.close === "function") active.close();
+      const loc = globalThis.location;
+      if (loc && typeof loc.reload === "function") loc.reload();
+      return;
+    }
+    if (message.type === "reconnect") {
+      // The mirror stays up. Blanking would wipe the open document before its file frame.
+      dropPendingEdits();
+      conflictWaiters.length = 0;
+      fileWaiters.length = 0;
+      outstandingLock = null;
+      live = false;
+      if (activeRepo) sendRepoFrames(activeRepo);
+      if (openPath) {
+        waitingForFile = true;
+        emit({ type: "open", path: openPath });
+      }
+      return;
+    }
     if (message.type === "ping") {
       emit({ type: "pong" });
       return;

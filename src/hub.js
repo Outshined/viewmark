@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -472,7 +472,94 @@ function closeCode(reason) {
   return 1002;
 }
 
+// Ambient GIT_DIR, GIT_WORK_TREE, or GIT_INDEX_FILE would name a different tree than root.
+function gitAt(root, args) {
+  return new Promise((resolve, reject) => {
+    const env = { ...process.env };
+    delete env.GIT_DIR;
+    delete env.GIT_WORK_TREE;
+    delete env.GIT_INDEX_FILE;
+    execFile("git", args, { cwd: root, env }, (err, stdout, stderr) => {
+      if (err) {
+        err.stdout = stdout;
+        err.stderr = stderr;
+        reject(err);
+        return;
+      }
+      resolve(typeof stdout === "string" ? stdout : stdout.toString("utf8"));
+    });
+  });
+}
+
+async function isRegularFile(abs) {
+  try {
+    const info = await fs.lstat(abs);
+    return info.isFile();
+  } catch (err) {
+    if (err && err.code === "ENOENT") return false;
+    throw err;
+  }
+}
+
+async function walkRegularFiles(abs, rel, out) {
+  const entries = await fs.readdir(abs, { withFileTypes: true });
+  for (const entry of entries) {
+    const childRel = `${rel}/${entry.name}`;
+    const childAbs = path.join(abs, entry.name);
+    if (entry.isDirectory()) await walkRegularFiles(childAbs, childRel, out);
+    else if (entry.isFile()) out.push(childRel);
+  }
+}
+
+async function hashBuild(root) {
+  const rels = [];
+  for (const name of ["index.html", "editor.css"]) {
+    if (await isRegularFile(path.join(root, name))) rels.push(name);
+  }
+  for (const dirName of ["src", "vendor"]) {
+    const abs = path.join(root, dirName);
+    let info;
+    try {
+      info = await fs.lstat(abs);
+    } catch (err) {
+      if (err && err.code === "ENOENT") continue;
+      throw err;
+    }
+    if (!info.isDirectory()) continue;
+    await walkRegularFiles(abs, dirName, rels);
+  }
+  rels.sort();
+  const hash = createHash("sha256");
+  for (const rel of rels) {
+    const bytes = await fs.readFile(path.join(root, ...rel.split("/")));
+    hash.update(rel);
+    hash.update("\0");
+    hash.update(bytes);
+  }
+  return hash.digest("hex");
+}
+
+export async function readBuild(root) {
+  try {
+    const top = (await gitAt(root, ["rev-parse", "--show-toplevel"])).trim();
+    const topReal = await fs.realpath(top);
+    const rootReal = await fs.realpath(root);
+    if (topReal === rootReal) {
+      const head = (await gitAt(root, ["rev-parse", "HEAD"])).trim();
+      if (/^[0-9a-f]{40}$/.test(head)) return head;
+    }
+  } catch {
+    // Not this repository's toplevel. Hash the page sources instead.
+  }
+  try {
+    return await hashBuild(root);
+  } catch {
+    return "";
+  }
+}
+
 export async function createHub(stateDir, sourceRoot) {
+  const build = await readBuild(sourceRoot);
   const repos = await loadRepos(stateDir);
   const sockets = new Set();
   let queue = Promise.resolve();
@@ -1657,6 +1744,7 @@ export async function createHub(stateDir, sourceRoot) {
         return;
       }
       session.username = msg.username;
+      send(socket, { type: "hello", build });
       return;
     }
     if (msg.type === "pong") {
@@ -1738,6 +1826,7 @@ export async function createHub(stateDir, sourceRoot) {
   pingTimer.unref();
 
   return {
+    build,
     stateDir,
     repoPath(name) {
       const repo = repos.get(name);
