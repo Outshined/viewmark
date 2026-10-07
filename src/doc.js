@@ -1598,6 +1598,21 @@ function quotedLock(locks, slot) {
   return openingLock(locks, slot);
 }
 
+// A child item is the next lock, so only the opener of this item starts the block.
+function listSlot(slot) {
+  if (!slot || slot.kind !== "line" || slot.fenceEdge) return false;
+  const { line, mode } = slot;
+  if (!line || !mode) return false;
+  if (mode.kind !== "li" && mode.kind !== "ol") return false;
+  if (line.text === "") return false;
+  return true;
+}
+
+function listLock(locks, slot) {
+  if (!listSlot(slot)) return null;
+  return openingLock(locks, slot);
+}
+
 // The quote marker is syntax. The left bar is the quote mark, so it is not shown.
 function dropPrefix(parts, cut) {
   const out = [];
@@ -1613,6 +1628,13 @@ function dropPrefix(parts, cut) {
     if (copy.text.length > 0 && copy.end > copy.start) out.push(copy);
   }
   return out;
+}
+
+function openerMarker(slot, index) {
+  if (index !== 0 || !slot || !slot.mode) return 0;
+  const kind = slot.mode.kind;
+  if (kind !== "quote" && kind !== "li" && kind !== "ol") return 0;
+  return slot.mode.marker || 0;
 }
 
 function linePieces(slot, spans, raw) {
@@ -1644,12 +1666,16 @@ function wrappedBlock(group, doc, cursor, spans) {
   for (let i = 0; i < group.length; i += 1) {
     const slot = group[i];
     const newline = slot.line.end < doc.length && doc[slot.line.end] === "\n";
-    const marker = i === 0 && slot.mode.kind === "quote" ? slot.mode.marker || 0 : 0;
+    // The separator belongs to the marker, so it is not a hard break.
+    const marker = openerMarker(slot, i);
     const source = marker > 0 ? slot.line.text.slice(Math.min(marker, slot.line.text.length)) : slot.line.text;
     const hide = newline ? hardHideCount(source) : 0;
     let pieces = linePieces(slot, spans, raw);
     if (hide > 0) pieces = trimTail(pieces, hide);
-    if (marker > 0) pieces = dropPrefix(pieces, slot.line.start + marker);
+    // A raw list keeps its marker in the text. A rendered list hides it and draws one bullet.
+    if (marker > 0 && (slot.mode.kind === "quote" || !raw)) {
+      pieces = dropPrefix(pieces, slot.line.start + marker);
+    }
     for (const piece of pieces) parts.push(piece);
     if (!newline) continue;
     if (hide > 0) parts.push(breakPart(slot.line.end));
@@ -1658,7 +1684,7 @@ function wrappedBlock(group, doc, cursor, spans) {
     }
   }
   const runs = parts.filter((part) => part.type === "run");
-  return {
+  const block = {
     type: "line",
     raw,
     empty: false,
@@ -1668,8 +1694,14 @@ function wrappedBlock(group, doc, cursor, spans) {
     classes: raw ? ["md-raw", plain] : [plain],
     runs,
     parts,
-    indent: 0,
+    // Continuation lines are plain, so the indent is the opener's.
+    indent: group[0].mode.indent ?? 0,
   };
+  if (!raw && group[0].mode.kind === "ol") {
+    const head = group[0];
+    block.marker = head.line.text.slice(0, head.mode.marker).replace(/^[ \t]+/, "");
+  }
+  return block;
 }
 
 // cursor === end stays closed so backspace still deletes the whole atom.
@@ -1711,7 +1743,7 @@ export function plan(doc, cursor) {
       index += 1;
       continue;
     }
-    const lock = paragraphLock(locks, slot) || quotedLock(locks, slot);
+    const lock = paragraphLock(locks, slot) || quotedLock(locks, slot) || listLock(locks, slot);
     if (lock) {
       const group = [slot];
       let next = index + 1;
