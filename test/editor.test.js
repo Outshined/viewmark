@@ -153,7 +153,7 @@ test("wrapped paragraph is one block", () => {
   assert.ok(quoted[0].classes.includes("md-quote"));
   assert.equal(shownText(quoted[0]), "Alpha Beta");
   assert.equal(shownText(quoted[0]).includes(">"), false);
-  assert.equal(proseBlocks("```js\nlet x\n```\n", 20).filter((line) => line.classes.includes("md-codeblock")).length, 3);
+  assert.equal(proseBlocks("```js\nlet x\n```\n", 20).filter((line) => line.classes.includes("md-codeblock")).length, 1);
 });
 
 test("wrapped paragraph hard break hides its marker", () => {
@@ -818,7 +818,7 @@ test("list item is one block", () => {
 
   const fenced = "- Alpha\n```js\nx\n```\n";
   assert.equal(shownText(proseBlocks(fenced, 0)[0]), "- Alpha");
-  assert.equal(proseBlocks(fenced, 0).filter((line) => line.classes.includes("md-codeblock")).length, 3);
+  assert.equal(proseBlocks(fenced, 0).filter((line) => line.classes.includes("md-codeblock")).length, 1);
 
   const tableDoc = "- Alpha\n| a |\n| --- |\n| 1 |\n";
   assert.equal(shownText(proseBlocks(tableDoc, 0)[0]), "- Alpha");
@@ -1531,6 +1531,75 @@ test("T-image-atom", () => {
   assert.ok(imageLine.parts.some((part) => part.type === "image" && part.start === 3));
 });
 
+test("code fence is one block", () => {
+  const codeBlock = (doc, cursor) => {
+    const blocks = plan(doc, cursor).blocks.filter((block) => block.classes && block.classes.includes("md-codeblock"));
+    assert.equal(blocks.length, 1);
+    return blocks[0];
+  };
+  const js = "```js\nlet x\nmore\n```\n";
+  assert.equal(js.length, 21);
+  assert.deepEqual([5, 11, 16, 20].map((offset) => js[offset]), ["\n", "\n", "\n", "\n"]);
+  assert.deepEqual(lockSpans(js), [{ start: 0, end: 20 }]);
+
+  const block = codeBlock(js, 21);
+  assert.equal(block.raw, false);
+  assert.equal(block.start, 0);
+  assert.equal(block.end, 20);
+  assert.equal(block.text, "let xmore");
+  assert.equal(block.text.includes("`"), false);
+  assert.ok(block.classes.includes("md-codeblock"));
+  assert.equal(block.classes.includes("md-raw"), false);
+  assert.equal(block.collapsed, undefined);
+  assert.deepEqual(
+    block.parts.filter((part) => part.type === "break").map((part) => [part.start, part.end]),
+    [[11, 12]],
+  );
+  assert.equal(block.runs.map((run) => run.text).join(""), "let xmore");
+  assert.ok(block.runs.every((run) => run.classes.includes("md-codeblock")));
+
+  const atEnd = codeBlock(js, 20);
+  assert.equal(atEnd.raw, true);
+  assert.equal(atEnd.text, "```jslet xmore```");
+
+  const raw = codeBlock(js, 0);
+  assert.equal(raw.raw, true);
+  assert.equal(raw.start, 0);
+  assert.equal(raw.end, 20);
+  assert.equal(raw.text, "```jslet xmore```");
+  assert.deepEqual(raw.runs.map((run) => run.text), ["```js", "let x", "more", "```"]);
+  assert.deepEqual(
+    raw.parts.filter((part) => part.type === "break").map((part) => [part.start, part.end]),
+    [[5, 6], [11, 12], [16, 17]],
+  );
+  assert.equal(raw.parts.some((part) => part.type === "break" && part.start === 20), false);
+  assert.equal(raw.runs.some((run) => run.classes.includes("token")), false);
+  assert.ok(raw.classes.includes("md-raw"));
+  assert.ok(raw.classes.includes("md-codeblock"));
+
+  const short = "```js\nlet x\n```\n";
+  const shortBlock = codeBlock(short, 20);
+  assert.equal(shortBlock.raw, false);
+  assert.equal(shortBlock.text, "let x");
+  assert.equal(shortBlock.parts.some((part) => part.type === "break"), false);
+
+  const bare = "```\n```\n";
+  const empty = codeBlock(bare, bare.length);
+  assert.equal(empty.raw, false);
+  assert.deepEqual(empty.parts, []);
+  assert.equal(empty.text, "");
+  assert.equal(empty.end, bare.length - 1);
+  const opened = codeBlock(bare, empty.end);
+  assert.equal(opened.raw, true);
+  assert.equal(opened.text, "``````");
+
+  const unclosed = "```js\nlet x\n";
+  const unclosedBlock = codeBlock(unclosed, unclosed.length);
+  assert.equal(unclosedBlock.raw, false);
+  assert.equal(unclosedBlock.text, "let x");
+  assert.equal(unclosedBlock.end, lockSpans(unclosed)[0].end);
+});
+
 test("T-diagram-atom", () => {
   assert.equal(E.length, 21);
   for (const cursor of [0, 12]) {
@@ -1590,9 +1659,9 @@ test("T-snap-rendered", () => {
   const openFence = fenced.indexOf("```js");
   const codeAt = fenced.indexOf("code");
   const closeFence = fenced.lastIndexOf("```");
-  assert.equal(placeMove(fenced, 1, codeAt, "forward", "line"), openFence);
-  assert.equal(placeMove(fenced, codeAt, 0, "backward", "line"), openFence + "```js".length);
-  assert.equal(placeMove(fenced, codeAt + "code".length, fenced.length, "forward", "character"), closeFence);
+  assert.equal(placeMove(fenced, 1, codeAt, "forward", "line"), codeAt);
+  assert.equal(placeMove(fenced, codeAt, 0, "backward", "line"), 0);
+  assert.equal(placeMove(fenced, codeAt + "code".length, fenced.length, "forward", "character"), fenced.length);
   assert.equal(placeMove(fenced, codeAt + "code".length, closeFence, "forward", "character"), closeFence);
   assert.equal(placeMove(fenced, openFence, codeAt, "forward", "character"), codeAt);
 });
@@ -1646,9 +1715,11 @@ test("marks hide their markers", () => {
 
   const spaced = plan("``` diagram\nA\n```\n", 30);
   assert.equal(spaced.blocks.some((block) => block.type === "diagram"), false);
-  assert.ok(spaced.lines.some((line) => line.classes.includes("md-codeblock") && line.text === "A"));
-  assert.equal(spaced.lines[0].collapsed, true);
-  assert.equal(spaced.lines[0].text.startsWith("```"), true);
+  assert.equal(spaced.lines.filter((line) => line.classes.includes("md-codeblock")).length, 1);
+  assert.equal(spaced.lines[0].text, "A");
+  assert.equal(spaced.lines[0].text.includes("`"), false);
+  assert.equal(spaced.lines[0].collapsed, undefined);
+  assert.equal(spaced.lines[0].raw, false);
 
   const strong = plan("__a__\n", 6);
   assert.equal(strong.lines[0].runs[0].text, "a");
@@ -1698,21 +1769,21 @@ test("marks hide their markers", () => {
 
   const fence = plan("```js\nfull\n```\n", 20);
   const codeLines = fence.lines.filter((line) => line.classes.includes("md-codeblock"));
-  assert.equal(codeLines.length, 3);
-  assert.equal(codeLines[0].runs[0].text, "```js");
-  assert.equal(codeLines[0].runs[0].start, 0);
-  assert.equal(codeLines[0].runs[0].end, 5);
-  assert.equal(codeLines[0].collapsed, true);
-  assert.equal(codeLines[1].collapsed, undefined);
-  assert.equal(codeLines[1].runs.map((run) => run.text).join(""), "full");
-  assert.equal(codeLines[1].runs[0].text, "full");
-  assert.equal(codeLines[1].runs[0].text.length, codeLines[1].runs[0].end - codeLines[1].runs[0].start);
-  assert.equal(codeLines[2].collapsed, true);
-  const onFence = plan("```js\nfull\n```\n", 0);
-  assert.equal(onFence.lines[0].collapsed, false);
-  assert.equal(onFence.lines[0].raw, true);
-  assert.equal(onFence.lines[0].runs[0].text, "```js");
-  assert.equal(onFence.lines[2].collapsed, true);
+  assert.equal(codeLines.length, 1);
+  assert.equal(codeLines[0].raw, false);
+  assert.equal(codeLines[0].collapsed, undefined);
+  assert.equal(codeLines[0].text, "full");
+  assert.equal(codeLines[0].text.includes("`"), false);
+  assert.equal(codeLines[0].runs.map((run) => run.text).join(""), "full");
+  assert.equal(codeLines[0].runs[0].start, 6);
+  assert.equal(codeLines[0].runs[codeLines[0].runs.length - 1].end, 10);
+  assert.equal(codeLines[0].runs[0].text.length, codeLines[0].runs[0].end - codeLines[0].runs[0].start);
+  const onFence = plan("```js\nfull\n```\n", 0).lines.filter((line) => line.classes.includes("md-codeblock"));
+  assert.equal(onFence.length, 1);
+  assert.equal(onFence[0].collapsed, undefined);
+  assert.equal(onFence[0].raw, true);
+  assert.equal(onFence[0].text, "```jsfull```");
+  assert.equal(onFence[0].runs.some((run) => run.classes.includes("token")), false);
 
   const h2 = plan("## Sub\n", 7);
   assert.equal(h2.lines[0].runs[0].text, "Sub");
@@ -2384,9 +2455,16 @@ test("prism keyword joins", () => {
     const plain = bodyOf("diagram", "A");
     assert.equal(plain.runs.length, 1);
     assert.deepEqual(plain.runs[0].classes, ["md-codeblock"]);
-    const fences = plan("```js\nfull\n```\n", 100);
-    assert.equal(fences.lines[0].runs[0].text, "```js");
-    assert.deepEqual(fences.lines[0].runs[0].classes, ["md-codeblock"]);
+    const fences = plan("```js\nfull\n```\n", 100).lines.filter((line) => line.classes.includes("md-codeblock"));
+    assert.equal(fences.length, 1);
+    assert.equal(fences[0].raw, false);
+    assert.equal(fences[0].text, "full");
+    assert.ok(fences[0].runs.every((run) => run.classes.includes("md-codeblock")));
+    const rawFence = plan("```js\nfull\n```\n", 0).lines.filter((line) => line.classes.includes("md-codeblock"));
+    assert.equal(rawFence.length, 1);
+    assert.equal(rawFence[0].raw, true);
+    assert.equal(rawFence[0].text, "```jsfull```");
+    assert.equal(rawFence[0].runs.some((run) => run.classes.includes("token")), false);
   } finally {
     if (previous === undefined) delete globalThis.Prism;
     else globalThis.Prism = previous;
@@ -3108,13 +3186,22 @@ test("fence clicks open source", () => {
     assert.ok(mounted.findAll((node) => node.className && node.className.includes("md-codeblock")).length >= 3);
     diagram.destroy();
 
-    createEditor(mounted.root, "```js\nfull\n```\n", 20).destroy();
-    const brs = mounted.findAll((node) => node.tagName === "BR" && node.classList && node.classList.contains("md-fence-collapsed"));
-    assert.equal(brs.length, 2);
-    assert.equal(brs[0].dataset.start, "0");
-    assert.equal(brs[0].dataset.end, "5");
-    assert.equal(brs[1].dataset.start, "11");
-    assert.equal(brs[1].dataset.end, "14");
+    const source = createEditor(mounted.root, "```js\nfull\n```\n", 20);
+    const codeNodes = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-codeblock"));
+    assert.equal(codeNodes.length, 1);
+    assert.equal(codeNodes[0].textContent, "full");
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-fence-collapsed")).length, 0);
+    source.destroy();
+
+    const bare = "```\n```\n";
+    const emptyFence = createEditor(mounted.root, bare, bare.length);
+    const emptyLine = mounted.findAll((node) => node.classList && node.classList.contains("md-codeblock"))[0];
+    assert.equal(emptyLine.dataset.start, String(bare.length - 1));
+    assert.equal(emptyLine.dataset.end, String(bare.length - 1));
+    const emptyBr = emptyLine.childNodes.find((node) => String(node.nodeName).toUpperCase() === "BR");
+    assert.ok(emptyBr);
+    assert.equal(mapOffset(emptyBr, 0), bare.length - 1);
+    emptyFence.destroy();
   } finally {
     mounted.restore();
   }

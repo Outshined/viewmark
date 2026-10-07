@@ -1107,12 +1107,19 @@ function structures(doc) {
         atoms.push(atom);
         slots.push({ kind: "atom", atom });
       } else {
-        const mode = { kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" };
+        const fenceLines = [];
         for (let line = index; line <= last; line += 1) {
-          const edge = line === index || (closed && line === last);
-          const parsed = edge ? parseSlot(lines[line], mode) : codeTokens(lines[line], opened.lang);
-          slots.push({ kind: "line", line: lines[line], mode, parsed, fenceEdge: edge });
+          const item = lines[line];
+          // lineSpans keeps a trailing empty row. The lock span ends on the last source line.
+          if (item.start === doc.length && item.end === doc.length) continue;
+          fenceLines.push(item);
         }
+        slots.push({
+          kind: "fence",
+          lang: opened.lang,
+          closed,
+          lines: fenceLines,
+        });
       }
       index = last + 1;
       continue;
@@ -1596,7 +1603,7 @@ function joinParts(offset, spans, raw, plain) {
 }
 
 function proseSlot(slot) {
-  if (!slot || slot.kind !== "line" || slot.fenceEdge) return false;
+  if (!slot || slot.kind !== "line") return false;
   const { line, mode } = slot;
   if (!line || !mode || mode.kind !== "p") return false;
   if (line.text === "") return false;
@@ -1622,7 +1629,7 @@ function paragraphLock(locks, slot) {
 
 // A quoted paragraph is the lock that opens with "> " and runs through plain lines.
 function quoteSlot(slot) {
-  if (!slot || slot.kind !== "line" || slot.fenceEdge) return false;
+  if (!slot || slot.kind !== "line") return false;
   const { line, mode } = slot;
   if (!line || !mode || mode.kind !== "quote") return false;
   if (line.text === "") return false;
@@ -1636,7 +1643,7 @@ function quotedLock(locks, slot) {
 
 // A child item is the next lock, so only the opener of this item starts the block.
 function listSlot(slot) {
-  if (!slot || slot.kind !== "line" || slot.fenceEdge) return false;
+  if (!slot || slot.kind !== "line") return false;
   const { line, mode } = slot;
   if (!line || !mode) return false;
   if (mode.kind !== "li" && mode.kind !== "ol") return false;
@@ -1740,6 +1747,50 @@ function wrappedBlock(group, doc, cursor, spans) {
   return block;
 }
 
+// Rendered fences hide the marker lines. The caret still owns the whole lock, including end,
+// because an empty fence's br maps there and must open the source.
+function fenceShown(lines, closed, raw) {
+  if (raw) return lines;
+  const to = closed ? lines.length - 1 : lines.length;
+  if (to <= 1) return [];
+  return lines.slice(1, to);
+}
+
+function fencePieces(line, lang, raw, spans) {
+  if (line.start === line.end) return [];
+  if (raw) {
+    const mode = { kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" };
+    return paintRuns(fillGaps(line, mode, parseSlot(line, mode)), spans, true).map(clonePart);
+  }
+  return paintParts(codeTokens(line, lang).parts, spans).map(clonePart);
+}
+
+function fenceBlock(slot, cursor, spans) {
+  const lines = slot.lines;
+  const start = lines[0].start;
+  const end = lines[lines.length - 1].end;
+  const raw = cursor >= start && cursor <= end;
+  const shown = fenceShown(lines, slot.closed, raw);
+  const parts = [];
+  for (let i = 0; i < shown.length; i += 1) {
+    for (const piece of fencePieces(shown[i], slot.lang, raw, spans)) parts.push(piece);
+    if (i < shown.length - 1) parts.push(breakPart(shown[i].end));
+  }
+  const runs = parts.filter((part) => part.type === "run");
+  return {
+    type: "line",
+    raw,
+    empty: false,
+    start,
+    end,
+    text: runs.map((run) => run.text).join(""),
+    classes: blockClasses({ kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" }, raw),
+    runs,
+    parts,
+    indent: 0,
+  };
+}
+
 // cursor === end stays closed so backspace still deletes the whole atom.
 function expandAtom(blocks, doc, atom, cursor, spans) {
   const lines = linesBetween(doc, atom.start, atom.end);
@@ -1779,6 +1830,11 @@ export function plan(doc, cursor) {
       index += 1;
       continue;
     }
+    if (slot.kind === "fence") {
+      blocks.push(fenceBlock(slot, cursor, spans));
+      index += 1;
+      continue;
+    }
     const lock = paragraphLock(locks, slot) || quotedLock(locks, slot) || listLock(locks, slot);
     if (lock) {
       const group = [slot];
@@ -1796,7 +1852,6 @@ export function plan(doc, cursor) {
     const { line, mode, parsed } = slot;
     const onLine = cursor >= line.start && cursor <= line.end;
     const block = onLine ? rawBlock(line, mode, parsed, spans) : renderedBlock(line, mode, parsed, spans);
-    if (slot.fenceEdge) block.collapsed = !onLine;
     if (mode.kind === "p" && !imageLine(line.text)) hardenBreak(block, line, text);
     blocks.push(block);
     index += 1;
@@ -1843,7 +1898,7 @@ export function snapMove(doc, cursor, landed, direction) {
   return forward ? atom.end : atom.start;
 }
 
-// A zero-height fence line is skipped by the caret; stop there so it can open.
+// A collapsed line has no height, so the caret would skip it. Stop on that line.
 function skippedFence(doc, from, landed, forward) {
   if (from === landed) return null;
   const fromLine = lineIndexAt(doc, from);
