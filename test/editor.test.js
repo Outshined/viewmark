@@ -5419,7 +5419,7 @@ test("T-ticket-rows", () => {
   assert.match(css, /#editor\s*\{[^}]*grid-row:\s*1\s*\/\s*span\s*2/);
   assert.match(css, /\.ticket-form\s*\{[^}]*grid-column:\s*2/);
   assert.match(css, /\.ticket-form\s*\{[^}]*grid-row:\s*1/);
-  assert.match(css, /\.ticket-form:not\(\[hidden\]\)\s*\+\s*#editor\s*\{[^}]*grid-row:\s*2/);
+  assert.match(css, /\.ticket-form:not\(\[hidden\]\)\s*\+\s*#editor\s*\{[^}]*grid-row:\s*2[^}]*border:\s*1px solid #4a463f/);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.sheet\s*\{[^}]*display:\s*block;/);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.md-ticket-drawer\s*\{[^}]*position:\s*static/);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.md-ticket-wide\s*\{[^}]*position:\s*static/);

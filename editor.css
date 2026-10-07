@@ -648,6 +648,7 @@ aside.comments {
 
 .ticket-form:not([hidden]) + #editor {
   grid-row: 2;
+  border: 1px solid #4a463f;
 }
 
 .ticket-form input,
