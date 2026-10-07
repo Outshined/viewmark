@@ -1054,7 +1054,7 @@ function renderBlock(block) {
   }
   if (block.raw) {
     if (block.empty) el.appendChild(document.createElement("br"));
-    else for (const run of block.runs) el.appendChild(renderRun(run));
+    else for (const part of block.parts) el.appendChild(part.type === "image" ? renderImage(part) : renderRun(part));
     return el;
   }
   if (block.empty || block.hr) {
@@ -1443,7 +1443,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const tagged = nearestTagged(br);
       if (!tagged) continue;
       const start = Number(tagged.dataset.start);
-      if (start === Number(tagged.dataset.end) && start === offset) return { node: br, offset: 0 };
+      const end = Number(tagged.dataset.end);
+      if (start === end && start === offset) return { node: br, offset: 0 };
+      // A hard break stands for one source newline, not an empty line.
+      if (end === start + 1 && offset === start) return { node: br, offset: 0 };
     }
     return atEnd;
   }

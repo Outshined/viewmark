@@ -1506,6 +1506,132 @@ function linesBetween(doc, start, end) {
   return found;
 }
 
+// Two trailing spaces, or a trailing backslash, mark a hard break.
+function hardHideCount(text) {
+  if (text.endsWith("\\")) return 1;
+  let count = 0;
+  for (let i = text.length - 1; i >= 0 && text[i] === " "; i -= 1) count += 1;
+  return count >= 2 ? count : 0;
+}
+
+function clonePart(part) {
+  if (!part || part.type !== "run") return { ...part };
+  const copy = cloneRun(part);
+  if (part.comment !== undefined) copy.comment = part.comment;
+  return copy;
+}
+
+function trimTail(parts, hide) {
+  let left = hide;
+  const out = parts.slice();
+  while (left > 0 && out.length > 0) {
+    const last = out[out.length - 1];
+    if (!last || last.type !== "run" || last.text.length === 0) break;
+    const n = Math.min(left, last.text.length);
+    last.end -= n;
+    last.text = last.text.slice(0, last.text.length - n);
+    left -= n;
+    if (last.text.length === 0) out.pop();
+  }
+  return out;
+}
+
+function breakPart(offset) {
+  return {
+    type: "break",
+    text: "",
+    start: offset,
+    end: offset + 1,
+    classes: ["md-break"],
+  };
+}
+
+function joinParts(offset, spans, raw) {
+  const run = {
+    type: "run",
+    text: " ",
+    start: offset,
+    end: offset + 1,
+    classes: ["md-p"],
+  };
+  const painted = raw ? paintRuns([run], spans, true) : paintParts([run], spans);
+  if (!painted || painted.length === 0) return [run];
+  return painted.map(clonePart);
+}
+
+function proseSlot(slot) {
+  if (!slot || slot.kind !== "line" || slot.fenceEdge) return false;
+  const { line, mode } = slot;
+  if (!line || !mode || mode.kind !== "p") return false;
+  if (line.text === "") return false;
+  if (imageLine(line.text)) return false;
+  return true;
+}
+
+function paragraphLock(locks, slot) {
+  if (!proseSlot(slot)) return null;
+  const start = slot.line.start;
+  for (let i = 0; i < locks.length; i += 1) {
+    const lock = locks[i];
+    if (start < lock.start || start > lock.end) continue;
+    if (lock.start === start && lock.end > slot.line.end) return lock;
+    return null;
+  }
+  return null;
+}
+
+function linePieces(slot, spans, raw) {
+  const { line, mode, parsed } = slot;
+  const source = raw
+    ? paintRuns(fillGaps(line, mode, parsed), spans, true)
+    : paintParts(parsed.parts, spans);
+  return source.map(clonePart);
+}
+
+function hardenBreak(block, line, doc) {
+  if (!block || block.type !== "line" || block.hr || block.empty || block.collapsed) return;
+  if (!line || line.end >= doc.length || doc[line.end] !== "\n") return;
+  const hide = hardHideCount(line.text);
+  if (hide === 0) return;
+  const parts = trimTail((block.parts || []).map(clonePart), hide);
+  parts.push(breakPart(line.end));
+  block.parts = parts;
+  block.runs = parts.filter((part) => part.type === "run");
+  block.text = block.runs.map((run) => run.text).join("");
+}
+
+function wrappedBlock(group, doc, cursor, spans) {
+  const start = group[0].line.start;
+  const end = group[group.length - 1].line.end;
+  const raw = cursor >= start && cursor <= end;
+  const parts = [];
+  for (let i = 0; i < group.length; i += 1) {
+    const slot = group[i];
+    const newline = slot.line.end < doc.length && doc[slot.line.end] === "\n";
+    const hide = newline ? hardHideCount(slot.line.text) : 0;
+    const pieces = hide > 0 ? trimTail(linePieces(slot, spans, raw), hide) : linePieces(slot, spans, raw);
+    for (const piece of pieces) parts.push(piece);
+    if (!newline) continue;
+    if (hide > 0) parts.push(breakPart(slot.line.end));
+    else if (i < group.length - 1) {
+      for (const piece of joinParts(slot.line.end, spans, raw)) parts.push(piece);
+    }
+  }
+  const runs = parts.filter((part) => part.type === "run");
+  return {
+    type: "line",
+    raw,
+    empty: false,
+    start,
+    end,
+    text: runs.map((run) => run.text).join(""),
+    classes: raw ? ["md-raw", "md-p"] : ["md-p"],
+    runs,
+    parts,
+    indent: 0,
+  };
+}
+
 // cursor === end stays closed so backspace still deletes the whole atom.
 function expandAtom(blocks, doc, atom, cursor, spans) {
   const lines = linesBetween(doc, atom.start, atom.end);
@@ -1530,8 +1656,11 @@ export function plan(doc, cursor) {
   const { slots } = built;
   const comments = built.comments || [];
   const spans = findSpans(text);
+  const locks = lockSpans(text);
   const blocks = [];
-  for (const slot of slots) {
+  let index = 0;
+  while (index < slots.length) {
+    const slot = slots[index];
     if (slot.kind === "atom") {
       const atom = slot.atom;
       if ((atom.type === "table" || atom.type === "diagram") && cursor >= atom.start && cursor < atom.end) {
@@ -1539,13 +1668,30 @@ export function plan(doc, cursor) {
       } else {
         blocks.push(atom);
       }
+      index += 1;
       continue;
+    }
+    const lock = paragraphLock(locks, slot);
+    if (lock) {
+      const group = [slot];
+      let next = index + 1;
+      while (next < slots.length && proseSlot(slots[next]) && slots[next].line.start <= lock.end) {
+        group.push(slots[next]);
+        next += 1;
+      }
+      if (group.length > 1) {
+        blocks.push(wrappedBlock(group, text, cursor, spans));
+        index = next;
+        continue;
+      }
     }
     const { line, mode, parsed } = slot;
     const onLine = cursor >= line.start && cursor <= line.end;
     const block = onLine ? rawBlock(line, mode, parsed, spans) : renderedBlock(line, mode, parsed, spans);
     if (slot.fenceEdge) block.collapsed = !onLine;
+    if (mode.kind === "p" && !imageLine(line.text)) hardenBreak(block, line, text);
     blocks.push(block);
+    index += 1;
   }
   const lines = blocks.filter((block) => block.type === "line");
   const atoms = [];

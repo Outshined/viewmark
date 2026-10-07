@@ -35,50 +35,265 @@ const E = "```mermaid\nA-->B\n```\n";
 const F = "Go\n![alt](sample.svg)\n";
 
 test("T-bold-rendered", () => {
-  const p = plan(A, 10);
-  const line0 = p.lines[0];
-  const line1 = p.lines[1];
+  const inside = plan(A, 10);
+  const insideProse = inside.lines.filter((line) => !line.empty);
+  assert.equal(insideProse.length, 1);
+  assert.equal(insideProse[0].text, "**hello** next");
+
+  const p = plan(A, A.length);
+  const prose = p.lines.filter((line) => !line.empty);
+  assert.equal(prose.length, 1);
+  const line0 = prose[0];
   assert.equal(line0.raw, false);
-  assert.equal(line0.runs.length, 1);
-  assert.equal(line0.runs[0].text, "hello");
-  assert.equal(line0.runs[0].start, 2);
-  assert.equal(line0.runs[0].end, 7);
-  assert.ok(line0.runs[0].classes.includes("md-strong"));
-  assert.equal(line0.runs[0].text.length, line0.runs[0].end - line0.runs[0].start);
-  assert.equal(line1.raw, true);
-  assert.equal(line1.text, "next");
-  assert.equal(line1.start, 10);
-  assert.equal(line1.end, 14);
-  assert.ok(line1.classes.includes("md-raw"));
+  const hello = line0.runs.find((run) => run.text === "hello");
+  assert.equal(hello.start, 2);
+  assert.equal(hello.end, 7);
+  assert.ok(hello.classes.includes("md-strong"));
+  assert.equal(hello.text.length, hello.end - hello.start);
+  assert.equal(line0.runs.map((run) => run.text).join(""), "hello next");
+  const space = line0.runs.find((run) => run.start === 9);
+  assert.equal(space.text, " ");
+  assert.equal(space.end, 10);
+  assert.equal(A[space.start], "\n");
+  const next = line0.runs.find((run) => run.text === "next");
+  assert.equal(next.start, 10);
+  assert.equal(next.end, 14);
+  assert.ok(next.classes.includes("md-p"));
+  assert.equal(next.text.length, next.end - next.start);
 });
 
 test("T-raw-line", () => {
   const p = plan(A, 0);
-  const line0 = p.lines[0];
-  const line1 = p.lines[1];
+  const prose = p.lines.filter((line) => !line.empty);
+  assert.equal(prose.length, 1);
+  const line0 = prose[0];
   assert.equal(line0.raw, true);
-  assert.equal(line0.text, "**hello**");
+  assert.equal(line0.text, "**hello** next");
   assert.equal(line0.start, 0);
-  assert.equal(line0.end, 9);
+  assert.equal(line0.end, 14);
   assert.equal(line0.text.length, line0.end - line0.start);
-  assert.equal(line0.runs.length, 1);
-  assert.equal(line0.runs[0].text, "**hello**");
-  assert.equal(line0.runs[0].start, 0);
-  assert.equal(line0.runs[0].end, 9);
-  assert.deepEqual(line0.runs[0].classes, ["md-strong"]);
-  assert.equal(line0.runs[0].classes.includes("md-syntax"), false);
-  assert.equal(line0.runs[0].text.length, line0.runs[0].end - line0.runs[0].start);
   assert.equal(line0.runs.map((run) => run.text).join(""), line0.text);
   assert.ok(line0.classes.includes("md-raw"));
   assert.ok(line0.classes.includes("md-p"));
   assert.equal(line0.marker, undefined);
-  assert.equal(line1.raw, false);
-  assert.equal(line1.runs.length, 1);
-  assert.equal(line1.runs[0].text, "next");
-  assert.equal(line1.runs[0].start, 10);
-  assert.equal(line1.runs[0].end, 14);
-  assert.ok(line1.runs[0].classes.includes("md-p"));
-  assert.equal(line1.runs[0].text.length, line1.runs[0].end - line1.runs[0].start);
+  const bold = line0.runs.find((run) => run.text === "**hello**");
+  assert.equal(bold.start, 0);
+  assert.equal(bold.end, 9);
+  assert.deepEqual(bold.classes, ["md-strong"]);
+  assert.equal(bold.classes.includes("md-syntax"), false);
+  assert.equal(bold.text.length, bold.end - bold.start);
+  const space = line0.runs.find((run) => run.start === 9);
+  assert.equal(space.text, " ");
+  assert.equal(space.end, 10);
+  assert.equal(A[9], "\n");
+  const next = line0.runs.find((run) => run.text === "next");
+  assert.equal(next.start, 10);
+  assert.equal(next.end, 14);
+  assert.ok(next.classes.includes("md-p"));
+  for (const run of line0.runs) assert.equal(run.text.length, run.end - run.start);
+});
+
+function proseBlocks(doc, cursor) {
+  return plan(doc, cursor).lines.filter((line) => !line.empty);
+}
+
+function shownText(block) {
+  return block.runs.map((run) => run.text).join("");
+}
+
+test("wrapped paragraph is one block", () => {
+  const doc = "Alpha\nBeta\n";
+  assert.equal(doc.length, 11);
+  assert.equal(doc[5], "\n");
+  assert.equal(doc[10], "\n");
+  const shown = [];
+  for (const cursor of [0, 5, 6, 10, 11]) {
+    const blocks = proseBlocks(doc, cursor);
+    assert.equal(blocks.length, 1);
+    const block = blocks[0];
+    assert.equal(block.start, 0);
+    assert.equal(block.end, 10);
+    assert.equal(shownText(block), "Alpha Beta");
+    assert.equal(shownText(block).includes("\n"), false);
+    const space = block.runs.find((run) => run.start === 5);
+    assert.equal(space.text, " ");
+    assert.equal(space.end, 6);
+    assert.equal(doc[space.start], "\n");
+    assert.equal(block.runs.some((run) => run.text === "Alpha" && run.text === "Beta"), false);
+    shown.push(shownText(block));
+  }
+  assert.deepEqual(shown, ["Alpha Beta", "Alpha Beta", "Alpha Beta", "Alpha Beta", "Alpha Beta"]);
+  assert.equal(doc, "Alpha\nBeta\n");
+
+  const bare = "Alpha\nBeta";
+  assert.equal(bare.length, 10);
+  const bareBlock = proseBlocks(bare, 0)[0];
+  assert.equal(proseBlocks(bare, 0).length, 1);
+  assert.equal(proseBlocks(bare, 9).length, 1);
+  assert.equal(shownText(bareBlock), "Alpha Beta");
+  assert.equal(bareBlock.end, 10);
+  assert.equal(bare[5], "\n");
+
+  const split = "Alpha\n\nBeta\n";
+  const splitBlocks = proseBlocks(split, 0);
+  assert.equal(splitBlocks.length, 2);
+  assert.equal(shownText(splitBlocks[0]), "Alpha");
+  assert.equal(shownText(splitBlocks[1]), "Beta");
+
+  const spaced = "Alpha\n \nBeta\n";
+  assert.equal(shownText(proseBlocks(spaced, 0)[0]), "Alpha   Beta");
+  assert.equal(spaced[6], " ");
+
+  assert.equal(proseBlocks("- Alpha\nBeta\n", 0).length, 2);
+  assert.equal(proseBlocks("> Alpha\nBeta\n", 0).length, 2);
+  assert.equal(proseBlocks("```js\nlet x\n```\n", 20).filter((line) => line.classes.includes("md-codeblock")).length, 3);
+});
+
+test("wrapped paragraph hard break hides its marker", () => {
+  const spaces = "red  \nblue\n";
+  assert.equal(spaces.length, 11);
+  const spacesBlock = proseBlocks(spaces, 0)[0];
+  assert.equal(proseBlocks(spaces, 0).length, 1);
+  assert.equal(proseBlocks(spaces, 6).length, 1);
+  assert.equal(shownText(spacesBlock), "redblue");
+  assert.equal(spacesBlock.runs.some((run) => run.text.includes(" ")), false);
+  const spacesBreak = spacesBlock.parts.find((part) => part.type === "break");
+  assert.equal(spacesBreak.start, 5);
+  assert.equal(spacesBreak.end, 6);
+  assert.equal(spaces[3], " ");
+  assert.equal(spaces[4], " ");
+  assert.equal(spaces[5], "\n");
+  assert.equal(spaces, "red  \nblue\n");
+
+  const three = "red   \nblue\n";
+  const threeBlock = proseBlocks(three, 0)[0];
+  assert.equal(shownText(threeBlock), "redblue");
+  assert.equal(threeBlock.parts.find((part) => part.type === "break").start, 6);
+  assert.equal(three, "red   \nblue\n");
+
+  const slash = "red\\\nblue\n";
+  assert.equal(slash.length, 10);
+  const slashBlock = proseBlocks(slash, 0)[0];
+  assert.equal(shownText(slashBlock), "redblue");
+  assert.equal(slashBlock.runs.some((run) => run.text.includes("\\")), false);
+  assert.equal(slashBlock.parts.find((part) => part.type === "break").start, 4);
+  assert.equal(slash[3], "\\");
+  assert.equal(slash, "red\\\nblue\n");
+
+  const one = "red \nblue\n";
+  const oneBlock = proseBlocks(one, 0)[0];
+  assert.equal(shownText(oneBlock), "red  blue");
+  assert.equal(oneBlock.parts.some((part) => part.type === "break"), false);
+  const mapped = oneBlock.runs.find((run) => run.start === 4);
+  assert.equal(mapped.text, " ");
+  assert.equal(one[4], "\n");
+  assert.equal(one, "red \nblue\n");
+
+  const kept = "red\\ \nblue\n";
+  const keptBlock = proseBlocks(kept, 0)[0];
+  assert.equal(shownText(keptBlock), "red\\  blue");
+  assert.equal(keptBlock.parts.some((part) => part.type === "break"), false);
+  assert.equal(kept[3], "\\");
+
+  const mixed = "red  \nblue\ngreen\n";
+  const mixedBlock = proseBlocks(mixed, 0)[0];
+  assert.equal(proseBlocks(mixed, 11).length, 1);
+  assert.equal(shownText(mixedBlock), "redblue green");
+  assert.equal(mixedBlock.parts.filter((part) => part.type === "break").length, 1);
+  assert.equal(mixedBlock.parts.find((part) => part.type === "break").start, 5);
+  const soft = mixedBlock.runs.find((run) => run.start === 10);
+  assert.equal(soft.text, " ");
+  assert.equal(mixed[10], "\n");
+
+  const only = "a  \n";
+  const onlyBlock = proseBlocks(only, 0)[0];
+  assert.equal(shownText(onlyBlock), "a");
+  assert.equal(onlyBlock.parts.find((part) => part.type === "break").start, 3);
+  assert.equal(only[3], "\n");
+  assert.equal(only, "a  \n");
+
+  assert.equal(shownText(proseBlocks("red  ", 0)[0]), "red  ");
+  assert.equal(proseBlocks("red  ", 0)[0].parts.some((part) => part.type === "break"), false);
+  assert.equal(shownText(proseBlocks("red\\", 0)[0]), "red\\");
+  assert.equal(proseBlocks("red\\", 0)[0].parts.some((part) => part.type === "break"), false);
+});
+
+test("wrapped paragraph maps the joining space and edits at that newline", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const doc = "Alpha\nBeta\n";
+  const caret = (node, offset) => {
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: node,
+      anchorOffset: offset,
+      focusNode: node,
+      focusOffset: offset,
+      removeAllRanges() {},
+      addRange() {},
+      getRangeAt() {
+        return {
+          startContainer: node,
+          startOffset: offset,
+          endContainer: node,
+          endOffset: offset,
+          collapsed: true,
+        };
+      },
+    });
+  };
+  const press = (inputType, data) => {
+    mounted.listeners.beforeinput({
+      inputType,
+      data,
+      preventDefault() {},
+    });
+  };
+  try {
+    for (const cursor of [0, 5, 6]) {
+      const view = createEditor(mounted.root, doc, cursor);
+      const lines = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && (node.textContent || "").includes("Alpha"));
+      assert.equal(lines.length, 1);
+      assert.equal(lines[0].textContent.includes("Beta"), true);
+      assert.equal(lines[0].textContent.includes("\n"), false);
+      assert.equal(view.getState().doc, doc);
+      view.destroy();
+    }
+
+    const view = createEditor(mounted.root, doc, 0);
+    const space = mounted.findAll((node) => node.nodeType === 3 && node.textContent === " ")[0];
+    assert.ok(space);
+    assert.equal(mapOffset(space, 0), 5);
+    assert.equal(view.getState().doc[mapOffset(space, 0)], "\n");
+    assert.equal(mapOffset(space, 1), 6);
+    caret(space, 1);
+    press("deleteContentBackward");
+    assert.equal(view.getState().doc, "AlphaBeta\n");
+    assert.equal(view.getState().cursor, 5);
+    view.destroy();
+
+    const typing = createEditor(mounted.root, doc, 0);
+    const again = mounted.findAll((node) => node.nodeType === 3 && node.textContent === " ")[0];
+    caret(again, 0);
+    press("insertText", "X");
+    assert.equal(typing.getState().doc, "AlphaX\nBeta\n");
+    assert.equal(typing.getState().cursor, 6);
+    typing.destroy();
+
+    const hard = createEditor(mounted.root, "red  \nblue\n", 0);
+    const br = mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.dataset.start === "5")[0];
+    assert.ok(br);
+    assert.equal(mapOffset(br, 0), 5);
+    assert.equal(hard.getState().doc[5], "\n");
+    const blue = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "blue")[0];
+    caret(blue, 0);
+    press("deleteContentBackward");
+    assert.equal(hard.getState().doc, "red  blue\n");
+    assert.equal(hard.getState().cursor, 5);
+    hard.destroy();
+  } finally {
+    mounted.restore();
+  }
 });
 
 test("T-heading-hides-marker", () => {
@@ -698,21 +913,26 @@ test("T-active-format", () => {
   assert.deepEqual(listed.runs[1].classes, ["md-strong"]);
 
   const hidden = plan("**a**\n**b**\n", 0);
-  assert.equal(hidden.lines[0].runs[0].text, "**a**");
-  assert.deepEqual(hidden.lines[0].runs[0].classes, ["md-strong"]);
-  assert.equal(hidden.lines[1].raw, false);
-  assert.equal(hidden.lines[1].runs[0].text, "b");
-  assert.equal(hidden.lines[1].runs[0].start, 8);
-  assert.equal(hidden.lines[1].runs[0].end, 9);
-  assert.ok(hidden.lines[1].runs[0].classes.includes("md-strong"));
+  const hiddenLines = hidden.lines.filter((line) => !line.empty);
+  assert.equal(hiddenLines.length, 1);
+  assert.equal(hiddenLines[0].raw, true);
+  assert.equal(hiddenLines[0].runs.map((run) => run.text).join(""), "**a** **b**");
+  const hiddenA = hiddenLines[0].runs.find((run) => run.text === "**a**");
+  assert.deepEqual(hiddenA.classes, ["md-strong"]);
+  const hiddenB = hiddenLines[0].runs.find((run) => run.text === "**b**");
+  assert.equal(hiddenB.start, 6);
+  assert.equal(hiddenB.end, 11);
+  assert.deepEqual(hiddenB.classes, ["md-strong"]);
 
-  const shifted = plan("next\n**hello**\n", 6).lines[1];
+  const shiftedPlan = plan("next\n**hello**\n", 6);
+  const shiftedLines = shiftedPlan.lines.filter((line) => !line.empty);
+  assert.equal(shiftedLines.length, 1);
+  const shifted = shiftedLines[0];
   assert.equal(shifted.raw, true);
-  assert.equal(shifted.runs.length, 1);
-  assert.equal(shifted.runs[0].text, "**hello**");
-  assert.equal(shifted.runs[0].start, 5);
-  assert.equal(shifted.runs[0].end, 14);
-  assert.deepEqual(shifted.runs[0].classes, ["md-strong"]);
+  const shiftedHello = shifted.runs.find((run) => run.text === "**hello**");
+  assert.equal(shiftedHello.start, 5);
+  assert.equal(shiftedHello.end, 14);
+  assert.deepEqual(shiftedHello.classes, ["md-strong"]);
 
   const image = plan("x![a](b)y", 0);
   assert.equal(image.atoms.some((atom) => atom.type === "image"), false);
@@ -1400,11 +1620,11 @@ test("backspace at the visual start of a line joins it upward", () => {
       },
     });
   };
-  const lineText = (text) => mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.textContent === text)[0];
+  const world = () => mounted.findAll((node) => node.nodeType === 3 && node.textContent === "world")[0];
   try {
     const transport = holdingTransport();
     const held = createEditor(mounted.root, "hello\nworld\n", 0, transport);
-    caret(lineText("world"), 0);
+    caret(world(), 0);
     press();
     const edit = transport.sent.find((message) => message.type === "edit");
     assert.equal(edit.op, "backspace");
@@ -1416,7 +1636,7 @@ test("backspace at the visual start of a line joins it upward", () => {
     held.destroy();
 
     const view = createEditor(mounted.root, "hello\nworld\n", 0);
-    caret(lineText("world"), 0);
+    caret(world(), 0);
     press();
     assert.equal(view.getState().doc, "helloworld\n");
     assert.equal(view.getState().cursor, 5);
@@ -1984,13 +2204,19 @@ test("comment spans hide markers off the cursor line", () => {
   assert.equal(boldRawFox.classes.includes("md-syntax"), false);
 
   const crossed = plan("{c1}ab\ncd{/c1}\n", 7);
-  assert.equal(crossed.lines[0].raw, false);
-  assert.equal(crossed.lines[0].runs[0].text, "ab");
-  assert.equal(crossed.lines[0].runs[0].start, 4);
-  assert.equal(crossed.lines[0].runs[0].end, 6);
-  assert.ok(crossed.lines[0].runs[0].classes.includes("md-comment"));
-  assert.equal(crossed.lines[1].raw, true);
-  assert.equal(crossed.lines[1].runs.map((run) => run.text).join(""), "cd{/c1}");
+  const crossedLines = crossed.lines.filter((line) => !line.empty);
+  assert.equal(crossedLines.length, 1);
+  assert.equal(crossedLines[0].raw, true);
+  assert.equal(crossedLines[0].runs.map((run) => run.text).join(""), "{c1}ab cd{/c1}");
+  const crossedAb = crossedLines[0].runs.find((run) => run.text === "ab");
+  assert.equal(crossedAb.start, 4);
+  assert.equal(crossedAb.end, 6);
+  assert.ok(crossedAb.classes.includes("md-comment"));
+  const crossedOff = plan("{c1}ab\ncd{/c1}\n", 100);
+  const crossedShown = crossedOff.lines.filter((line) => !line.empty);
+  assert.equal(crossedShown.length, 1);
+  assert.equal(crossedShown[0].raw, false);
+  assert.equal(crossedShown[0].runs.map((run) => run.text).join(""), "ab cd");
 
   const fenced = plan("```python\n{c1}x{/c1}\n```\n", 30);
   assert.equal(fenced.comments.length, 0);
@@ -3965,8 +4191,7 @@ test("locks name another user and a rejected lock does not take the caret", () =
     });
     const marks = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-lock"));
     assert.deepEqual(marks.map((mark) => mark.textContent), ["ada"]);
-    const firstLine = mounted.root.childNodes[0];
-    assert.equal(walkNodes(firstLine, (node) => node.classList && node.classList.contains("md-lock")).length, 0);
+    assert.equal(walkNodes(mounted.root.childNodes[0], (node) => node.classList && node.classList.contains("md-lock")).length, 1);
     transport.sent.length = 0;
     transport.deliver({
       type: "file",
@@ -3982,9 +4207,8 @@ test("locks name another user and a rejected lock does not take the caret", () =
     assert.equal(walkNodes(mounted.root.childNodes[0], (node) => node.classList && node.classList.contains("md-lock")).length, 1);
     assert.equal(transport.sent.some((message) => message.type === "lock" && message.anchor === 0 && message.cursor === 0 && message.path === "p.md" && message.rev === 2 && message.lines === undefined), true);
 
-    const lines = mounted.root.childNodes;
-    const origin = lines[0].childNodes[0].childNodes[0];
-    const next = lines[1].childNodes[0].childNodes[0];
+    const origin = walkNodes(mounted.root, (node) => node.nodeType === 3 && node.textContent === "one")[0];
+    const next = walkNodes(mounted.root, (node) => node.nodeType === 3 && node.textContent === "two")[0];
     assert.equal(origin.textContent, "one");
     assert.equal(next.textContent, "two");
     const rejecting = {
@@ -4001,7 +4225,7 @@ test("locks name another user and a rejected lock does not take the caret", () =
     };
     view.destroy();
     const blocked = createEditor(mounted.root, "a\nb\n", 0, rejecting);
-    const text = mounted.root.childNodes.map((line) => line.childNodes[0] && line.childNodes[0].childNodes[0]).filter((node) => node && node.nodeType === 3);
+    const text = ["a", "b"].map((value) => walkNodes(mounted.root, (node) => node.nodeType === 3 && node.textContent === value)[0]);
     assert.equal(text[0].textContent, "a");
     assert.equal(text[1].textContent, "b");
     mounted.listeners.mousedown({ clientX: 0, clientY: 0 });
@@ -5170,8 +5394,7 @@ test("commit button checkpoints the active repo", () => {
     field.value = "notes/idea";
     field.listeners.keydown({ key: "Enter", preventDefault() {} });
     assert.equal(transport.sent.at(-1).type, "create");
-    const line = mounted.root.childNodes[1];
-    const text = line.childNodes[0].childNodes[0];
+    const text = walkNodes(mounted.root, (node) => node.nodeType === 3 && node.textContent === "cd")[0];
     assert.equal(text.textContent, "cd");
     document.caretPositionFromPoint = () => ({ offsetNode: text, offset: 0 });
     mounted.listeners.click({ target: text, clientX: 1, clientY: 1, preventDefault() {} });
@@ -5242,8 +5465,7 @@ test("a create 409 does not restore the caret and a later 409 does", () => {
     field.value = "notes/idea";
     field.listeners.keydown({ key: "Enter", preventDefault() {} });
     assert.deepEqual(transport.sent.at(-1), { type: "create", path: "notes/idea.md", username: "" });
-    const line = mounted.root.childNodes[1];
-    const text = line.childNodes[0].childNodes[0];
+    const text = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "cd")[0];
     assert.equal(text.textContent, "cd");
     document.caretPositionFromPoint = () => ({ offsetNode: text, offset: 0 });
     mounted.listeners.click({ target: text, clientX: 1, clientY: 1, preventDefault() {} });
@@ -6215,7 +6437,7 @@ test("T-ticket-fields", () => {
     state().value = "triaged";
     state().listeners.change();
     assert.equal(sets().length, 1);
-    const text = mounted.root.childNodes[1].childNodes[0].childNodes[0];
+    const text = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "next")[0];
     assert.equal(text.textContent, "next");
     document.caretPositionFromPoint = () => ({ offsetNode: text, offset: 1 });
     mounted.listeners.click({ target: text, clientX: 1, clientY: 1, preventDefault() {} });
@@ -8008,8 +8230,9 @@ test("T-file-delete", () => {
     transport.deliver({ type: "file", rev: 0, text: "a\nb\n", path: "b.md", cursor: 0, anchor: 0, locks: [] });
 
     globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
-    const lines = mounted.root.childNodes;
-    const text = lines.map((line) => line.childNodes[0] && line.childNodes[0].childNodes[0]).filter((node) => node && node.nodeType === 3);
+    const text = ["a", "b"].map((value) => walkNodes(mounted.root, (node) => node.nodeType === 3 && node.textContent === value)[0]);
+    assert.equal(text[0].textContent, "a");
+    assert.equal(text[1].textContent, "b");
     globalThis.window.getSelection = () => ({
       rangeCount: 1,
       anchorNode: text[0],
