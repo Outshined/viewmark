@@ -145,7 +145,11 @@ test("wrapped paragraph is one block", () => {
   assert.equal(spaced[6], " ");
 
   assert.equal(proseBlocks("- Alpha\nBeta\n", 0).length, 2);
-  assert.equal(proseBlocks("> Alpha\nBeta\n", 0).length, 2);
+  const quoted = proseBlocks("> Alpha\nBeta\n", 0);
+  assert.equal(quoted.length, 1);
+  assert.ok(quoted[0].classes.includes("md-quote"));
+  assert.equal(shownText(quoted[0]), "Alpha Beta");
+  assert.equal(shownText(quoted[0]).includes(">"), false);
   assert.equal(proseBlocks("```js\nlet x\n```\n", 20).filter((line) => line.classes.includes("md-codeblock")).length, 3);
 });
 
@@ -290,6 +294,287 @@ test("wrapped paragraph maps the joining space and edits at that newline", () =>
     press("deleteContentBackward");
     assert.equal(hard.getState().doc, "red  blue\n");
     assert.equal(hard.getState().cursor, 5);
+    hard.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("quoted paragraph is one block", () => {
+  const doc = "> hi\nthere\n";
+  assert.equal(doc.length, 11);
+  assert.equal(doc[4], "\n");
+  assert.equal(doc[10], "\n");
+  assert.deepEqual(lockSpans(doc), [{ start: 0, end: 10 }]);
+  const shown = [];
+  for (const cursor of [0, 1, 2, 4, 5, 9, 10, 11]) {
+    const blocks = proseBlocks(doc, cursor);
+    assert.equal(blocks.length, 1);
+    const block = blocks[0];
+    assert.equal(block.start, 0);
+    assert.equal(block.end, 10);
+    assert.equal(block.raw, cursor <= 10);
+    assert.deepEqual(block.classes, cursor <= 10 ? ["md-raw", "md-quote"] : ["md-quote"]);
+    assert.equal(shownText(block), "hi there");
+    assert.equal(shownText(block).includes(">"), false);
+    assert.equal(shownText(block).includes("\n"), false);
+    const space = block.runs.find((run) => run.start === 4);
+    assert.equal(space.text, " ");
+    assert.equal(space.end, 5);
+    assert.equal(doc[space.start], "\n");
+    assert.ok(space.classes.includes("md-quote"));
+    const hi = block.runs.find((run) => run.text === "hi");
+    assert.equal(hi.start, 2);
+    assert.equal(hi.end, 4);
+    assert.ok(hi.classes.includes("md-quote"));
+    const there = block.runs.find((run) => run.text === "there");
+    assert.equal(there.start, 5);
+    assert.equal(there.end, 10);
+    for (const run of block.runs) assert.equal(run.text.length, run.end - run.start);
+    shown.push(shownText(block));
+  }
+  assert.deepEqual(shown, ["hi there", "hi there", "hi there", "hi there", "hi there", "hi there", "hi there", "hi there"]);
+  assert.equal(doc, "> hi\nthere\n");
+
+  const bare = "> hi\nthere";
+  const bareBlock = proseBlocks(bare, 0)[0];
+  assert.equal(proseBlocks(bare, 0).length, 1);
+  assert.equal(proseBlocks(bare, bare.length).length, 1);
+  assert.equal(shownText(bareBlock), "hi there");
+  assert.equal(bareBlock.end, bare.length);
+  assert.equal(bare[4], "\n");
+
+  const marked = "> **hi**\nthere\n";
+  const rawMarked = proseBlocks(marked, 0)[0];
+  assert.equal(proseBlocks(marked, 0).length, 1);
+  assert.equal(proseBlocks(marked, 5).length, 1);
+  assert.equal(rawMarked.raw, true);
+  assert.equal(shownText(rawMarked), "**hi** there");
+  assert.equal(shownText(rawMarked).includes(">"), false);
+  const stars = rawMarked.runs.find((run) => run.text === "**hi**");
+  assert.equal(stars.start, 2);
+  assert.equal(stars.end, 8);
+  assert.ok(stars.classes.includes("md-strong"));
+  const renderedMarked = proseBlocks(marked, marked.length)[0];
+  assert.equal(renderedMarked.raw, false);
+  assert.deepEqual(renderedMarked.classes, ["md-quote"]);
+  assert.equal(shownText(renderedMarked), "hi there");
+  assert.equal(shownText(renderedMarked).includes(">"), false);
+  assert.equal(shownText(renderedMarked).includes("*"), false);
+  const markedHi = renderedMarked.runs.find((run) => run.text === "hi");
+  assert.equal(markedHi.start, 4);
+  assert.equal(markedHi.end, 6);
+  assert.ok(markedHi.classes.includes("md-strong"));
+  assert.equal(marked, "> **hi**\nthere\n");
+
+  const triple = "> one\ntwo\nthree\n";
+  assert.equal(shownText(proseBlocks(triple, triple.indexOf("two"))[0]), "one two three");
+  assert.equal(proseBlocks(triple, triple.indexOf("three")).length, 1);
+  assert.ok(proseBlocks(triple, triple.indexOf("three"))[0].classes.includes("md-quote"));
+
+  const split = "> hi\n\nthere\n";
+  const splitBlocks = proseBlocks(split, 0);
+  assert.equal(splitBlocks.length, 2);
+  assert.equal(shownText(splitBlocks[0]), "> hi");
+  assert.equal(shownText(splitBlocks[1]), "there");
+
+  const nextQuote = "> a\nb\n> c\n";
+  const nextBlocks = proseBlocks(nextQuote, 0);
+  assert.equal(nextBlocks.length, 2);
+  assert.equal(shownText(nextBlocks[0]), "a b");
+  assert.ok(nextBlocks[0].classes.includes("md-quote"));
+  assert.equal(shownText(nextBlocks[1]), "c");
+  assert.ok(nextBlocks[1].classes.includes("md-quote"));
+  const onSecond = proseBlocks(nextQuote, nextQuote.lastIndexOf(">"));
+  assert.equal(onSecond.length, 2);
+  assert.equal(shownText(onSecond[0]), "a b");
+  assert.equal(onSecond[0].raw, false);
+  assert.equal(shownText(onSecond[1]), "> c");
+  assert.equal(onSecond[1].raw, true);
+
+  const child = "> - a\n  - b\n";
+  const childBlocks = proseBlocks(child, 0);
+  assert.equal(childBlocks.length, 2);
+  assert.equal(shownText(childBlocks[0]), "> - a");
+  assert.equal(shownText(childBlocks[1]), "b");
+
+  const headed = "> a\nb\n# C\n";
+  const headedBlocks = proseBlocks(headed, 0);
+  assert.equal(headedBlocks.length, 2);
+  assert.equal(shownText(headedBlocks[0]), "a b");
+  assert.ok(headedBlocks[0].classes.includes("md-quote"));
+  assert.equal(shownText(headedBlocks[1]), "C");
+  assert.equal(doc, "> hi\nthere\n");
+});
+
+test("quoted paragraph hard break hides its marker", () => {
+  const spaces = "> red  \nblue\n";
+  assert.equal(spaces.length, 13);
+  assert.equal(spaces[7], "\n");
+  for (const cursor of [0, 7, 8, 12, 13]) {
+    const blocks = proseBlocks(spaces, cursor);
+    assert.equal(blocks.length, 1);
+    assert.ok(blocks[0].classes.includes("md-quote"));
+    assert.equal(blocks[0].classes.includes("md-p"), false);
+  }
+  const spacesBlock = proseBlocks(spaces, 0)[0];
+  assert.equal(shownText(spacesBlock), "redblue");
+  assert.equal(shownText(spacesBlock).includes(">"), false);
+  assert.equal(spacesBlock.runs.some((run) => run.text.includes(" ")), false);
+  assert.equal(spacesBlock.runs.some((run) => run.text.includes(">")), false);
+  const spacesBreak = spacesBlock.parts.find((part) => part.type === "break");
+  assert.equal(spacesBreak.start, 7);
+  assert.equal(spacesBreak.end, 8);
+  assert.equal(spaces[5], " ");
+  assert.equal(spaces[6], " ");
+  assert.equal(spaces, "> red  \nblue\n");
+  const red = spacesBlock.runs.find((run) => run.text === "red");
+  assert.equal(red.start, 2);
+  assert.equal(red.end, 5);
+  const blue = spacesBlock.runs.find((run) => run.text === "blue");
+  assert.equal(blue.start, 8);
+  assert.equal(blue.end, 12);
+
+  const three = "> red   \nblue\n";
+  const threeBlock = proseBlocks(three, 0)[0];
+  assert.equal(shownText(threeBlock), "redblue");
+  assert.equal(threeBlock.parts.find((part) => part.type === "break").start, 8);
+  assert.equal(three, "> red   \nblue\n");
+
+  const slash = "> red\\\nblue\n";
+  assert.equal(slash.length, 12);
+  const slashBlock = proseBlocks(slash, 0)[0];
+  assert.equal(shownText(slashBlock), "redblue");
+  assert.equal(slashBlock.runs.some((run) => run.text.includes("\\")), false);
+  assert.equal(slashBlock.runs.some((run) => run.text.includes(">")), false);
+  assert.equal(slashBlock.parts.find((part) => part.type === "break").start, 6);
+  assert.equal(slash[5], "\\");
+  assert.equal(slash, "> red\\\nblue\n");
+
+  const one = "> red \nblue\n";
+  const oneBlock = proseBlocks(one, 0)[0];
+  assert.equal(shownText(oneBlock), "red  blue");
+  assert.equal(oneBlock.parts.some((part) => part.type === "break"), false);
+  const mapped = oneBlock.runs.find((run) => run.start === 6);
+  assert.equal(mapped.text, " ");
+  assert.equal(one[6], "\n");
+  assert.equal(one, "> red \nblue\n");
+
+  const kept = "> red\\ \nblue\n";
+  const keptBlock = proseBlocks(kept, 0)[0];
+  assert.equal(shownText(keptBlock), "red\\  blue");
+  assert.equal(keptBlock.parts.some((part) => part.type === "break"), false);
+  assert.equal(keptBlock.runs.some((run) => run.text.includes(">")), false);
+  assert.equal(kept[5], "\\");
+
+  const mixed = "> red  \nblue\ngreen\n";
+  const mixedBlock = proseBlocks(mixed, 0)[0];
+  assert.equal(proseBlocks(mixed, 12).length, 1);
+  assert.equal(shownText(mixedBlock), "redblue green");
+  assert.equal(mixedBlock.parts.filter((part) => part.type === "break").length, 1);
+  assert.equal(mixedBlock.parts.find((part) => part.type === "break").start, 7);
+  const soft = mixedBlock.runs.find((run) => run.start === 12);
+  assert.equal(soft.text, " ");
+  assert.equal(mixed[12], "\n");
+
+  const tail = "> red\nblue  \n";
+  const tailBlock = proseBlocks(tail, 0)[0];
+  assert.equal(shownText(tailBlock), "red blue");
+  assert.equal(tailBlock.parts.filter((part) => part.type === "break").length, 1);
+  assert.equal(tailBlock.parts.find((part) => part.type === "break").start, 12);
+  assert.equal(tail, "> red\nblue  \n");
+
+  const markerSpace = ">  \nblue\n";
+  assert.equal(markerSpace[1], " ");
+  assert.equal(markerSpace[2], " ");
+  assert.equal(markerSpace[3], "\n");
+  const markerBlock = proseBlocks(markerSpace, 0)[0];
+  assert.equal(markerBlock.parts.some((part) => part.type === "break"), false);
+  assert.equal(shownText(markerBlock), "  blue");
+  assert.equal(shownText(markerBlock).includes(">"), false);
+
+  const markerBreak = ">   \nblue\n";
+  const markerBreakBlock = proseBlocks(markerBreak, 0)[0];
+  assert.equal(shownText(markerBreakBlock), "blue");
+  assert.equal(markerBreakBlock.parts.find((part) => part.type === "break").start, 4);
+  assert.equal(markerBreak[4], "\n");
+  assert.equal(markerBreak, ">   \nblue\n");
+});
+
+test("quoted paragraph maps the joining space and keeps the source", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const doc = "> hi\nthere\n";
+  const caret = (node, offset) => {
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: node,
+      anchorOffset: offset,
+      focusNode: node,
+      focusOffset: offset,
+      removeAllRanges() {},
+      addRange() {},
+      getRangeAt() {
+        return {
+          startContainer: node,
+          startOffset: offset,
+          endContainer: node,
+          endOffset: offset,
+          collapsed: true,
+        };
+      },
+    });
+  };
+  const press = (inputType, data) => {
+    mounted.listeners.beforeinput({
+      inputType,
+      data,
+      preventDefault() {},
+    });
+  };
+  try {
+    for (const cursor of [0, 4, 5]) {
+      const view = createEditor(mounted.root, doc, cursor);
+      const lines = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-quote"));
+      assert.equal(lines.length, 1);
+      assert.equal(lines[0].textContent.includes("hi"), true);
+      assert.equal(lines[0].textContent.includes("there"), true);
+      assert.equal(lines[0].textContent.includes(">"), false);
+      assert.equal(lines[0].textContent.includes("\n"), false);
+      assert.equal(view.getState().doc, doc);
+      view.destroy();
+    }
+
+    const view = createEditor(mounted.root, doc, 0);
+    const space = mounted.findAll((node) => node.nodeType === 3 && node.textContent === " ")[0];
+    assert.ok(space);
+    assert.equal(mapOffset(space, 0), 4);
+    assert.equal(view.getState().doc[mapOffset(space, 0)], "\n");
+    assert.equal(mapOffset(space, 1), 5);
+    caret(space, 1);
+    press("deleteContentBackward");
+    assert.equal(view.getState().doc, "> hithere\n");
+    assert.equal(view.getState().cursor, 4);
+    view.destroy();
+
+    const typing = createEditor(mounted.root, doc, 0);
+    const again = mounted.findAll((node) => node.nodeType === 3 && node.textContent === " ")[0];
+    caret(again, 0);
+    press("insertText", "X");
+    assert.equal(typing.getState().doc, "> hiX\nthere\n");
+    assert.equal(typing.getState().cursor, 5);
+    typing.destroy();
+
+    const hard = createEditor(mounted.root, "> red  \nblue\n", 0);
+    const br = mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.dataset.start === "7")[0];
+    assert.ok(br);
+    assert.equal(mapOffset(br, 0), 7);
+    assert.equal(hard.getState().doc[7], "\n");
+    const blue = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "blue")[0];
+    caret(blue, 0);
+    press("deleteContentBackward");
+    assert.equal(hard.getState().doc, "> red  blue\n");
+    assert.equal(hard.getState().cursor, 7);
     hard.destroy();
   } finally {
     mounted.restore();

@@ -1546,13 +1546,13 @@ function breakPart(offset) {
   };
 }
 
-function joinParts(offset, spans, raw) {
+function joinParts(offset, spans, raw, plain) {
   const run = {
     type: "run",
     text: " ",
     start: offset,
     end: offset + 1,
-    classes: ["md-p"],
+    classes: [plain || "md-p"],
   };
   const painted = raw ? paintRuns([run], spans, true) : paintParts([run], spans);
   if (!painted || painted.length === 0) return [run];
@@ -1568,8 +1568,7 @@ function proseSlot(slot) {
   return true;
 }
 
-function paragraphLock(locks, slot) {
-  if (!proseSlot(slot)) return null;
+function openingLock(locks, slot) {
   const start = slot.line.start;
   for (let i = 0; i < locks.length; i += 1) {
     const lock = locks[i];
@@ -1578,6 +1577,42 @@ function paragraphLock(locks, slot) {
     return null;
   }
   return null;
+}
+
+function paragraphLock(locks, slot) {
+  if (!proseSlot(slot)) return null;
+  return openingLock(locks, slot);
+}
+
+// A quoted paragraph is the lock that opens with "> " and runs through plain lines.
+function quoteSlot(slot) {
+  if (!slot || slot.kind !== "line" || slot.fenceEdge) return false;
+  const { line, mode } = slot;
+  if (!line || !mode || mode.kind !== "quote") return false;
+  if (line.text === "") return false;
+  return true;
+}
+
+function quotedLock(locks, slot) {
+  if (!quoteSlot(slot)) return null;
+  return openingLock(locks, slot);
+}
+
+// The quote marker is syntax. The left bar is the quote mark, so it is not shown.
+function dropPrefix(parts, cut) {
+  const out = [];
+  for (const part of parts) {
+    if (!part || part.end <= cut) continue;
+    if (part.start >= cut || part.type !== "run") {
+      out.push(part);
+      continue;
+    }
+    const copy = clonePart(part);
+    copy.text = copy.text.slice(cut - copy.start);
+    copy.start = cut;
+    if (copy.text.length > 0 && copy.end > copy.start) out.push(copy);
+  }
+  return out;
 }
 
 function linePieces(slot, spans, raw) {
@@ -1604,17 +1639,22 @@ function wrappedBlock(group, doc, cursor, spans) {
   const start = group[0].line.start;
   const end = group[group.length - 1].line.end;
   const raw = cursor >= start && cursor <= end;
+  const plain = group[0].mode.plain;
   const parts = [];
   for (let i = 0; i < group.length; i += 1) {
     const slot = group[i];
     const newline = slot.line.end < doc.length && doc[slot.line.end] === "\n";
-    const hide = newline ? hardHideCount(slot.line.text) : 0;
-    const pieces = hide > 0 ? trimTail(linePieces(slot, spans, raw), hide) : linePieces(slot, spans, raw);
+    const marker = i === 0 && slot.mode.kind === "quote" ? slot.mode.marker || 0 : 0;
+    const source = marker > 0 ? slot.line.text.slice(Math.min(marker, slot.line.text.length)) : slot.line.text;
+    const hide = newline ? hardHideCount(source) : 0;
+    let pieces = linePieces(slot, spans, raw);
+    if (hide > 0) pieces = trimTail(pieces, hide);
+    if (marker > 0) pieces = dropPrefix(pieces, slot.line.start + marker);
     for (const piece of pieces) parts.push(piece);
     if (!newline) continue;
     if (hide > 0) parts.push(breakPart(slot.line.end));
     else if (i < group.length - 1) {
-      for (const piece of joinParts(slot.line.end, spans, raw)) parts.push(piece);
+      for (const piece of joinParts(slot.line.end, spans, raw, plain)) parts.push(piece);
     }
   }
   const runs = parts.filter((part) => part.type === "run");
@@ -1625,7 +1665,7 @@ function wrappedBlock(group, doc, cursor, spans) {
     start,
     end,
     text: runs.map((run) => run.text).join(""),
-    classes: raw ? ["md-raw", "md-p"] : ["md-p"],
+    classes: raw ? ["md-raw", plain] : [plain],
     runs,
     parts,
     indent: 0,
@@ -1671,7 +1711,7 @@ export function plan(doc, cursor) {
       index += 1;
       continue;
     }
-    const lock = paragraphLock(locks, slot);
+    const lock = paragraphLock(locks, slot) || quotedLock(locks, slot);
     if (lock) {
       const group = [slot];
       let next = index + 1;
