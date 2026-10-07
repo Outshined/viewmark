@@ -2748,9 +2748,7 @@ test("backspace at the visual start of a line joins it upward", () => {
     assert.equal(edit.op, "backspace");
     assert.equal(edit.cursor, 6);
     assert.equal(edit.anchor, 6);
-    const lock = transport.sent.filter((message) => message.type === "lock").at(-1);
-    assert.equal(Math.min(lock.anchor, lock.cursor), 5);
-    assert.equal(Math.max(lock.anchor, lock.cursor), 6);
+    assert.equal(transport.sent.some((message) => message.type === "lock"), false);
     held.destroy();
 
     const view = createEditor(mounted.root, "hello\nworld\n", 0);
@@ -2816,10 +2814,7 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
     assert.equal(edit.text, "\n");
     assert.equal(edit.cursor, 5);
     assert.equal(edit.anchor, 5);
-    const lock = transport.sent.filter((message) => message.type === "lock").at(-1);
-    assert.equal(Math.min(lock.anchor, lock.cursor), 5);
-    assert.equal(Math.max(lock.anchor, lock.cursor), 6);
-    assert.ok(transport.sent.indexOf(lock) < transport.sent.indexOf(edit));
+    assert.equal(transport.sent.some((message) => message.type === "lock"), false);
     held.destroy();
 
     const broken = holdingTransport();
@@ -2830,10 +2825,7 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
     assert.equal(breakEdit.text, "\n");
     assert.equal(breakEdit.cursor, 5);
     assert.equal(breakEdit.anchor, 5);
-    const breakLock = broken.sent.filter((message) => message.type === "lock").at(-1);
-    assert.equal(Math.min(breakLock.anchor, breakLock.cursor), 5);
-    assert.equal(Math.max(breakLock.anchor, breakLock.cursor), 6);
-    assert.ok(broken.sent.indexOf(breakLock) < broken.sent.indexOf(breakEdit));
+    assert.equal(broken.sent.some((message) => message.type === "lock"), false);
     shiftEnter.destroy();
 
     const view = createEditor(mounted.root, "hello\nworld\n", 5);
@@ -2875,7 +2867,8 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
     };
     const blocked = createEditor(mounted.root, "hello\nworld\n", 5, rejecting);
     press("insertParagraph");
-    assert.equal(rejecting.sent.some((message) => message.type === "edit"), false);
+    assert.equal(rejecting.sent.some((message) => message.type === "lock"), false);
+    assert.equal(rejecting.sent.some((message) => message.type === "edit"), true);
     assert.equal(blocked.getState().doc, "hello\nworld\n");
     assert.equal(blocked.getState().cursor, 5);
     assert.equal(blocked.getState().anchor, 5);
@@ -5303,6 +5296,75 @@ test("another user's doc shifts a caret at or after to", () => {
   }
 });
 
+test("moving inside a paragraph keeps one held span", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const doc = "Alpha\nBeta\n";
+    assert.equal(doc.length, 11);
+    assert.equal(lockIndexAt(doc, 0), 0);
+    assert.equal(lockIndexAt(doc, 10), 0);
+    const clickAt = (needle, offset) => {
+      const node = walkNodes(mounted.root, (item) => item.nodeType === 3 && item.textContent === needle)[0];
+      assert.ok(node, needle);
+      globalThis.document.caretPositionFromPoint = () => ({ offsetNode: node, offset });
+      mounted.listeners.click({ clientX: 4, clientY: 4, detail: 1, target: node });
+    };
+    const view = createEditor(mounted.root, doc, 0, transport);
+    transport.sent.length = 0;
+    clickAt("Beta", 1);
+    assert.equal(view.getState().cursor, doc.indexOf("Beta") + 1);
+    assert.equal(view.getState().anchor, view.getState().cursor);
+    assert.equal(lockIndexAt(doc, view.getState().cursor), 0);
+    assert.equal(transport.sent.some((message) => message.type === "lock"), false);
+    view.destroy();
+
+    const next = "Alpha\nBeta\n\nGamma\n";
+    const moved = createEditor(mounted.root, next, 0, transport);
+    transport.sent.length = 0;
+    clickAt("Gamma", 0);
+    assert.notEqual(lockIndexAt(next, 0), lockIndexAt(next, moved.getState().cursor));
+    assert.equal(lockIndexAt(next, moved.getState().cursor), lockIndexAt(next, next.indexOf("Gamma")));
+    const locks = transport.sent.filter((message) => message.type === "lock");
+    assert.equal(locks.length, 1);
+    assert.equal(locks[0].anchor, moved.getState().anchor);
+    assert.equal(locks[0].cursor, moved.getState().cursor);
+    transport.sent.length = 0;
+    clickAt("Gamma", 2);
+    assert.equal(transport.sent.some((message) => message.type === "lock"), false);
+    assert.equal(lockIndexAt(next, moved.getState().cursor), lockIndexAt(next, next.indexOf("Gamma")));
+    moved.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
+    mounted.restore();
+  }
+});
+
+test("a closed table names every overlapping row span", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  transport.username = "me";
+  const doc = "| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n";
+  try {
+    const view = createEditor(mounted.root, doc, doc.length, transport);
+    transport.deliver({
+      type: "locks",
+      lines: [
+        { index: 0, username: "me" },
+        { index: 1, username: "ada" },
+        { index: 2, username: "bea" },
+      ],
+    });
+    const table = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-table"))[0];
+    assert.ok(table);
+    const marks = walkNodes(table, (node) => node.classList && node.classList.contains("md-lock"));
+    assert.deepEqual(marks.map((mark) => mark.textContent), ["ada", "bea"]);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("locks name another user and a rejected lock does not take the caret", () => {
   const mounted = mountEditor();
   const transport = holdingTransport();
@@ -5313,7 +5375,7 @@ test("locks name another user and a rejected lock does not take the caret", () =
       type: "locks",
       lines: [
         { index: 0, username: "me" },
-        { index: 1, username: "ada" },
+        { index: 0, username: "ada" },
       ],
     });
     const marks = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-lock"));
@@ -5351,7 +5413,7 @@ test("locks name another user and a rejected lock does not take the caret", () =
       },
     };
     view.destroy();
-    const blocked = createEditor(mounted.root, "a\nb\n", 0, rejecting);
+    const blocked = createEditor(mounted.root, "a\n\nb\n", 0, rejecting);
     const text = ["a", "b"].map((value) => walkNodes(mounted.root, (node) => node.nodeType === 3 && node.textContent === value)[0]);
     assert.equal(text[0].textContent, "a");
     assert.equal(text[1].textContent, "b");
@@ -5369,7 +5431,7 @@ test("locks name another user and a rejected lock does not take the caret", () =
     };
     globalThis.window.getSelection = () => selection;
     mounted.listeners.mouseup({ clientX: 20, clientY: 20 });
-    assert.equal(rejecting.sent.some((message) => message.type === "lock" && message.anchor === 0 && message.cursor === 3 && message.path === "" && message.rev === 0 && message.lines === undefined), true);
+    assert.equal(rejecting.sent.some((message) => message.type === "lock" && message.anchor === 0 && message.cursor === 4 && message.path === "" && message.rev === 0 && message.lines === undefined), true);
     assert.equal(blocked.getState().cursor, 0);
     assert.equal(blocked.getState().anchor, 0);
     blocked.destroy();
@@ -6473,7 +6535,7 @@ test("commit button checkpoints the active repo", () => {
   };
   const transport = holdingTransport();
   try {
-    const view = createEditor(mounted.root, "ab\ncd\n", 0, transport, storage);
+    const view = createEditor(mounted.root, "ab\n\ncd\n", 0, transport, storage);
     const commits = () => walkNodes(aside, (node) => node.classList && node.classList.contains("md-doc-commit"));
     const plus = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"))[0];
     const tree = walkNodes(nav, (node) => node.classList && node.classList.contains("file-tree"))[0];
@@ -6508,7 +6570,7 @@ test("commit button checkpoints the active repo", () => {
     select.listeners.change();
     assert.equal(button.hidden, false);
     assert.equal(button.hasAttribute("hidden"), false);
-    transport.deliver({ type: "file", rev: 1, text: "ab\ncd\n", path: "a.md", cursor: 0, anchor: 0 });
+    transport.deliver({ type: "file", rev: 1, text: "ab\n\ncd\n", path: "a.md", cursor: 0, anchor: 0 });
     const before = transport.sent.length;
     button.listeners.click({ preventDefault() {} });
     assert.equal(transport.sent.length, before + 1);
@@ -6525,11 +6587,11 @@ test("commit button checkpoints the active repo", () => {
     assert.equal(text.textContent, "cd");
     document.caretPositionFromPoint = () => ({ offsetNode: text, offset: 0 });
     mounted.listeners.click({ target: text, clientX: 1, clientY: 1, preventDefault() {} });
-    assert.equal(view.getState().cursor, 3);
-    assert.equal(view.getState().anchor, 3);
+    assert.equal(view.getState().cursor, 4);
+    assert.equal(view.getState().anchor, 4);
     transport.deliver({ type: "error", status: 409 });
-    assert.equal(view.getState().cursor, 3);
-    assert.equal(view.getState().anchor, 3);
+    assert.equal(view.getState().cursor, 4);
+    assert.equal(view.getState().anchor, 4);
     transport.deliver({ type: "error", status: 409 });
     assert.equal(view.getState().cursor, 0);
     assert.equal(view.getState().anchor, 0);
@@ -6585,7 +6647,7 @@ test("a create 409 does not restore the caret and a later 409 does", () => {
   sheet.append(nav, mounted.root);
   const transport = holdingTransport();
   try {
-    const view = createEditor(mounted.root, "ab\ncd\n", 0, transport);
+    const view = createEditor(mounted.root, "ab\n\ncd\n", 0, transport);
     const button = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"))[0];
     const field = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name"))[0];
     button.listeners.click({ preventDefault() {} });
@@ -6596,11 +6658,11 @@ test("a create 409 does not restore the caret and a later 409 does", () => {
     assert.equal(text.textContent, "cd");
     document.caretPositionFromPoint = () => ({ offsetNode: text, offset: 0 });
     mounted.listeners.click({ target: text, clientX: 1, clientY: 1, preventDefault() {} });
-    assert.equal(view.getState().cursor, 3);
-    assert.equal(view.getState().anchor, 3);
+    assert.equal(view.getState().cursor, 4);
+    assert.equal(view.getState().anchor, 4);
     transport.deliver({ type: "error", status: 409 });
-    assert.equal(view.getState().cursor, 3);
-    assert.equal(view.getState().anchor, 3);
+    assert.equal(view.getState().cursor, 4);
+    assert.equal(view.getState().anchor, 4);
     transport.deliver({ type: "error", status: 409 });
     assert.equal(view.getState().cursor, 0);
     assert.equal(view.getState().anchor, 0);

@@ -10,7 +10,7 @@ import {
   createState,
   deleteForward,
   insert,
-  lineIndexAt,
+  lockIndexAt,
   parseCommentNotes,
   removeCommentThread,
   replaceCommentBody,
@@ -290,8 +290,8 @@ function coveringSplice(before, after) {
 }
 
 function touchedLines(doc, from, to) {
-  const start = lineIndexAt(doc, from);
-  const end = lineIndexAt(doc, to);
+  const start = lockIndexAt(doc, from);
+  const end = lockIndexAt(doc, to);
   const lines = [];
   for (let index = Math.min(start, end); index <= Math.max(start, end); index += 1) lines.push(index);
   return lines;

@@ -25,6 +25,8 @@ import {
   splitCommentNote,
   orderVisibleComments,
   lineIndexAt,
+  lockIndexAt,
+  lockSpans,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./ticket.js";
@@ -55,21 +57,6 @@ function sameLines(a, b) {
   if (!a || !b || a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
   return true;
-}
-
-function offsetOfLine(doc, index) {
-  const text = typeof doc === "string" ? doc : "";
-  let line = 0;
-  let start = 0;
-  for (let i = 0; i <= text.length; i += 1) {
-    if (i === text.length || text[i] === "\n") {
-      if (line === index) return start;
-      line += 1;
-      start = i + 1;
-      if (i === text.length) break;
-    }
-  }
-  return -1;
 }
 
 function isMarkdownPath(file) {
@@ -1284,10 +1271,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function lineSet(anchor, cursor) {
     const from = Math.min(anchor, cursor);
     const to = Math.max(anchor, cursor);
-    const start = lineIndexAt(state.doc, from);
-    const end = lineIndexAt(state.doc, to);
+    const start = lockIndexAt(state.doc, from);
+    const end = lockIndexAt(state.doc, to);
     const lines = [];
-    for (let i = start; i <= end; i += 1) lines.push(i);
+    for (let index = Math.min(start, end); index <= Math.max(start, end); index += 1) lines.push(index);
     return lines;
   }
   sentLines = lineSet(state.anchor, state.cursor);
@@ -2212,10 +2199,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const start = Number(block.start);
     const end = Number(block.end);
     if (!Number.isFinite(start) || !Number.isFinite(end)) return [];
+    const spans = lockSpans(state.doc);
     const names = [];
     for (const line of lockTable) {
       if (!line || typeof line.username !== "string" || line.username === "" || line.username === selfName()) continue;
-      const at = offsetOfLine(state.doc, line.index);
+      const span = spans[line.index];
+      if (!span) continue;
+      const at = span.start;
       if (at >= start && at <= end) names.push(line.username);
     }
     return names;

@@ -1024,6 +1024,75 @@ test("T-cli-edit", async () => {
   });
 });
 
+test("edit --find inside one span may cross a newline", async () => {
+  await withDocs(async ({ dir, port }) => {
+    const body = "Alpha\nBeta\n";
+    await fs.writeFile(path.join(dir, "para.md"), body);
+    const edited = await run([
+      "--port", String(port),
+      "--user", "user",
+      "--repo", "docs",
+      "edit",
+      "para.md",
+      "--rev", "0",
+      "--find", "a\nB",
+      "--replace", "Z",
+    ]);
+    assert.equal(edited.code, 0);
+    assert.equal(edited.stderr, "rev 1\n");
+    assert.ok(edited.stdout.includes("Zeta"));
+    assert.equal(await fs.readFile(path.join(dir, "para.md"), "utf8"), edited.stdout);
+  });
+});
+
+test("edit --find that crosses a span returns 409", async () => {
+  await withDocs(async ({ dir, port }) => {
+    const body = "Alpha\n\nBeta\n";
+    await fs.writeFile(path.join(dir, "gap.md"), body);
+    const watcher = await hello(port, "watch");
+    try {
+      await openDoc(watcher, "watch", "gap.md");
+      const blocked = await run([
+        "--port", String(port),
+        "--user", "user",
+        "--repo", "docs",
+        "edit",
+        "gap.md",
+        "--rev", "0",
+        "--find", "a\n\nB",
+        "--replace", "Z",
+      ]);
+      assert.equal(blocked.code, shellStatus(409));
+      assert.equal(blocked.stdout, body);
+      assert.equal(blocked.stderr, "rev 0\nconflict\n");
+      assert.equal(await fs.readFile(path.join(dir, "gap.md"), "utf8"), body);
+      assert.equal(sawOwnEdit(watcher.queue, "user"), false);
+
+      const json = await run([
+        "--json",
+        "--port", String(port),
+        "--user", "user",
+        "--repo", "docs",
+        "edit",
+        "gap.md",
+        "--rev", "0",
+        "--find", "a\n\nB",
+        "--replace", "Z",
+      ]);
+      assert.equal(json.code, shellStatus(409));
+      assert.equal(json.stderr, "");
+      assert.equal(
+        json.stdout,
+        `${JSON.stringify({ path: "gap.md", rev: 0, text: body, error: "conflict" })}\n`,
+      );
+      assert.equal(await fs.readFile(path.join(dir, "gap.md"), "utf8"), body);
+      assert.equal(sawOwnEdit(watcher.queue, "user"), false);
+    } finally {
+      watcher.ws.close();
+    }
+  });
+});
+
 test("T-cli-stale", async () => {
   await withDocs(async ({ dir, port }) => {
     const stale = await run([

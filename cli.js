@@ -5,6 +5,7 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { start } from "./server.js";
+import { lockIndexAt } from "./src/doc.js";
 import { TICKET_ALPHABET, TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./src/ticket.js";
 
 const HELP = `viewmark talks to the document hub, one command, then exit.
@@ -331,31 +332,10 @@ function parseRev(raw) {
   return n;
 }
 
-function lineSpans(doc) {
-  const lines = [];
-  let start = 0;
-  for (let i = 0; i <= doc.length; i += 1) {
-    if (i === doc.length || doc[i] === "\n") {
-      lines.push({ start, end: i });
-      start = i + 1;
-      if (i === doc.length) break;
-    }
-  }
-  return lines;
-}
-
-function lineIndexAt(doc, cursor) {
-  const lines = lineSpans(doc);
-  for (let i = 0; i < lines.length; i += 1) {
-    if (cursor >= lines[i].start && cursor <= lines[i].end) return i;
-  }
-  return Math.max(0, lines.length - 1);
-}
-
-// Lock the same inclusive endpoints the hub turns into held lines.
+// Lock the same inclusive endpoints the hub turns into held spans.
 function touchedLines(doc, from, to) {
-  const start = lineIndexAt(doc, from);
-  const end = lineIndexAt(doc, to);
+  const start = lockIndexAt(doc, from);
+  const end = lockIndexAt(doc, to);
   const lines = [];
   for (let index = Math.min(start, end); index <= Math.max(start, end); index += 1) lines.push(index);
   return lines;
@@ -616,6 +596,11 @@ async function runEdit(hub, username, path, rev, find, replace, json) {
   }
   const anchor = hits[0];
   const cursor = anchor + find.length;
+  // The find is half-open. Only the last included byte decides the span.
+  if (cursor > anchor && lockIndexAt(held.text, anchor) !== lockIndexAt(held.text, cursor - 1)) {
+    printConflict(held, json);
+    return 409;
+  }
   const lines = touchedLines(held.text, anchor, cursor);
   hub.send({ type: "lock", username, path: held.path, rev: held.rev, anchor, cursor });
   // publish refuses an edit until this socket holds every touched line.

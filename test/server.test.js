@@ -353,7 +353,8 @@ test("T-list", async () => {
 
 test("T-auth", async () => {
   await withDocs(async ({ port, dir }) => {
-    await fs.writeFile(path.join(dir, "a.md"), ALPHA);
+    const split = "alpha\n\nbeta\n";
+    await fs.writeFile(path.join(dir, "a.md"), split);
     const empty = connect(port);
     await empty.ready;
     const untilClosed = closed(empty.ws);
@@ -378,10 +379,10 @@ test("T-auth", async () => {
     await syncLock(a, [a2], "A", "a.md", 0, rev);
     a2.send({ type: "lock", username: "A", path: "a.md", anchor: 0, cursor: 0, rev });
     assert.deepEqual(await a2.next((msg) => msg.type === "error"), { type: "error", status: 409 });
-    const other = await syncLock(a2, [a], "A", "a.md", ALPHA.indexOf("beta"), rev);
+    const other = await syncLock(a2, [a], "A", "a.md", split.indexOf("beta"), rev);
     assert.deepEqual(other.lines, [
       { index: 0, username: "A" },
-      { index: 1, username: "A" },
+      { index: 2, username: "A" },
     ]);
     a.ws.close();
     a2.ws.close();
@@ -433,7 +434,8 @@ test("T-edit", async () => {
 
 test("T-undo", async () => {
   await withDocs(async ({ port, dir }) => {
-    await fs.writeFile(path.join(dir, "a.md"), ALPHA);
+    const lines = "alpha\n\nbeta\n\ngamma\n";
+    await fs.writeFile(path.join(dir, "a.md"), lines);
     const a = await hello(port, "A");
     const b = await hello(port, "B");
     let rev = (await openDoc(a, "A", "a.md")).rev;
@@ -448,19 +450,19 @@ test("T-undo", async () => {
     doc = await takeDoc(b);
     await takeDoc(a);
     rev = doc.rev;
-    assert.equal(doc.text, "Xalpha\nYbeta\ngamma\n");
+    assert.equal(doc.text, "Xalpha\n\nYbeta\n\ngamma\n");
     b.send({ type: "undo", username: "B", path: "a.md", rev });
     doc = await takeDoc(b);
     await takeDoc(a);
     rev = doc.rev;
-    assert.equal(doc.text, "Xalpha\nbeta\ngamma\n");
+    assert.equal(doc.text, "Xalpha\n\nbeta\n\ngamma\n");
     assert.equal(await readDoc(dir, "a.md"), doc.text);
 
     a.send({ type: "undo", username: "A", path: "a.md", rev });
     doc = await takeDoc(a);
     await takeDoc(b);
     rev = doc.rev;
-    assert.equal(doc.text, ALPHA);
+    assert.equal(doc.text, lines);
     a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "X" });
     doc = await takeDoc(a);
     await takeDoc(b);
@@ -473,7 +475,7 @@ test("T-undo", async () => {
     a.send({ type: "undo", username: "A", path: "a.md", rev });
     doc = await takeDoc(a);
     await takeDoc(b);
-    assert.equal(doc.text, "alpha\nYbeta\ngamma\n");
+    assert.equal(doc.text, "alpha\n\nYbeta\n\ngamma\n");
     assert.equal(await readDoc(dir, "a.md"), doc.text);
     a.ws.close();
     b.ws.close();
@@ -482,7 +484,8 @@ test("T-undo", async () => {
 
 test("T-undo-lock", async () => {
   await withDocs(async ({ port, dir }) => {
-    await fs.writeFile(path.join(dir, "a.md"), ALPHA);
+    const lines = "alpha\n\nbeta\n\ngamma\n";
+    await fs.writeFile(path.join(dir, "a.md"), lines);
     const a = await hello(port, "A");
     const b = await hello(port, "B");
     let rev = (await openDoc(a, "A", "a.md")).rev;
@@ -506,7 +509,7 @@ test("T-undo-lock", async () => {
     a.send({ type: "undo", username: "A", path: "a.md", rev });
     doc = await takeDoc(a);
     await takeDoc(b);
-    assert.equal(doc.text, "Zalpha\nbeta\ngamma\n");
+    assert.equal(doc.text, "Zalpha\n\nbeta\n\ngamma\n");
     assert.equal(await readDoc(dir, "a.md"), doc.text);
     a.ws.close();
     b.ws.close();
@@ -515,7 +518,8 @@ test("T-undo-lock", async () => {
 
 test("T-overlap", async () => {
   await withDocs(async ({ port, dir }) => {
-    await fs.writeFile(path.join(dir, "a.md"), ALPHA);
+    const lines = "alpha\n\nbeta\n\ngamma\n";
+    await fs.writeFile(path.join(dir, "a.md"), lines);
     const a = await hello(port, "A");
     const b = await hello(port, "B");
     let rev = (await openDoc(a, "A", "a.md")).rev;
@@ -531,11 +535,11 @@ test("T-overlap", async () => {
     doc = await takeDoc(b);
     await takeDoc(a);
     rev = doc.rev;
-    assert.equal(doc.text, ALPHA);
+    assert.equal(doc.text, lines);
     await syncLock(b, [a], "B", "a.md", doc.text.indexOf("beta"), rev);
     a.send({ type: "undo", username: "A", path: "a.md", rev });
     assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
-    assert.equal(await readDoc(dir, "a.md"), ALPHA);
+    assert.equal(await readDoc(dir, "a.md"), lines);
     a.ws.close();
     b.ws.close();
   });
@@ -654,12 +658,13 @@ test("T-comment", async () => {
 
 test("T-shrink", async () => {
   await withDocs(async ({ port, dir }) => {
-    await fs.writeFile(path.join(dir, "a.md"), ALPHA);
+    const text = `${ALPHA}\n# H\n`;
+    await fs.writeFile(path.join(dir, "a.md"), text);
     const a = await hello(port, "A");
     const b = await hello(port, "B");
     const opened = await openDoc(a, "A", "a.md");
     await openDoc(b, "B", "a.md");
-    const locked = await syncLock(a, [b], "A", "a.md", 0, opened.rev, ALPHA.length);
+    const locked = await syncLock(a, [b], "A", "a.md", 0, opened.rev, text.length);
     assert.ok(locked.lines.some((line) => line.index === 1 && line.username === "A"));
     assert.ok(locked.lines.some((line) => line.index === 2 && line.username === "A"));
     a.send({
@@ -682,6 +687,62 @@ test("T-shrink", async () => {
     assert.equal(locks.lines.some((line) => line.index === 1 || line.index === 2), false);
     a.ws.close();
     b.ws.close();
+  });
+});
+
+test("a second socket editing a held paragraph gets 409", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const para = "Alpha\nBeta\n";
+    await fs.writeFile(path.join(dir, "a.md"), para);
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    const opened = await openDoc(a, "A", "a.md");
+    await openDoc(b, "B", "a.md");
+    await syncLock(a, [b], "A", "a.md", 0, opened.rev);
+    const beta = para.indexOf("Beta");
+    b.send({
+      type: "edit",
+      username: "B",
+      path: "a.md",
+      rev: opened.rev,
+      op: "insert",
+      text: "Q",
+      anchor: beta,
+      cursor: beta,
+    });
+    assert.deepEqual(await b.next((msg) => msg.type === "error" || msg.type === "doc"), { type: "error", status: 409 });
+    assert.equal(await readDoc(dir, "a.md"), para);
+    a.ws.close();
+    b.ws.close();
+
+    const table = "| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n";
+    await fs.writeFile(path.join(dir, "t.md"), table);
+    const owner = await hello(port, "A");
+    const other = await hello(port, "B");
+    const file = await openDoc(owner, "A", "t.md");
+    await openDoc(other, "B", "t.md");
+    const held = await syncLock(owner, [other], "A", "t.md", 0, file.rev, table.length);
+    assert.ok(held.lines.some((line) => line.index === 1 && line.username === "A"));
+    assert.ok(held.lines.some((line) => line.index === 2 && line.username === "A"));
+    const from = table.indexOf("1");
+    const to = table.indexOf("4") + 1;
+    owner.send({
+      type: "edit",
+      username: "A",
+      path: "t.md",
+      rev: file.rev,
+      op: "insert",
+      text: "Z",
+      anchor: from,
+      cursor: to,
+    });
+    const doc = await takeDoc(owner);
+    await other.next((msg) => msg.type === "doc" && msg.rev === doc.rev);
+    assert.equal(doc.text.includes("Z"), true);
+    assert.notEqual(doc.text, table);
+    assert.equal(await readDoc(dir, "t.md"), doc.text);
+    owner.ws.close();
+    other.ws.close();
   });
 });
 
