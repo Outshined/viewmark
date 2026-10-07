@@ -1079,7 +1079,8 @@ export function lockIndexAt(doc, cursor) {
 }
 
 function structures(doc) {
-  const lines = lineSpans(doc);
+  // lineSpans adds an empty row at length. It is not a block, same as lockLines.
+  const lines = lockLines(doc);
   const atoms = [];
   const slots = [];
   let index = 0;
@@ -1109,10 +1110,7 @@ function structures(doc) {
       } else {
         const fenceLines = [];
         for (let line = index; line <= last; line += 1) {
-          const item = lines[line];
-          // lineSpans keeps a trailing empty row. The lock span ends on the last source line.
-          if (item.start === doc.length && item.end === doc.length) continue;
-          fenceLines.push(item);
+          fenceLines.push(lines[line]);
         }
         slots.push({
           kind: "fence",
@@ -1809,6 +1807,39 @@ function expandAtom(blocks, doc, atom, cursor, spans) {
   }
 }
 
+function quotedBlock(block) {
+  return Boolean(block && block.type === "line" && !block.empty && block.classes && block.classes.includes("md-quote"));
+}
+
+function blankBlock(block) {
+  return Boolean(block && block.type === "line" && block.empty);
+}
+
+function addQuoteBar(block) {
+  if (block.classes.includes("md-quote")) return;
+  const names = [];
+  if (block.classes[0] === "md-raw") names.push("md-raw");
+  names.push("md-quote");
+  for (const name of block.classes) {
+    if (name !== "md-raw") names.push(name);
+  }
+  block.classes = names;
+}
+
+function continueQuoteBars(blocks) {
+  let index = 0;
+  while (index < blocks.length) {
+    if (!blankBlock(blocks[index])) {
+      index += 1;
+      continue;
+    }
+    const from = index;
+    while (index < blocks.length && blankBlock(blocks[index])) index += 1;
+    if (!quotedBlock(blocks[from - 1]) || !quotedBlock(blocks[index])) continue;
+    for (let i = from; i < index; i += 1) addQuoteBar(blocks[i]);
+  }
+}
+
 export function plan(doc, cursor) {
   const text = typeof doc === "string" ? doc : "";
   const built = structures(text);
@@ -1856,6 +1887,8 @@ export function plan(doc, cursor) {
     blocks.push(block);
     index += 1;
   }
+  // A blank run between two quoted blocks keeps the bar. The blanks stay blocks.
+  continueQuoteBars(blocks);
   const lines = blocks.filter((block) => block.type === "line");
   const atoms = [];
   for (const block of blocks) {

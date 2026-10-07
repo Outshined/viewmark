@@ -410,6 +410,95 @@ test("quoted paragraph is one block", () => {
   assert.equal(doc, "> hi\nthere\n");
 });
 
+test("a trailing newline is not its own block", () => {
+  const doc = "Alpha\nBeta\n";
+  for (const cursor of [0, doc.length]) {
+    const blocks = plan(doc, cursor).blocks;
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].start, 0);
+    assert.equal(blocks[0].end, 10);
+    assert.equal(blocks.some((block) => block.start === doc.length && block.end === doc.length), false);
+  }
+  const atEnd = plan(doc, doc.length).blocks;
+  assert.equal(atEnd.length, 1);
+  assert.equal(atEnd[0].end < doc.length, true);
+
+  const empty = plan("", 0).blocks;
+  assert.equal(empty.length, 1);
+  assert.equal(empty[0].empty, true);
+  assert.equal(empty[0].start, 0);
+  assert.equal(empty[0].end, 0);
+
+  const only = "\n";
+  for (const cursor of [0, only.length]) {
+    const blocks = plan(only, cursor).blocks;
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].empty, true);
+    assert.equal(blocks[0].start, 0);
+    assert.equal(blocks[0].end, 0);
+    assert.equal(blocks.some((block) => block.start === only.length), false);
+  }
+
+  const bare = "Alpha\nBeta";
+  const bareBlocks = plan(bare, bare.length).blocks;
+  assert.equal(bareBlocks.length, 1);
+  assert.equal(bareBlocks[0].end, bare.length);
+  assert.equal(bareBlocks[0].raw, true);
+});
+
+test("a blank between quotes keeps the quote bar", () => {
+  const paired = "> Alpha\n\n> Beta\n";
+  const blocks = plan(paired, 0).blocks;
+  assert.equal(blocks.length, 3);
+  assert.equal(blocks[1].empty, true);
+  assert.equal(blocks[1].start, 8);
+  assert.equal(blocks[1].end, 8);
+  assert.ok(blocks[1].classes.includes("md-quote"));
+  assert.equal(blocks.some((block) => block.start === paired.length && block.end === paired.length), false);
+  const onBlank = plan(paired, 8).blocks[1];
+  assert.equal(onBlank.raw, true);
+  assert.equal(onBlank.empty, true);
+  assert.ok(onBlank.classes.includes("md-quote"));
+  assert.deepEqual(lockSpans(paired), [
+    { start: 0, end: 7 },
+    { start: 8, end: 8 },
+    { start: 9, end: 15 },
+  ]);
+
+  const gap = "> a\n\n\n> b\n";
+  const gapBlocks = plan(gap, 0).blocks;
+  assert.equal(gapBlocks.length, 4);
+  assert.equal(gapBlocks[1].empty, true);
+  assert.equal(gapBlocks[2].empty, true);
+  assert.ok(gapBlocks[1].classes.includes("md-quote"));
+  assert.ok(gapBlocks[2].classes.includes("md-quote"));
+
+  const list = "> a\n\n- b\n";
+  const listBlocks = plan(list, 0).blocks;
+  assert.equal(listBlocks.length, 3);
+  assert.equal(listBlocks[1].empty, true);
+  assert.equal(listBlocks[1].classes.includes("md-quote"), false);
+
+  for (const doc of ["> a\n\npara\n", "> a\n\n# H\n", "> a\n\n---\n", "> a\n\n```\nx\n```\n"]) {
+    const blank = plan(doc, 0).blocks.find((block) => block.empty);
+    assert.ok(blank, doc);
+    assert.equal(blank.classes.includes("md-quote"), false);
+  }
+
+  const tail = "> a\n\n";
+  const tailBlocks = plan(tail, 0).blocks;
+  assert.equal(tailBlocks.length, 2);
+  assert.equal(tailBlocks[1].empty, true);
+  assert.equal(tailBlocks[1].classes.includes("md-quote"), false);
+
+  const items = "> - a\n\n> - b\n";
+  const itemBlocks = plan(items, 0).blocks;
+  assert.equal(itemBlocks.length, 3);
+  assert.equal(itemBlocks[1].empty, true);
+  assert.ok(itemBlocks[1].classes.includes("md-quote"));
+  assert.equal(lockSpans(items).length, 3);
+});
+
 test("quoted paragraph hard break hides its marker", () => {
   const spaces = "> red  \nblue\n";
   assert.equal(spaces.length, 13);
@@ -3055,23 +3144,16 @@ test("delete on an empty line removes that line", () => {
     assert.equal(view.getState().anchor, 5);
     view.destroy();
 
-    const trailingTransport = holdingTransport();
-    const trailingHeld = createEditor(mounted.root, "hello\n", 0, trailingTransport);
-    caret(emptyBr("6"), 0);
-    press();
-    const trailingEdit = trailingTransport.sent.find((message) => message.type === "edit");
-    assert.equal(trailingEdit.op, "backspace");
-    assert.equal(trailingEdit.cursor, 6);
-    assert.equal(trailingEdit.anchor, 6);
-    trailingHeld.destroy();
-
-    const trailing = createEditor(mounted.root, "hello\n", 0);
-    caret(emptyBr("6"), 0);
-    press();
-    assert.equal(trailing.getState().doc, "hello");
-    assert.equal(trailing.getState().cursor, 5);
-    assert.equal(trailing.getState().anchor, 5);
-    trailing.destroy();
+    const trailingDoc = "hello\n";
+    const trailingView = createEditor(mounted.root, trailingDoc, 0);
+    const phantom = mounted.findAll((node) => {
+      if (!node.classList || !node.classList.contains("md-line")) return false;
+      return node.dataset
+        && node.dataset.start === String(trailingDoc.length)
+        && node.dataset.end === String(trailingDoc.length);
+    });
+    assert.equal(phantom.length, 0);
+    trailingView.destroy();
 
     const leadingTransport = holdingTransport();
     const leadingHeld = createEditor(mounted.root, "\nworld", 0, leadingTransport);
