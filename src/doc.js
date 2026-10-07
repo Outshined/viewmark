@@ -942,7 +942,7 @@ function lineBlank(text) {
   return text === "";
 }
 
-// A line that is only an image is not a lock span.
+// A line that is only an image is one paragraph, so it does not join its neighbors.
 function imageLine(text) {
   const core = text.trim();
   if (!core.startsWith("!")) return false;
@@ -952,6 +952,14 @@ function imageLine(text) {
 
 function pushLines(spans, lines, from, to) {
   spans.push({ start: lines[from].start, end: lines[to].end });
+}
+
+// lineSpans adds an empty line at length when the text ends in a newline.
+function lockLines(doc) {
+  const lines = lineSpans(doc);
+  const last = lines[lines.length - 1];
+  if (lines.length > 1 && last.start === doc.length) lines.pop();
+  return lines;
 }
 
 // Quote markers are written once. The next block, including a child item, is its own span.
@@ -966,16 +974,15 @@ function plainJoin(lines, index) {
   return last;
 }
 
-// A deeper item stays in this one. Equal or lesser indent starts the next span.
+// Continuation is a non-item line. Any item starts the next span.
 function listJoin(lines, index) {
-  const indent = classify(lines[index].text).indent;
   let last = index;
   for (let next = index + 1; next < lines.length; next += 1) {
     const text = lines[next].text;
     if (lineBlank(text) || imageLine(text) || fenceOpen(text) || isTableStart(lines, next)) break;
     const mode = classify(text);
     if (mode.kind === "h" || mode.kind === "hr" || mode.kind === "quote") break;
-    if ((mode.kind === "li" || mode.kind === "ol") && mode.indent <= indent) break;
+    if (mode.kind === "li" || mode.kind === "ol") break;
     last = next;
   }
   return last;
@@ -990,7 +997,7 @@ function fenceEnd(lines, index) {
 
 export function lockSpans(doc) {
   const text = typeof doc === "string" ? doc : "";
-  const lines = lineSpans(text);
+  const lines = lockLines(text);
   const spans = [];
   let index = 0;
   while (index < lines.length) {
@@ -1025,12 +1032,8 @@ export function lockSpans(doc) {
       index = row;
       continue;
     }
-    if (lineBlank(textLine)) {
+    if (lineBlank(textLine) || imageLine(textLine)) {
       pushLines(spans, lines, index, index);
-      index += 1;
-      continue;
-    }
-    if (imageLine(textLine)) {
       index += 1;
       continue;
     }
@@ -1052,7 +1055,7 @@ export function lockIndexAt(doc, cursor) {
   for (let index = 0; index < spans.length; index += 1) {
     if (cursor >= spans[index].start && cursor <= spans[index].end) return index;
   }
-  return -1;
+  return Math.max(0, spans.length - 1);
 }
 
 function structures(doc) {

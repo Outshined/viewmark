@@ -8380,13 +8380,22 @@ test("lock spans cut paragraphs, quotes, lists, fences, and tables", () => {
   const blanks = "a\n\n\nb";
   assert.deepEqual(lockSpans(blanks).map((span) => spanText(blanks, span)), ["a", "", "", "b"]);
 
-  const quote = "> hi\nthere\n";
-  assert.deepEqual(lockSpans(quote), [
-    { start: 0, end: 10 },
-    { start: 11, end: 11 },
+  const paired = "Alpha\nBeta\n";
+  assert.deepEqual(lockSpans(paired), [{ start: 0, end: 10 }]);
+  assert.equal(lockIndexAt(paired, paired.length), 0);
+  assert.deepEqual(lockSpans("\n"), [{ start: 0, end: 0 }]);
+  assert.equal(lockIndexAt("\n", 1), 0);
+  assert.deepEqual(lockSpans("\n\n"), [
+    { start: 0, end: 0 },
+    { start: 1, end: 1 },
   ]);
+  assert.deepEqual(lockSpans(""), [{ start: 0, end: 0 }]);
+  assert.equal(lockIndexAt("", 0), 0);
+
+  const quote = "> hi\nthere\n";
+  assert.deepEqual(lockSpans(quote), [{ start: 0, end: 10 }]);
   assert.equal(lockIndexAt(quote, 10), 0);
-  assert.equal(lockIndexAt(quote, 11), 1);
+  assert.equal(lockIndexAt(quote, quote.length), 0);
 
   const quotes = "> a\nb\n> c";
   assert.deepEqual(lockSpans(quotes).map((span) => spanText(quotes, span)), ["> a\nb", "> c"]);
@@ -8409,15 +8418,14 @@ test("lock spans cut paragraphs, quotes, lists, fences, and tables", () => {
   assert.deepEqual(lockSpans(child), [
     { start: 0, end: 5 },
     { start: 6, end: 11 },
-    { start: 12, end: 12 },
   ]);
   const orderedChild = "> 1. a\n   1. b";
   assert.deepEqual(lockSpans(orderedChild).map((span) => spanText(orderedChild, span)), ["> 1. a", "   1. b"]);
 
   const nested = "- a\nmore\n  - b\n- c";
-  assert.deepEqual(lockSpans(nested).map((span) => spanText(nested, span)), ["- a\nmore\n  - b", "- c"]);
+  assert.deepEqual(lockSpans(nested).map((span) => spanText(nested, span)), ["- a\nmore", "  - b", "- c"]);
   const paren = "1) a\n   1) b\n2) c";
-  assert.deepEqual(lockSpans(paren).map((span) => spanText(paren, span)), ["1) a\n   1) b", "2) c"]);
+  assert.deepEqual(lockSpans(paren).map((span) => spanText(paren, span)), ["1) a", "   1) b", "2) c"]);
 
   const listBreaks = "- a\n# H\n- b\n---\n- c";
   assert.deepEqual(lockSpans(listBreaks).map((span) => spanText(listBreaks, span)), ["- a", "# H", "- b", "---", "- c"]);
@@ -8431,15 +8439,10 @@ test("lock spans cut paragraphs, quotes, lists, fences, and tables", () => {
   const listTable = "- a\n| a |\n| --- |\n| b |";
   assert.deepEqual(lockSpans(listTable).map((span) => spanText(listTable, span)), ["- a", "| a |\n| --- |", "| b |"]);
 
-  const image = "ab ![x](y) cd\n\n![alt](sample.svg)";
-  const imageSpans = lockSpans(image);
-  assert.deepEqual(imageSpans.map((span) => spanText(image, span)), ["ab ![x](y) cd", ""]);
-  assert.equal(imageSpans.some((span) => span.start === image.indexOf("![x]")), false);
-  assert.equal(lockIndexAt(image, image.indexOf("![alt]")), -1);
-  assert.equal(lockIndexAt(image, image.length), -1);
+  const image = "ab ![x](y) cd";
+  assert.deepEqual(lockSpans(image), [{ start: 0, end: image.length }]);
   const splitImage = "ab\n![x](y)\ncd";
-  assert.deepEqual(lockSpans(splitImage).map((span) => spanText(splitImage, span)), ["ab", "cd"]);
-  assert.equal(lockIndexAt(splitImage, splitImage.indexOf("![")), -1);
+  assert.deepEqual(lockSpans(splitImage).map((span) => spanText(splitImage, span)), ["ab", "![x](y)", "cd"]);
 
   const comment = ["```comment c1 resolved", ":: 0", "", "alpha", ":: 01", ":: 1", "beta", "```"].join("\n");
   assert.deepEqual(lockSpans(comment).map((span) => spanText(comment, span)), [
@@ -8467,34 +8470,28 @@ test("lock spans cut paragraphs, quotes, lists, fences, and tables", () => {
 test("lock spans cover the sample document", () => {
   const doc = sampleDocument();
   const spans = lockSpans(doc);
-  const imageAt = doc.indexOf("![alt](sample.svg)");
-  const imageEnd = doc.indexOf("\n", imageAt);
   for (let cursor = 0; cursor <= doc.length; cursor += 1) {
     const index = lockIndexAt(doc, cursor);
-    if (cursor >= imageAt && cursor <= imageEnd) {
-      assert.equal(index, -1);
-      continue;
-    }
     assert.equal(index >= 0, true);
-    assert.equal(cursor >= spans[index].start && cursor <= spans[index].end, true);
+    if (cursor === doc.length && doc.endsWith("\n")) assert.equal(index, spans.length - 1);
+    else assert.equal(cursor >= spans[index].start && cursor <= spans[index].end, true);
   }
   for (let i = 1; i < spans.length; i += 1) {
-    const gap = doc.slice(spans[i - 1].end + 1, spans[i].start);
-    assert.equal(spans[i].start === spans[i - 1].end + 1 || gap === "![alt](sample.svg)\n", true);
+    assert.equal(spans[i].start, spans[i - 1].end + 1);
   }
 
   const at = (needle) => lockIndexAt(doc, doc.indexOf(needle));
   assert.equal(spanText(doc, spans[at("# Viewmark")]), "# Viewmark");
   assert.notEqual(at("# Viewmark"), at("A **bold**"));
   assert.equal(spanText(doc, spans[at("---")]), "---");
-  assert.equal(at("- two"), at("- sub"));
-  assert.equal(at("- two"), at("- tabbed"));
+  assert.notEqual(at("- two"), at("- sub"));
+  assert.notEqual(at("- sub"), at("- tabbed"));
   assert.notEqual(at("- one"), at("- two"));
-  assert.equal(at("1. first"), at("1. nested"));
+  assert.notEqual(at("1. first"), at("1. nested"));
   assert.notEqual(at("1. first"), at("2. second"));
   assert.equal(at("| a | b |"), at("| --- | --- |"));
   assert.notEqual(at("| a | b |"), at("| 1 | 2 |"));
-  assert.equal(at("![alt]"), -1);
+  assert.equal(spanText(doc, spans[at("![alt]")]), "![alt](sample.svg)");
   assert.equal(at("```python"), at("x = 1"));
   assert.equal(at("```python"), at("```\n"));
   const mermaid = doc.indexOf("```mermaid");
