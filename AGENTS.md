@@ -10,7 +10,7 @@ Pass `--user` and `--repo` on every document, comment, and ticket command. The u
 
 Read with `show`. The bytes are on stdout and `rev N` is on stderr. Pass that same rev to `edit` and to `comment edit`. A stale rev leaves the file as it was and exits 409.
 
-`edit` replaces one exact `--find`. Zero matches or several exit 2 and leave the file as it was. `--find` equal to `--replace` writes nothing. The hub applies the smallest splice that covers the change. When that splice touches a line outside the find, the edit is rejected even though the rev matches. Put the whole region you intend to change in `--find`.
+`edit` replaces one exact `--find`. Zero matches or several exit 2 and leave the file as it was. `--find` equal to `--replace` writes nothing. The hub applies the smallest splice that covers the change. A lock is a prose paragraph, a blank line, a heading, a list item, a fence, a table row, or a comment note. A quoted paragraph or item carries `>` on its first line only. `edit --find` that crosses one of those boundaries returns 409 and leaves the file as it was. A find that stays inside one of them may include a newline. Put the whole region you intend to change in `--find`.
 
 `create` reads the body from stdin when stdin is not a terminal. `--file PATH` reads that file instead. A path without a markdown suffix is stored with `.md` added. A path under `tickets/` is rejected. Use the ticket commands for those files.
 
@@ -47,7 +47,7 @@ Node and git are the toolchain. There are no packages. From the repository root,
 
 `src/doc.js` is the model: strings, offsets, and tokens. `src/editor.js` is the page and re-exports the names the editor tests call. `src/hub.js` stores the open files and publishes edits. `src/session.js` is the page socket. `cli.js` opens one socket, finishes the command, and exits. The page retries a dropped socket. The CLI stays one-shot.
 
-The page builds the DOM with elements and text nodes. It prevents the browser's own input and applies the change to the string. A newline inserted on top of a newline is published after the following run of newlines. The lock for that edit covers every line the splice touches.
+The page builds the DOM with elements and text nodes. It prevents the browser's own input and applies the change to the string. A newline inserted on top of a newline is published after the following run of newlines. The lock for that edit covers every span the splice touches.
 
 `index.html` on disk has no build meta. The server inserts `<meta name="viewmark-build">` when it serves the page. A later hello whose build differs from that meta reloads the page.
 
