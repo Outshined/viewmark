@@ -938,6 +938,123 @@ function parseSlot(line, mode) {
   return parseInlines(line.text.slice(mode.marker), line.start + mode.marker, mode.plain);
 }
 
+function lineBlank(text) {
+  return text === "";
+}
+
+// A line that is only an image is not a lock span.
+function imageLine(text) {
+  const core = text.trim();
+  if (!core.startsWith("!")) return false;
+  const image = matchLinkOrImage(core, 0, true);
+  return image !== null && image.end === core.length;
+}
+
+function pushLines(spans, lines, from, to) {
+  spans.push({ start: lines[from].start, end: lines[to].end });
+}
+
+// Quote markers are written once. The next block, including a child item, is its own span.
+function plainJoin(lines, index) {
+  let last = index;
+  for (let next = index + 1; next < lines.length; next += 1) {
+    const text = lines[next].text;
+    if (lineBlank(text) || imageLine(text) || fenceOpen(text) || isTableStart(lines, next)) break;
+    if (classify(text).kind !== "p") break;
+    last = next;
+  }
+  return last;
+}
+
+// A deeper item stays in this one. Equal or lesser indent starts the next span.
+function listJoin(lines, index) {
+  const indent = classify(lines[index].text).indent;
+  let last = index;
+  for (let next = index + 1; next < lines.length; next += 1) {
+    const text = lines[next].text;
+    if (lineBlank(text) || imageLine(text) || fenceOpen(text) || isTableStart(lines, next)) break;
+    const mode = classify(text);
+    if (mode.kind === "h" || mode.kind === "hr" || mode.kind === "quote") break;
+    if ((mode.kind === "li" || mode.kind === "ol") && mode.indent <= indent) break;
+    last = next;
+  }
+  return last;
+}
+
+function fenceEnd(lines, index) {
+  let end = index + 1;
+  while (end < lines.length && !isFenceClose(lines[end].text)) end += 1;
+  const closed = end < lines.length;
+  return { closed, last: closed ? end : lines.length - 1 };
+}
+
+export function lockSpans(doc) {
+  const text = typeof doc === "string" ? doc : "";
+  const lines = lineSpans(text);
+  const spans = [];
+  let index = 0;
+  while (index < lines.length) {
+    const textLine = lines[index].text;
+    const opened = fenceOpen(textLine);
+    if (opened) {
+      const fence = fenceEnd(lines, index);
+      if (opened.lang === "comment") {
+        pushLines(spans, lines, index, index);
+        const stop = fence.closed ? fence.last : lines.length;
+        let note = index + 1;
+        while (note < stop) {
+          let next = note + 1;
+          while (next < stop && separatorId(lines[next].text) === undefined) next += 1;
+          pushLines(spans, lines, note, next - 1);
+          note = next;
+        }
+        if (fence.closed) pushLines(spans, lines, fence.last, fence.last);
+      } else {
+        pushLines(spans, lines, index, fence.last);
+      }
+      index = fence.last + 1;
+      continue;
+    }
+    if (isTableStart(lines, index)) {
+      pushLines(spans, lines, index, index + 1);
+      let row = index + 2;
+      while (row < lines.length && isTableBody(lines[row].text)) {
+        pushLines(spans, lines, row, row);
+        row += 1;
+      }
+      index = row;
+      continue;
+    }
+    if (lineBlank(textLine)) {
+      pushLines(spans, lines, index, index);
+      index += 1;
+      continue;
+    }
+    if (imageLine(textLine)) {
+      index += 1;
+      continue;
+    }
+    const mode = classify(textLine);
+    if (mode.kind === "h" || mode.kind === "hr") {
+      pushLines(spans, lines, index, index);
+      index += 1;
+      continue;
+    }
+    const last = mode.kind === "li" || mode.kind === "ol" ? listJoin(lines, index) : plainJoin(lines, index);
+    pushLines(spans, lines, index, last);
+    index = last + 1;
+  }
+  return spans;
+}
+
+export function lockIndexAt(doc, cursor) {
+  const spans = lockSpans(doc);
+  for (let index = 0; index < spans.length; index += 1) {
+    if (cursor >= spans[index].start && cursor <= spans[index].end) return index;
+  }
+  return -1;
+}
+
 function structures(doc) {
   const lines = lineSpans(doc);
   const atoms = [];
