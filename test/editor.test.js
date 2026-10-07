@@ -398,7 +398,7 @@ test("quoted paragraph is one block", () => {
   const child = "> - a\n  - b\n";
   const childBlocks = proseBlocks(child, 0);
   assert.equal(childBlocks.length, 2);
-  assert.equal(shownText(childBlocks[0]), "> - a");
+  assert.equal(shownText(childBlocks[0]), "- a");
   assert.equal(shownText(childBlocks[1]), "b");
 
   const headed = "> a\nb\n# C\n";
@@ -801,7 +801,7 @@ test("list item is one block", () => {
 
   const quotedItem = proseBlocks("> - a\n  - b\n", 0);
   assert.equal(quotedItem.length, 2);
-  assert.equal(shownText(quotedItem[0]), "> - a");
+  assert.equal(shownText(quotedItem[0]), "- a");
   assert.equal(shownText(quotedItem[1]), "b");
 
   const headed = proseBlocks("- Alpha\n# H\n", 0);
@@ -1054,6 +1054,286 @@ test("list item maps the joining space and keeps the source", () => {
   } finally {
     mounted.restore();
   }
+});
+
+test("quoted item is one block", () => {
+  const doc = "> - Alpha\nBeta\n";
+  assert.equal(doc.length, 15);
+  assert.equal(doc[9], "\n");
+  assert.equal(doc[14], "\n");
+  assert.deepEqual(lockSpans(doc), [{ start: 0, end: 14 }]);
+  const shown = [];
+  for (const cursor of [0, 2, 4, 9, 10, 14, 15]) {
+    const blocks = proseBlocks(doc, cursor);
+    assert.equal(blocks.length, 1);
+    const block = blocks[0];
+    assert.equal(block.start, 0);
+    assert.equal(block.end, 14);
+    assert.equal(block.raw, cursor <= 14);
+    assert.deepEqual(block.classes, cursor <= 14 ? ["md-raw", "md-quote", "md-li"] : ["md-quote", "md-li"]);
+    assert.equal(Object.hasOwn(block, "marker"), false);
+    assert.equal(block.indent, 0);
+    assert.equal(shownText(block), cursor <= 14 ? "- Alpha Beta" : "Alpha Beta");
+    assert.equal(shownText(block).includes(">"), false);
+    assert.equal(shownText(block).includes("\n"), false);
+    const space = block.runs.find((run) => run.start === 9);
+    assert.equal(space.text, " ");
+    assert.equal(space.end, 10);
+    assert.equal(doc[space.start], "\n");
+    assert.ok(space.classes.includes("md-li"));
+    if (cursor <= 14) {
+      assert.equal(block.runs.filter((run) => run.text.includes("-")).length, 1);
+      assert.equal(block.runs[0].text.startsWith("- "), true);
+    } else {
+      assert.equal(shownText(block).includes("-"), false);
+      const alpha = block.runs.find((run) => run.text === "Alpha");
+      assert.equal(alpha.start, 4);
+      assert.equal(alpha.end, 9);
+      assert.ok(alpha.classes.includes("md-li"));
+    }
+    const beta = block.runs.find((run) => run.text === "Beta");
+    assert.equal(beta.start, 10);
+    assert.equal(beta.end, 14);
+    for (const run of block.runs) assert.equal(run.text.length, run.end - run.start);
+    shown.push(shownText(block));
+  }
+  assert.deepEqual(shown, [
+    "- Alpha Beta",
+    "- Alpha Beta",
+    "- Alpha Beta",
+    "- Alpha Beta",
+    "- Alpha Beta",
+    "- Alpha Beta",
+    "Alpha Beta",
+  ]);
+  assert.equal(doc, "> - Alpha\nBeta\n");
+
+  const bare = "> - Alpha\nBeta";
+  assert.equal(proseBlocks(bare, 0).length, 1);
+  assert.equal(proseBlocks(bare, bare.length).length, 1);
+  assert.equal(shownText(proseBlocks(bare, bare.length)[0]), "- Alpha Beta");
+  assert.equal(proseBlocks(bare, bare.length)[0].raw, true);
+  assert.equal(proseBlocks(bare, bare.length)[0].end, bare.length);
+
+  const one = "> - a\n";
+  const oneRaw = proseBlocks(one, 0)[0];
+  assert.equal(shownText(oneRaw), "- a");
+  assert.equal(shownText(oneRaw).includes(">"), false);
+  assert.deepEqual(oneRaw.classes, ["md-raw", "md-quote", "md-li"]);
+  assert.equal(Object.hasOwn(oneRaw, "marker"), false);
+  const oneRendered = proseBlocks(one, one.length)[0];
+  assert.equal(shownText(oneRendered), "a");
+  assert.equal(shownText(oneRendered).includes("-"), false);
+  assert.equal(shownText(oneRendered).includes(">"), false);
+  assert.deepEqual(oneRendered.classes, ["md-quote", "md-li"]);
+
+  for (const bullet of ["+", "*"]) {
+    const marked = `> ${bullet} Alpha\nBeta\n`;
+    assert.deepEqual(lockSpans(marked), [{ start: 0, end: 14 }]);
+    assert.equal(shownText(proseBlocks(marked, 0)[0]), `${bullet} Alpha Beta`);
+    assert.equal(shownText(proseBlocks(marked, 0)[0]).includes(">"), false);
+    assert.equal(proseBlocks(marked, 0)[0].runs.filter((run) => run.text.includes(bullet)).length, 1);
+    const markedRendered = proseBlocks(marked, marked.length)[0];
+    assert.equal(shownText(markedRendered), "Alpha Beta");
+    assert.equal(shownText(markedRendered).includes(bullet), false);
+    assert.equal(shownText(markedRendered).includes(">"), false);
+    assert.deepEqual(markedRendered.classes, ["md-quote", "md-li"]);
+    assert.equal(Object.hasOwn(markedRendered, "marker"), false);
+  }
+
+  const ordered = "> 1. Alpha\nmore\n";
+  assert.equal(ordered.length, 16);
+  assert.deepEqual(lockSpans(ordered), [{ start: 0, end: 15 }]);
+  const orderedRaw = proseBlocks(ordered, 0)[0];
+  assert.equal(proseBlocks(ordered, 0).length, 1);
+  assert.equal(orderedRaw.raw, true);
+  assert.deepEqual(orderedRaw.classes, ["md-raw", "md-quote", "md-ol"]);
+  assert.equal(Object.hasOwn(orderedRaw, "marker"), false);
+  assert.equal(shownText(orderedRaw), "1. Alpha more");
+  assert.equal(shownText(orderedRaw).includes(">"), false);
+  assert.equal(orderedRaw.runs.filter((run) => run.text.includes("1.")).length, 1);
+  const orderedSpace = orderedRaw.runs.find((run) => run.start === 10);
+  assert.equal(orderedSpace.text, " ");
+  assert.equal(ordered[10], "\n");
+  const orderedRendered = proseBlocks(ordered, ordered.length)[0];
+  assert.equal(shownText(orderedRendered), "Alpha more");
+  assert.equal(shownText(orderedRendered).includes("1."), false);
+  assert.equal(shownText(orderedRendered).includes(">"), false);
+  assert.equal(orderedRendered.marker, "1. ");
+  assert.deepEqual(orderedRendered.classes, ["md-quote", "md-ol"]);
+  assert.equal(orderedRendered.runs.find((run) => run.text === "Alpha").start, 5);
+
+  const orderedLine = "> 1. a\n";
+  assert.equal(shownText(proseBlocks(orderedLine, 0)[0]), "1. a");
+  assert.equal(shownText(proseBlocks(orderedLine, 0)[0]).includes(">"), false);
+  assert.deepEqual(proseBlocks(orderedLine, 0)[0].classes, ["md-raw", "md-quote", "md-ol"]);
+  assert.equal(Object.hasOwn(proseBlocks(orderedLine, 0)[0], "marker"), false);
+  assert.equal(shownText(proseBlocks(orderedLine, orderedLine.length)[0]), "a");
+  assert.equal(proseBlocks(orderedLine, orderedLine.length)[0].marker, "1. ");
+  assert.deepEqual(proseBlocks(orderedLine, orderedLine.length)[0].classes, ["md-quote", "md-ol"]);
+
+  const paren = "> 1) Alpha\nmore\n";
+  assert.deepEqual(lockSpans(paren), [{ start: 0, end: 15 }]);
+  assert.equal(shownText(proseBlocks(paren, 0)[0]), "1) Alpha more");
+  assert.equal(shownText(proseBlocks(paren, 0)[0]).includes(">"), false);
+  assert.equal(proseBlocks(paren, paren.length)[0].marker, "1) ");
+  assert.equal(shownText(proseBlocks(paren, paren.length)[0]), "Alpha more");
+  assert.ok(proseBlocks(paren, paren.length)[0].classes.includes("md-quote"));
+  assert.ok(proseBlocks(paren, paren.length)[0].classes.includes("md-ol"));
+
+  const wide = "> 10. Alpha\nmore\n";
+  assert.equal(shownText(proseBlocks(wide, 0)[0]), "10. Alpha more");
+  assert.equal(proseBlocks(wide, wide.length)[0].marker, "10. ");
+  assert.equal(shownText(proseBlocks(wide, wide.length)[0]), "Alpha more");
+  assert.equal(shownText(proseBlocks(wide, wide.length)[0]).includes(">"), false);
+
+  const notItem = "> -Alpha\n";
+  const notBlock = proseBlocks(notItem, 0)[0];
+  assert.deepEqual(notBlock.classes, ["md-raw", "md-quote"]);
+  assert.equal(shownText(notBlock), "> -Alpha");
+  assert.equal(shownText(proseBlocks(notItem, notItem.length)[0]), "-Alpha");
+  assert.equal(proseBlocks(notItem, notItem.length)[0].classes.includes("md-li"), false);
+
+  const indented = ">   - child\n";
+  assert.equal(shownText(proseBlocks(indented, 0)[0]), ">   - child");
+  assert.deepEqual(proseBlocks(indented, indented.length)[0].classes, ["md-quote"]);
+  assert.equal(shownText(proseBlocks(indented, indented.length)[0]), "  - child");
+  assert.equal(proseBlocks(indented, indented.length)[0].classes.includes("md-li"), false);
+
+  const spaces = "> - red  \nblue\n";
+  assert.equal(shownText(proseBlocks(spaces, 0)[0]), "- redblue");
+  assert.equal(shownText(proseBlocks(spaces, 0)[0]).includes(">"), false);
+  assert.equal(proseBlocks(spaces, 0)[0].parts.find((part) => part.type === "break").start, 9);
+  assert.equal(shownText(proseBlocks(spaces, spaces.length)[0]), "redblue");
+  assert.equal(shownText(proseBlocks(spaces, spaces.length)[0]).includes("-"), false);
+  assert.equal(shownText(proseBlocks(spaces, spaces.length)[0]).includes(">"), false);
+
+  const soft = "> - red \nblue\n";
+  assert.equal(shownText(proseBlocks(soft, 0)[0]), "- red  blue");
+  assert.equal(proseBlocks(soft, 0)[0].parts.some((part) => part.type === "break"), false);
+  assert.equal(shownText(proseBlocks(soft, soft.length)[0]), "red  blue");
+
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  try {
+    const rawView = createEditor(mounted.root, doc, 0);
+    const rawLine = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-quote"));
+    assert.equal(rawLine.length, 1);
+    assert.ok(rawLine[0].classList.contains("md-li"));
+    assert.ok(rawLine[0].classList.contains("md-raw"));
+    assert.equal(rawLine[0].textContent, "- Alpha Beta");
+    assert.equal(rawLine[0].textContent.includes(">"), false);
+    assert.equal(rawLine[0].dataset.marker, undefined);
+    assert.equal(rawView.getState().doc, doc);
+    rawView.destroy();
+
+    const renderedView = createEditor(mounted.root, doc, doc.length);
+    const renderedLine = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-quote"));
+    assert.equal(renderedLine.length, 1);
+    assert.ok(renderedLine[0].classList.contains("md-li"));
+    assert.equal(renderedLine[0].classList.contains("md-raw"), false);
+    assert.equal(renderedLine[0].textContent, "Alpha Beta");
+    assert.equal(renderedLine[0].textContent.includes("-"), false);
+    assert.equal(renderedLine[0].textContent.includes(">"), false);
+    assert.equal(renderedLine[0].dataset.marker, undefined);
+    assert.equal(renderedView.getState().doc, doc);
+    renderedView.destroy();
+
+    const orderedView = createEditor(mounted.root, ordered, ordered.length);
+    const orderedLineEl = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-ol"));
+    assert.equal(orderedLineEl.length, 1);
+    assert.ok(orderedLineEl[0].classList.contains("md-quote"));
+    assert.equal(orderedLineEl[0].classList.contains("md-raw"), false);
+    assert.equal(orderedLineEl[0].textContent, "Alpha more");
+    assert.equal(orderedLineEl[0].dataset.marker, "1. ");
+    assert.equal(orderedView.getState().doc, ordered);
+    orderedView.destroy();
+
+    const orderedRawView = createEditor(mounted.root, ordered, 0);
+    const orderedRawEl = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-ol"));
+    assert.equal(orderedRawEl.length, 1);
+    assert.ok(orderedRawEl[0].classList.contains("md-quote"));
+    assert.ok(orderedRawEl[0].classList.contains("md-raw"));
+    assert.equal(orderedRawEl[0].textContent, "1. Alpha more");
+    assert.equal(orderedRawEl[0].textContent.includes(">"), false);
+    assert.equal(orderedRawEl[0].dataset.marker, undefined);
+    orderedRawView.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("quoted item child is not quoted", () => {
+  const doc = "> - a\n  - b\n";
+  assert.deepEqual(lockSpans(doc), [
+    { start: 0, end: 5 },
+    { start: 6, end: 11 },
+  ]);
+  const atParent = proseBlocks(doc, 0);
+  assert.equal(atParent.length, 2);
+  assert.equal(shownText(atParent[0]), "- a");
+  assert.equal(shownText(atParent[0]).includes(">"), false);
+  assert.equal(shownText(atParent[0]).includes("b"), false);
+  assert.deepEqual(atParent[0].classes, ["md-raw", "md-quote", "md-li"]);
+  assert.equal(atParent[0].end, 5);
+  assert.equal(atParent[1].raw, false);
+  assert.equal(shownText(atParent[1]), "b");
+  assert.equal(shownText(atParent[1]).includes("-"), false);
+  assert.equal(atParent[1].classes.includes("md-quote"), false);
+  assert.deepEqual(atParent[1].classes, ["md-li"]);
+  assert.equal(atParent[1].indent, 2);
+  assert.equal(atParent[0].indent, 0);
+  assert.equal(atParent[1].start, 6);
+
+  const onChild = proseBlocks(doc, 8);
+  assert.equal(shownText(onChild[0]), "a");
+  assert.equal(shownText(onChild[0]).includes(">"), false);
+  assert.equal(shownText(onChild[0]).includes("-"), false);
+  assert.ok(onChild[0].classes.includes("md-quote"));
+  assert.ok(onChild[0].classes.includes("md-li"));
+  assert.equal(onChild[0].raw, false);
+  assert.equal(shownText(onChild[1]), "  - b");
+  assert.equal(onChild[1].raw, true);
+  assert.equal(onChild[1].classes.includes("md-quote"), false);
+  assert.ok(onChild[1].classes.includes("md-raw"));
+  assert.equal(shownText(onChild[0]).includes("b"), false);
+
+  const nested = "> - Alpha\n  - Beta\nGamma\n";
+  assert.equal(nested.length, 25);
+  assert.deepEqual(lockSpans(nested), [
+    { start: 0, end: 9 },
+    { start: 10, end: 24 },
+  ]);
+  const blocks = proseBlocks(nested, 0);
+  assert.equal(blocks.length, 2);
+  assert.equal(shownText(blocks[0]), "- Alpha");
+  assert.equal(shownText(blocks[0]).includes("Beta"), false);
+  assert.equal(shownText(blocks[0]).includes("Gamma"), false);
+  assert.equal(blocks[0].end, 9);
+  assert.equal(shownText(blocks[1]), "Beta Gamma");
+  assert.equal(blocks[1].start, 10);
+  assert.equal(blocks[1].end, 24);
+  assert.equal(blocks[1].classes.includes("md-quote"), false);
+  const join = blocks[1].runs.find((run) => run.start === 18);
+  assert.equal(join.text, " ");
+  assert.equal(nested[18], "\n");
+  assert.equal(blocks[1].indent, 2);
+
+  const sibling = "> - Alpha\n- Beta\n";
+  assert.deepEqual(lockSpans(sibling), [
+    { start: 0, end: 9 },
+    { start: 10, end: 16 },
+  ]);
+  const sib = proseBlocks(sibling, sibling.length);
+  assert.equal(sib.length, 2);
+  assert.equal(shownText(sib[0]), "Alpha");
+  assert.ok(sib[0].classes.includes("md-quote"));
+  assert.ok(sib[0].classes.includes("md-li"));
+  assert.equal(shownText(sib[0]).includes("Beta"), false);
+  assert.equal(shownText(sib[1]), "Beta");
+  assert.equal(sib[1].classes.includes("md-quote"), false);
+  assert.ok(sib[1].classes.includes("md-li"));
+  assert.equal(doc, "> - a\n  - b\n");
 });
 
 test("T-heading-hides-marker", () => {

@@ -90,6 +90,22 @@ function listSeparator(text, index) {
   return count;
 }
 
+// "> - " is one quoted item: the bar is the quote, and the list marker is the bullet.
+// A marker indented after "> " stays quote prose. It is not an item.
+function quotedList(text) {
+  if (!text.startsWith("> ")) return null;
+  const list = classifyList(text.slice(2));
+  if (!list || list.indent !== 0) return null;
+  return {
+    kind: list.kind,
+    marker: 2 + list.marker,
+    quote: 2,
+    indent: 0,
+    plain: list.plain,
+    quoted: true,
+  };
+}
+
 // A space is one column. A tab advances to the next multiple of 4, even from a stop.
 function classifyList(text) {
   let column = 0;
@@ -126,7 +142,11 @@ function classify(text) {
     const level = heading[1].length;
     return { kind: "h", level, marker: level + 1, indent: 0, plain: `md-h${level}` };
   }
-  if (text.startsWith("> ")) return { kind: "quote", marker: 2, indent: 0, plain: "md-quote" };
+  if (text.startsWith("> ")) {
+    const item = quotedList(text);
+    if (item) return item;
+    return { kind: "quote", marker: 2, indent: 0, plain: "md-quote" };
+  }
   const list = classifyList(text);
   if (list) return list;
   return { kind: "p", marker: 0, indent: 0, plain: "md-p" };
@@ -1432,9 +1452,25 @@ function paintParts(parts, spans) {
   return changed ? out : parts;
 }
 
+function blockClasses(mode, raw) {
+  const names = [];
+  if (raw) names.push("md-raw");
+  if (mode.quoted) names.push("md-quote");
+  names.push(mode.plain);
+  return names;
+}
+
+function orderedMarker(line, mode) {
+  let text = line.text.slice(0, mode.marker || 0);
+  if (mode.quoted) text = text.slice(mode.quote || 0);
+  return text.replace(/^[ \t]+/, "");
+}
+
 function rawBlock(line, mode, parsed, spans) {
   const empty = line.start === line.end;
-  const runs = empty ? [] : paintRuns(fillGaps(line, mode, parsed), spans, true);
+  let runs = empty ? [] : paintRuns(fillGaps(line, mode, parsed), spans, true);
+  // The quote mark is the bar. A one-line quoted item still does not show ">".
+  if (!empty && mode.quoted && mode.quote) runs = dropPrefix(runs, line.start + mode.quote);
   return {
     type: "line",
     raw: true,
@@ -1442,7 +1478,7 @@ function rawBlock(line, mode, parsed, spans) {
     start: line.start,
     end: line.end,
     text: line.text,
-    classes: ["md-raw", mode.plain],
+    classes: blockClasses(mode, true),
     runs,
     parts: runs,
     indent: mode.indent ?? 0,
@@ -1458,7 +1494,7 @@ function renderedBlock(line, mode, parsed, spans) {
       start: line.start,
       end: line.end,
       text: "",
-      classes: [mode.plain],
+      classes: blockClasses(mode, false),
       runs: [],
       parts: [],
       indent: mode.indent ?? 0,
@@ -1487,12 +1523,12 @@ function renderedBlock(line, mode, parsed, spans) {
     start: line.start,
     end: line.end,
     text: line.text,
-    classes: [mode.plain],
+    classes: blockClasses(mode, false),
     runs: parts === parsed.parts ? parsed.runs : parts.filter((part) => part.type === "run"),
     parts,
     indent: mode.indent ?? 0,
   };
-  if (mode.kind === "ol") block.marker = line.text.slice(0, mode.marker).replace(/^[ \t]+/, "");
+  if (mode.kind === "ol") block.marker = orderedMarker(line, mode);
   return block;
 }
 
@@ -1673,8 +1709,11 @@ function wrappedBlock(group, doc, cursor, spans) {
     let pieces = linePieces(slot, spans, raw);
     if (hide > 0) pieces = trimTail(pieces, hide);
     // A raw list keeps its marker in the text. A rendered list hides it and draws one bullet.
+    // The quote mark is never text. A quoted item still shows its list marker when raw.
     if (marker > 0 && (slot.mode.kind === "quote" || !raw)) {
       pieces = dropPrefix(pieces, slot.line.start + marker);
+    } else if (raw && slot.mode.quoted && slot.mode.quote) {
+      pieces = dropPrefix(pieces, slot.line.start + slot.mode.quote);
     }
     for (const piece of pieces) parts.push(piece);
     if (!newline) continue;
@@ -1691,16 +1730,13 @@ function wrappedBlock(group, doc, cursor, spans) {
     start,
     end,
     text: runs.map((run) => run.text).join(""),
-    classes: raw ? ["md-raw", plain] : [plain],
+    classes: blockClasses(group[0].mode, raw),
     runs,
     parts,
     // Continuation lines are plain, so the indent is the opener's.
     indent: group[0].mode.indent ?? 0,
   };
-  if (!raw && group[0].mode.kind === "ol") {
-    const head = group[0];
-    block.marker = head.line.text.slice(0, head.mode.marker).replace(/^[ \t]+/, "");
-  }
+  if (!raw && group[0].mode.kind === "ol") block.marker = orderedMarker(group[0].line, group[0].mode);
   return block;
 }
 
