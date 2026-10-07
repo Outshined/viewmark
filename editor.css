@@ -646,9 +646,17 @@ aside.comments {
   display: none;
 }
 
+.sheet:has(.ticket-form:not([hidden])) {
+  height: calc(100vh - 2rem);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .ticket-form:not([hidden]) + #editor {
   grid-row: 2;
   border: 1px solid #4a463f;
+  align-self: stretch;
+  min-height: 0;
+  overflow: auto;
 }
 
 .ticket-form input,
@@ -1219,6 +1227,10 @@ a.md-link {
     display: block;
     width: 100%;
     max-width: 100%;
+  }
+
+  .sheet:has(.ticket-form:not([hidden])) {
+    height: auto;
   }
 
   nav.files {

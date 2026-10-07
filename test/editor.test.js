@@ -5420,6 +5420,14 @@ test("T-ticket-rows", () => {
   assert.match(css, /\.ticket-form\s*\{[^}]*grid-column:\s*2/);
   assert.match(css, /\.ticket-form\s*\{[^}]*grid-row:\s*1/);
   assert.match(css, /\.ticket-form:not\(\[hidden\]\)\s*\+\s*#editor\s*\{[^}]*grid-row:\s*2[^}]*border:\s*1px solid #4a463f/);
+  const ticketBody = css.match(/\.ticket-form:not\(\[hidden\]\)\s*\+\s*#editor\s*\{[^}]*\}/)[0];
+  assert.match(ticketBody, /align-self:\s*stretch/);
+  assert.match(ticketBody, /min-height:\s*0/);
+  assert.match(ticketBody, /overflow:\s*auto/);
+  const sheetHas = css.match(/\.sheet:has\(\.ticket-form:not\(\[hidden\]\)\)\s*\{[^}]*\}/)[0];
+  assert.match(sheetHas, /height:\s*calc\(100vh - 2rem\)/);
+  assert.match(sheetHas, /grid-template-rows:\s*auto minmax\(0,\s*1fr\)/);
+  assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.sheet:has\(\.ticket-form:not\(\[hidden\]\)\)\s*\{[^}]*height:\s*auto/);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.sheet\s*\{[^}]*display:\s*block;/);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.md-ticket-drawer\s*\{[^}]*position:\s*static/);
   assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.md-ticket-wide\s*\{[^}]*position:\s*static/);
