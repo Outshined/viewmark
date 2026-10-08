@@ -35,6 +35,8 @@ const HELP_NEEDLES = [
   "conflict",
   "matches N",
   "error STATUS",
+  "held by NAME",
+  "A find may cross a span, the CLI locks every span it touches, another socket's span is 409 and names that user, and a comment range that overlaps a fence or a table or splits a comment is 409 and names that.",
   "{files}",
   "{path,rev,text}",
   "{path,rev:0}",
@@ -272,6 +274,10 @@ function trap() {
 }
 
 test("T-cli-help", async () => {
+  const agents = await fs.readFile(path.join(root, "AGENTS.md"), "utf8");
+  const cause = "A find may cross a span, the CLI locks every span it touches, another socket's span is 409 and names that user, and a comment range that overlaps a fence or a table or splits a comment is 409 and names that.";
+  assert.ok(agents.includes(cause));
+  assert.equal(agents.includes("crosses one of those boundaries"), false);
   const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
   assert.equal(pkg.bin.viewmark, "./cli.js");
   assert.equal(pkg.dependencies, undefined);
@@ -685,7 +691,7 @@ test("T-cli-delete", async () => {
     const held = await run(["--port", String(port), "--user", "user", "--repo", "docs", "delete", "hello.md"]);
     assert.equal(held.code, shellStatus(409));
     assert.equal(held.stdout, "");
-    assert.equal(held.stderr, "error 409\n");
+    assert.equal(held.stderr, "error 409\nheld by Ada\n");
     assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
     const witness = await hello(port, "Bea");
     await openDoc(witness, "Bea", "hello.md");
@@ -1048,14 +1054,16 @@ test("edit --find inside one span may cross a newline", async () => {
   });
 });
 
-test("edit --find that crosses a span returns 409", async () => {
+test("edit --find that crosses a span applies when nobody else holds a span", async () => {
   await withDocs(async ({ dir, port }) => {
     const body = "Alpha\n\nBeta\n";
+    const next = "AlphZeta\n";
     await fs.writeFile(path.join(dir, "gap.md"), body);
+    await fs.writeFile(path.join(dir, "gap-json.md"), body);
     const watcher = await hello(port, "watch");
     try {
       await openDoc(watcher, "watch", "gap.md");
-      const blocked = await run([
+      const edited = await run([
         "--port", String(port),
         "--user", "user",
         "--repo", "docs",
@@ -1065,11 +1073,13 @@ test("edit --find that crosses a span returns 409", async () => {
         "--find", "a\n\nB",
         "--replace", "Z",
       ]);
-      assert.equal(blocked.code, shellStatus(409));
-      assert.equal(blocked.stdout, body);
-      assert.equal(blocked.stderr, "rev 0\nconflict\n");
-      assert.equal(await fs.readFile(path.join(dir, "gap.md"), "utf8"), body);
-      assert.equal(sawOwnEdit(watcher.queue, "user"), false);
+      assert.equal(edited.code, 0);
+      assert.equal(edited.stdout, next);
+      assert.equal(edited.stderr, "rev 1\n");
+      assert.equal(await fs.readFile(path.join(dir, "gap.md"), "utf8"), next);
+      const seen = await watcher.next((msg) => msg.type === "doc" && msg.path === "gap.md");
+      assert.equal(seen.text, next);
+      assert.equal(seen.actor, "user");
 
       const json = await run([
         "--json",
@@ -1077,21 +1087,89 @@ test("edit --find that crosses a span returns 409", async () => {
         "--user", "user",
         "--repo", "docs",
         "edit",
-        "gap.md",
+        "gap-json.md",
         "--rev", "0",
         "--find", "a\n\nB",
         "--replace", "Z",
+      ]);
+      assert.equal(json.code, 0);
+      assert.equal(json.stderr, "");
+      assert.equal(json.stdout, `${JSON.stringify({ path: "gap-json.md", rev: 1, text: next })}\n`);
+      assert.equal(await fs.readFile(path.join(dir, "gap-json.md"), "utf8"), next);
+    } finally {
+      watcher.ws.close();
+    }
+  });
+});
+
+test("edit --find across every span applies, and a held title names that user", async () => {
+  await withDocs(async ({ dir, port }) => {
+    const body = "# Title\n\nBody\n";
+    const next = "# Next\n\nNew\n";
+    await fs.writeFile(path.join(dir, "page.md"), body);
+    await fs.writeFile(path.join(dir, "titled.md"), body);
+    const edited = await run([
+      "--port", String(port),
+      "--user", "user",
+      "--repo", "docs",
+      "edit",
+      "page.md",
+      "--rev", "0",
+      "--find", body,
+      "--replace", next,
+    ]);
+    assert.equal(edited.code, 0);
+    assert.equal(edited.stdout, next);
+    assert.equal(edited.stderr, "rev 1\n");
+    assert.equal(await fs.readFile(path.join(dir, "page.md"), "utf8"), next);
+
+    const holder = await hello(port, "holder");
+    try {
+      const opened = await openDoc(holder, "holder", "titled.md");
+      holder.send({
+        type: "lock",
+        username: "holder",
+        path: "titled.md",
+        anchor: 0,
+        cursor: 0,
+        rev: opened.rev,
+      });
+      await holder.next((msg) => msg.type === "locks" && msg.path === "titled.md");
+      const blocked = await run([
+        "--port", String(port),
+        "--user", "user",
+        "--repo", "docs",
+        "edit",
+        "titled.md",
+        "--rev", "0",
+        "--find", body,
+        "--replace", next,
+      ]);
+      assert.equal(blocked.code, shellStatus(409));
+      assert.equal(blocked.stdout, body);
+      assert.equal(blocked.stderr, "rev 0\nconflict\nheld by holder\n");
+      assert.equal(await fs.readFile(path.join(dir, "titled.md"), "utf8"), body);
+
+      const json = await run([
+        "--json",
+        "--port", String(port),
+        "--user", "user",
+        "--repo", "docs",
+        "edit",
+        "titled.md",
+        "--rev", "0",
+        "--find", body,
+        "--replace", next,
       ]);
       assert.equal(json.code, shellStatus(409));
       assert.equal(json.stderr, "");
       assert.equal(
         json.stdout,
-        `${JSON.stringify({ path: "gap.md", rev: 0, text: body, error: "conflict" })}\n`,
+        `${JSON.stringify({ path: "titled.md", rev: 0, text: body, error: "conflict", heldBy: "holder" })}\n`,
       );
-      assert.equal(await fs.readFile(path.join(dir, "gap.md"), "utf8"), body);
-      assert.equal(sawOwnEdit(watcher.queue, "user"), false);
+      assert.equal(await fs.readFile(path.join(dir, "titled.md"), "utf8"), body);
     } finally {
-      watcher.ws.close();
+      holder.ws.close();
     }
   });
 });
@@ -1152,7 +1230,7 @@ test("T-cli-stale", async () => {
     ]);
     assert.equal(later.code, shellStatus(409));
     assert.equal(later.stdout, DRAFT);
-    assert.equal(later.stderr, "rev 0\nconflict\n");
+    assert.equal(later.stderr, "rev 0\nconflict\nheld by holder\n");
     assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), DRAFT);
 
     const laterJson = await run([
@@ -1170,7 +1248,7 @@ test("T-cli-stale", async () => {
     assert.equal(laterJson.stderr, "");
     assert.equal(
       laterJson.stdout,
-      `${JSON.stringify({ path: "notes/draft.md", rev: 0, text: DRAFT, error: "conflict" })}\n`,
+      `${JSON.stringify({ path: "notes/draft.md", rev: 0, text: DRAFT, error: "conflict", heldBy: "holder" })}\n`,
     );
     assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), DRAFT);
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
@@ -2430,7 +2508,7 @@ test("T-cli-ticket-delete", async () => {
     const held = await runFast(ticketArgs(port, ["ticket", "delete", B]));
     assert.equal(held.code, shellStatus(409));
     assert.equal(held.stdout, "");
-    assert.equal(held.stderr, "error 409\n");
+    assert.equal(held.stderr, "error 409\nheld by Ada\n");
     assert.equal(await fs.readFile(path.join(dir, "tickets", `${B}.md`), "utf8"), parentText);
     const witness = await hello(port, "Bea");
     await openDoc(witness, "Bea", `tickets/${B}.md`);
@@ -3068,7 +3146,7 @@ test("T-comment-conflict", async () => {
       const blocked = await run(commentArgs(port, "Grok", ["reply", THREAD_REL, "c1"]), {}, "Yes.\n");
       assert.equal(blocked.code, shellStatus(409));
       assert.equal(blocked.stdout, "");
-      assert.equal(blocked.stderr, "error 409\n");
+      assert.equal(blocked.stderr, "error 409\nheld by Ada\n");
       assert.equal(await fs.readFile(full, "utf8"), THREAD_DOC);
       await delay(50);
       assert.equal(witness.queue.some((msg) => msg.type === "doc"), false);
@@ -3537,8 +3615,34 @@ test("T-comment-add", async () => {
     );
     assert.equal(fenced.code, shellStatus(409));
     assert.equal(fenced.stdout, "");
-    assert.equal(fenced.stderr, "error 409\n");
+    assert.equal(fenced.stderr, "error 409\noverlaps a fence\n");
     assert.equal(await fs.readFile(fenceFull, "utf8"), fence);
+
+    const table = "| Login stalls | Ends the character |\n| --- | --- |\n| yes | no |\n";
+    const tableFull = path.join(dir, "notes/table.md");
+    await fs.writeFile(tableFull, table);
+    const row = await run(
+      commentArgs(port, "Ada", ["add", "notes/table.md", "--start", "3:2", "--end", "3:5"]),
+      {},
+      question,
+    );
+    assert.equal(row.code, shellStatus(409));
+    assert.equal(row.stdout, "");
+    assert.equal(row.stderr, "error 409\noverlaps a table\n");
+    assert.equal(await fs.readFile(tableFull, "utf8"), table);
+
+    const marked = "See {c1}fox{/c1}.\n";
+    const splitFull = path.join(dir, "notes/split.md");
+    await fs.writeFile(splitFull, marked);
+    const split = await run(
+      commentArgs(port, "Ada", ["add", "notes/split.md", "--start", "1:9", "--end", "1:16"]),
+      {},
+      question,
+    );
+    assert.equal(split.code, shellStatus(409));
+    assert.equal(split.stdout, "");
+    assert.equal(split.stderr, "error 409\nsplits a comment\n");
+    assert.equal(await fs.readFile(splitFull, "utf8"), marked);
 
     const holdFull = path.join(dir, "notes/hold.md");
     await fs.writeFile(holdFull, fox);
@@ -3564,7 +3668,7 @@ test("T-comment-add", async () => {
       );
       assert.equal(blocked.code, shellStatus(409));
       assert.equal(blocked.stdout, "");
-      assert.equal(blocked.stderr, "error 409\n");
+      assert.equal(blocked.stderr, "error 409\nheld by Ada\n");
       assert.equal(await fs.readFile(holdFull, "utf8"), fox);
       await delay(50);
       assert.equal(seeing.queue.some((msg) => msg.type === "doc"), false);

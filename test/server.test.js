@@ -379,7 +379,7 @@ test("T-auth", async () => {
     await openDoc(a2, "A", "a.md");
     await syncLock(a, [a2], "A", "a.md", 0, rev);
     a2.send({ type: "lock", username: "A", path: "a.md", anchor: 0, cursor: 0, rev });
-    assert.deepEqual(await a2.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+    assert.deepEqual(await a2.next((msg) => msg.type === "error"), { type: "error", status: 409, heldBy: "A" });
     const other = await syncLock(a2, [a], "A", "a.md", split.indexOf("beta"), rev);
     assert.deepEqual(other.lines, [
       { index: 0, username: "A" },
@@ -403,7 +403,7 @@ test("T-edit", async () => {
     const locked = await syncLock(a, [b], "A", "a.md", 0, opened.rev);
     assert.deepEqual(locked.lines, [{ index: 0, username: "A" }]);
     b.send({ type: "lock", username: "B", path: "a.md", anchor: 0, cursor: 0, rev: opened.rev });
-    assert.deepEqual(await b.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+    assert.deepEqual(await b.next((msg) => msg.type === "error"), { type: "error", status: 409, heldBy: "A" });
     assert.equal(await readDoc(dir, "a.md"), ALPHA);
     a.send({ type: "edit", username: "A", path: "a.md", rev: opened.rev, op: "insert", text: "X" });
     const docA = await a.next((msg) => msg.type === "doc");
@@ -504,7 +504,7 @@ test("T-undo-lock", async () => {
     rev = doc.rev;
     assert.equal(doc.text.startsWith("Z"), true);
     a.send({ type: "undo", username: "A", path: "a.md", rev });
-    assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+    assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409, heldBy: "B" });
     assert.ok((await readDoc(dir, "a.md")).startsWith("Z"));
     await syncLock(b, [a], "B", "a.md", doc.text.indexOf("beta"), rev);
     a.send({ type: "undo", username: "A", path: "a.md", rev });
@@ -711,7 +711,7 @@ test("a second socket editing a held paragraph gets 409", async () => {
       anchor: beta,
       cursor: beta,
     });
-    assert.deepEqual(await b.next((msg) => msg.type === "error" || msg.type === "doc"), { type: "error", status: 409 });
+    assert.deepEqual(await b.next((msg) => msg.type === "error" || msg.type === "doc"), { type: "error", status: 409, heldBy: "A" });
     assert.equal(await readDoc(dir, "a.md"), para);
     a.ws.close();
     b.ws.close();
@@ -1961,7 +1961,7 @@ test("T-hub-delete", async () => {
     await openDoc(bea, "Bea", "b.md");
     await syncLock(bea, [], "Bea", "b.md", 0, 0);
     ada.send({ type: "delete", username: "Ada", path: "b.md" });
-    assert.deepEqual(await ada.next((msg) => msg.type === "error" || msg.type === "deleted"), { type: "error", status: 409 });
+    assert.deepEqual(await ada.next((msg) => msg.type === "error" || msg.type === "deleted"), { type: "error", status: 409, heldBy: "Bea" });
     assert.equal(await readDoc(dir, "b.md"), "bee\n");
 
     bea.send({ type: "edit", username: "Bea", path: "b.md", rev: 0, anchor: 0, cursor: 0, op: "insert", text: "Z" });
@@ -2021,7 +2021,7 @@ test("T-hub-ticket-delete", async () => {
 
     await openDoc(bea, "Bea", "tickets/aaaaaaaa.md");
     ada.send({ type: "ticket.delete", username: "Ada", id: "aaaaaaaa" });
-    assert.deepEqual(await ada.next((msg) => msg.type === "error" || msg.type === "deleted"), { type: "error", status: 409 });
+    assert.deepEqual(await ada.next((msg) => msg.type === "error" || msg.type === "deleted"), { type: "error", status: 409, heldBy: "Bea" });
     assert.equal(await readDoc(dir, "tickets/aaaaaaaa.md"), alpha);
     assert.equal(await readDoc(dir, "tickets/bbbbbbbb.md"), beta);
 
@@ -2984,16 +2984,74 @@ test("T-comment-add", async () => {
         path: "fence.md",
         rev: 0,
         anchor: 0,
-        cursor: 3,
+        cursor: 0,
         text: question,
       });
       assert.deepEqual(
         await coder.next((item) => item.type === "comment" || item.type === "error"),
         { type: "error", status: 409 },
       );
+      coder.send({
+        type: "comment.add",
+        username: "Ada",
+        path: "fence.md",
+        rev: 0,
+        anchor: 0,
+        cursor: 3,
+        text: question,
+      });
+      assert.deepEqual(
+        await coder.next((item) => item.type === "comment" || item.type === "error"),
+        { type: "error", status: 409, reason: "overlaps a fence" },
+      );
       assert.equal(await readDoc(dir, "fence.md"), fence);
     } finally {
       coder.ws.close();
+    }
+
+    const table = "| Login stalls | Ends the character |\n| --- | --- |\n| yes | no |\n";
+    await fs.writeFile(path.join(dir, "table.md"), table);
+    const tabler = await hello(port, "Ada");
+    try {
+      const cell = table.indexOf("yes");
+      tabler.send({
+        type: "comment.add",
+        username: "Ada",
+        path: "table.md",
+        rev: 0,
+        anchor: cell,
+        cursor: cell + 3,
+        text: question,
+      });
+      assert.deepEqual(
+        await tabler.next((item) => item.type === "comment" || item.type === "error"),
+        { type: "error", status: 409, reason: "overlaps a table" },
+      );
+      assert.equal(await readDoc(dir, "table.md"), table);
+    } finally {
+      tabler.ws.close();
+    }
+
+    const marked = "See {c1}fox{/c1}.\n";
+    await fs.writeFile(path.join(dir, "split.md"), marked);
+    const splitter = await hello(port, "Ada");
+    try {
+      splitter.send({
+        type: "comment.add",
+        username: "Ada",
+        path: "split.md",
+        rev: 0,
+        anchor: marked.indexOf("ox"),
+        cursor: marked.indexOf("."),
+        text: question,
+      });
+      assert.deepEqual(
+        await splitter.next((item) => item.type === "comment" || item.type === "error"),
+        { type: "error", status: 409, reason: "splits a comment" },
+      );
+      assert.equal(await readDoc(dir, "split.md"), marked);
+    } finally {
+      splitter.ws.close();
     }
 
     const back = "back.md";
@@ -3083,7 +3141,7 @@ test("T-comment-add", async () => {
       });
       assert.deepEqual(
         await blocked.next((item) => item.type === "comment" || item.type === "error"),
-        { type: "error", status: 409 },
+        { type: "error", status: 409, heldBy: "Hold" },
       );
       assert.equal(await readDoc(dir, held), fox);
       await delay(50);

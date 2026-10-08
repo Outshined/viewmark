@@ -643,24 +643,38 @@ export function setCommentResolved(state, id, resolved) {
   };
 }
 
-export function addComment(doc, anchor, cursor) {
-  const text = typeof doc === "string" ? doc : "";
+function clampRange(text, anchor, cursor) {
   const left = Number.isFinite(anchor) ? anchor : 0;
   const right = Number.isFinite(cursor) ? cursor : 0;
   const from = Math.max(0, Math.min(left, right, text.length));
   const to = Math.max(0, Math.min(text.length, Math.max(left, right)));
+  return { from, to };
+}
+
+// An empty range is a bare refusal. These three are the named ones.
+export function commentRangeReason(doc, anchor, cursor) {
+  const text = typeof doc === "string" ? doc : "";
+  const { from, to } = clampRange(text, anchor, cursor);
   if (!(from < to)) return null;
   for (const fence of fenceContentRanges(text)) {
-    if (rangesOverlap(from, to, fence.start, fence.contentEnd)) return null;
+    if (rangesOverlap(from, to, fence.start, fence.contentEnd)) return "overlaps a fence";
   }
   for (const atom of structures(text).atoms) {
-    if (atom.type === "table" && rangesOverlap(from, to, atom.start, atom.end)) return null;
+    if (atom.type === "table" && rangesOverlap(from, to, atom.start, atom.end)) return "overlaps a table";
   }
   for (const span of findSpans(text)) {
     const inside = from >= span.interiorStart && to <= span.interiorEnd;
     const outside = to <= span.openStart || from >= span.closeEnd;
-    if (!inside && !outside) return null;
+    if (!inside && !outside) return "splits a comment";
   }
+  return null;
+}
+
+export function addComment(doc, anchor, cursor) {
+  const text = typeof doc === "string" ? doc : "";
+  const { from, to } = clampRange(text, anchor, cursor);
+  if (!(from < to)) return null;
+  if (commentRangeReason(text, anchor, cursor)) return null;
   const id = nextCommentId(text);
   const open = `{${id}}`;
   const close = `{/${id}}`;

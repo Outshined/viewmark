@@ -47,12 +47,13 @@ stdout and stderr:
   create: path on stdout and rev 0 on stderr
   edit: one copy-paste edit, then the same stdout and stderr as show
   commit: the subject on stdout, or nothing when commits is empty. stderr is empty.
-  stale or later conflict: the held text on stdout and rev N plus conflict on stderr
+  stale or later conflict: the held text on stdout and rev N plus conflict on stderr, then held by NAME when the hub names that user
   match count other than one: matches N on stderr
-  other statuses: error STATUS on stderr
+  other statuses: error STATUS on stderr, then held by NAME or the reason when the hub names one
+  A find may cross a span, the CLI locks every span it touches, another socket's span is 409 and names that user, and a comment range that overlaps a fence or a table or splits a comment is 409 and names that.
   --json: one object plus a newline and empty stderr:
     list {files}; show and edit {path,rev,text}; create {path,rev:0};
-    conflict {path,rev,text,error:"conflict"};
+    conflict {path,rev,text,error:"conflict"} and heldBy only when the hub names that user;
     commit {type:"commit",commits:[{author,subject,paths}]}
   repo list: name, description, and path, tab-separated, in name order
   repo register: the name
@@ -381,13 +382,17 @@ function printShow(doc, json) {
   process.stderr.write(`rev ${doc.rev}\n`);
 }
 
-function printConflict(doc, json) {
+function printConflict(doc, json, heldBy) {
+  const name = typeof heldBy === "string" && heldBy ? heldBy : "";
   if (json) {
-    writeJson({ path: doc.path, rev: doc.rev, text: doc.text, error: "conflict" });
+    const body = { path: doc.path, rev: doc.rev, text: doc.text, error: "conflict" };
+    if (name) body.heldBy = name;
+    writeJson(body);
     return;
   }
   process.stdout.write(doc.text);
   process.stderr.write(`rev ${doc.rev}\nconflict\n`);
+  if (name) process.stderr.write(`held by ${name}\n`);
 }
 
 function statusOf(msg) {
@@ -521,6 +526,8 @@ function serverError(msg) {
   const status = statusOf(msg);
   if (status === null) return 1;
   process.stderr.write(`error ${status}\n`);
+  if (typeof msg.heldBy === "string" && msg.heldBy) process.stderr.write(`held by ${msg.heldBy}\n`);
+  else if (typeof msg.reason === "string" && msg.reason) process.stderr.write(`${msg.reason}\n`);
   return status;
 }
 
@@ -611,23 +618,18 @@ async function runEdit(hub, username, path, rev, find, replace, json) {
   }
   const anchor = hits[0];
   const cursor = anchor + find.length;
-  // The find is half-open. Only the last included byte decides the span.
-  if (cursor > anchor && lockIndexAt(held.text, anchor) !== lockIndexAt(held.text, cursor - 1)) {
-    printConflict(held, json);
-    return 409;
-  }
   const lines = touchedLines(held.text, anchor, cursor);
   hub.send({ type: "lock", username, path: held.path, rev: held.rev, anchor, cursor });
   // publish refuses an edit until this socket holds every touched line.
   const locked = await hub.next((item) => item.type === "error" || holds(item, username, held.path, lines));
   if (locked.type === "error") {
-    if (locked.status === 409) return printConflict(held, json), 409;
+    if (locked.status === 409) return printConflict(held, json, locked.heldBy), 409;
     return serverError(locked);
   }
   hub.send({ type: "edit", username, path: held.path, rev: held.rev, op: "insert", text: replace });
   const edited = await hub.next((item) => item.type === "doc" || item.type === "error");
   if (edited.type === "error") {
-    if (edited.status === 409) return printConflict(held, json), 409;
+    if (edited.status === 409) return printConflict(held, json, edited.heldBy), 409;
     return serverError(edited);
   }
   const doc = asDoc(edited);

@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   addComment,
   appendCommentReply,
+  commentRangeReason,
   backspace,
   commentThreads,
   createState,
@@ -584,8 +585,16 @@ export async function createHub(stateDir, sourceRoot) {
     safeWrite(socket, encodeText(value));
   }
 
-  function fail(socket, status) {
-    send(socket, { type: "error", status });
+  function fail(socket, status, extra) {
+    const body = { type: "error", status };
+    if (extra && typeof extra.heldBy === "string") body.heldBy = extra.heldBy;
+    if (extra && typeof extra.reason === "string") body.reason = extra.reason;
+    send(socket, body);
+  }
+
+  function failHeld(socket, wrote) {
+    if (wrote && typeof wrote.heldBy === "string") return fail(socket, 409, { heldBy: wrote.heldBy });
+    return fail(socket, 409);
   }
 
   function endSocket(socket, reason) {
@@ -788,7 +797,8 @@ export async function createHub(stateDir, sourceRoot) {
     for (const index of touched) {
       const owner = file.locks.get(index);
       if (owner === socket) continue;
-      if (owner || mode === "edit") return false;
+      if (owner) return { heldBy: owner.session.username };
+      if (mode === "edit") return false;
     }
     const after = before.slice(0, splice.from) + splice.inserted + before.slice(splice.to);
     if (file.ticket) {
@@ -1299,17 +1309,17 @@ export async function createHub(stateDir, sourceRoot) {
     mark(repo, rel, username);
   }
 
-  function otherHolds(repo, rel, socket) {
+  function otherHolder(repo, rel, socket) {
     for (const sock of sockets) {
       if (sock === socket || !sock.session || sock.session.repo !== repo) continue;
-      if (sock.session.docPath === rel) return true;
+      if (sock.session.docPath === rel) return sock.session.username;
     }
     const file = repo.files.get(rel);
-    if (!file) return false;
+    if (!file) return null;
     for (const owner of file.locks.values()) {
-      if (owner && owner !== socket) return true;
+      if (owner && owner !== socket) return owner.session.username;
     }
-    return false;
+    return null;
   }
 
   // The requester may still have the file open. Removal is not an edit: no undo entry and no commit.
@@ -1332,7 +1342,8 @@ export async function createHub(stateDir, sourceRoot) {
     if (isTicketTree(rel)) return fail(socket, 400);
     const listed = await listMarkdown(repo.path, "");
     if (!listed.includes(rel)) return fail(socket, 404);
-    if (otherHolds(repo, rel, socket)) return fail(socket, 409);
+    const holder = otherHolder(repo, rel, socket);
+    if (holder) return fail(socket, 409, { heldBy: holder });
     await unlinkFile(socket, rel);
   }
 
@@ -1344,7 +1355,8 @@ export async function createHub(stateDir, sourceRoot) {
     if (!ticketIdFromRel(rel)) return fail(socket, 404);
     const all = await collectTickets(repo);
     if (!all.some((ticket) => ticket.id === id)) return fail(socket, 404);
-    if (otherHolds(repo, rel, socket)) return fail(socket, 409);
+    const holder = otherHolder(repo, rel, socket);
+    if (holder) return fail(socket, 409, { heldBy: holder });
     await unlinkFile(socket, rel);
     for (const ticket of all) {
       if (ticket.id === id) continue;
@@ -1393,7 +1405,7 @@ export async function createHub(stateDir, sourceRoot) {
     const nextLines = new Set(touchedLines(file.text, Math.min(anchor, cursor), Math.max(anchor, cursor)));
     for (const index of nextLines) {
       const owner = file.locks.get(index);
-      if (owner && owner !== socket) return fail(socket, 409);
+      if (owner && owner !== socket) return fail(socket, 409, { heldBy: owner.session.username });
     }
     session.lines = nextLines;
     session.anchor = anchor;
@@ -1420,10 +1432,13 @@ export async function createHub(stateDir, sourceRoot) {
     }
     const produced = runOp(file.text, session.cursor, session.anchor, msg);
     if (produced === undefined || produced === null || coveringSplice(file.text, produced.doc) == null) {
+      const reason = produced === null && msg.op === "comment.add"
+        ? commentRangeReason(file.text, session.anchor, session.cursor)
+        : null;
       session.cursor = savedCursor;
       session.anchor = savedAnchor;
       if (produced === undefined) return fail(socket, 400);
-      if (produced === null) return fail(socket, 409);
+      if (produced === null) return reason ? fail(socket, 409, { reason }) : fail(socket, 409);
       return;
     }
     const splice = coveringSplice(file.text, produced.doc);
@@ -1452,10 +1467,10 @@ export async function createHub(stateDir, sourceRoot) {
       null,
       mode,
     );
-    if (!wrote) {
+    if (wrote !== true) {
       session.cursor = savedCursor;
       session.anchor = savedAnchor;
-      return fail(socket, 409);
+      return failHeld(socket, wrote);
     }
     session.redo = [];
     pushCap(session.undo, entry);
@@ -1482,7 +1497,7 @@ export async function createHub(stateDir, sourceRoot) {
       ? { cursor: entry.cursor, anchor: entry.anchor }
       : { cursor: entry.cursorAfter, anchor: entry.anchorAfter };
     const wrote = await publish(socket, file, file.text, splice, caret, entry, "history");
-    if (!wrote) return fail(socket, 409);
+    if (wrote !== true) return failHeld(socket, wrote);
     stack.pop();
     if (direction === "undo") pushCap(session.redo, entry);
     else pushCap(session.undo, entry);
@@ -1685,7 +1700,7 @@ export async function createHub(stateDir, sourceRoot) {
       return;
     }
     const wrote = await publish(socket, file, file.text, splice, { cursor: 0, anchor: 0 }, null, "comment");
-    if (!wrote) return fail(socket, 409);
+    if (wrote !== true) return failHeld(socket, wrote);
     sendComment(socket, file, threadId, noteId);
   }
 
@@ -1738,7 +1753,11 @@ export async function createHub(stateDir, sourceRoot) {
     if (!Number.isInteger(msg.anchor) || !Number.isInteger(msg.cursor)) return fail(socket, 400);
     if (typeof msg.text !== "string") return fail(socket, 400);
     const added = addComment(file.text, msg.anchor, msg.cursor);
-    if (!added) return fail(socket, 409);
+    if (!added) {
+      const reason = commentRangeReason(file.text, msg.anchor, msg.cursor);
+      if (reason) return fail(socket, 409, { reason });
+      return fail(socket, 409);
+    }
     const thread = commentThreads(added.doc).find((item) => item.id === added.id);
     if (!thread) return fail(socket, 409);
     const reply = appendCommentReply(thread.body, msg.text, socket.session.username, new Date().toISOString());
@@ -1755,7 +1774,7 @@ export async function createHub(stateDir, sourceRoot) {
       null,
       "comment",
     );
-    if (!wrote) return fail(socket, 409);
+    if (wrote !== true) return failHeld(socket, wrote);
     sendComment(socket, file, added.id, reply.note.id);
   }
 

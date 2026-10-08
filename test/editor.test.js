@@ -24,7 +24,7 @@ import {
   formatHash,
   parseHash,
 } from "../src/editor.js";
-import { splitCommentNote, lockSpans, lockIndexAt } from "../src/doc.js";
+import { splitCommentNote, lockSpans, lockIndexAt, commentRangeReason } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
@@ -3697,6 +3697,21 @@ test("addComment wraps a free range and appends an empty thread", () => {
   assert.equal(addComment("```python\nx\n```\n", 12, 13), null);
   assert.equal(addComment(D, 2, 3), null);
   assert.equal(addComment(E, 4, 8), null);
+});
+
+test("commentRangeReason names a fence, a table, or a split", () => {
+  const added = addComment("hello fox\n", 6, 9);
+  assert.equal(commentRangeReason("hello fox\n", 6, 6), null);
+  assert.equal(commentRangeReason("```\ncode\n```\n", 0, 0), null);
+  assert.equal(commentRangeReason("```python\nx\n```\n", 12, 13), "overlaps a fence");
+  assert.equal(commentRangeReason(E, 4, 8), "overlaps a fence");
+  assert.equal(commentRangeReason(D, 2, 3), "overlaps a table");
+  assert.equal(commentRangeReason(added.doc, 11, 20), "splits a comment");
+  assert.equal(commentRangeReason(added.doc, 10, 12), null);
+  assert.equal(commentRangeReason(added.doc, 0, 4), null);
+  assert.equal(addComment("```python\nx\n```\n", 12, 13), null);
+  assert.equal(addComment(D, 2, 3), null);
+  assert.equal(addComment(added.doc, 11, 20), null);
 });
 
 test("deleting an empty comment interior drops the span and the thread", () => {
