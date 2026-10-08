@@ -1085,6 +1085,14 @@ test("a diff publishes one splice per hunk and skips text between them", async (
       assert.ok(first.from > body.indexOf("Beta"));
       assert.equal(second.text, next);
       assert.ok(second.to <= body.indexOf("Beta"));
+      let cursor = body.indexOf("Beta") + 1;
+      for (const msg of [first, second]) {
+        if (cursor <= msg.from) continue;
+        if (cursor >= msg.to) cursor = cursor - (msg.to - msg.from) + msg.inserted.length;
+        else cursor = msg.from + msg.inserted.length;
+      }
+      assert.equal(next[cursor], "e");
+      assert.equal(cursor, next.indexOf("Beta") + 1);
 
       const json = await run(
         ["--json", ...editArgs(port, "gap-json.md")],
@@ -1223,11 +1231,22 @@ test("T-cli-matches", async () => {
     assert.equal(await fs.readFile(path.join(dir, "lines.md"), "utf8"), "line\nline\n");
 
     await fs.writeFile(path.join(dir, "triple.md"), "a\na\na\n");
-    const overlap = await run(editArgs(port, "triple.md"), {}, diffText([["-a", "-a", "+b"]]));
+    const repeated = await run(editArgs(port, "triple.md"), {}, diffText([["-a", "-a", "+b"]]));
+    assert.equal(repeated.code, 2);
+    assert.equal(repeated.stdout, "");
+    assert.equal(repeated.stderr, "matches 2\n");
+    assert.equal(await fs.readFile(path.join(dir, "triple.md"), "utf8"), "a\na\na\n");
+
+    await fs.writeFile(path.join(dir, "pair.md"), "Alpha\nBeta\n");
+    const overlap = await run(
+      editArgs(port, "pair.md"),
+      {},
+      diffText([["-Alpha", "-Beta"], ["-Beta"]]),
+    );
     assert.equal(overlap.code, 2);
     assert.equal(overlap.stdout, "");
     assert.equal(overlap.stderr, "overlap\n");
-    assert.equal(await fs.readFile(path.join(dir, "triple.md"), "utf8"), "a\na\na\n");
+    assert.equal(await fs.readFile(path.join(dir, "pair.md"), "utf8"), "Alpha\nBeta\n");
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
     watcher.ws.close();
   });
@@ -2960,6 +2979,43 @@ test("T-comment-edit", async () => {
     assert.equal(separator.stdout, "");
     assert.equal(separator.stderr, "error 400\n");
     assert.equal(notesOf(await fs.readFile(full, "utf8"))[1].raw, `${GROK_LINE}\nUpdated. again`);
+  });
+
+  await withDocs(async ({ dir, port }) => {
+    const full = await writeThread(dir);
+    const grok = await hello(port, "Grok");
+    try {
+      grok.send({
+        type: "comment.edit",
+        username: "Grok",
+        path: THREAD_REL,
+        id: "c1",
+        note: 1,
+        rev: 99,
+        text: "Updated.",
+      });
+      const stale = await grok.next((msg) => msg.type === "error" || msg.type === "comment");
+      assert.equal(stale.status, 409);
+      assert.equal(await fs.readFile(full, "utf8"), THREAD_DOC);
+    } finally {
+      grok.ws.close();
+    }
+
+    const saw = await run(
+      editArgs(port, THREAD_REL),
+      {},
+      diffText([["-See {c1}this{/c1}.", "+Saw {c1}this{/c1}."]]),
+    );
+    assert.equal(saw.code, 0);
+    const later = await run(
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--expect", "Because."]),
+      {},
+      "Later.",
+    );
+    assert.equal(later.code, 0);
+    const stored = await fs.readFile(full, "utf8");
+    assert.equal(splitCommentNote(notesOf(stored)[1].raw).text, "Later.");
+    assert.equal(stored.split("\n")[0], "Saw {c1}this{/c1}.");
   });
 });
 

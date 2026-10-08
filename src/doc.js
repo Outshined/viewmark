@@ -2164,12 +2164,10 @@ export function parseUnifiedDiff(text) {
     return null;
   };
   for (const line of rows) {
-    if (DIFF_HEADER.test(line)) {
-      const bad = finish();
-      if (bad) return bad;
-      continue;
-    }
     if (line === DIFF_NO_NEWLINE) continue;
+    // A leading "--- " or "+++ " is a file header only before the first hunk.
+    // Inside a hunk those bytes are a removed or added line.
+    if (!current && DIFF_HEADER.test(line)) continue;
     if (line.startsWith("@@")) {
       const bad = finish();
       if (bad) return bad;
@@ -2266,8 +2264,6 @@ export function planDiff(text, hunks, startOff, endOff) {
   const located = [];
   for (const hunk of hunks) {
     const runs = findRuns(lines, hunk.old);
-    const ranges = runs.map((start) => ({ start, end: start + hunk.old.length }));
-    if (spansOverlap(ranges)) return { error: "overlap" };
     if (runs.length === 0) return { error: "context" };
     if (runs.length !== 1) return { error: "matches", matches: runs.length };
     located.push({ hunk, at: runs[0] });

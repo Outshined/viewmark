@@ -28,6 +28,20 @@ test("parseUnifiedDiff keeps old and new lines and ignores placement headers", (
     { tag: "+", text: "Beta" },
     { tag: "+", text: "Delta" },
   ])]);
+
+  const dashed = parseUnifiedDiff([
+    "diff --git a/hello.md b/hello.md",
+    "index 111..222 100644",
+    "--- a/hello.md",
+    "+++ b/hello.md",
+    "@@",
+    " keep",
+    "--- note",
+    "+++ new",
+  ].join("\n"));
+  assert.equal(dashed.hunks.length, 1);
+  assert.deepEqual(dashed.hunks[0].old, ["keep", "-- note"]);
+  assert.deepEqual(dashed.hunks[0].new, ["keep", "++ new"]);
 });
 
 test("parseUnifiedDiff rejects a hunk with no old lines and a malformed body", () => {
@@ -79,7 +93,11 @@ test("planDiff reports context, matches, overlap, and a ranged slice", () => {
   assert.equal(next, "one\ntwo\nONE\n");
 
   assert.deepEqual(planDiff("Alpha\nBeta\nGamma\n", parseUnifiedDiff("@@\n-Gone\n+X\n").hunks, null, null), { error: "context" });
-  assert.deepEqual(planDiff("a\na\na\n", parseUnifiedDiff("@@\n-a\n-a\n+b\n").hunks, null, null), { error: "overlap" });
+  assert.deepEqual(planDiff("a\na\na\n", parseUnifiedDiff("@@\n-a\n-a\n+b\n").hunks, null, null), { error: "matches", matches: 2 });
+  assert.deepEqual(
+    planDiff("Alpha\nBeta\n", parseUnifiedDiff("@@\n-Alpha\n-Beta\n@@\n-Beta\n").hunks, null, null),
+    { error: "overlap" },
+  );
   assert.deepEqual(planDiff("Alpha\nBeta\n", parseUnifiedDiff("@@\n Alpha\n").hunks, null, null), { splices: [] });
 
   const outside = "Alpha\nBee\nGone\n";
