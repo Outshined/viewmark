@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { start } from "../server.js";
 import { acceptKey, createParser, encodeFrame } from "../src/ws.js";
-import { commentThreads, parseCommentNotes } from "../src/doc.js";
+import { commentThreads, parseCommentNotes, splitCommentNote } from "../src/doc.js";
 import { composeTicket, parseTicket } from "../src/ticket.js";
 import { validUsername } from "../cli.js";
 
@@ -48,7 +48,10 @@ const HELP_NEEDLES = [
   "comment list <path>",
   "comment show <path> <thread>",
   "comment reply <path> <thread>",
+  "comment add <path> --start LINE:OFFSET --end LINE:OFFSET",
   "comment edit <path> <thread> <note> --rev N",
+  "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET` and the question on stdin.",
+  "Lines count from 1. Offset counts from 0. The end offset is exclusive.",
   "--repo is required on list, show, create, edit, delete, comment, commit, and ticket.",
   "ticket delete",
   "--title",
@@ -2734,6 +2737,8 @@ test("T-cli-serve", async () => {
       ["serve", "--description", "d"],
       ["serve", "--path", "p"],
       ["serve", "--message", "hi"],
+      ["serve", "--start", "1:0"],
+      ["serve", "--end", "1:1"],
       ["serve", "one", "two"],
       ["serve", "--port", "nope"],
       ["serve", "--port", "65536"],
@@ -3109,7 +3114,9 @@ test("T-comment-usage", async () => {
     "comment list <path>",
     "comment show <path> <thread>",
     "comment reply <path> <thread>",
+    "comment add <path> --start LINE:OFFSET --end LINE:OFFSET",
     "comment edit <path> <thread> <note> --rev N",
+    "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET` and the question on stdin.",
   ]) {
     assert.ok(help.stdout.includes(line), line);
   }
@@ -3139,6 +3146,20 @@ test("T-comment-usage", async () => {
       [["comment", "edit", "a.md", "c1", "1", "--rev", "nope"], "edit requires integer --rev"],
       [["comment", "edit", "a.md", "c1", "1", "--rev", "1.5"], "edit requires integer --rev"],
       [["comment", "reply", "a.md", "c1", "--rev", "1"], "unexpected flag"],
+      [["comment", "add"], "path required"],
+      [["comment", "add", "a.md"], "add requires --start and --end"],
+      [["comment", "add", "a.md", "--start", "1:0"], "add requires --start and --end"],
+      [["comment", "add", "a.md", "--end", "1:1"], "add requires --start and --end"],
+      [["comment", "add", "a.md", "--start", "foo", "--end", "1:1"], "invalid position"],
+      [["comment", "add", "a.md", "--start", "1:0", "--end", "1:1", "extra"], "unexpected argument"],
+      [["comment", "add", "a.md", "--start", "1:0", "--end", "1:1", "--find", "x"], "unexpected flag"],
+      [["comment", "add", "a.md", "--start", "1:0", "--end", "1:1", "--rev", "0"], "unexpected flag"],
+      [["comment", "list", "a.md", "--start", "1:0", "--end", "1:1"], "unexpected flag"],
+      [["comment", "show", "a.md", "c1", "--start", "1:0"], "unexpected flag"],
+      [["comment", "reply", "a.md", "c1", "--end", "1:1"], "unexpected flag"],
+      [["comment", "edit", "a.md", "c1", "0", "--rev", "0", "--start", "1:0"], "unexpected flag"],
+      [["list", "--start", "1:0"], "unexpected flag"],
+      [["show", "hello.md", "--end", "1:0"], "unexpected flag"],
     ];
     for (const [args, message] of cases) {
       const res = await run(["--port", String(gate.port), "--user", "Grok", "--repo", "docs", ...args]);
@@ -3214,5 +3235,351 @@ test("T-comment-usage", async () => {
     } finally {
       alone.ws.close();
     }
+  });
+});
+
+async function captureComment(args, input, text, rev = 4) {
+  const messages = [];
+  let peer = null;
+  const server = http.createServer();
+  server.on("upgrade", (req, socket) => {
+    peer = socket;
+    const key = req.headers["sec-websocket-key"];
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\n" +
+        "Upgrade: websocket\r\n" +
+        "Connection: Upgrade\r\n" +
+        `Sec-WebSocket-Accept: ${acceptKey(key)}\r\n` +
+        "\r\n",
+    );
+    const parser = createParser({
+      requireMask: true,
+      onText(payload) {
+        const msg = JSON.parse(payload.toString("utf8"));
+        messages.push(msg);
+        let reply = null;
+        if (msg.type === "open") reply = { type: "file", path: msg.path, rev, text, locks: [] };
+        else if (msg.type === "comment.add") {
+          reply = { type: "comment", path: msg.path, id: "c1", note: 0, rev: rev + 1 };
+        }
+        if (reply) socket.write(encodeFrame(0x1, Buffer.from(JSON.stringify(reply))));
+      },
+      onPing(payload) {
+        socket.write(encodeFrame(0xa, payload));
+      },
+      onClose() {
+        socket.end();
+      },
+      onError() {
+        socket.destroy();
+      },
+    });
+    socket.on("data", (chunk) => parser.push(chunk));
+    socket.on("error", () => {});
+  });
+  await listen(server);
+  try {
+    const res = await run(
+      ["--port", String(server.address().port), "--user", "Ada", "--repo", "docs", ...args],
+      {},
+      input,
+    );
+    return { res, messages };
+  } finally {
+    peer?.destroy();
+    await new Promise((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections();
+    });
+  }
+}
+
+function addedMessage(messages) {
+  return messages.find((msg) => msg.type === "comment.add");
+}
+
+test("T-comment-add", async () => {
+  const agents = await fs.readFile(path.join(root, "AGENTS.md"), "utf8");
+  const replyAt = agents.indexOf("A reply goes through `comment reply`, not through `edit`.");
+  const leaveAt = agents.indexOf(
+    "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET` and the question on stdin. Lines count from 1. Offset counts from 0. The end offset is exclusive.",
+  );
+  assert.ok(replyAt !== -1);
+  assert.ok(leaveAt > replyAt);
+
+  const fox = "See the fox.\n";
+  const question = "Is this the right animal?\n";
+  const gate = await trap();
+  try {
+    const silent = [
+      [["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11"], ""],
+      [["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11"], "Yes.\n::\nno\n"],
+      [["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11"], ":: 3\n"],
+      [["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:8"], question],
+      [["comment", "add", "notes/fox.md", "--start", "0:0", "--end", "1:1"], question],
+      [["comment", "add", "notes/fox.md", "--start", "1:-1", "--end", "1:2"], question],
+      [["comment", "add", "notes/fox.md", "--start", "-3:0", "--end", "1:1"], question],
+    ];
+    for (const [args, input] of silent) {
+      const res = await run(
+        ["--port", String(gate.port), "--user", "Ada", "--repo", "docs", ...args],
+        {},
+        input,
+      );
+      assert.equal(res.code, shellStatus(400), `${args.join(" ")} ${JSON.stringify(input)}`);
+      assert.equal(res.stdout, "", args.join(" "));
+      assert.equal(res.stderr, "error 400\n", args.join(" "));
+    }
+    assert.equal(gate.hits.length, 0);
+  } finally {
+    await gate.close();
+  }
+
+  const sent = await captureComment(
+    ["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11"],
+    question,
+    fox,
+  );
+  assert.equal(sent.res.code, 0);
+  assert.equal(sent.res.stdout, "c1\n");
+  assert.equal(sent.res.stderr, "rev 5\n");
+  assert.deepEqual(sent.messages.map((msg) => msg.type), ["hello", "repo", "open", "comment.add"]);
+  assert.deepEqual(addedMessage(sent.messages), {
+    type: "comment.add",
+    username: "Ada",
+    path: "notes/fox.md",
+    rev: 4,
+    anchor: 8,
+    cursor: 11,
+    text: question,
+  });
+
+  const jsonWire = await captureComment(
+    ["--json", "comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11"],
+    question,
+    fox,
+  );
+  assert.equal(jsonWire.res.code, 0);
+  assert.equal(jsonWire.res.stderr, "");
+  assert.deepEqual(JSON.parse(jsonWire.res.stdout), {
+    path: "notes/fox.md",
+    id: "c1",
+    note: 0,
+    rev: 5,
+  });
+
+  const wrapped = await captureComment(
+    ["comment", "add", "notes/pair.md", "--start", "1:0", "--end", "2:0"],
+    question,
+    "one\ntwo\n",
+  );
+  assert.equal(wrapped.res.code, 0);
+  assert.equal(addedMessage(wrapped.messages).anchor, 0);
+  assert.equal(addedMessage(wrapped.messages).cursor, 4);
+
+  const throughPeriod = await captureComment(
+    ["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:12"],
+    question,
+    fox,
+  );
+  assert.equal(throughPeriod.res.code, 0);
+  assert.equal(addedMessage(throughPeriod.messages).anchor, 8);
+  assert.equal(addedMessage(throughPeriod.messages).cursor, 12);
+
+  const reversed = await captureComment(
+    ["comment", "add", "notes/fox.md", "--start", "1:11", "--end", "1:8"],
+    question,
+    fox,
+  );
+  assert.equal(reversed.res.code, 0);
+  assert.equal(addedMessage(reversed.messages).anchor, 11);
+  assert.equal(addedMessage(reversed.messages).cursor, 8);
+
+  const missingLine = await captureComment(
+    ["comment", "add", "notes/fox.md", "--start", "9:0", "--end", "9:1"],
+    question,
+    fox,
+  );
+  assert.equal(missingLine.res.code, shellStatus(400));
+  assert.equal(missingLine.res.stdout, "");
+  assert.equal(missingLine.res.stderr, "error 400\n");
+  assert.equal(missingLine.messages.some((msg) => msg.type === "comment.add"), false);
+  assert.equal(missingLine.messages.some((msg) => msg.type === "open"), true);
+
+  const past = await captureComment(
+    ["comment", "add", "notes/fox.md", "--start", "1:0", "--end", "1:13"],
+    question,
+    fox,
+  );
+  assert.equal(past.res.code, shellStatus(400));
+  assert.equal(past.res.stderr, "error 400\n");
+  assert.equal(past.messages.some((msg) => msg.type === "comment.add"), false);
+
+  await withDocs(async ({ dir, port }) => {
+    const rel = "notes/fox.md";
+    const full = path.join(dir, rel);
+    await fs.writeFile(full, fox);
+    const witness = await hello(port, "witness");
+    try {
+      await openDoc(witness, "witness", rel);
+      const added = await run(
+        commentArgs(port, "Ada", ["add", rel, "--start", "1:8", "--end", "1:11"]),
+        {},
+        question,
+      );
+      assert.equal(added.code, 0);
+      assert.equal(added.stdout, "c1\n");
+      assert.equal(added.stderr, "rev 1\n");
+      const stored = await fs.readFile(full, "utf8");
+      assert.equal(stored.startsWith("See the {c1}fox{/c1}.\n"), true);
+      const thread = commentThreads(stored).find((item) => item.id === "c1");
+      const notes = parseCommentNotes(thread.body);
+      assert.equal(notes.length, 1);
+      assert.equal(notes[0].id, 0);
+      const parts = splitCommentNote(notes[0].raw);
+      assert.equal(parts.author, "Ada");
+      assert.equal(parts.text, question);
+      assert.match(parts.time, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      const doc = await witness.next((msg) => msg.type === "doc" && msg.path === rel);
+      assert.equal(doc.rev, 1);
+      assert.equal(doc.actor, "Ada");
+      assert.equal(doc.text, stored);
+      await delay(50);
+      assert.equal(witness.queue.filter((msg) => msg.type === "doc").length, 0);
+    } finally {
+      witness.ws.close();
+    }
+
+    const revFull = path.join(dir, "notes/rev.md");
+    await fs.writeFile(revFull, fox);
+    const backward = await run(
+      commentArgs(port, "Ada", ["add", "notes/rev.md", "--start", "1:11", "--end", "1:8"]),
+      {},
+      question,
+    );
+    assert.equal(backward.code, 0);
+    assert.equal(backward.stdout, "c1\n");
+    assert.equal((await fs.readFile(revFull, "utf8")).startsWith("See the {c1}fox{/c1}.\n"), true);
+
+    const dotFull = path.join(dir, "notes/dot.md");
+    await fs.writeFile(dotFull, fox);
+    const dotted = await run(
+      commentArgs(port, "Ada", ["add", "notes/dot.md", "--start", "1:8", "--end", "1:12"]),
+      {},
+      question,
+    );
+    assert.equal(dotted.code, 0);
+    assert.equal((await fs.readFile(dotFull, "utf8")).startsWith("See the {c1}fox.{/c1}\n"), true);
+
+    const pairFull = path.join(dir, "notes/pair.md");
+    await fs.writeFile(pairFull, "one\ntwo\n");
+    const pair = await run(
+      commentArgs(port, "Ada", ["add", "notes/pair.md", "--start", "1:0", "--end", "2:0"]),
+      {},
+      question,
+    );
+    assert.equal(pair.code, 0);
+    assert.equal(pair.stdout, "c1\n");
+    assert.equal((await fs.readFile(pairFull, "utf8")).startsWith("{c1}one\n{/c1}two\n"), true);
+
+    const shortFull = path.join(dir, "notes/short.md");
+    await fs.writeFile(shortFull, fox);
+    const watcher = await hello(port, "witness");
+    try {
+      await openDoc(watcher, "witness", "notes/short.md");
+      const missing = await run(
+        commentArgs(port, "Ada", ["add", "notes/short.md", "--start", "9:0", "--end", "9:1"]),
+        {},
+        question,
+      );
+      assert.equal(missing.code, shellStatus(400));
+      assert.equal(missing.stdout, "");
+      assert.equal(missing.stderr, "error 400\n");
+      assert.equal(await fs.readFile(shortFull, "utf8"), fox);
+      await delay(50);
+      assert.equal(watcher.queue.some((msg) => msg.type === "doc"), false);
+    } finally {
+      watcher.ws.close();
+    }
+
+    const over = await run(
+      commentArgs(port, "Ada", ["add", "notes/short.md", "--start", "1:0", "--end", "1:13"]),
+      {},
+      question,
+    );
+    assert.equal(over.code, shellStatus(400));
+    assert.equal(over.stderr, "error 400\n");
+    assert.equal(await fs.readFile(shortFull, "utf8"), fox);
+
+    const jsonFull = path.join(dir, "notes/json.md");
+    await fs.writeFile(jsonFull, fox);
+    const json = await run(
+      ["--json", ...commentArgs(port, "Ada", ["add", "notes/json.md", "--start", "1:8", "--end", "1:11"])],
+      {},
+      question,
+    );
+    assert.equal(json.code, 0);
+    assert.equal(json.stderr, "");
+    assert.deepEqual(JSON.parse(json.stdout), { path: "notes/json.md", id: "c1", note: 0, rev: 1 });
+    const jsonDoc = await fs.readFile(jsonFull, "utf8");
+    assert.equal(jsonDoc.startsWith("See the {c1}fox{/c1}.\n"), true);
+    const jsonNote = splitCommentNote(parseCommentNotes(commentThreads(jsonDoc)[0].body)[0].raw);
+    assert.equal(jsonNote.author, "Ada");
+    assert.equal(jsonNote.text, question);
+
+    const fence = "```\ncode\n```\n";
+    const fenceFull = path.join(dir, "notes/fence.md");
+    await fs.writeFile(fenceFull, fence);
+    const fenced = await run(
+      commentArgs(port, "Ada", ["add", "notes/fence.md", "--start", "1:0", "--end", "1:3"]),
+      {},
+      question,
+    );
+    assert.equal(fenced.code, shellStatus(409));
+    assert.equal(fenced.stdout, "");
+    assert.equal(fenced.stderr, "error 409\n");
+    assert.equal(await fs.readFile(fenceFull, "utf8"), fence);
+
+    const holdFull = path.join(dir, "notes/hold.md");
+    await fs.writeFile(holdFull, fox);
+    const holder = await hello(port, "Ada");
+    const seeing = await hello(port, "witness");
+    try {
+      await openDoc(seeing, "witness", "notes/hold.md");
+      const opened = await openDoc(holder, "Ada", "notes/hold.md");
+      holder.send({
+        type: "lock",
+        username: "Ada",
+        path: "notes/hold.md",
+        rev: opened.rev,
+        anchor: 0,
+        cursor: opened.text.length,
+      });
+      await holder.next((msg) => msg.type === "locks" && msg.path === "notes/hold.md");
+      await seeing.next((msg) => msg.type === "locks" && msg.path === "notes/hold.md");
+      const blocked = await run(
+        commentArgs(port, "Bea", ["add", "notes/hold.md", "--start", "1:8", "--end", "1:11"]),
+        {},
+        question,
+      );
+      assert.equal(blocked.code, shellStatus(409));
+      assert.equal(blocked.stdout, "");
+      assert.equal(blocked.stderr, "error 409\n");
+      assert.equal(await fs.readFile(holdFull, "utf8"), fox);
+      await delay(50);
+      assert.equal(seeing.queue.some((msg) => msg.type === "doc"), false);
+    } finally {
+      holder.ws.close();
+      seeing.ws.close();
+    }
+
+    const gone = await run(
+      commentArgs(port, "Ada", ["add", "notes/missing.md", "--start", "1:0", "--end", "1:1"]),
+      {},
+      question,
+    );
+    assert.equal(gone.code, shellStatus(404));
+    assert.equal(gone.stdout, "");
+    assert.equal(gone.stderr, "error 404\n");
   });
 });

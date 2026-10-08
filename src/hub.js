@@ -1724,6 +1724,37 @@ export async function createHub(stateDir, sourceRoot) {
     await applyCommentBody(socket, loaded.file, msg.id, result.body, result.note.id);
   }
 
+  // The question is note 0 on the new fence. One publish writes the marks and
+  // the note, or neither: a refused question must not leave an empty thread.
+  async function onCommentAdd(socket, msg) {
+    const loaded = await loadCommentFile(socket, msg);
+    if (loaded.error) return fail(socket, loaded.error);
+    const file = loaded.file;
+    if (typeof msg.rev !== "number" || msg.rev !== file.rev) return fail(socket, 409);
+    if (!Number.isInteger(msg.anchor) || !Number.isInteger(msg.cursor)) return fail(socket, 400);
+    if (typeof msg.text !== "string") return fail(socket, 400);
+    const added = addComment(file.text, msg.anchor, msg.cursor);
+    if (!added) return fail(socket, 409);
+    const thread = commentThreads(added.doc).find((item) => item.id === added.id);
+    if (!thread) return fail(socket, 409);
+    const reply = appendCommentReply(thread.body, msg.text, socket.session.username, new Date().toISOString());
+    if (reply.error) return fail(socket, reply.error);
+    const replaced = replaceCommentBody(createState(added.doc, added.cursor, added.cursor), added.id, reply.body);
+    const splice = coveringSplice(file.text, replaced.doc);
+    if (splice == null) return fail(socket, 409);
+    const wrote = await publish(
+      socket,
+      file,
+      file.text,
+      splice,
+      { cursor: replaced.cursor, anchor: replaced.anchor },
+      null,
+      "comment",
+    );
+    if (!wrote) return fail(socket, 409);
+    sendComment(socket, file, added.id, reply.note.id);
+  }
+
   async function handleText(socket, payload) {
     if (socket.session?.gone || socket.session?.ending) return;
     let msg;
@@ -1760,6 +1791,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "comment.threads") return onCommentThreads(socket, msg);
     if (msg.type === "comment.reply") return onCommentReply(socket, msg);
     if (msg.type === "comment.edit") return onCommentEdit(socket, msg);
+    if (msg.type === "comment.add") return onCommentAdd(socket, msg);
     if (msg.type === "list") return onList(socket);
     if (msg.type === "move") return onMove(socket, msg);
     if (msg.type === "open") return onOpen(socket, msg);

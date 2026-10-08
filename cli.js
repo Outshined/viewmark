@@ -19,6 +19,7 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment list <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment show <path> <thread>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment reply <path> <thread>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment add <path> --start LINE:OFFSET --end LINE:OFFSET
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment edit <path> <thread> <note> --rev N
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME commit [--message TEXT]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket list [--closed]
@@ -86,10 +87,12 @@ comment:
   comment list <path> prints each thread id, or the id and resolved.
   comment show <path> <thread> prints the stored body and rev N on stderr.
   comment reply <path> <thread> reads the note text from stdin and prints note N. stderr is rev N.
+  A reply goes through \`comment reply\`, not through \`edit\`. An agent leaves a question with \`comment add PATH --start LINE:OFFSET --end LINE:OFFSET\` and the question on stdin. Lines count from 1. Offset counts from 0. The end offset is exclusive.
+  comment add <path> --start LINE:OFFSET --end LINE:OFFSET reads the question from stdin and prints the thread id. stderr is rev N.
   comment edit <path> <thread> <note> --rev N reads stdin the same way. Reply with --rev is rejected.
   A negative note exits 400 and does not open a socket. A stale rev exits 409 and does not write.
   The same text exits 0 and does not write.
-  --json: list {path,rev,threads}; show {path,rev,id,resolved,notes}; reply and edit {path,id,note,rev}.
+  --json: list {path,rev,threads}; show {path,rev,id,resolved,notes}; reply and edit {path,id,note,rev}; add {path,id,note:0,rev}.
 
 delete:
   delete <path> removes that document. The path is sent unchanged. ticket delete <id> removes that ticket and clears it from other tickets' parent and depends. Another socket holding the file exits 409 and writes nothing. stdout is the removed path. --json is {path}.
@@ -120,6 +123,8 @@ const VALUE_FLAGS = new Set([
   "path",
   "message",
   "file",
+  "start",
+  "end",
 ]);
 
 // Same rejection the hub uses, so a bad name never opens a socket.
@@ -222,6 +227,10 @@ function parseArgs(argv) {
     message: "",
     fileSet: false,
     file: "",
+    startSet: false,
+    start: "",
+    endSet: false,
+    end: "",
     closed: false,
     positionals: [],
   };
@@ -308,6 +317,12 @@ function parseArgs(argv) {
       } else if (name === "file") {
         args.fileSet = true;
         args.file = value;
+      } else if (name === "start") {
+        args.startSet = true;
+        args.start = value;
+      } else if (name === "end") {
+        args.endSet = true;
+        args.end = value;
       }
       continue;
     }
@@ -1184,6 +1199,16 @@ function printCommentWrite(msg, json) {
   return 0;
 }
 
+function printCommentAdd(msg, json) {
+  if (json) {
+    writeJson({ path: msg.path, id: msg.id, note: 0, rev: msg.rev });
+    return 0;
+  }
+  process.stdout.write(`${msg.id}\n`);
+  process.stderr.write(`rev ${msg.rev}\n`);
+  return 0;
+}
+
 async function runCommentList(hub, username, docPath, json) {
   hub.send({ type: "comment.threads", username, path: docPath });
   const msg = await hub.next((item) => item.type === "comments" || item.type === "error");
@@ -1222,10 +1247,64 @@ async function runCommentEdit(hub, username, docPath, id, note, rev, text, json)
   return printCommentWrite(parsed, json);
 }
 
+// Same rows as the document model, including the empty row after a final newline.
+function lineRows(text) {
+  const lines = [];
+  let start = 0;
+  for (let i = 0; i <= text.length; i += 1) {
+    if (i === text.length || text[i] === "\n") {
+      lines.push({ start, text: text.slice(start, i) });
+      start = i + 1;
+      if (i === text.length) break;
+    }
+  }
+  return lines;
+}
+
+// The end offset is exclusive. An offset equal to the line length is the
+// position after the last character, which is still on this line.
+function offsetAt(text, line, column) {
+  if (line < 1 || column < 0) return { error: 400 };
+  const row = lineRows(text)[line - 1];
+  if (!row || column > row.text.length) return { error: 400 };
+  return { offset: row.start + column };
+}
+
+async function runCommentAdd(hub, username, docPath, start, end, text, json) {
+  hub.send({ type: "open", username, path: docPath });
+  const opened = await hub.next((item) => item.type === "file" || item.type === "error");
+  if (opened.type === "error") return serverError(opened);
+  const doc = asDoc(opened);
+  if (!doc || doc.path !== docPath) return 1;
+  const anchor = offsetAt(doc.text, start.line, start.offset);
+  const cursor = offsetAt(doc.text, end.line, end.offset);
+  if (anchor.error || cursor.error || anchor.offset === cursor.offset) {
+    process.stderr.write("error 400\n");
+    return 400;
+  }
+  hub.send({
+    type: "comment.add",
+    username,
+    path: doc.path,
+    rev: doc.rev,
+    anchor: anchor.offset,
+    cursor: cursor.offset,
+    text,
+  });
+  const msg = await hub.next((item) => item.type === "comment" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  const parsed = asCommentResult(msg);
+  if (!parsed || parsed.path !== doc.path || parsed.note !== 0) return 1;
+  return printCommentAdd(parsed, json);
+}
+
 async function runComment(hub, username, command, text, json) {
   if (command.sub === "list") return runCommentList(hub, username, command.path, json);
   if (command.sub === "show") return runCommentShow(hub, username, command.path, command.id, json);
   if (command.sub === "reply") return runCommentReply(hub, username, command.path, command.id, text, json);
+  if (command.sub === "add") {
+    return runCommentAdd(hub, username, command.path, command.start, command.end, text, json);
+  }
   if (command.sub === "edit") {
     return runCommentEdit(hub, username, command.path, command.id, command.note, command.rev, text, json);
   }
@@ -1238,6 +1317,7 @@ function commentFlagRejected(args, sub) {
     || args.nameSet || args.descriptionSet || args.pathSet) {
     return true;
   }
+  if ((args.startSet || args.endSet) && sub !== "add") return true;
   return sub !== "edit" && args.revSet;
 }
 
@@ -1246,6 +1326,26 @@ function parseNoteArg(raw) {
   const n = Number(raw);
   if (!Number.isSafeInteger(n)) return null;
   return n;
+}
+
+function parseLineOffset(raw) {
+  if (typeof raw !== "string") return null;
+  const match = /^(-?\d+):(-?\d+)$/.exec(raw);
+  if (!match) return null;
+  const line = Number(match[1]);
+  const offset = Number(match[2]);
+  if (!Number.isSafeInteger(line) || !Number.isSafeInteger(offset)) return null;
+  return { line, offset };
+}
+
+// Same boundary the hub refuses inside a note. Rejecting it here sends nothing.
+const NOTE_SEPARATOR = /^::(?: (0|[1-9]\d*))?$/;
+
+function noteHasSeparator(text) {
+  for (const line of text.split("\n")) {
+    if (NOTE_SEPARATOR.test(line)) return true;
+  }
+  return false;
 }
 
 function prepareComment(args, rest) {
@@ -1260,6 +1360,15 @@ function prepareComment(args, rest) {
     if (more.length === 0) return { error: "path required" };
     if (more.length !== 2) return { error: "unexpected argument" };
     return { sub, path: more[0], id: more[1] };
+  }
+  if (sub === "add") {
+    if (more.length === 0) return { error: "path required" };
+    if (more.length !== 1) return { error: "unexpected argument" };
+    if (!args.startSet || !args.endSet) return { error: "add requires --start and --end" };
+    const start = parseLineOffset(args.start);
+    const end = parseLineOffset(args.end);
+    if (!start || !end) return { error: "invalid position" };
+    return { sub, path: more[0], start, end };
   }
   if (sub === "edit") {
     if (more.length === 0) return { error: "path required" };
@@ -1281,7 +1390,7 @@ function serveFlagRejected(args) {
   return args.revSet || args.findSet || args.replaceSet || args.titleSet
     || args.stateSet || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet
     || args.repoSet || args.nameSet || args.descriptionSet || args.pathSet
-    || args.messageSet || args.fileSet;
+    || args.messageSet || args.fileSet || args.startSet || args.endSet;
 }
 
 function defaultStateDir() {
@@ -1358,6 +1467,10 @@ async function main() {
     return;
   }
   if (args.fileSet && cmd !== "create") {
+    usage("unexpected flag");
+    return;
+  }
+  if ((args.startSet || args.endSet) && cmd !== "comment") {
     usage("unexpected flag");
     return;
   }
@@ -1475,7 +1588,17 @@ async function main() {
       return;
     }
     let text = "";
-    if (command.sub === "reply" || command.sub === "edit") text = await readStdin();
+    if (command.sub === "reply" || command.sub === "edit" || command.sub === "add") text = await readStdin();
+    if (command.sub === "add") {
+      const samePoint = command.start.line === command.end.line && command.start.offset === command.end.offset;
+      if (text === "" || noteHasSeparator(text) || samePoint
+        || command.start.line < 1 || command.end.line < 1
+        || command.start.offset < 0 || command.end.offset < 0) {
+        process.stderr.write("error 400\n");
+        process.exitCode = 400;
+        return;
+      }
+    }
     await withHub(port, user, (hub) => runComment(hub, user, command, text, args.json), args.repo);
     return;
   }

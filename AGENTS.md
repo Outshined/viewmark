@@ -14,7 +14,7 @@ Read with `show`. The bytes are on stdout and `rev N` is on stderr. Pass that sa
 
 `create` reads the body from stdin when stdin is not a terminal. `--file PATH` reads that file instead. A path without a markdown suffix is stored with `.md` added. A path under `tickets/` is rejected. Use the ticket commands for those files.
 
-Send the text of one comment note. The hub writes the note id and the author line. A reply goes through `comment reply`, not through `edit`.
+Send the text of one comment note. The hub writes the note id and the author line. A reply goes through `comment reply`, not through `edit`. An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET` and the question on stdin. Lines count from 1. Offset counts from 0. The end offset is exclusive.
 
 ```
 printf 'A correction.\n' | viewmark --user ada --repo notes comment reply welcome.md c1

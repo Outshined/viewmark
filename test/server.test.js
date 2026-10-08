@@ -11,6 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { start } from "../server.js";
 import { readBuild } from "../src/hub.js";
+import { commentThreads, parseCommentNotes, splitCommentNote } from "../src/doc.js";
 import { TICKET_ALPHABET, composeTicket, parseTicket } from "../src/ticket.js";
 import { createParser, encodeFrame } from "../src/ws.js";
 
@@ -2844,4 +2845,253 @@ test("readBuild hashes a directory that is not a git toplevel", async () => {
     }
     await fs.rm(dir, { recursive: true, force: true });
   }
+});
+
+test("T-comment-add", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const fox = "See the fox.\n";
+    const question = "Is this the right animal?\n";
+    const rel = "fox.md";
+    await fs.writeFile(path.join(dir, rel), fox);
+    const witness = await hello(port, "witness");
+    const ada = await hello(port, "Ada");
+    try {
+      await openDoc(witness, "witness", rel);
+      ada.send({
+        type: "comment.add",
+        username: "Ada",
+        path: rel,
+        rev: 0,
+        anchor: 8,
+        cursor: 11,
+        text: question,
+      });
+      const msg = await ada.next((item) => item.type === "comment" || item.type === "error");
+      assert.equal(msg.type, "comment");
+      assert.equal(msg.path, rel);
+      assert.equal(msg.id, "c1");
+      assert.equal(msg.note, 0);
+      assert.equal(msg.rev, 1);
+      const stored = await readDoc(dir, rel);
+      assert.equal(stored.startsWith("See the {c1}fox{/c1}.\n"), true);
+      const thread = commentThreads(stored).find((item) => item.id === "c1");
+      const notes = parseCommentNotes(thread.body);
+      assert.equal(notes.length, 1);
+      assert.equal(notes[0].id, 0);
+      const parts = splitCommentNote(notes[0].raw);
+      assert.equal(parts.author, "Ada");
+      assert.equal(parts.text, question);
+      assert.match(parts.time, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      const doc = await witness.next((item) => item.type === "doc" && item.path === rel);
+      assert.equal(doc.rev, 1);
+      assert.equal(doc.text, stored);
+      assert.equal(doc.actor, "Ada");
+      await delay(50);
+      assert.equal(witness.all.filter((item) => item.type === "doc").length, 0);
+
+      ada.send({
+        type: "comment.add",
+        username: "Ada",
+        path: rel,
+        rev: 0,
+        anchor: 0,
+        cursor: 3,
+        text: "Later.\n",
+      });
+      const stale = await ada.next((item) => item.type === "comment" || item.type === "error");
+      assert.deepEqual(stale, { type: "error", status: 409 });
+      assert.equal(await readDoc(dir, rel), stored);
+      await delay(50);
+      assert.equal(witness.all.filter((item) => item.type === "doc").length, 0);
+    } finally {
+      ada.ws.close();
+      witness.ws.close();
+    }
+
+    const plain = "plain.md";
+    await fs.writeFile(path.join(dir, plain), fox);
+    const quiet = await hello(port, "Ada");
+    const seeing = await hello(port, "witness");
+    try {
+      await openDoc(seeing, "witness", plain);
+      for (const text of ["", "no\n::\n", ":: 0\n"]) {
+        quiet.send({
+          type: "comment.add",
+          username: "Ada",
+          path: plain,
+          rev: 0,
+          anchor: 8,
+          cursor: 11,
+          text,
+        });
+        const refused = await quiet.next((item) => item.type === "comment" || item.type === "error");
+        assert.deepEqual(refused, { type: "error", status: 400 });
+        assert.equal(await readDoc(dir, plain), fox);
+      }
+      quiet.send({
+        type: "comment.add",
+        username: "Ada",
+        path: plain,
+        rev: 0,
+        anchor: 8,
+        cursor: 8,
+        text: question,
+      });
+      assert.deepEqual(
+        await quiet.next((item) => item.type === "comment" || item.type === "error"),
+        { type: "error", status: 409 },
+      );
+      quiet.send({
+        type: "comment.add",
+        username: "Ada",
+        path: plain,
+        rev: 0,
+        anchor: "8",
+        cursor: 11,
+        text: question,
+      });
+      assert.deepEqual(
+        await quiet.next((item) => item.type === "comment" || item.type === "error"),
+        { type: "error", status: 400 },
+      );
+      quiet.send({
+        type: "comment.add",
+        username: "Ada",
+        path: plain,
+        anchor: 8,
+        cursor: 11,
+        text: question,
+      });
+      assert.deepEqual(
+        await quiet.next((item) => item.type === "comment" || item.type === "error"),
+        { type: "error", status: 409 },
+      );
+      assert.equal(await readDoc(dir, plain), fox);
+      await delay(50);
+      assert.equal(seeing.all.some((item) => item.type === "doc"), false);
+    } finally {
+      quiet.ws.close();
+      seeing.ws.close();
+    }
+
+    const fence = "```\ncode\n```\n";
+    await fs.writeFile(path.join(dir, "fence.md"), fence);
+    const coder = await hello(port, "Ada");
+    try {
+      coder.send({
+        type: "comment.add",
+        username: "Ada",
+        path: "fence.md",
+        rev: 0,
+        anchor: 0,
+        cursor: 3,
+        text: question,
+      });
+      assert.deepEqual(
+        await coder.next((item) => item.type === "comment" || item.type === "error"),
+        { type: "error", status: 409 },
+      );
+      assert.equal(await readDoc(dir, "fence.md"), fence);
+    } finally {
+      coder.ws.close();
+    }
+
+    const back = "back.md";
+    await fs.writeFile(path.join(dir, back), fox);
+    const reverser = await hello(port, "Ada");
+    try {
+      reverser.send({
+        type: "comment.add",
+        username: "Ada",
+        path: back,
+        rev: 0,
+        anchor: 11,
+        cursor: 8,
+        text: question,
+      });
+      const msg = await reverser.next((item) => item.type === "comment" || item.type === "error");
+      assert.equal(msg.type, "comment");
+      assert.equal(msg.note, 0);
+      assert.equal((await readDoc(dir, back)).startsWith("See the {c1}fox{/c1}.\n"), true);
+    } finally {
+      reverser.ws.close();
+    }
+
+    const pair = "pair.md";
+    await fs.writeFile(path.join(dir, pair), "one\ntwo\n");
+    const liner = await hello(port, "Ada");
+    try {
+      liner.send({
+        type: "comment.add",
+        username: "Ada",
+        path: pair,
+        rev: 0,
+        anchor: 0,
+        cursor: 4,
+        text: question,
+      });
+      const msg = await liner.next((item) => item.type === "comment" || item.type === "error");
+      assert.equal(msg.type, "comment");
+      assert.equal((await readDoc(dir, pair)).startsWith("{c1}one\n{/c1}two\n"), true);
+    } finally {
+      liner.ws.close();
+    }
+
+    const para = "aaa\n\nbbb\n";
+    await fs.writeFile(path.join(dir, "para.md"), para);
+    const holder = await hello(port, "Hold");
+    const other = await hello(port, "Ada");
+    try {
+      const opened = await openDoc(holder, "Hold", "para.md");
+      await syncLock(holder, [], "Hold", "para.md", 0, opened.rev, 3);
+      other.send({
+        type: "comment.add",
+        username: "Ada",
+        path: "para.md",
+        rev: opened.rev,
+        anchor: 5,
+        cursor: 8,
+        text: question,
+      });
+      const msg = await other.next((item) => item.type === "comment" || item.type === "error");
+      assert.equal(msg.type, "comment");
+      assert.equal(msg.note, 0);
+      assert.equal(msg.rev, 1);
+      assert.equal((await readDoc(dir, "para.md")).startsWith("aaa\n\n{c1}bbb{/c1}\n"), true);
+    } finally {
+      holder.ws.close();
+      other.ws.close();
+    }
+
+    const held = "held.md";
+    await fs.writeFile(path.join(dir, held), fox);
+    const owner = await hello(port, "Hold");
+    const blocked = await hello(port, "Ada");
+    const watcher = await hello(port, "witness");
+    try {
+      await openDoc(watcher, "witness", held);
+      const opened = await openDoc(owner, "Hold", held);
+      await syncLock(owner, [watcher], "Hold", held, 0, opened.rev, opened.text.length);
+      blocked.send({
+        type: "comment.add",
+        username: "Ada",
+        path: held,
+        rev: opened.rev,
+        anchor: 8,
+        cursor: 11,
+        text: question,
+      });
+      assert.deepEqual(
+        await blocked.next((item) => item.type === "comment" || item.type === "error"),
+        { type: "error", status: 409 },
+      );
+      assert.equal(await readDoc(dir, held), fox);
+      await delay(50);
+      assert.equal(watcher.all.some((item) => item.type === "doc"), false);
+    } finally {
+      owner.ws.close();
+      blocked.ws.close();
+      watcher.ws.close();
+    }
+  });
 });
