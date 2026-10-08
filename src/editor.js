@@ -27,6 +27,7 @@ import {
   lineIndexAt,
   lockIndexAt,
   lockSpans,
+  continuedMarker,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./ticket.js";
@@ -1051,7 +1052,7 @@ function renderBlock(block) {
   for (const part of block.parts) {
     el.appendChild(part.type === "image" ? renderImage(part) : renderRun(part));
   }
-  if (!el.firstChild) {
+  if (!el.childNodes || el.childNodes.length === 0) {
     el.dataset.start = String(block.end);
     el.dataset.end = String(block.end);
     el.appendChild(document.createElement("br"));
@@ -3060,6 +3061,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return claimLines(state.cursor, at);
   }
 
+  // Enter on an item inserts the same kind of marker. A plain line stays a newline.
+  function breakText() {
+    if (state.anchor !== state.cursor) return "\n";
+    const marker = continuedMarker(state.doc, state.cursor);
+    return marker ? `\n${marker}` : "\n";
+  }
+
   listen("beforeinput", (event) => {
     commentFocus = null;
     event.preventDefault();
@@ -3080,7 +3088,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (event.data === "\n") {
         if (event.data === composed) return;
         if (!claimFollowingBreaks()) return;
-        emitEdit({ op: "insert", text: "\n" });
+        emitEdit({ op: "insert", text: breakText() });
         return;
       }
       if (event.data && event.data !== composed) emitEdit({ op: "insert", text: event.data });
@@ -3089,7 +3097,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (type === "insertCompositionText" || type === "insertFromComposition") return;
     if (type === "insertParagraph" || type === "insertLineBreak") {
       if (!claimFollowingBreaks()) return;
-      emitEdit({ op: "insert", text: "\n" });
+      emitEdit({ op: "insert", text: breakText() });
       return;
     }
     if (type === "deleteContentBackward") {

@@ -90,17 +90,16 @@ function listSeparator(text, index) {
   return count;
 }
 
-// "> - " is one quoted item: the bar is the quote, and the list marker is the bullet.
-// A marker indented after "> " stays quote prose. It is not an item.
+// "> - " is one quoted item. Indent after "> " is a nested item inside that quote.
 function quotedList(text) {
   if (!text.startsWith("> ")) return null;
   const list = classifyList(text.slice(2));
-  if (!list || list.indent !== 0) return null;
+  if (!list) return null;
   return {
     kind: list.kind,
     marker: 2 + list.marker,
     quote: 2,
-    indent: 0,
+    indent: list.indent,
     plain: list.plain,
     quoted: true,
   };
@@ -131,6 +130,26 @@ function classifyList(text) {
     indent: column,
     plain: "md-ol",
   };
+}
+
+// The marker of the next item of the same kind, or null when the caret's line is not an item.
+export function continuedMarker(doc, cursor) {
+  const text = typeof doc === "string" ? doc : "";
+  const at = Math.max(0, Math.min(text.length, Number.isFinite(cursor) ? cursor : 0));
+  let start = at;
+  let end = at;
+  while (start > 0 && text[start - 1] !== "\n") start -= 1;
+  while (end < text.length && text[end] !== "\n") end += 1;
+  const line = text.slice(start, end);
+  const mode = classify(line);
+  if (mode.kind !== "li" && mode.kind !== "ol") return null;
+  const head = line.slice(0, mode.marker || 0);
+  if (mode.kind === "li") return head;
+  const quote = mode.quoted ? line.slice(0, mode.quote || 0) : "";
+  const body = head.slice(quote.length);
+  const match = /^([ \t]*)(\d+)([.)])([ \t]+)$/.exec(body);
+  if (!match) return head;
+  return quote + match[1] + String(Number(match[2]) + 1) + match[3] + match[4];
 }
 
 function classify(text) {
@@ -2043,7 +2062,14 @@ export function deleteForward(state) {
   if (state.cursor >= state.doc.length) return state;
   const atom = renderedAtomAt(state.doc, state.cursor, (item) => state.cursor >= item.start && state.cursor < item.end);
   if (atom) return applySplice(state, atom.start, atom.end, "", atom.start);
-  return applySplice(state, state.cursor, state.cursor + 1, "", state.cursor);
+  const at = state.cursor;
+  // The last byte of a trailing empty line is a newline. Leaving the caret at
+  // the new length sits past that remaining newline, where no block is drawn.
+  let cursor = at;
+  if (at === state.doc.length - 1 && state.doc[at] === "\n" && at > 0 && state.doc[at - 1] === "\n") {
+    cursor = at - 1;
+  }
+  return applySplice(state, at, at + 1, "", cursor);
 }
 
 export function undo(state) {

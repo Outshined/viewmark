@@ -1284,10 +1284,17 @@ test("quoted item is one block", () => {
   assert.equal(proseBlocks(notItem, notItem.length)[0].classes.includes("md-li"), false);
 
   const indented = ">   - child\n";
-  assert.equal(shownText(proseBlocks(indented, 0)[0]), ">   - child");
-  assert.deepEqual(proseBlocks(indented, indented.length)[0].classes, ["md-quote"]);
-  assert.equal(shownText(proseBlocks(indented, indented.length)[0]), "  - child");
-  assert.equal(proseBlocks(indented, indented.length)[0].classes.includes("md-li"), false);
+  const indentedRaw = proseBlocks(indented, 0)[0];
+  assert.equal(shownText(indentedRaw), "  - child");
+  assert.equal(shownText(indentedRaw).includes(">"), false);
+  assert.deepEqual(indentedRaw.classes, ["md-raw", "md-quote", "md-li"]);
+  assert.equal(indentedRaw.indent, 2);
+  const indentedRendered = proseBlocks(indented, indented.length)[0];
+  assert.equal(shownText(indentedRendered), "child");
+  assert.equal(shownText(indentedRendered).includes("-"), false);
+  assert.equal(shownText(indentedRendered).includes(">"), false);
+  assert.deepEqual(indentedRendered.classes, ["md-quote", "md-li"]);
+  assert.equal(indentedRendered.indent, 2);
 
   const spaces = "> - red  \nblue\n";
   assert.equal(shownText(proseBlocks(spaces, 0)[0]), "- redblue");
@@ -1347,6 +1354,82 @@ test("quoted item is one block", () => {
     assert.equal(orderedRawEl[0].textContent.includes(">"), false);
     assert.equal(orderedRawEl[0].dataset.marker, undefined);
     orderedRawView.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a quoted list keeps the bar with the parent quote", () => {
+  const doc = "> Parent\n> - alpha\n> - beta\n>   - child\n> 1. one\n";
+  assert.equal(doc.length, 49);
+  const blocks = plan(doc, doc.length).blocks;
+  assert.equal(blocks.length, 5);
+  assert.equal(blocks.some((block) => block.raw), false);
+  assert.equal(shownText(blocks[0]), "Parent");
+  assert.deepEqual(blocks[0].classes, ["md-quote"]);
+  assert.equal(blocks[0].classes.includes("md-li"), false);
+  assert.equal(blocks[0].classes.includes("md-ol"), false);
+  assert.equal(shownText(blocks[1]), "alpha");
+  assert.equal(shownText(blocks[2]), "beta");
+  assert.equal(shownText(blocks[3]), "child");
+  assert.equal(shownText(blocks[4]), "one");
+  for (const block of blocks) assert.ok(block.classes.includes("md-quote"));
+  assert.ok(blocks[1].classes.includes("md-li"));
+  assert.ok(blocks[2].classes.includes("md-li"));
+  assert.ok(blocks[3].classes.includes("md-li"));
+  assert.ok(blocks[4].classes.includes("md-ol"));
+  assert.equal(blocks[1].indent, 0);
+  assert.ok(blocks[3].indent > blocks[1].indent);
+  assert.equal(blocks[4].marker.trimEnd(), "1.");
+  assert.equal(blocks[0].end < blocks[1].start, true);
+  assert.equal(blocks[1].end < blocks[2].start, true);
+  assert.equal(blocks[2].end < blocks[3].start, true);
+  assert.equal(blocks[3].end < blocks[4].start, true);
+
+  const plain = "- a\n  - b\n1. c\n";
+  const plainBlocks = plan(plain, plain.length).blocks;
+  assert.equal(plainBlocks.length, 3);
+  for (const block of plainBlocks) assert.equal(block.classes.includes("md-quote"), false);
+  assert.ok(plainBlocks[1].indent > plainBlocks[0].indent);
+  assert.ok(plainBlocks[2].classes.includes("md-ol"));
+  assert.equal(shownText(plainBlocks[0]), "a");
+  assert.equal(shownText(plainBlocks[1]), "b");
+  assert.equal(shownText(plainBlocks[2]), "c");
+
+  const continued = "- a\n  more\n";
+  const continuedBlocks = plan(continued, continued.length).blocks;
+  assert.equal(continuedBlocks.length, 1);
+  assert.ok(continuedBlocks[0].classes.includes("md-li"));
+  assert.equal(shownText(continuedBlocks[0]).includes("more"), true);
+  assert.equal(shownText(continuedBlocks[0]).includes("-"), false);
+
+  const prose = "-Alpha\n";
+  const proseBlocksAtEnd = plan(prose, prose.length).blocks;
+  assert.equal(proseBlocksAtEnd.length, 1);
+  assert.equal(proseBlocksAtEnd[0].classes.includes("md-li"), false);
+  assert.equal(proseBlocksAtEnd[0].classes.includes("md-p"), true);
+  assert.equal(shownText(proseBlocksAtEnd[0]), "-Alpha");
+
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const quotedItem = css.match(/\.md-line\.md-quote\.md-li\s*,\s*\.md-line\.md-quote\.md-ol\s*\{[^}]*\}/);
+  assert.ok(quotedItem);
+  assert.match(quotedItem[0], /margin-left:\s*0\s*;/);
+  assert.match(quotedItem[0], /padding-left:[^;]*var\(--indent/);
+  assert.equal(/margin-left:[^;]*var\(--indent/.test(quotedItem[0]), false);
+
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, doc, doc.length);
+    const lines = mounted.findAll((node) => node.classList && node.classList.contains("md-line"));
+    assert.equal(lines.length, 5);
+    for (const line of lines) assert.ok(line.classList.contains("md-quote"));
+    assert.equal(lines[0].classList.contains("md-li"), false);
+    assert.equal(lines[3].classList.contains("md-li"), true);
+    assert.ok(Number(lines[3].styleProps["--indent"]) > Number(lines[1].styleProps["--indent"]));
+    assert.equal(lines[4].classList.contains("md-ol"), true);
+    assert.equal(String(lines[4].dataset.marker).trimEnd(), "1.");
+    assert.equal(view.getState().doc, doc);
+    view.destroy();
   } finally {
     mounted.restore();
   }
@@ -1538,6 +1621,58 @@ test("T-delete", () => {
   const end = createState("ab", 2);
   assert.equal(deleteForward(end), end);
   assert.equal(end.undo.length, 0);
+});
+
+test("collapsed caret removes a blank line and keeps a joining newline", () => {
+  const between = "Title\n\nBody\n";
+  assert.equal(between[5], "\n");
+  assert.equal(between[6], "\n");
+  assert.equal(between[7], "B");
+  const backBetween = backspace(createState(between, 6));
+  assert.equal(backBetween.doc, "Title\nBody\n");
+  assert.equal(backBetween.cursor, 5);
+  assert.equal(backBetween.anchor, 5);
+  assert.equal(backBetween.doc[backBetween.cursor], "\n");
+  const delBetween = deleteForward(createState(between, 6));
+  assert.equal(delBetween.doc, "Title\nBody\n");
+  assert.equal(delBetween.cursor, 6);
+  assert.equal(delBetween.anchor, 6);
+  assert.equal(delBetween.doc[delBetween.cursor], "B");
+
+  const last = "Title\n\n";
+  assert.equal(last.length, 7);
+  const backLast = backspace(createState(last, 6));
+  assert.equal(backLast.doc, "Title\n");
+  assert.equal(backLast.cursor, 5);
+  assert.equal(backLast.doc[backLast.cursor], "\n");
+  const delLast = deleteForward(createState(last, 6));
+  assert.equal(delLast.doc, "Title\n");
+  assert.equal(delLast.cursor, 5);
+  assert.equal(delLast.anchor, 5);
+  assert.equal(delLast.doc[delLast.cursor], "\n");
+
+  const leading = createState("\nBody", 0);
+  assert.equal(backspace(leading), leading);
+  const delLead = deleteForward(leading);
+  assert.equal(delLead.doc, "Body");
+  assert.equal(delLead.cursor, 0);
+  assert.equal(delLead.anchor, 0);
+
+  const joined = "hello\nworld";
+  const backWord = backspace(createState(joined, 6));
+  assert.equal(backWord.doc, "helloworld");
+  assert.equal(backWord.cursor, 5);
+  const delWord = deleteForward(createState(joined, 6));
+  assert.equal(delWord.doc, "hello\norld");
+  assert.equal(delWord.cursor, 6);
+  assert.equal(delWord.doc[delWord.cursor], "o");
+
+  const backBreak = backspace(createState(joined, 5));
+  assert.equal(backBreak.doc, "hell\nworld");
+  assert.equal(backBreak.cursor, 4);
+  const delBreak = deleteForward(createState(joined, 5));
+  assert.equal(delBreak.doc, "helloworld");
+  assert.equal(delBreak.cursor, 5);
 });
 
 test("T-backspace-atom", () => {
@@ -2875,6 +3010,73 @@ test("backspace at the visual start of a line joins it upward", () => {
     assert.equal(heading.getState().doc, "hello# Title\n");
     assert.equal(heading.getState().cursor, 5);
     heading.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("enter on a list item continues that item", () => {
+  const mounted = mountEditor();
+  const press = (inputType, data) => {
+    mounted.listeners.beforeinput({
+      inputType,
+      data,
+      preventDefault() {},
+    });
+  };
+  const enter = (doc, cursor, inputType = "insertParagraph") => {
+    const view = createEditor(mounted.root, doc, cursor);
+    press(inputType);
+    const state = view.getState();
+    view.destroy();
+    return state;
+  };
+  try {
+    const bullet = enter("- alpha", 7);
+    assert.equal(bullet.doc, "- alpha\n- ");
+    assert.equal(bullet.cursor, 10);
+    assert.equal(bullet.anchor, 10);
+    assert.equal(bullet.doc.slice(0, bullet.cursor), "- alpha\n- ");
+
+    const child = enter("  - child", 9);
+    assert.equal(child.doc, "  - child\n  - ");
+    assert.equal(child.cursor, child.doc.length);
+    assert.equal(child.doc.endsWith("\n  - "), true);
+
+    const ordered = enter("1. alpha", 8);
+    assert.equal(ordered.doc, "1. alpha\n2. ");
+    assert.equal(ordered.cursor, ordered.doc.length);
+
+    const paren = enter("3) alpha", 8);
+    assert.equal(paren.doc, "3) alpha\n4) ");
+    assert.equal(paren.cursor, paren.doc.length);
+
+    const quoted = enter("> - alpha", 9);
+    assert.equal(quoted.doc, "> - alpha\n> - ");
+    assert.equal(quoted.cursor, quoted.doc.length);
+
+    const nested = enter(">   - child", 11);
+    assert.equal(nested.doc, ">   - child\n>   - ");
+    assert.equal(nested.cursor, nested.doc.length);
+
+    const quotedOrdered = enter("> 1. alpha", 10);
+    assert.equal(quotedOrdered.doc, "> 1. alpha\n> 2. ");
+    assert.equal(quotedOrdered.cursor, quotedOrdered.doc.length);
+
+    const split = enter("- alpha", 4);
+    assert.equal(split.doc, "- al\n- pha");
+    assert.equal(split.cursor, 7);
+    assert.equal(split.doc[split.cursor], "p");
+
+    const prose = enter("hello", 5);
+    assert.equal(prose.doc, "hello\n");
+    assert.equal(prose.cursor, 6);
+
+    for (const inputType of ["insertLineBreak", "insertParagraph"]) {
+      const again = enter("- alpha", 7, inputType);
+      assert.equal(again.doc, "- alpha\n- ");
+      assert.equal(again.cursor, 10);
+    }
   } finally {
     mounted.restore();
   }

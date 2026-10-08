@@ -938,6 +938,19 @@ a.md-link {
   content: attr(data-marker);
 }
 
+.md-line.md-quote.md-li,
+.md-line.md-quote.md-ol {
+  margin-left: 0;
+  list-style-position: inside;
+  padding-left: calc(0.7em + var(--indent, 0) * 1ch);
+}
+
+.md-raw.md-quote.md-li,
+.md-raw.md-quote.md-ol {
+  margin-left: 0;
+  padding-left: 0.7em;
+}
+
 .md-line.md-hr {
   min-height: 0;
   border: 0;
