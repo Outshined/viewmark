@@ -3721,10 +3721,32 @@ test("a caret in one paragraph does not hold the next paragraph or the blank lin
       assert.equal(seen.text, xBody);
       assert.equal(await fs.readFile(path.join(dir, "held.md"), "utf8"), xBody);
 
-      const again = await run(botEditArgs(port, "held.md"), {}, tailDiff());
+      const again = await run(
+        botEditArgs(port, "held.md"),
+        {},
+        diffText([[
+          "-XBeta paragraph has a tail the bot would change.",
+          "+XBeta paragraph has a tail the bot did change.",
+        ]]),
+      );
       assert.equal(again.code, shellStatus(409));
-      const commented = await run(tailComment(port, "held.md"), {}, TAIL_QUESTION);
+      assert.equal(again.stdout, xBody);
+      assert.equal(again.stderr, "rev 1\nconflict\nheld by Ada\n");
+      const shifted = linePos(xBody, "would change");
+      const commented = await run(
+        commentArgs(port, "bot", [
+          "add",
+          "held.md",
+          "--start", `${shifted.line}:${shifted.offset}`,
+          "--end", `${shifted.line}:${shifted.end}`,
+          "--expect", "would change",
+        ]),
+        {},
+        TAIL_QUESTION,
+      );
       assert.equal(commented.code, shellStatus(409));
+      assert.equal(commented.stdout, "");
+      assert.equal(commented.stderr, "error 409\nheld by Ada\n");
       assert.equal(await fs.readFile(path.join(dir, "held.md"), "utf8"), xBody);
       assert.equal(xBody.includes("```comment"), false);
       await delay(50);
@@ -3779,6 +3801,35 @@ test("a caret in one paragraph does not hold the next paragraph or the blank lin
     } finally {
       other.ada.ws.close();
       other.witness.ws.close();
+    }
+
+    const gap = await place("gap.md", PARAS.indexOf("\n\n") + 1);
+    try {
+      const edited = await run(botEditArgs(port, "gap.md"), {}, tailDiff());
+      assert.equal(edited.code, 0);
+      const changed = PARAS.replace("the bot would change", "the bot did change");
+      assert.equal(edited.stdout.split("\n")[0], "Alpha paragraph stays put.");
+      assert.equal(edited.stdout.split("\n")[2].endsWith("the bot did change."), true);
+      assert.equal(await fs.readFile(path.join(dir, "gap.md"), "utf8"), changed);
+      const marked = linePos(changed, "Gamma");
+      const added = await run(
+        commentArgs(port, "bot", [
+          "add",
+          "gap.md",
+          "--start", `${marked.line}:${marked.offset}`,
+          "--end", `${marked.line}:${marked.end}`,
+          "--expect", "Gamma",
+        ]),
+        {},
+        TAIL_QUESTION,
+      );
+      assert.equal(added.code, 0);
+      const stored = await fs.readFile(path.join(dir, "gap.md"), "utf8");
+      assert.equal(stored.split("\n")[0], "Alpha paragraph stays put.");
+      assert.match(stored, /\{c1\}Gamma\{\/c1\}/);
+    } finally {
+      gap.ada.ws.close();
+      gap.witness.ws.close();
     }
   });
 });
