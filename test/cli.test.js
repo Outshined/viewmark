@@ -19,6 +19,15 @@ const cli = path.join(root, "cli.js");
 const HELLO = "hello line\nsecond line\n";
 const DRAFT = "a draft\n";
 
+function diffText(hunks) {
+  const lines = [];
+  for (const hunk of hunks) {
+    lines.push("@@");
+    for (const row of hunk) lines.push(row);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 const HELP_NEEDLES = [
   "list",
   "show",
@@ -27,20 +36,26 @@ const HELP_NEEDLES = [
   "--rev",
   "--find",
   "--replace",
-  "one copy-paste edit",
+  "--start",
+  "--end",
+  "--expect",
   "stdout",
   "stderr",
   "rev N",
   "rev 0",
   "conflict",
+  "context",
+  "overlap",
   "matches N",
   "error STATUS",
   "held by NAME",
-  "A find may cross a span, the CLI locks every span it touches, another socket's span is 409 and names that user, and a comment range that overlaps a fence or a table or splits a comment is 409 and names that.",
+  "Each hunk is its own splice, so unchanged text between hunks stays put. Another socket's span is 409 and names that user, and a comment range that overlaps a fence or a table or splits a comment is 409 and names that.",
   "{files}",
   "{path,rev,text}",
   "{path,rev:0}",
-  "A stale rev exits 409 and does not write.",
+  "A context mismatch exits 409 and does not write.",
+  "No hunks leaves the file as it was and does not open a socket.",
+  "Later field writes win.",
   "ticket list",
   "ticket show",
   "ticket create",
@@ -51,8 +66,8 @@ const HELP_NEEDLES = [
   "comment show <path> <thread>",
   "comment reply <path> <thread>",
   "comment add <path> --start LINE:OFFSET --end LINE:OFFSET",
-  "comment edit <path> <thread> <note> --rev N",
-  "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET` and the question on stdin.",
+  "comment edit <path> <thread> <note> --expect TEXT",
+  "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin.",
   "Lines count from 1. Offset counts from 0. The end offset is exclusive.",
   "--repo is required on list, show, create, edit, delete, comment, commit, and ticket.",
   "ticket delete",
@@ -275,7 +290,7 @@ function trap() {
 
 test("T-cli-help", async () => {
   const agents = await fs.readFile(path.join(root, "AGENTS.md"), "utf8");
-  const cause = "A find may cross a span, the CLI locks every span it touches, another socket's span is 409 and names that user, and a comment range that overlaps a fence or a table or splits a comment is 409 and names that.";
+  const cause = "Each hunk is its own splice, so unchanged text between hunks stays put. Another socket's span is 409 and names that user, and a comment range that overlaps a fence or a table or splits a comment is 409 and names that.";
   assert.ok(agents.includes(cause));
   assert.equal(agents.includes("crosses one of those boundaries"), false);
   const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
@@ -464,7 +479,7 @@ test("T-cli-commit", async () => {
     for (const args of [
       ["show", "hello.md", "--message", "hi"],
       ["create", "a.md", "--message", "hi"],
-      ["edit", "hello.md", "--rev", "0", "--find", "a", "--replace", "b", "--message", "hi"],
+      ["edit", "hello.md", "--message", "hi"],
       ["delete", "hello.md", "--message", "hi"],
       ["ticket", "list", "--message", "hi"],
       ["repo", "list", "--message", "hi"],
@@ -525,10 +540,7 @@ test("T-cli-commit", async () => {
       "--repo", "docs",
       "edit",
       "notes/draft.md",
-      "--rev", "0",
-      "--find", "a draft",
-      "--replace", "a note",
-    ]);
+    ], {}, diffText([["-a draft", "+a note"]]));
     assert.equal(edited.code, 0);
     assert.equal(edited.stdout, "a note\n");
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
@@ -555,10 +567,7 @@ test("T-cli-commit", async () => {
       "--repo", "docs",
       "edit",
       "hello.md",
-      "--rev", "0",
-      "--find", "hello",
-      "--replace", "hi",
-    ]);
+    ], {}, diffText([["-hello line", "+hi line"]]));
     assert.equal(hello.code, 0);
     assert.equal(hello.stdout, "hi line\nsecond line\n");
     assert.equal((await git(dir, ["rev-parse", "HEAD"])).trim(), head);
@@ -582,10 +591,7 @@ test("T-cli-commit", async () => {
       "--repo", "docs",
       "edit",
       "hello.md",
-      "--rev", "1",
-      "--find", "hi",
-      "--replace", "yo",
-    ]);
+    ], {}, diffText([["-hi line", "+yo line"]]));
     assert.equal(shipped.code, 0);
     const noted = await run([...args, "--message", "  Ship it  "]);
     assert.equal(noted.code, 0);
@@ -768,7 +774,7 @@ test("T-cli-create", async () => {
     for (const args of [
       ["list", "--file", "x"],
       ["show", "hello.md", "--file", "x"],
-      ["edit", "hello.md", "--rev", "0", "--find", "a", "--replace", "b", "--file", "x"],
+      ["edit", "hello.md", "--file", "x"],
       ["delete", "hello.md", "--file", "x"],
       ["commit", "--file", "x"],
       ["ticket", "list", "--file", "x"],
@@ -934,240 +940,213 @@ test("T-cli-create", async () => {
   });
 });
 
+function editArgs(port, path, extra = []) {
+  return ["--port", String(port), "--user", "user", "--repo", "docs", "edit", path, ...extra];
+}
+
 test("T-cli-edit", async () => {
   const gate = await trap();
   try {
-    const missing = await run([
-      "--port", String(gate.port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "hello.md",
-      "--find", "hello",
-      "--replace", "hi",
-    ]);
-    assert.equal(missing.code, 2);
-    const emptyFind = await run([
-      "--port", String(gate.port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "hello.md",
-      "--rev", "0",
-      "--find", "",
-      "--replace", "hi",
-    ]);
-    assert.equal(emptyFind.code, 2);
-    const badRev = await run([
-      "--port", String(gate.port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "hello.md",
-      "--rev", "1.5",
-      "--find", "hello",
-      "--replace", "hi",
-    ]);
-    assert.equal(badRev.code, 2);
+    const rejected = [
+      ["--rev", "0"],
+      ["--find", "hello", "--replace", "hi"],
+      ["--replace", "hi"],
+      ["--start", "1:0"],
+      ["--start", "nope", "--end", "1:1"],
+    ];
+    for (const flags of rejected) {
+      const res = await run(
+        ["--port", String(gate.port), "--user", "user", "--repo", "docs", "edit", "hello.md", ...flags],
+        {},
+        diffText([["-hello line", "+hi line"]]),
+      );
+      assert.equal(res.code, 2, flags.join(" "));
+      assert.equal(res.stdout, "", flags.join(" "));
+    }
+    const invalid = await run(
+      ["--port", String(gate.port), "--user", "user", "--repo", "docs", "edit", "hello.md"],
+      {},
+      "not a diff\n",
+    );
+    assert.equal(invalid.code, 2);
+    assert.equal(invalid.stdout, "");
+    assert.equal(invalid.stderr, "viewmark: invalid diff\n");
+    const bare = await run(
+      ["--port", String(gate.port), "--user", "user", "--repo", "docs", "edit", "hello.md"],
+      {},
+      "@@\n+only\n",
+    );
+    assert.equal(bare.code, 2);
+    assert.equal(bare.stderr, "viewmark: hunk has no context\n");
+    const empty = await run(
+      ["--port", String(gate.port), "--user", "user", "--repo", "docs", "edit", "hello.md"],
+      {},
+      "diff --git a b\n--- a\n+++ b\n",
+    );
+    assert.equal(empty.code, 0);
+    assert.equal(empty.stdout, "");
+    assert.equal(empty.stderr, "");
     assert.equal(gate.hits.length, 0);
   } finally {
     await gate.close();
   }
 
   await withDocs(async ({ dir, port }) => {
-    const edited = await run([
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "notes/draft.md",
-      "--rev", "0",
-      "--find", "a draft",
-      "--replace", "a note",
-    ]);
+    const body = "Alpha\nBeta\nGamma\n";
+    await fs.writeFile(path.join(dir, "greek.md"), body);
+    const edited = await run(
+      editArgs(port, "greek.md"),
+      {},
+      diffText([["-Beta", "-Gamma", "+Beta", "+Delta"]]),
+    );
     assert.equal(edited.code, 0);
-    assert.equal(edited.stdout, "a note\n");
+    assert.equal(edited.stdout, "Alpha\nBeta\nDelta\n");
     assert.equal(edited.stderr, "rev 1\n");
-    assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), "a note\n");
+    assert.equal(await fs.readFile(path.join(dir, "greek.md"), "utf8"), "Alpha\nBeta\nDelta\n");
     await delay(400);
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
 
-    const cleared = await run([
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "hello.md",
-      "--rev", "0",
-      "--find", "second ",
-      "--replace=",
-    ]);
+    const cleared = await run(
+      editArgs(port, "hello.md"),
+      {},
+      diffText([["-second line", "+line"]]),
+    );
     assert.equal(cleared.code, 0);
     assert.equal(cleared.stdout, "hello line\nline\n");
     assert.equal(cleared.stderr, "rev 1\n");
     assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), "hello line\nline\n");
 
     await fs.writeFile(path.join(dir, "overlap.md"), "aaa\n");
-    const once = await run([
-      "--json",
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "overlap.md",
-      "--rev", "0",
-      "--find", "aa",
-      "--replace", "b",
-    ]);
+    const once = await run(
+      ["--json", ...editArgs(port, "overlap.md")],
+      {},
+      diffText([["-aaa", "+ba"]]),
+    );
     assert.equal(once.code, 0);
     assert.equal(once.stderr, "");
     assert.equal(once.stdout, `${JSON.stringify({ path: "overlap.md", rev: 1, text: "ba\n" })}\n`);
     assert.equal(await fs.readFile(path.join(dir, "overlap.md"), "utf8"), "ba\n");
 
-    const absent = await run([
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "missing.md",
-      "--rev", "0",
-      "--find", "a",
-      "--replace", "b",
-    ]);
+    const absent = await run(editArgs(port, "missing.md"), {}, diffText([["-a", "+b"]]));
     assert.equal(absent.code, shellStatus(404));
     assert.equal(absent.stdout, "");
     assert.equal(absent.stderr, "error 404\n");
+
+    const ranged = "one\ntwo\none\n";
+    await fs.writeFile(path.join(dir, "repeat.md"), ranged);
+    const many = await run(editArgs(port, "repeat.md"), {}, diffText([["-one", "+ONE"]]));
+    assert.equal(many.code, 2);
+    assert.equal(many.stdout, "");
+    assert.equal(many.stderr, "matches 2\n");
+    assert.equal(await fs.readFile(path.join(dir, "repeat.md"), "utf8"), ranged);
+    const third = await run(
+      editArgs(port, "repeat.md", ["--start", "3:0", "--end", "3:3"]),
+      {},
+      diffText([["-one", "+ONE"]]),
+    );
+    assert.equal(third.code, 0);
+    assert.equal(third.stdout, "one\ntwo\nONE\n");
+    assert.equal(third.stderr, "rev 1\n");
+    const flipped = await run(
+      editArgs(port, "repeat.md", ["--start", "3:3", "--end", "3:0"]),
+      {},
+      diffText([["-ONE", "+one"]]),
+    );
+    assert.equal(flipped.code, 0);
+    assert.equal(flipped.stdout, ranged);
+    assert.equal(await fs.readFile(path.join(dir, "repeat.md"), "utf8"), ranged);
   });
 });
 
-test("edit --find inside one span may cross a newline", async () => {
+test("a diff publishes one splice per hunk and skips text between them", async () => {
   await withDocs(async ({ dir, port }) => {
-    const body = "Alpha\nBeta\n";
-    await fs.writeFile(path.join(dir, "para.md"), body);
-    const edited = await run([
-      "--port", String(port),
-      "--user", "user",
-      "--repo", "docs",
-      "edit",
-      "para.md",
-      "--rev", "0",
-      "--find", "a\nB",
-      "--replace", "Z",
-    ]);
-    assert.equal(edited.code, 0);
-    assert.equal(edited.stderr, "rev 1\n");
-    assert.ok(edited.stdout.includes("Zeta"));
-    assert.equal(await fs.readFile(path.join(dir, "para.md"), "utf8"), edited.stdout);
-  });
-});
-
-test("edit --find that crosses a span applies when nobody else holds a span", async () => {
-  await withDocs(async ({ dir, port }) => {
-    const body = "Alpha\n\nBeta\n";
-    const next = "AlphZeta\n";
+    const body = "Alpha\n\nBeta\n\nGamma\n";
+    const next = "A\n\nBeta\n\nG\n";
     await fs.writeFile(path.join(dir, "gap.md"), body);
     await fs.writeFile(path.join(dir, "gap-json.md"), body);
     const watcher = await hello(port, "watch");
     try {
       await openDoc(watcher, "watch", "gap.md");
-      const edited = await run([
-        "--port", String(port),
-        "--user", "user",
-        "--repo", "docs",
-        "edit",
-        "gap.md",
-        "--rev", "0",
-        "--find", "a\n\nB",
-        "--replace", "Z",
-      ]);
+      const edited = await run(
+        editArgs(port, "gap.md"),
+        {},
+        diffText([["-Alpha", "+A"], ["-Gamma", "+G"]]),
+      );
       assert.equal(edited.code, 0);
       assert.equal(edited.stdout, next);
-      assert.equal(edited.stderr, "rev 1\n");
+      assert.equal(edited.stderr, "rev 2\n");
       assert.equal(await fs.readFile(path.join(dir, "gap.md"), "utf8"), next);
-      const seen = await watcher.next((msg) => msg.type === "doc" && msg.path === "gap.md");
-      assert.equal(seen.text, next);
-      assert.equal(seen.actor, "user");
+      const first = await watcher.next((msg) => msg.type === "doc" && msg.path === "gap.md");
+      const second = await watcher.next((msg) => msg.type === "doc" && msg.path === "gap.md");
+      assert.equal(first.actor, "user");
+      assert.equal(second.actor, "user");
+      assert.equal(first.text.includes("Gamma"), false);
+      assert.equal(first.text.includes("Beta"), true);
+      assert.ok(first.from > body.indexOf("Beta"));
+      assert.equal(second.text, next);
+      assert.ok(second.to <= body.indexOf("Beta"));
 
-      const json = await run([
-        "--json",
-        "--port", String(port),
-        "--user", "user",
-        "--repo", "docs",
-        "edit",
-        "gap-json.md",
-        "--rev", "0",
-        "--find", "a\n\nB",
-        "--replace", "Z",
-      ]);
+      const json = await run(
+        ["--json", ...editArgs(port, "gap-json.md")],
+        {},
+        diffText([["-Alpha", "+A"], ["-Gamma", "+G"]]),
+      );
       assert.equal(json.code, 0);
       assert.equal(json.stderr, "");
-      assert.equal(json.stdout, `${JSON.stringify({ path: "gap-json.md", rev: 1, text: next })}\n`);
-      assert.equal(await fs.readFile(path.join(dir, "gap-json.md"), "utf8"), next);
+      assert.equal(json.stdout, `${JSON.stringify({ path: "gap-json.md", rev: 2, text: next })}\n`);
     } finally {
       watcher.ws.close();
     }
   });
 });
 
-test("edit --find across every span applies, and a held title names that user", async () => {
+test("a Gamma change leaves a Beta hunk applicable, and a held Beta span names that user", async () => {
   await withDocs(async ({ dir, port }) => {
-    const body = "# Title\n\nBody\n";
-    const next = "# Next\n\nNew\n";
-    await fs.writeFile(path.join(dir, "page.md"), body);
-    await fs.writeFile(path.join(dir, "titled.md"), body);
-    const edited = await run([
-      "--port", String(port),
-      "--user", "user",
-      "--repo", "docs",
-      "edit",
-      "page.md",
-      "--rev", "0",
-      "--find", body,
-      "--replace", next,
-    ]);
-    assert.equal(edited.code, 0);
-    assert.equal(edited.stdout, next);
-    assert.equal(edited.stderr, "rev 1\n");
-    assert.equal(await fs.readFile(path.join(dir, "page.md"), "utf8"), next);
+    const body = "Alpha\nBeta\nGamma\n";
+    await fs.writeFile(path.join(dir, "greek.md"), body);
+    await fs.writeFile(path.join(dir, "held.md"), body);
+    const gamma = await run(editArgs(port, "greek.md"), {}, diffText([["-Gamma", "+Gone"]]));
+    assert.equal(gamma.code, 0);
+    assert.equal(gamma.stdout, "Alpha\nBeta\nGone\n");
+    const beta = await run(
+      editArgs(port, "greek.md", ["--start", "2:0", "--end", "2:4"]),
+      {},
+      diffText([["-Beta", "+Bee"]]),
+    );
+    assert.equal(beta.code, 0);
+    assert.equal(beta.stdout, "Alpha\nBee\nGone\n");
+    assert.equal(beta.stderr, "rev 2\n");
+    assert.equal(await fs.readFile(path.join(dir, "greek.md"), "utf8"), "Alpha\nBee\nGone\n");
 
     const holder = await hello(port, "holder");
     try {
-      const opened = await openDoc(holder, "holder", "titled.md");
+      const opened = await openDoc(holder, "holder", "held.md");
+      const at = opened.text.indexOf("Beta");
       holder.send({
         type: "lock",
         username: "holder",
-        path: "titled.md",
-        anchor: 0,
-        cursor: 0,
+        path: "held.md",
+        anchor: at,
+        cursor: at + 4,
         rev: opened.rev,
       });
-      await holder.next((msg) => msg.type === "locks" && msg.path === "titled.md");
-      const blocked = await run([
-        "--port", String(port),
-        "--user", "user",
-        "--repo", "docs",
-        "edit",
-        "titled.md",
-        "--rev", "0",
-        "--find", body,
-        "--replace", next,
-      ]);
+      await holder.next((msg) => msg.type === "locks" && msg.path === "held.md");
+      const blocked = await run(editArgs(port, "held.md"), {}, diffText([["-Beta", "+Bee"]]));
       assert.equal(blocked.code, shellStatus(409));
       assert.equal(blocked.stdout, body);
       assert.equal(blocked.stderr, "rev 0\nconflict\nheld by holder\n");
-      assert.equal(await fs.readFile(path.join(dir, "titled.md"), "utf8"), body);
-
-      const json = await run([
-        "--json",
-        "--port", String(port),
-        "--user", "user",
-        "--repo", "docs",
-        "edit",
-        "titled.md",
-        "--rev", "0",
-        "--find", body,
-        "--replace", next,
-      ]);
+      assert.equal(await fs.readFile(path.join(dir, "held.md"), "utf8"), body);
+      const json = await run(
+        ["--json", ...editArgs(port, "held.md")],
+        {},
+        diffText([["-Beta", "+Bee"]]),
+      );
       assert.equal(json.code, shellStatus(409));
       assert.equal(json.stderr, "");
       assert.equal(
         json.stdout,
-        `${JSON.stringify({ path: "titled.md", rev: 0, text: body, error: "conflict", heldBy: "holder" })}\n`,
+        `${JSON.stringify({ path: "held.md", rev: 0, text: body, error: "conflict", heldBy: "holder" })}\n`,
       );
-      assert.equal(await fs.readFile(path.join(dir, "titled.md"), "utf8"), body);
     } finally {
       holder.ws.close();
     }
@@ -1176,36 +1155,33 @@ test("edit --find across every span applies, and a held title names that user", 
 
 test("T-cli-stale", async () => {
   await withDocs(async ({ dir, port }) => {
-    const stale = await run([
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "hello.md",
-      "--rev", "4",
-      "--find", "line",
-      "--replace", "row",
-    ]);
-    assert.equal(stale.code, shellStatus(409));
-    assert.equal(stale.stdout, HELLO);
-    assert.equal(stale.stderr, "rev 0\nconflict\n");
+    const missing = await run(editArgs(port, "hello.md"), {}, diffText([["-missing", "+x"]]));
+    assert.equal(missing.code, shellStatus(409));
+    assert.equal(missing.stdout, HELLO);
+    assert.equal(missing.stderr, "rev 0\ncontext\n");
     assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
 
-    const json = await run([
-      "--json",
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "hello.md",
-      "--rev", "4",
-      "--find", "line",
-      "--replace", "row",
-    ]);
+    const json = await run(
+      ["--json", ...editArgs(port, "hello.md")],
+      {},
+      diffText([["-missing", "+x"]]),
+    );
     assert.equal(json.code, shellStatus(409));
     assert.equal(json.stderr, "");
     assert.equal(
       json.stdout,
-      `${JSON.stringify({ path: "hello.md", rev: 0, text: HELLO, error: "conflict" })}\n`,
+      `${JSON.stringify({ path: "hello.md", rev: 0, text: HELLO, error: "context" })}\n`,
     );
+
+    const past = await run(
+      editArgs(port, "hello.md", ["--start", "9:0", "--end", "9:1"]),
+      {},
+      diffText([["-hello line", "+x"]]),
+    );
+    assert.equal(past.code, shellStatus(400));
+    assert.equal(past.stdout, "");
+    assert.equal(past.stderr, "error 400\n");
+    assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
 
     const holder = await hello(port, "holder");
     const opened = await openDoc(holder, "holder", "notes/draft.md");
@@ -1218,38 +1194,14 @@ test("T-cli-stale", async () => {
       rev: opened.rev,
     });
     await holder.next((msg) => msg.type === "locks" && msg.path === "notes/draft.md");
-    const later = await run([
-      "--port", String(port),
-      "--user", "other",
-      "--repo", "docs",
-      "edit",
-      "notes/draft.md",
-      "--rev", "0",
-      "--find", "draft",
-      "--replace", "nope",
-    ]);
+    const later = await run(
+      ["--port", String(port), "--user", "other", "--repo", "docs", "edit", "notes/draft.md"],
+      {},
+      diffText([["-a draft", "+nope"]]),
+    );
     assert.equal(later.code, shellStatus(409));
     assert.equal(later.stdout, DRAFT);
     assert.equal(later.stderr, "rev 0\nconflict\nheld by holder\n");
-    assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), DRAFT);
-
-    const laterJson = await run([
-      "--json",
-      "--port", String(port),
-      "--user", "other",
-      "--repo", "docs",
-      "edit",
-      "notes/draft.md",
-      "--rev", "0",
-      "--find", "draft",
-      "--replace", "nope",
-    ]);
-    assert.equal(laterJson.code, shellStatus(409));
-    assert.equal(laterJson.stderr, "");
-    assert.equal(
-      laterJson.stdout,
-      `${JSON.stringify({ path: "notes/draft.md", rev: 0, text: DRAFT, error: "conflict", heldBy: "holder" })}\n`,
-    );
     assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), DRAFT);
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
     holder.ws.close();
@@ -1260,47 +1212,22 @@ test("T-cli-matches", async () => {
   await withDocs(async ({ dir, port }) => {
     const watcher = await hello(port, "watch");
     await openDoc(watcher, "watch", "hello.md");
-    const none = await run([
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "hello.md",
-      "--rev", "0",
-      "--find", "missing",
-      "--replace", "x",
-    ]);
-    assert.equal(none.code, 2);
-    assert.equal(none.stdout, "");
-    assert.equal(none.stderr, "matches 0\n");
-    const many = await run([
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "hello.md",
-      "--rev", "0",
-      "--find", "line",
-      "--replace", "row",
-    ]);
+    await fs.writeFile(path.join(dir, "lines.md"), "line\nline\n");
+    const many = await run(editArgs(port, "lines.md"), {}, diffText([["-line", "+row"]]));
     assert.equal(many.code, 2);
     assert.equal(many.stdout, "");
     assert.equal(many.stderr, "matches 2\n");
     await delay(100);
     assert.equal(sawOwnEdit(watcher.queue, "user"), false);
     assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
+    assert.equal(await fs.readFile(path.join(dir, "lines.md"), "utf8"), "line\nline\n");
 
-    await fs.writeFile(path.join(dir, "quad.md"), "aaaa\n");
-    const overlap = await run([
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "quad.md",
-      "--rev", "0",
-      "--find", "aa",
-      "--replace", "b",
-    ]);
+    await fs.writeFile(path.join(dir, "triple.md"), "a\na\na\n");
+    const overlap = await run(editArgs(port, "triple.md"), {}, diffText([["-a", "-a", "+b"]]));
     assert.equal(overlap.code, 2);
-    assert.equal(overlap.stderr, "matches 2\n");
-    assert.equal(await fs.readFile(path.join(dir, "quad.md"), "utf8"), "aaaa\n");
+    assert.equal(overlap.stdout, "");
+    assert.equal(overlap.stderr, "overlap\n");
+    assert.equal(await fs.readFile(path.join(dir, "triple.md"), "utf8"), "a\na\na\n");
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
     watcher.ws.close();
   });
@@ -1310,28 +1237,15 @@ test("T-cli-noop", async () => {
   await withDocs(async ({ dir, port }) => {
     const watcher = await hello(port, "watch");
     await openDoc(watcher, "watch", "hello.md");
-    const same = await run([
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "hello.md",
-      "--rev", "0",
-      "--find", "hello",
-      "--replace", "hello",
-    ]);
+    const same = await run(editArgs(port, "hello.md"), {}, diffText([[" hello line"]]));
     assert.equal(same.code, 0);
     assert.equal(same.stdout, HELLO);
     assert.equal(same.stderr, "rev 0\n");
-    const json = await run([
-      "--json",
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "hello.md",
-      "--rev", "0",
-      "--find", "hello",
-      "--replace", "hello",
-    ]);
+    const json = await run(
+      ["--json", ...editArgs(port, "hello.md")],
+      {},
+      diffText([["-hello line", "+hello line"]]),
+    );
     assert.equal(json.code, 0);
     assert.equal(json.stderr, "");
     assert.equal(json.stdout, `${JSON.stringify({ path: "hello.md", rev: 0, text: HELLO })}\n`);
@@ -1339,30 +1253,6 @@ test("T-cli-noop", async () => {
     assert.equal(sawOwnEdit(watcher.queue, "user"), false);
     assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
-
-    const many = await run([
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "hello.md",
-      "--rev", "0",
-      "--find", "line",
-      "--replace", "line",
-    ]);
-    assert.equal(many.code, 2);
-    assert.equal(many.stderr, "matches 2\n");
-    const absent = await run([
-      "--port", String(port),
-      "--user", "user", "--repo", "docs",
-      "edit",
-      "hello.md",
-      "--rev", "0",
-      "--find", "zzz",
-      "--replace", "zzz",
-    ]);
-    assert.equal(absent.code, 2);
-    assert.equal(absent.stderr, "matches 0\n");
-    assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
     watcher.ws.close();
   });
 });
@@ -1412,8 +1302,9 @@ test("T-cli-user", async () => {
 
   await withDocs(async ({ dir, port }) => {
     const fromEnv = await run(
-      ["--port", String(port), "--repo", "docs", "edit", "hello.md", "--rev", "0", "--find", "hello", "--replace", "howdy"],
+      ["--port", String(port), "--repo", "docs", "edit", "hello.md"],
       { VIEWMARK_USER: "envuser" },
+      diffText([["-hello line", "+howdy line"]]),
     );
     assert.equal(fromEnv.code, 0);
     assert.equal(fromEnv.stdout, "howdy line\nsecond line\n");
@@ -1426,11 +1317,9 @@ test("T-cli-user", async () => {
         "--port", String(port),
         "--repo", "docs",
         "edit", "notes/draft.md",
-        "--rev", "0",
-        "--find", "a draft",
-        "--replace", "flagged",
       ],
       { VIEWMARK_USER: "envuser" },
+      diffText([["-a draft", "+flagged"]]),
     );
     assert.equal(flagged.code, 0);
     assert.equal(flagged.stdout, "flagged\n");
@@ -2126,7 +2015,6 @@ test("T-cli-ticket-set", async () => {
     const cases = [
       ["ticket", "set", "short", "--rev", "0", "--title", "Hello"],
       ["ticket", "set", "iiiiiiii", "--rev", "0", "--title", "Hello"],
-      ["ticket", "set", A, "--title", "Hello"],
       ["ticket", "set", A, "--rev", "1.5", "--title", "Hello"],
       ["ticket", "set", A, "--rev", "0"],
       ["ticket", "set", A, "--rev", "0", "--title", ""],
@@ -2178,70 +2066,40 @@ test("T-cli-ticket-set", async () => {
     };
     const watcher = await hello(port, "watch");
     try {
-      const missing = await runFast(ticketArgs(port, ["ticket", "set", D, "--rev", "0", "--title", "Nope"]));
+      const missing = await runFast(ticketArgs(port, ["ticket", "set", D, "--title", "Nope"]));
       assert.equal(missing.code, shellStatus(404));
       assert.equal(missing.stdout, "");
       assert.equal(missing.stderr, "error 404\n");
 
-      const sameTitle = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "0", "--title", "  Beta  "]));
+      const sameTitle = await runFast(ticketArgs(port, ["ticket", "set", B, "--title", "  Beta  "]));
       assert.equal(sameTitle.code, 0);
       assert.equal(sameTitle.stdout, BODY);
       assert.equal(sameTitle.stderr, ticketErr(view));
       await assertNoTicketBroadcast(watcher);
 
-      const sameDepends = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "0", "--depends", `${C}, ${A}`]));
+      const sameDepends = await runFast(ticketArgs(port, ["ticket", "set", B, "--depends", `${C}, ${A}`]));
       assert.equal(sameDepends.code, 0);
       assert.equal(sameDepends.stdout, BODY);
       assert.equal(sameDepends.stderr, ticketErr(view));
       await assertNoTicketBroadcast(watcher);
 
-      const sameParent = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev=0", "--parent=none"]));
+      const sameParent = await runFast(ticketArgs(port, ["ticket", "set", B, "--parent=none"]));
       assert.equal(sameParent.code, 0);
       assert.equal(sameParent.stderr, ticketErr(view));
       await assertNoTicketBroadcast(watcher);
       assert.equal(await fs.readFile(bPath, "utf8"), original);
 
-      const stale = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "4", "--title", "Renamed"]));
-      assert.equal(stale.code, shellStatus(409));
-      assert.equal(stale.stdout, BODY);
-      assert.equal(stale.stderr, ticketErr(view, true));
-      assert.equal(stale.stderr.includes("error "), false);
-      await assertNoTicketBroadcast(watcher);
-
-      const staleBad = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "4", "--title", "x".repeat(201)]));
-      assert.equal(staleBad.code, shellStatus(409));
-      assert.equal(staleBad.stdout, BODY);
-      assert.equal(staleBad.stderr, ticketErr(view, true));
-      assert.equal(await fs.readFile(bPath, "utf8"), original);
-
-      const staleJson = await runFast(["--json", ...ticketArgs(port, ["ticket", "set", B, "--rev", "4", "--title", "Renamed"])]);
-      assert.equal(staleJson.code, shellStatus(409));
-      assert.equal(staleJson.stderr, "");
-      const conflict = JSON.parse(staleJson.stdout);
-      assert.deepEqual(Object.keys(conflict), [
-        "id", "path", "rev", "title", "state", "type", "priority", "parent", "depends", "reporter", "created", "text", "error",
-      ]);
-      assert.deepEqual(conflict, {
-        ...ticketJson({
-          id: B,
-          path: `tickets/${B}.md`,
-          text: BODY,
-          ...view,
-        }),
-        error: "conflict",
-      });
-
-      const long = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "0", "--title", "x".repeat(201)]));
+      const long = await runFast(ticketArgs(port, ["ticket", "set", B, "--title", "x".repeat(201)]));
       assert.equal(long.code, shellStatus(400));
       assert.equal(long.stdout, "");
       assert.equal(long.stderr, "error 400\n");
-      const tabbed = await runFast(["--json", ...ticketArgs(port, ["ticket", "set", B, "--rev", "0", "--title", "bad\ttitle"])]);
+      const tabbed = await runFast(["--json", ...ticketArgs(port, ["ticket", "set", B, "--title", "bad\ttitle"])]);
       assert.equal(tabbed.code, shellStatus(400));
       assert.equal(tabbed.stdout, "");
       assert.equal(tabbed.stderr, "error 400\n");
       assert.equal(await fs.readFile(bPath, "utf8"), original);
 
-      const renamed = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev=0", "--title=Renamed"]));
+      const renamed = await runFast(ticketArgs(port, ["ticket", "set", B, "--title=Renamed"]));
       assert.equal(renamed.code, 0);
       view.rev = 1;
       view.title = "Renamed";
@@ -2249,7 +2107,7 @@ test("T-cli-ticket-set", async () => {
       assert.equal(renamed.stderr, ticketErr(view));
       assert.equal(parseTicket(B, await fs.readFile(bPath, "utf8")).body, BODY);
 
-      const progressed = await runFast(["--json", ...ticketArgs(port, ["ticket", "set", B, "--rev", "1", "--state", "in progress"])]);
+      const progressed = await runFast(["--json", ...ticketArgs(port, ["ticket", "set", B, "--state", "in progress"])]);
       assert.equal(progressed.code, 0);
       assert.equal(progressed.stderr, "");
       view.rev = 2;
@@ -2264,7 +2122,7 @@ test("T-cli-ticket-set", async () => {
       assert.equal(Object.hasOwn(progressedJson, "error"), false);
 
       const linked = await runFast(ticketArgs(port, [
-        "ticket", "set", B, "--rev", "2", "--parent", A, "--depends", `${C}, ${A}`,
+        "ticket", "set", B, "--parent", A, "--depends", `${C}, ${A}`,
       ]));
       assert.equal(linked.code, 0);
       view.rev = 3;
@@ -2272,7 +2130,7 @@ test("T-cli-ticket-set", async () => {
       assert.equal(linked.stdout, BODY);
       assert.equal(linked.stderr, ticketErr(view));
 
-      const replaced = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "3", "--depends", ` ${C} `]));
+      const replaced = await runFast(ticketArgs(port, ["ticket", "set", B, "--depends", ` ${C} `]));
       assert.equal(replaced.code, 0);
       view.rev = 4;
       view.depends = [C];
@@ -2280,7 +2138,7 @@ test("T-cli-ticket-set", async () => {
       assert.deepEqual(parseTicket(B, await fs.readFile(bPath, "utf8")).depends, [C]);
 
       const cleared = await runFast(ticketArgs(port, [
-        "ticket", "set", B, "--rev", "4", "--parent", "none", "--depends", "none",
+        "ticket", "set", B, "--parent", "none", "--depends", "none",
       ]));
       assert.equal(cleared.code, 0);
       view.rev = 5;
@@ -2290,13 +2148,13 @@ test("T-cli-ticket-set", async () => {
       assert.equal(cleared.stderr, ticketErr(view));
 
       const beforeMiss = await fs.readFile(bPath, "utf8");
-      const miss = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "5", "--parent", D]));
+      const miss = await runFast(ticketArgs(port, ["ticket", "set", B, "--parent", D]));
       assert.equal(miss.code, shellStatus(409));
       assert.equal(miss.stdout, BODY);
       assert.equal(miss.stderr, ticketErr(view, true));
       assert.equal(await fs.readFile(bPath, "utf8"), beforeMiss);
 
-      const self = await runFast(["--json", ...ticketArgs(port, ["ticket", "set", B, "--rev", "5", "--parent", B])]);
+      const self = await runFast(["--json", ...ticketArgs(port, ["ticket", "set", B, "--parent", B])]);
       assert.equal(self.code, shellStatus(409));
       assert.equal(self.stderr, "");
       assert.deepEqual(JSON.parse(self.stdout), {
@@ -2305,13 +2163,13 @@ test("T-cli-ticket-set", async () => {
       });
       assert.equal(await fs.readFile(bPath, "utf8"), beforeMiss);
 
-      const parented = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "5", "--parent", A]));
+      const parented = await runFast(ticketArgs(port, ["ticket", "set", B, "--parent", A]));
       assert.equal(parented.code, 0);
       view.rev = 6;
       view.parent = A;
       assert.equal(parented.stderr, ticketErr(view));
 
-      const typed = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "6", "--type", "bug"]));
+      const typed = await runFast(ticketArgs(port, ["ticket", "set", B, "--type", "bug"]));
       assert.equal(typed.code, 0);
       view.rev = 7;
       view.type = "bug";
@@ -2324,13 +2182,13 @@ test("T-cli-ticket-set", async () => {
       assert.equal(typedDisk.title, "Renamed");
 
       const beforeSame = await fs.readFile(bPath, "utf8");
-      const sameType = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "7", "--type", "bug"]));
+      const sameType = await runFast(ticketArgs(port, ["ticket", "set", B, "--type", "bug"]));
       assert.equal(sameType.code, 0);
       assert.equal(sameType.stdout, BODY);
       assert.equal(sameType.stderr, ticketErr(view));
       assert.equal(await fs.readFile(bPath, "utf8"), beforeSame);
 
-      const lowered = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "7", "--priority", "low"]));
+      const lowered = await runFast(ticketArgs(port, ["ticket", "set", B, "--priority", "low"]));
       assert.equal(lowered.code, 0);
       view.rev = 8;
       view.priority = "low";
@@ -2338,13 +2196,13 @@ test("T-cli-ticket-set", async () => {
       assert.equal(lowered.stderr, ticketErr(view));
       assert.equal(parseTicket(B, await fs.readFile(bPath, "utf8")).priority, "low");
       const beforeSamePriority = await fs.readFile(bPath, "utf8");
-      const samePriority = await runFast(ticketArgs(port, ["ticket", "set", B, "--rev", "8", "--priority", "low"]));
+      const samePriority = await runFast(ticketArgs(port, ["ticket", "set", B, "--priority", "low"]));
       assert.equal(samePriority.code, 0);
       assert.equal(samePriority.stdout, BODY);
       assert.equal(samePriority.stderr, ticketErr(view));
       assert.equal(await fs.readFile(bPath, "utf8"), beforeSamePriority);
 
-      const cycle = await runFast(ticketArgs(port, ["ticket", "set", A, "--rev", "0", "--parent", B]));
+      const cycle = await runFast(ticketArgs(port, ["ticket", "set", A, "--parent", B]));
       assert.equal(cycle.code, shellStatus(409));
       assert.equal(cycle.stdout, "alpha\n");
       assert.equal(cycle.stderr, ticketErr({
@@ -2359,6 +2217,17 @@ test("T-cli-ticket-set", async () => {
       assert.equal(parseTicket(A, await fs.readFile(path.join(dir, "tickets", `${A}.md`), "utf8")).parent, "");
       assert.equal(parseTicket(B, await fs.readFile(bPath, "utf8")).parent, A);
       assert.equal(parseTicket(B, await fs.readFile(bPath, "utf8")).body, BODY);
+
+      const later = await runFast(ticketArgs(port, ["ticket", "set", B, "--title", "Later"]));
+      assert.equal(later.code, 0);
+      assert.equal(later.stdout, BODY);
+      view.rev = 9;
+      view.title = "Later";
+      assert.equal(later.stderr, ticketErr(view));
+      const laterDisk = parseTicket(B, await fs.readFile(bPath, "utf8"));
+      assert.equal(laterDisk.title, "Later");
+      assert.equal(laterDisk.body, BODY);
+      assert.equal(laterDisk.parent, A);
       await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
     } finally {
       watcher.ws.close();
@@ -2493,7 +2362,7 @@ test("T-cli-ticket-delete", async () => {
     await writeTicket(dir, { id: C, title: "See", created: T1, body: "see\n" });
     await writeTicket(dir, { id: E, title: "Ee", created: T2, body: "ee\n" });
     const linked = await runFast(ticketArgs(port, [
-      "ticket", "set", C, "--rev", "0", "--parent", B, "--depends", B,
+      "ticket", "set", C, "--parent", B, "--depends", B,
     ]));
     assert.equal(linked.code, 0);
     assert.equal(parseTicket(C, await fs.readFile(path.join(dir, "tickets", `${C}.md`), "utf8")).parent, B);
@@ -3039,7 +2908,7 @@ test("T-comment-edit", async () => {
     }
 
     const same = await run(
-      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "0"]),
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--expect", "Because."]),
       {},
       "Because.",
     );
@@ -3049,7 +2918,7 @@ test("T-comment-edit", async () => {
     assert.equal(await fs.readFile(full, "utf8"), THREAD_DOC);
 
     const edited = await run(
-      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "0"]),
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--expect", "Because."]),
       {},
       "Updated.",
     );
@@ -3063,7 +2932,7 @@ test("T-comment-edit", async () => {
     const changed = await fs.readFile(full, "utf8");
 
     const again = await run(
-      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "1"]),
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--expect", "Updated."]),
       {},
       "Updated.",
     );
@@ -3073,7 +2942,7 @@ test("T-comment-edit", async () => {
     assert.equal(await fs.readFile(full, "utf8"), changed);
 
     const json = await run(
-      ["--json", ...commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "1"])],
+      ["--json", ...commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--expect", "Updated."])],
       {},
       "Updated. again",
     );
@@ -3083,7 +2952,7 @@ test("T-comment-edit", async () => {
     assert.equal(notesOf(await fs.readFile(full, "utf8"))[1].raw, `${GROK_LINE}\nUpdated. again`);
 
     const separator = await run(
-      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "2"]),
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--expect", "Updated. again"]),
       {},
       "no\n::\n",
     );
@@ -3101,7 +2970,7 @@ test("T-comment-auth", async () => {
     try {
       await openDoc(watcher, "watcher", THREAD_REL);
       const ada = await run(
-        commentArgs(port, "Ada", ["edit", THREAD_REL, "c1", "1", "--rev", "0"]),
+        commentArgs(port, "Ada", ["edit", THREAD_REL, "c1", "1", "--expect", "Because."]),
         {},
         "Updated.",
       );
@@ -3109,7 +2978,7 @@ test("T-comment-auth", async () => {
       assert.equal(ada.stdout, "");
       assert.equal(ada.stderr, "error 403\n");
       const note0 = await run(
-        commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "0", "--rev", "0"]),
+        commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "0", "--expect", "How?"]),
         {},
         "Updated.",
       );
@@ -3162,7 +3031,7 @@ test("T-comment-conflict", async () => {
     }
 
     const edited = await run(
-      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "0"]),
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--expect", "Because."]),
       {},
       "Updated.",
     );
@@ -3171,14 +3040,22 @@ test("T-comment-conflict", async () => {
     const changed = await fs.readFile(full, "utf8");
     assert.notEqual(changed, THREAD_DOC);
     const stale = await run(
-      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--rev", "0"]),
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--expect", "Because."]),
       {},
       "Nope.",
     );
     assert.equal(stale.code, shellStatus(409));
     assert.equal(stale.stdout, "");
-    assert.equal(stale.stderr, "error 409\n");
+    assert.equal(stale.stderr, "error 409\ncontext\n");
     assert.equal(await fs.readFile(full, "utf8"), changed);
+    const moved = await run(
+      commentArgs(port, "Grok", ["edit", THREAD_REL, "c1", "1", "--expect", "Updated."]),
+      {},
+      "Nope.",
+    );
+    assert.equal(moved.code, 0);
+    assert.equal(moved.stderr, "rev 2\n");
+    assert.equal(notesOf(await fs.readFile(full, "utf8"))[1].raw, `${GROK_LINE}\nNope.`);
   });
 });
 
@@ -3193,8 +3070,8 @@ test("T-comment-usage", async () => {
     "comment show <path> <thread>",
     "comment reply <path> <thread>",
     "comment add <path> --start LINE:OFFSET --end LINE:OFFSET",
-    "comment edit <path> <thread> <note> --rev N",
-    "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET` and the question on stdin.",
+    "comment edit <path> <thread> <note> --expect TEXT",
+    "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin.",
   ]) {
     assert.ok(help.stdout.includes(line), line);
   }
@@ -3215,14 +3092,14 @@ test("T-comment-usage", async () => {
       [["comment", "list", "a.md", "b.md"], "unexpected argument"],
       [["comment", "show", "a.md"], "unexpected argument"],
       [["comment", "reply", "a.md", "c1", "extra"], "unexpected argument"],
-      [["comment", "edit", "a.md", "c1", "1", "extra", "--rev", "0"], "unexpected argument"],
+      [["comment", "edit", "a.md", "c1", "1", "extra", "--expect", "x"], "unexpected argument"],
       [["comment", "nope", "a.md"], "unexpected argument"],
       [["comment", "edit", "a.md", "c1"], "invalid note"],
-      [["comment", "edit", "a.md", "c1", "abc", "--rev", "0"], "invalid note"],
-      [["comment", "edit", "a.md", "c1", "1.5", "--rev", "0"], "invalid note"],
-      [["comment", "edit", "a.md", "c1", "1"], "edit requires integer --rev"],
-      [["comment", "edit", "a.md", "c1", "1", "--rev", "nope"], "edit requires integer --rev"],
-      [["comment", "edit", "a.md", "c1", "1", "--rev", "1.5"], "edit requires integer --rev"],
+      [["comment", "edit", "a.md", "c1", "abc", "--expect", "x"], "invalid note"],
+      [["comment", "edit", "a.md", "c1", "1.5", "--expect", "x"], "invalid note"],
+      [["comment", "edit", "a.md", "c1", "1"], "edit requires --expect"],
+      [["comment", "edit", "a.md", "c1", "1", "--rev", "nope"], "unexpected flag"],
+      [["comment", "edit", "a.md", "c1", "1", "--rev", "1.5", "--expect", "x"], "unexpected flag"],
       [["comment", "reply", "a.md", "c1", "--rev", "1"], "unexpected flag"],
       [["comment", "add"], "path required"],
       [["comment", "add", "a.md"], "add requires --start and --end"],
@@ -3230,12 +3107,13 @@ test("T-comment-usage", async () => {
       [["comment", "add", "a.md", "--end", "1:1"], "add requires --start and --end"],
       [["comment", "add", "a.md", "--start", "foo", "--end", "1:1"], "invalid position"],
       [["comment", "add", "a.md", "--start", "1:0", "--end", "1:1", "extra"], "unexpected argument"],
+      [["comment", "add", "a.md", "--start", "1:0", "--end", "1:1"], "add requires --expect"],
       [["comment", "add", "a.md", "--start", "1:0", "--end", "1:1", "--find", "x"], "unexpected flag"],
       [["comment", "add", "a.md", "--start", "1:0", "--end", "1:1", "--rev", "0"], "unexpected flag"],
       [["comment", "list", "a.md", "--start", "1:0", "--end", "1:1"], "unexpected flag"],
       [["comment", "show", "a.md", "c1", "--start", "1:0"], "unexpected flag"],
       [["comment", "reply", "a.md", "c1", "--end", "1:1"], "unexpected flag"],
-      [["comment", "edit", "a.md", "c1", "0", "--rev", "0", "--start", "1:0"], "unexpected flag"],
+      [["comment", "edit", "a.md", "c1", "0", "--expect", "x", "--start", "1:0"], "unexpected flag"],
       [["list", "--start", "1:0"], "unexpected flag"],
       [["show", "hello.md", "--end", "1:0"], "unexpected flag"],
     ];
@@ -3254,7 +3132,6 @@ test("T-comment-usage", async () => {
       THREAD_REL,
       "c1",
       "-1",
-      "--rev", "0",
     ]);
     assert.equal(negative.code, shellStatus(400));
     assert.equal(negative.stdout, "");
@@ -3380,7 +3257,7 @@ test("T-comment-add", async () => {
   const agents = await fs.readFile(path.join(root, "AGENTS.md"), "utf8");
   const replyAt = agents.indexOf("A reply goes through `comment reply`, not through `edit`.");
   const leaveAt = agents.indexOf(
-    "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET` and the question on stdin. Lines count from 1. Offset counts from 0. The end offset is exclusive.",
+    "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin. `--expect` is the bytes at that range. Lines count from 1. Offset counts from 0. The end offset is exclusive.",
   );
   assert.ok(replyAt !== -1);
   assert.ok(leaveAt > replyAt);
@@ -3390,13 +3267,13 @@ test("T-comment-add", async () => {
   const gate = await trap();
   try {
     const silent = [
-      [["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11"], ""],
-      [["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11"], "Yes.\n::\nno\n"],
-      [["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11"], ":: 3\n"],
-      [["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:8"], question],
-      [["comment", "add", "notes/fox.md", "--start", "0:0", "--end", "1:1"], question],
-      [["comment", "add", "notes/fox.md", "--start", "1:-1", "--end", "1:2"], question],
-      [["comment", "add", "notes/fox.md", "--start", "-3:0", "--end", "1:1"], question],
+      [["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11", "--expect", "fox"], ""],
+      [["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11", "--expect", "fox"], "Yes.\n::\nno\n"],
+      [["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11", "--expect", "fox"], ":: 3\n"],
+      [["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:8", "--expect", "fox"], question],
+      [["comment", "add", "notes/fox.md", "--start", "0:0", "--end", "1:1", "--expect", "x"], question],
+      [["comment", "add", "notes/fox.md", "--start", "1:-1", "--end", "1:2", "--expect", "x"], question],
+      [["comment", "add", "notes/fox.md", "--start", "-3:0", "--end", "1:1", "--expect", "x"], question],
     ];
     for (const [args, input] of silent) {
       const res = await run(
@@ -3414,26 +3291,26 @@ test("T-comment-add", async () => {
   }
 
   const sent = await captureComment(
-    ["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11"],
+    ["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11", "--expect", "fox"],
     question,
     fox,
   );
   assert.equal(sent.res.code, 0);
   assert.equal(sent.res.stdout, "c1\n");
   assert.equal(sent.res.stderr, "rev 5\n");
-  assert.deepEqual(sent.messages.map((msg) => msg.type), ["hello", "repo", "open", "comment.add"]);
+  assert.deepEqual(sent.messages.map((msg) => msg.type), ["hello", "repo", "comment.add"]);
   assert.deepEqual(addedMessage(sent.messages), {
     type: "comment.add",
     username: "Ada",
     path: "notes/fox.md",
-    rev: 4,
-    anchor: 8,
-    cursor: 11,
+    start: { line: 1, offset: 8 },
+    end: { line: 1, offset: 11 },
+    expect: "fox",
     text: question,
   });
 
   const jsonWire = await captureComment(
-    ["--json", "comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11"],
+    ["--json", "comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:11", "--expect", "fox"],
     question,
     fox,
   );
@@ -3447,61 +3324,52 @@ test("T-comment-add", async () => {
   });
 
   const wrapped = await captureComment(
-    ["comment", "add", "notes/pair.md", "--start", "1:0", "--end", "2:0"],
+    ["comment", "add", "notes/pair.md", "--start", "1:0", "--end", "2:0", "--expect", "one\n"],
     question,
     "one\ntwo\n",
   );
   assert.equal(wrapped.res.code, 0);
-  assert.equal(addedMessage(wrapped.messages).anchor, 0);
-  assert.equal(addedMessage(wrapped.messages).cursor, 4);
+  assert.deepEqual(addedMessage(wrapped.messages).start, { line: 1, offset: 0 });
+  assert.deepEqual(addedMessage(wrapped.messages).end, { line: 2, offset: 0 });
+  assert.equal(addedMessage(wrapped.messages).expect, "one\n");
 
   const throughPeriod = await captureComment(
-    ["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:12"],
+    ["comment", "add", "notes/fox.md", "--start", "1:8", "--end", "1:12", "--expect", "fox."],
     question,
     fox,
   );
   assert.equal(throughPeriod.res.code, 0);
-  assert.equal(addedMessage(throughPeriod.messages).anchor, 8);
-  assert.equal(addedMessage(throughPeriod.messages).cursor, 12);
+  assert.deepEqual(addedMessage(throughPeriod.messages).end, { line: 1, offset: 12 });
+  assert.equal(addedMessage(throughPeriod.messages).expect, "fox.");
 
   const reversed = await captureComment(
-    ["comment", "add", "notes/fox.md", "--start", "1:11", "--end", "1:8"],
+    ["comment", "add", "notes/fox.md", "--start", "1:11", "--end", "1:8", "--expect", "fox"],
     question,
     fox,
   );
   assert.equal(reversed.res.code, 0);
-  assert.equal(addedMessage(reversed.messages).anchor, 11);
-  assert.equal(addedMessage(reversed.messages).cursor, 8);
-
-  const missingLine = await captureComment(
-    ["comment", "add", "notes/fox.md", "--start", "9:0", "--end", "9:1"],
-    question,
-    fox,
-  );
-  assert.equal(missingLine.res.code, shellStatus(400));
-  assert.equal(missingLine.res.stdout, "");
-  assert.equal(missingLine.res.stderr, "error 400\n");
-  assert.equal(missingLine.messages.some((msg) => msg.type === "comment.add"), false);
-  assert.equal(missingLine.messages.some((msg) => msg.type === "open"), true);
-
-  const past = await captureComment(
-    ["comment", "add", "notes/fox.md", "--start", "1:0", "--end", "1:13"],
-    question,
-    fox,
-  );
-  assert.equal(past.res.code, shellStatus(400));
-  assert.equal(past.res.stderr, "error 400\n");
-  assert.equal(past.messages.some((msg) => msg.type === "comment.add"), false);
+  assert.deepEqual(addedMessage(reversed.messages).start, { line: 1, offset: 11 });
+  assert.deepEqual(addedMessage(reversed.messages).end, { line: 1, offset: 8 });
+  assert.equal(addedMessage(reversed.messages).expect, "fox");
 
   await withDocs(async ({ dir, port }) => {
     const rel = "notes/fox.md";
     const full = path.join(dir, rel);
     await fs.writeFile(full, fox);
+    const wrong = await run(
+      commentArgs(port, "Ada", ["add", rel, "--start", "1:8", "--end", "1:11", "--expect", "cat"]),
+      {},
+      question,
+    );
+    assert.equal(wrong.code, shellStatus(409));
+    assert.equal(wrong.stdout, "");
+    assert.equal(wrong.stderr, "error 409\ncontext\n");
+    assert.equal(await fs.readFile(full, "utf8"), fox);
     const witness = await hello(port, "witness");
     try {
       await openDoc(witness, "witness", rel);
       const added = await run(
-        commentArgs(port, "Ada", ["add", rel, "--start", "1:8", "--end", "1:11"]),
+        commentArgs(port, "Ada", ["add", rel, "--start", "1:8", "--end", "1:11", "--expect", "fox"]),
         {},
         question,
       );
@@ -3531,7 +3399,7 @@ test("T-comment-add", async () => {
     const revFull = path.join(dir, "notes/rev.md");
     await fs.writeFile(revFull, fox);
     const backward = await run(
-      commentArgs(port, "Ada", ["add", "notes/rev.md", "--start", "1:11", "--end", "1:8"]),
+      commentArgs(port, "Ada", ["add", "notes/rev.md", "--start", "1:11", "--end", "1:8", "--expect", "fox"]),
       {},
       question,
     );
@@ -3542,7 +3410,7 @@ test("T-comment-add", async () => {
     const dotFull = path.join(dir, "notes/dot.md");
     await fs.writeFile(dotFull, fox);
     const dotted = await run(
-      commentArgs(port, "Ada", ["add", "notes/dot.md", "--start", "1:8", "--end", "1:12"]),
+      commentArgs(port, "Ada", ["add", "notes/dot.md", "--start", "1:8", "--end", "1:12", "--expect", "fox."]),
       {},
       question,
     );
@@ -3552,7 +3420,7 @@ test("T-comment-add", async () => {
     const pairFull = path.join(dir, "notes/pair.md");
     await fs.writeFile(pairFull, "one\ntwo\n");
     const pair = await run(
-      commentArgs(port, "Ada", ["add", "notes/pair.md", "--start", "1:0", "--end", "2:0"]),
+      commentArgs(port, "Ada", ["add", "notes/pair.md", "--start", "1:0", "--end", "2:0", "--expect", "one\n"]),
       {},
       question,
     );
@@ -3566,7 +3434,7 @@ test("T-comment-add", async () => {
     try {
       await openDoc(watcher, "witness", "notes/short.md");
       const missing = await run(
-        commentArgs(port, "Ada", ["add", "notes/short.md", "--start", "9:0", "--end", "9:1"]),
+        commentArgs(port, "Ada", ["add", "notes/short.md", "--start", "9:0", "--end", "9:1", "--expect", "x"]),
         {},
         question,
       );
@@ -3581,7 +3449,7 @@ test("T-comment-add", async () => {
     }
 
     const over = await run(
-      commentArgs(port, "Ada", ["add", "notes/short.md", "--start", "1:0", "--end", "1:13"]),
+      commentArgs(port, "Ada", ["add", "notes/short.md", "--start", "1:0", "--end", "1:13", "--expect", "x"]),
       {},
       question,
     );
@@ -3592,7 +3460,7 @@ test("T-comment-add", async () => {
     const jsonFull = path.join(dir, "notes/json.md");
     await fs.writeFile(jsonFull, fox);
     const json = await run(
-      ["--json", ...commentArgs(port, "Ada", ["add", "notes/json.md", "--start", "1:8", "--end", "1:11"])],
+      ["--json", ...commentArgs(port, "Ada", ["add", "notes/json.md", "--start", "1:8", "--end", "1:11", "--expect", "fox"])],
       {},
       question,
     );
@@ -3609,7 +3477,7 @@ test("T-comment-add", async () => {
     const fenceFull = path.join(dir, "notes/fence.md");
     await fs.writeFile(fenceFull, fence);
     const fenced = await run(
-      commentArgs(port, "Ada", ["add", "notes/fence.md", "--start", "1:0", "--end", "1:3"]),
+      commentArgs(port, "Ada", ["add", "notes/fence.md", "--start", "1:0", "--end", "1:3", "--expect", "```"]),
       {},
       question,
     );
@@ -3622,7 +3490,7 @@ test("T-comment-add", async () => {
     const tableFull = path.join(dir, "notes/table.md");
     await fs.writeFile(tableFull, table);
     const row = await run(
-      commentArgs(port, "Ada", ["add", "notes/table.md", "--start", "3:2", "--end", "3:5"]),
+      commentArgs(port, "Ada", ["add", "notes/table.md", "--start", "3:2", "--end", "3:5", "--expect", "yes"]),
       {},
       question,
     );
@@ -3635,7 +3503,7 @@ test("T-comment-add", async () => {
     const splitFull = path.join(dir, "notes/split.md");
     await fs.writeFile(splitFull, marked);
     const split = await run(
-      commentArgs(port, "Ada", ["add", "notes/split.md", "--start", "1:9", "--end", "1:16"]),
+      commentArgs(port, "Ada", ["add", "notes/split.md", "--start", "1:9", "--end", "1:16", "--expect", "ox{/c1}"]),
       {},
       question,
     );
@@ -3662,7 +3530,7 @@ test("T-comment-add", async () => {
       await holder.next((msg) => msg.type === "locks" && msg.path === "notes/hold.md");
       await seeing.next((msg) => msg.type === "locks" && msg.path === "notes/hold.md");
       const blocked = await run(
-        commentArgs(port, "Bea", ["add", "notes/hold.md", "--start", "1:8", "--end", "1:11"]),
+        commentArgs(port, "Bea", ["add", "notes/hold.md", "--start", "1:8", "--end", "1:11", "--expect", "fox"]),
         {},
         question,
       );
@@ -3678,7 +3546,7 @@ test("T-comment-add", async () => {
     }
 
     const gone = await run(
-      commentArgs(port, "Ada", ["add", "notes/missing.md", "--start", "1:0", "--end", "1:1"]),
+      commentArgs(port, "Ada", ["add", "notes/missing.md", "--start", "1:0", "--end", "1:1", "--expect", "x"]),
       {},
       question,
     );

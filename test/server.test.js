@@ -1567,39 +1567,46 @@ test("T-ticket-set", async () => {
 test("T-ticket-stale", async () => {
   await withDocs(async ({ server, port, dir }) => {
     const a = await hello(port, "A");
-    const created = await createTicket(a, "A", "Alpha");
+    const created = await createTicket(a, "A", "Alpha", undefined, undefined, "Keep the body.\n");
     const path = created.file.path;
     const id = created.file.ticket.id;
-    const original = await readDoc(dir, path);
+    const body = "Keep the body.\n";
 
-    a.send({ type: "ticket.set", username: "A", path, rev: 4, title: "Nope" });
-    assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
-    assert.equal(await readDoc(dir, path), original);
-    assert.equal(a.all.some((msg) => msg.type === "tickets" || msg.type === "ticket"), false);
+    async function setTitle(rev, title) {
+      const payload = { type: "ticket.set", username: "A", path, title };
+      if (rev !== undefined) payload.rev = rev;
+      a.send(payload);
+      const listed = await a.next((msg) => msg.type === "tickets");
+      const meta = await a.next((msg) => msg.type === "ticket");
+      return { listed, meta };
+    }
 
-    a.send({ type: "ticket.set", username: "A", path, rev: 0, title: "Kept" });
-    const listed = await a.next((msg) => msg.type === "tickets");
-    const meta = await a.next((msg) => msg.type === "ticket");
-    assert.equal(meta.rev, 1);
-    assert.equal(meta.title, "Kept");
-    assert.equal(listed.tickets.find((ticket) => ticket.id === id).title, "Kept");
-    const written = await readDoc(dir, path);
-    assert.equal(parseTicket(id, written).title, "Kept");
-    assert.notEqual(written, original);
+    let step = await setTitle(4, "Nope");
+    assert.equal(step.meta.rev, 1);
+    assert.equal(step.meta.title, "Nope");
+    assert.equal(step.listed.tickets.find((ticket) => ticket.id === id).title, "Nope");
+    assert.equal(parseTicket(id, await readDoc(dir, path)).body, body);
 
-    a.send({ type: "ticket.set", username: "A", path, rev: 0, title: "Other" });
-    assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
-    assert.equal(await readDoc(dir, path), written);
-    a.send({ type: "ticket.set", username: "A", path, rev: "1", title: "Other" });
-    assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
-    assert.equal(await readDoc(dir, path), written);
+    step = await setTitle(0, "Kept");
+    assert.equal(step.meta.rev, 2);
+    assert.equal(step.meta.title, "Kept");
+    assert.equal(parseTicket(id, await readDoc(dir, path)).body, body);
 
-    a.send({ type: "ticket.set", username: "A", path, rev: 1, title: "Final" });
-    const again = await a.next((msg) => msg.type === "ticket");
-    await a.next((msg) => msg.type === "tickets");
-    assert.equal(again.title, "Final");
-    assert.equal(again.rev, 2);
-    assert.equal(parseTicket(id, await readDoc(dir, path)).title, "Final");
+    step = await setTitle(0, "Other");
+    assert.equal(step.meta.rev, 3);
+    assert.equal(step.meta.title, "Other");
+
+    step = await setTitle("1", "String");
+    assert.equal(step.meta.rev, 4);
+    assert.equal(step.meta.title, "String");
+    assert.equal(parseTicket(id, await readDoc(dir, path)).body, body);
+
+    step = await setTitle(undefined, "Final");
+    assert.equal(step.meta.rev, 5);
+    assert.equal(step.meta.title, "Final");
+    const disk = parseTicket(id, await readDoc(dir, path));
+    assert.equal(disk.title, "Final");
+    assert.equal(disk.body, body);
 
     await assertNoHead(server, dir);
   });
@@ -1919,14 +1926,18 @@ test("T-ticket-purge", async () => {
     assert.equal((await sub.next((msg) => msg.type === "docs" || msg.type === "ticket")).type, "docs");
 
     sub.send({ type: "ticket.set", username: "Sub", path: "tickets/aaaaaaaa.md", rev: 0, title: "Stale" });
-    assert.deepEqual(await sub.next((msg) => msg.type === "error"), { type: "error", status: 409 });
-    assert.equal(parseTicket("aaaaaaaa", await readDoc(dir, "tickets/aaaaaaaa.md")).title, "Alpha");
+    const stale = await sub.next((msg) => msg.type === "ticket");
+    await sub.next((msg) => msg.type === "tickets");
+    assert.equal(stale.rev, 2);
+    assert.equal(stale.title, "Stale");
+    assert.equal(parseTicket("aaaaaaaa", await readDoc(dir, "tickets/aaaaaaaa.md")).body, "alpha\n");
     sub.send({ type: "ticket.set", username: "Sub", path: "tickets/aaaaaaaa.md", rev: 1, title: "After" });
     const bumped = await sub.next((msg) => msg.type === "ticket");
     await sub.next((msg) => msg.type === "tickets");
-    assert.equal(bumped.rev, 2);
+    assert.equal(bumped.rev, 3);
     assert.equal(bumped.parent, "");
     assert.equal(bumped.title, "After");
+    assert.equal(parseTicket("aaaaaaaa", await readDoc(dir, "tickets/aaaaaaaa.md")).body, "alpha\n");
     await keep.next((msg) => msg.type === "tickets");
     await idle.next((msg) => msg.type === "tickets");
     keep.send({ type: "ticket.set", username: "Keep", path: "tickets/bbbbbbbb.md", rev: 0, title: "Beta 2" });

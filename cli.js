@@ -5,7 +5,7 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { start } from "./server.js";
-import { lockIndexAt } from "./src/doc.js";
+import { parseUnifiedDiff } from "./src/doc.js";
 import { TICKET_ALPHABET, TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./src/ticket.js";
 
 const HELP = `viewmark talks to the document hub, one command, then exit.
@@ -14,18 +14,18 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME list
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME show <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME create <path> [--file PATH]
-  viewmark [--port PORT] [--user NAME] [--json] --repo NAME edit <path> --rev N --find TEXT --replace TEXT
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME edit <path> [--start LINE:OFFSET --end LINE:OFFSET]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME delete <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment list <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment show <path> <thread>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment reply <path> <thread>
-  viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment add <path> --start LINE:OFFSET --end LINE:OFFSET
-  viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment edit <path> <thread> <note> --rev N
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment add <path> --start LINE:OFFSET --end LINE:OFFSET --expect TEXT
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment edit <path> <thread> <note> --expect TEXT
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME commit [--message TEXT]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket list [--closed]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket show <id>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY]
-  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket set <id> --rev N [--title TEXT] [--state STATE] [--type TYPE] [--priority PRIORITY] [--parent ID] [--depends IDS]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket set <id> [--title TEXT] [--state STATE] [--type TYPE] [--priority PRIORITY] [--parent ID] [--depends IDS]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket delete <id>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket purge
   viewmark [--port PORT] [--user NAME] [--json] repo list
@@ -45,23 +45,36 @@ stdout and stderr:
   list: one path per line on stdout
   show: the document text on stdout and rev N on stderr
   create: path on stdout and rev 0 on stderr
-  edit: one copy-paste edit, then the same stdout and stderr as show
+  edit: the diff on stdin, then the same stdout and stderr as show
   commit: the subject on stdout, or nothing when commits is empty. stderr is empty.
-  stale or later conflict: the held text on stdout and rev N plus conflict on stderr, then held by NAME when the hub names that user
+  conflict: the held text on stdout and rev N plus conflict on stderr, then held by NAME when the hub names that user
+  context: the held text on stdout and rev N plus context on stderr
   match count other than one: matches N on stderr
+  overlapping matches: overlap on stderr
   other statuses: error STATUS on stderr, then held by NAME or the reason when the hub names one
-  A find may cross a span, the CLI locks every span it touches, another socket's span is 409 and names that user, and a comment range that overlaps a fence or a table or splits a comment is 409 and names that.
+  Each hunk is its own splice, so unchanged text between hunks stays put. Another socket's span is 409 and names that user, and a comment range that overlaps a fence or a table or splits a comment is 409 and names that.
   --json: one object plus a newline and empty stderr:
     list {files}; show and edit {path,rev,text}; create {path,rev:0};
     conflict {path,rev,text,error:"conflict"} and heldBy only when the hub names that user;
+    context {path,rev,text,error:"context"};
     commit {type:"commit",commits:[{author,subject,paths}]}
   repo list: name, description, and path, tab-separated, in name order
   repo register: the name
   repo deregister: nothing
   --json repo list {repos}; register {name,description,path}; deregister {name}
 
-Example of one copy-paste edit:
-  viewmark --user alice --repo docs edit hello.md --rev 0 --find "hello" --replace "hi"
+Example of one ranged diff:
+  printf '%s\n' '@@' '-Hello' '+Hi' | viewmark --user alice --repo docs edit hello.md
+
+edit:
+  The diff is stdin when stdin is not a terminal. A terminal sends an empty diff.
+  --start and --end together limit the slice. Neither means the whole document.
+  Lines count from 1. Offset counts from 0 and may equal the line length. The end is exclusive.
+  A reversed pair is ordered. Out of range is 400 and writes nothing.
+  @@ numbers do not place a hunk. A hunk with no old lines is rejected.
+  No hunks leaves the file as it was and does not open a socket.
+  Zero matches exits 409 and does not write. Several matches or an overlap exits 2 and does not write.
+  A change outside the slice does not reject the diff. --rev, --find, and --replace are rejected.
 
 create:
   The body is stdin when stdin is not a terminal. A terminal sends an empty body. --file PATH reads that file instead and does not read stdin.
@@ -71,12 +84,12 @@ commit:
   The message is trimmed and must be 1–200 characters. CR, LF, tab, and NUL are rejected.
 
 ticket:
-  list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY], set <id> --rev N, delete <id>, purge.
-  --rev, --title, --state, --type, --priority, --parent, --depends, --closed.
+  list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY], set <id>, delete <id>, purge.
+  --title, --state, --type, --priority, --parent, --depends, --closed.
   --parent none clears. --depends none clears. --state is new, triaged, in progress, or closed.
   --type is bug, enhancement, or task. An omitted type is task.
   --priority is low, medium, or high. An omitted create stores medium.
-  reporter is --user. A stale rev exits 409 and does not write.
+  reporter is --user. A field write uses the current body. Later field writes win. --rev is rejected.
   list prints id, created, state, type, priority, and title. show prints the body.
   create reads the body from stdin when stdin is not a terminal.
   --json: list {tickets:[{id,title,state,type,priority,parent,depends,reporter,created}]};
@@ -88,10 +101,10 @@ comment:
   comment list <path> prints each thread id, or the id and resolved.
   comment show <path> <thread> prints the stored body and rev N on stderr.
   comment reply <path> <thread> reads the note text from stdin and prints note N. stderr is rev N.
-  A reply goes through \`comment reply\`, not through \`edit\`. An agent leaves a question with \`comment add PATH --start LINE:OFFSET --end LINE:OFFSET\` and the question on stdin. Lines count from 1. Offset counts from 0. The end offset is exclusive.
-  comment add <path> --start LINE:OFFSET --end LINE:OFFSET reads the question from stdin and prints the thread id. stderr is rev N.
-  comment edit <path> <thread> <note> --rev N reads stdin the same way. Reply with --rev is rejected.
-  A negative note exits 400 and does not open a socket. A stale rev exits 409 and does not write.
+  A reply goes through \`comment reply\`, not through \`edit\`. An agent leaves a question with \`comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT\` and the question on stdin. \`--expect\` is the bytes at that range. Lines count from 1. Offset counts from 0. The end offset is exclusive.
+  comment add <path> --start LINE:OFFSET --end LINE:OFFSET --expect TEXT reads the question from stdin and prints the thread id. stderr is rev N.
+  comment edit <path> <thread> <note> --expect TEXT reads the replacement from stdin. --expect is the note text after the poster line. --rev is rejected.
+  A negative note exits 400 and does not open a socket. A mismatched --expect exits 409 and does not write.
   The same text exits 0 and does not write.
   --json: list {path,rev,threads}; show {path,rev,id,resolved,notes}; reply and edit {path,id,note,rev}; add {path,id,note:0,rev}.
 
@@ -99,11 +112,11 @@ delete:
   delete <path> removes that document. The path is sent unchanged. ticket delete <id> removes that ticket and clears it from other tickets' parent and depends. Another socket holding the file exits 409 and writes nothing. stdout is the removed path. --json is {path}.
 
 Exit codes: 0, 1, 2, 400, 404, 409.
-  0 success, help, or find equal to replace
+  0 success, help, or an empty diff
   1 five silent seconds or a dead socket
-  2 usage
+  2 usage, several matches, or an overlap
   400, 404, 409 hub status
-A stale rev exits 409 and does not write. The shell status is that number modulo 256, so 400 is 144, 404 is 148, and 409 is 153. stderr \`conflict\` or \`error N\` is the hub status.
+A context mismatch exits 409 and does not write. The shell status is that number modulo 256, so 400 is 144, 404 is 148, and 409 is 153. stderr \`conflict\`, \`context\`, or \`error N\` is the hub status.
 `;
 
 const VALUE_FLAGS = new Set([
@@ -126,6 +139,7 @@ const VALUE_FLAGS = new Set([
   "file",
   "start",
   "end",
+  "expect",
 ]);
 
 // Same rejection the hub uses, so a bad name never opens a socket.
@@ -232,6 +246,8 @@ function parseArgs(argv) {
     start: "",
     endSet: false,
     end: "",
+    expectSet: false,
+    expect: "",
     closed: false,
     positionals: [],
   };
@@ -324,6 +340,9 @@ function parseArgs(argv) {
       } else if (name === "end") {
         args.endSet = true;
         args.end = value;
+      } else if (name === "expect") {
+        args.expectSet = true;
+        args.expect = value;
       }
       continue;
     }
@@ -341,34 +360,6 @@ function parsePort(raw) {
   return n;
 }
 
-function parseRev(raw) {
-  if (typeof raw !== "string" || !/^-?\d+$/.test(raw)) return null;
-  const n = Number(raw);
-  if (!Number.isSafeInteger(n)) return null;
-  return n;
-}
-
-// Lock the same inclusive endpoints the hub turns into held spans.
-function touchedLines(doc, from, to) {
-  const start = lockIndexAt(doc, from);
-  const end = lockIndexAt(doc, to);
-  const lines = [];
-  for (let index = Math.min(start, end); index <= Math.max(start, end); index += 1) lines.push(index);
-  return lines;
-}
-
-function findHits(text, needle) {
-  const hits = [];
-  let from = 0;
-  while (from <= text.length - needle.length) {
-    const at = text.indexOf(needle, from);
-    if (at < 0) break;
-    hits.push(at);
-    from = at + needle.length;
-  }
-  return hits;
-}
-
 function writeJson(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
@@ -380,6 +371,15 @@ function printShow(doc, json) {
   }
   process.stdout.write(doc.text);
   process.stderr.write(`rev ${doc.rev}\n`);
+}
+
+function printContext(doc, json) {
+  if (json) {
+    writeJson({ path: doc.path, rev: doc.rev, text: doc.text, error: "context" });
+    return;
+  }
+  process.stdout.write(doc.text);
+  process.stderr.write(`rev ${doc.rev}\ncontext\n`);
 }
 
 function printConflict(doc, json, heldBy) {
@@ -536,15 +536,6 @@ function asDoc(msg) {
   return { path: msg.path, rev: msg.rev, text: msg.text };
 }
 
-function holds(msg, username, path, lines) {
-  if (!msg || msg.type !== "locks" || msg.path !== path || !Array.isArray(msg.lines)) return false;
-  const owned = new Set();
-  for (const line of msg.lines) {
-    if (line && line.username === username && Number.isInteger(line.index)) owned.add(line.index);
-  }
-  return lines.every((index) => owned.has(index));
-}
-
 async function runList(hub, username, json) {
   hub.send({ type: "list", username });
   const msg = await hub.next((item) => item.type === "docs" || item.type === "error");
@@ -600,39 +591,36 @@ async function runCreate(hub, username, path, json, text) {
   return 0;
 }
 
-async function runEdit(hub, username, path, rev, find, replace, json) {
-  hub.send({ type: "open", username, path });
-  const opened = await hub.next((item) => item.type === "file" || item.type === "error");
-  if (opened.type === "error") return serverError(opened);
-  const held = asDoc(opened);
-  if (!held) return 1;
-  if (held.rev !== rev) return printConflict(held, json), 409;
-  const hits = findHits(held.text, find);
-  if (hits.length !== 1) {
-    process.stderr.write(`matches ${hits.length}\n`);
-    return 2;
+async function runEdit(hub, username, path, diff, range, json) {
+  const payload = { type: "diff", username, path, diff };
+  if (range) {
+    payload.start = range.start;
+    payload.end = range.end;
   }
-  if (find === replace) {
-    printShow(held, json);
-    return 0;
+  hub.send(payload);
+  const msg = await hub.next((item) => item.type === "file" || item.type === "error");
+  if (msg.type === "error") {
+    if (msg.status === 409 && typeof msg.text === "string") {
+      const doc = asDoc(msg);
+      if (!doc) return 1;
+      if (msg.reason === "context") {
+        printContext(doc, json);
+        return 409;
+      }
+      printConflict(doc, json, msg.heldBy);
+      return 409;
+    }
+    if (msg.status === 2 && msg.reason === "matches") {
+      process.stderr.write(`matches ${msg.matches}\n`);
+      return 2;
+    }
+    if (msg.status === 2 && msg.reason === "overlap") {
+      process.stderr.write("overlap\n");
+      return 2;
+    }
+    return serverError(msg);
   }
-  const anchor = hits[0];
-  const cursor = anchor + find.length;
-  const lines = touchedLines(held.text, anchor, cursor);
-  hub.send({ type: "lock", username, path: held.path, rev: held.rev, anchor, cursor });
-  // publish refuses an edit until this socket holds every touched line.
-  const locked = await hub.next((item) => item.type === "error" || holds(item, username, held.path, lines));
-  if (locked.type === "error") {
-    if (locked.status === 409) return printConflict(held, json, locked.heldBy), 409;
-    return serverError(locked);
-  }
-  hub.send({ type: "edit", username, path: held.path, rev: held.rev, op: "insert", text: replace });
-  const edited = await hub.next((item) => item.type === "doc" || item.type === "error");
-  if (edited.type === "error") {
-    if (edited.status === 409) return printConflict(held, json, edited.heldBy), 409;
-    return serverError(edited);
-  }
-  const doc = asDoc(edited);
+  const doc = asDoc(msg);
   if (!doc) return 1;
   printShow(doc, json);
   return 0;
@@ -675,6 +663,7 @@ function normalizeDepends(raw) {
 }
 
 function prepareTicket(args, rest) {
+  if (args.revSet || args.findSet || args.replaceSet || args.expectSet) return { error: "unexpected flag" };
   const [sub, ...more] = rest;
   if (sub === "list") {
     if (more.length !== 0) return { error: "unexpected argument" };
@@ -710,9 +699,6 @@ function prepareTicket(args, rest) {
     if (more.length === 0) return { error: "id required" };
     if (more.length !== 1) return { error: "unexpected argument" };
     if (!validTicketId(more[0])) return { error: "invalid id" };
-    if (!args.revSet) return { error: "set requires integer --rev" };
-    const rev = parseRev(args.rev);
-    if (rev === null) return { error: "set requires integer --rev" };
     const fields = {};
     if (args.titleSet) {
       const title = normalizeTitle(args.title);
@@ -742,7 +728,7 @@ function prepareTicket(args, rest) {
       fields.depends = depends;
     }
     if (Object.keys(fields).length === 0) return { error: "set requires --title, --state, --type, --priority, --parent, or --depends" };
-    return { sub, id: more[0], rev, fields };
+    return { sub, id: more[0], fields };
   }
   if (sub === "delete") {
     if (more.length === 0) return { error: "id required" };
@@ -961,16 +947,12 @@ async function runTicketSet(hub, username, command, json) {
   if (openedMsg.type === "error") return serverError(openedMsg);
   const opened = asTicketFile(openedMsg);
   if (!opened) return 1;
-  // A mismatched rev is a conflict. Do not send: the hub reports a bad field
-  // as 400 before it compares rev.
-  if (opened.rev !== command.rev) return printTicket(opened, json, true), 409;
   // The hub stays silent when the composed ticket would not change.
   if (requestedMatches(opened, command.fields)) return printTicket(opened, json, false), 0;
   const payload = {
     type: "ticket.set",
     username,
     path: opened.path,
-    rev: command.rev,
   };
   const fields = command.fields;
   if (Object.prototype.hasOwnProperty.call(fields, "title")) payload.title = fields.title;
@@ -1240,8 +1222,8 @@ async function runCommentReply(hub, username, docPath, id, text, json) {
   return printCommentWrite(parsed, json);
 }
 
-async function runCommentEdit(hub, username, docPath, id, note, rev, text, json) {
-  hub.send({ type: "comment.edit", username, path: docPath, id, note, rev, text });
+async function runCommentEdit(hub, username, docPath, id, note, text, expect, json) {
+  hub.send({ type: "comment.edit", username, path: docPath, id, note, text, expect });
   const msg = await hub.next((item) => item.type === "comment" || item.type === "error");
   if (msg.type === "error") return serverError(msg);
   const parsed = asCommentResult(msg);
@@ -1249,54 +1231,20 @@ async function runCommentEdit(hub, username, docPath, id, note, rev, text, json)
   return printCommentWrite(parsed, json);
 }
 
-// Same rows as the document model, including the empty row after a final newline.
-function lineRows(text) {
-  const lines = [];
-  let start = 0;
-  for (let i = 0; i <= text.length; i += 1) {
-    if (i === text.length || text[i] === "\n") {
-      lines.push({ start, text: text.slice(start, i) });
-      start = i + 1;
-      if (i === text.length) break;
-    }
-  }
-  return lines;
-}
-
-// The end offset is exclusive. An offset equal to the line length is the
-// position after the last character, which is still on this line.
-function offsetAt(text, line, column) {
-  if (line < 1 || column < 0) return { error: 400 };
-  const row = lineRows(text)[line - 1];
-  if (!row || column > row.text.length) return { error: 400 };
-  return { offset: row.start + column };
-}
-
-async function runCommentAdd(hub, username, docPath, start, end, text, json) {
-  hub.send({ type: "open", username, path: docPath });
-  const opened = await hub.next((item) => item.type === "file" || item.type === "error");
-  if (opened.type === "error") return serverError(opened);
-  const doc = asDoc(opened);
-  if (!doc || doc.path !== docPath) return 1;
-  const anchor = offsetAt(doc.text, start.line, start.offset);
-  const cursor = offsetAt(doc.text, end.line, end.offset);
-  if (anchor.error || cursor.error || anchor.offset === cursor.offset) {
-    process.stderr.write("error 400\n");
-    return 400;
-  }
+async function runCommentAdd(hub, username, docPath, start, end, expect, text, json) {
   hub.send({
     type: "comment.add",
     username,
-    path: doc.path,
-    rev: doc.rev,
-    anchor: anchor.offset,
-    cursor: cursor.offset,
+    path: docPath,
+    start,
+    end,
+    expect,
     text,
   });
   const msg = await hub.next((item) => item.type === "comment" || item.type === "error");
   if (msg.type === "error") return serverError(msg);
   const parsed = asCommentResult(msg);
-  if (!parsed || parsed.path !== doc.path || parsed.note !== 0) return 1;
+  if (!parsed || parsed.path !== docPath || parsed.note !== 0) return 1;
   return printCommentAdd(parsed, json);
 }
 
@@ -1305,10 +1253,10 @@ async function runComment(hub, username, command, text, json) {
   if (command.sub === "show") return runCommentShow(hub, username, command.path, command.id, json);
   if (command.sub === "reply") return runCommentReply(hub, username, command.path, command.id, text, json);
   if (command.sub === "add") {
-    return runCommentAdd(hub, username, command.path, command.start, command.end, text, json);
+    return runCommentAdd(hub, username, command.path, command.start, command.end, command.expect, text, json);
   }
   if (command.sub === "edit") {
-    return runCommentEdit(hub, username, command.path, command.id, command.note, command.rev, text, json);
+    return runCommentEdit(hub, username, command.path, command.id, command.note, text, command.expect, json);
   }
   return 2;
 }
@@ -1316,11 +1264,12 @@ async function runComment(hub, username, command, text, json) {
 function commentFlagRejected(args, sub) {
   if (args.closed || args.findSet || args.replaceSet || args.titleSet || args.stateSet
     || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet
-    || args.nameSet || args.descriptionSet || args.pathSet) {
+    || args.nameSet || args.descriptionSet || args.pathSet || args.revSet) {
     return true;
   }
+  if (args.expectSet && sub !== "edit" && sub !== "add") return true;
   if ((args.startSet || args.endSet) && sub !== "add") return true;
-  return sub !== "edit" && args.revSet;
+  return false;
 }
 
 function parseNoteArg(raw) {
@@ -1370,7 +1319,8 @@ function prepareComment(args, rest) {
     const start = parseLineOffset(args.start);
     const end = parseLineOffset(args.end);
     if (!start || !end) return { error: "invalid position" };
-    return { sub, path: more[0], start, end };
+    if (!args.expectSet) return { error: "add requires --expect" };
+    return { sub, path: more[0], start, end, expect: args.expect };
   }
   if (sub === "edit") {
     if (more.length === 0) return { error: "path required" };
@@ -1379,10 +1329,8 @@ function prepareComment(args, rest) {
     const note = parseNoteArg(more[2]);
     if (note === null) return { error: "invalid note" };
     if (note < 0) return { error: "negative note" };
-    if (!args.revSet) return { error: "edit requires integer --rev" };
-    const rev = parseRev(args.rev);
-    if (rev === null) return { error: "edit requires integer --rev" };
-    return { sub, path: more[0], id: more[1], note, rev };
+    if (!args.expectSet) return { error: "edit requires --expect" };
+    return { sub, path: more[0], id: more[1], note, expect: args.expect };
   }
   return { error: "unexpected argument" };
 }
@@ -1392,7 +1340,7 @@ function serveFlagRejected(args) {
   return args.revSet || args.findSet || args.replaceSet || args.titleSet
     || args.stateSet || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet
     || args.repoSet || args.nameSet || args.descriptionSet || args.pathSet
-    || args.messageSet || args.fileSet || args.startSet || args.endSet;
+    || args.messageSet || args.fileSet || args.startSet || args.endSet || args.expectSet;
 }
 
 function defaultStateDir() {
@@ -1472,7 +1420,11 @@ async function main() {
     usage("unexpected flag");
     return;
   }
-  if ((args.startSet || args.endSet) && cmd !== "comment") {
+  if (args.expectSet && cmd !== "comment") {
+    usage("unexpected flag");
+    return;
+  }
+  if ((args.startSet || args.endSet) && cmd !== "comment" && cmd !== "edit") {
     usage("unexpected flag");
     return;
   }
@@ -1633,16 +1585,36 @@ async function main() {
     return;
   }
 
-  if (!args.revSet || !args.findSet || !args.replaceSet) {
-    usage("edit requires integer --rev, non-empty --find, and --replace");
+  if (args.revSet || args.findSet || args.replaceSet) {
+    usage("unexpected flag");
     return;
   }
-  const rev = parseRev(args.rev);
-  if (rev === null || args.find.length === 0) {
-    usage("edit requires integer --rev, non-empty --find, and --replace");
+  if (args.startSet !== args.endSet) {
+    usage("edit requires --start and --end");
     return;
   }
-  await withHub(port, user, (hub) => runEdit(hub, user, rest[0], rev, args.find, args.replace, args.json), args.repo);
+  let range = null;
+  if (args.startSet) {
+    const start = parseLineOffset(args.start);
+    const end = parseLineOffset(args.end);
+    if (!start || !end) {
+      usage("invalid position");
+      return;
+    }
+    range = { start, end };
+  }
+  const diff = await readStdin();
+  const parsed = parseUnifiedDiff(diff);
+  if (parsed.error === "invalid") {
+    usage("invalid diff");
+    return;
+  }
+  if (parsed.error === "no-context") {
+    usage("hunk has no context");
+    return;
+  }
+  if (parsed.hunks.length === 0) return;
+  await withHub(port, user, (hub) => runEdit(hub, user, rest[0], diff, range, args.json), args.repo);
 }
 
 const entry = process.argv[1];

@@ -12,7 +12,10 @@ import {
   deleteForward,
   insert,
   lockIndexAt,
+  offsetAt,
   parseCommentNotes,
+  parseUnifiedDiff,
+  planDiff,
   removeCommentThread,
   replaceCommentBody,
   reviseCommentNote,
@@ -792,7 +795,7 @@ export async function createHub(stateDir, sourceRoot) {
     syncLocks(file);
   }
 
-  async function publish(socket, file, before, splice, caret, entry, mode) {
+  async function publish(socket, file, before, splice, caret, entry, mode, retain) {
     const touched = touchedLines(before, splice.from, splice.to);
     for (const index of touched) {
       const owner = file.locks.get(index);
@@ -820,8 +823,9 @@ export async function createHub(stateDir, sourceRoot) {
     socket.session.anchor = caret.anchor;
     mark(socket.session.repo, file.rel, socket.session.username);
     // The preparatory lock covers the splice, including a fence through EOF.
-    // Keep the caret line so the rest can be taken.
-    socket.session.lines = new Set(touchedLines(file.text, caret.cursor, caret.cursor));
+    // Keep the caret line so the rest can be taken. A ranged diff keeps every
+    // splice span instead, including the ones already rebased.
+    if (!retain) socket.session.lines = new Set(touchedLines(file.text, caret.cursor, caret.cursor));
     syncLocks(file);
     broadcast(file, {
       type: "doc",
@@ -1262,7 +1266,6 @@ export async function createHub(stateDir, sourceRoot) {
     if (Object.prototype.hasOwnProperty.call(msg, "depends")) next.depends = msg.depends;
     const composed = composeTicket({ ...next, id: file.ticket.id, body: file.text });
     if (composed == null) return fail(socket, 400);
-    if (typeof msg.rev !== "number" || msg.rev !== file.rev) return fail(socket, 409);
     const parsed = parseTicket(file.ticket.id, composed);
     if (!parsed) return fail(socket, 400);
     const reason = rejectLink(await collectTickets(repo), parsed.id, parsed.parent, parsed.depends);
@@ -1412,6 +1415,108 @@ export async function createHub(stateDir, sourceRoot) {
     session.cursor = cursor;
     syncLocks(file);
     broadcast(file, { type: "locks", path: file.rel, rev: file.rev, lines: lockSnapshot(file) });
+  }
+
+  function failDoc(socket, status, file, extra) {
+    const body = { type: "error", status, path: file.rel, rev: file.rev, text: file.text };
+    if (extra && typeof extra.heldBy === "string" && extra.heldBy) body.heldBy = extra.heldBy;
+    if (extra && typeof extra.reason === "string") body.reason = extra.reason;
+    send(socket, body);
+  }
+
+  function holderOf(file, socket, splices) {
+    for (const splice of splices) {
+      for (const index of touchedLines(file.text, splice.from, splice.to)) {
+        const owner = file.locks.get(index);
+        if (owner && owner !== socket) return owner.session.username;
+      }
+    }
+    return null;
+  }
+
+  async function ensureSubscribed(socket, file) {
+    const session = socket.session;
+    if (session.docPath !== file.rel) {
+      await releaseFile(socket);
+      session.docPath = file.rel;
+      session.anchor = 0;
+      session.cursor = 0;
+      session.lines = new Set();
+      session.undo = [];
+      session.redo = [];
+    }
+    file.subscribers.add(socket);
+  }
+
+  async function onDiff(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const rel = safeRel(msg.path);
+    if (!rel) return fail(socket, 404);
+    if (rel === "tickets" || (rel.startsWith("tickets/") && !ticketIdFromRel(rel))) return fail(socket, 404);
+    const file = await loadFile(repo, rel);
+    if (!file) return fail(socket, 404);
+    if (typeof msg.diff !== "string") return fail(socket, 400);
+    const parsed = parseUnifiedDiff(msg.diff);
+    if (parsed.error) return fail(socket, 400);
+    if (parsed.hunks.length === 0) {
+      send(socket, { type: "file", path: file.rel, rev: file.rev, text: file.text });
+      return;
+    }
+    let startOff = 0;
+    let endOff = file.text.length;
+    if (msg.start !== undefined || msg.end !== undefined) {
+      const start = linePosition(msg.start);
+      const end = linePosition(msg.end);
+      if (!start || !end) return fail(socket, 400);
+      const from = offsetAt(file.text, start.line, start.offset);
+      const to = offsetAt(file.text, end.line, end.offset);
+      if (from.error || to.error) return fail(socket, 400);
+      startOff = Math.min(from.offset, to.offset);
+      endOff = Math.max(from.offset, to.offset);
+    }
+    const plan = planDiff(file.text, parsed.hunks, startOff, endOff);
+    if (plan.error === "context") return failDoc(socket, 409, file, { reason: "context" });
+    if (plan.error === "matches") {
+      send(socket, { type: "error", status: 2, reason: "matches", matches: plan.matches });
+      return;
+    }
+    if (plan.error === "overlap") {
+      send(socket, { type: "error", status: 2, reason: "overlap" });
+      return;
+    }
+    const splices = plan.splices.slice().sort((a, b) => b.from - a.from || b.to - a.to);
+    const holder = holderOf(file, socket, splices);
+    if (holder) return failDoc(socket, 409, file, { reason: "conflict", heldBy: holder });
+    if (splices.length === 0) {
+      send(socket, { type: "file", path: file.rel, rev: file.rev, text: file.text });
+      return;
+    }
+    await ensureSubscribed(socket, file);
+    const held = new Set();
+    for (const splice of splices) {
+      for (const index of touchedLines(file.text, splice.from, splice.to)) held.add(index);
+    }
+    socket.session.lines = held;
+    syncLocks(file);
+    for (const splice of splices) {
+      const caret = splice.from + splice.inserted.length;
+      const wrote = await publish(
+        socket,
+        file,
+        file.text,
+        splice,
+        { cursor: caret, anchor: caret },
+        null,
+        "diff",
+        true,
+      );
+      if (wrote !== true) {
+        const heldBy = wrote && typeof wrote.heldBy === "string" ? wrote.heldBy : "";
+        return failDoc(socket, 409, file, heldBy ? { reason: "conflict", heldBy } : { reason: "conflict" });
+      }
+    }
+    send(socket, { type: "file", path: file.rel, rev: file.rev, text: file.text });
   }
 
   async function onEdit(socket, msg) {
@@ -1732,8 +1837,17 @@ export async function createHub(stateDir, sourceRoot) {
     const found = commentThread(loaded.file, msg.id);
     if (found.error) return fail(socket, found.error);
     if (typeof msg.note !== "number" || !Number.isInteger(msg.note) || msg.note < 0) return fail(socket, 400);
-    if (typeof msg.rev !== "number" || msg.rev !== loaded.file.rev) return fail(socket, 409);
     if (typeof msg.text !== "string") return fail(socket, 400);
+    const hasExpect = Object.prototype.hasOwnProperty.call(msg, "expect");
+    if (hasExpect) {
+      if (typeof msg.expect !== "string") return fail(socket, 400);
+      const notes = parseCommentNotes(found.thread.body).filter((note) => note.id === msg.note);
+      if (notes.length === 1 && splitCommentNote(notes[0].raw).text !== msg.expect) {
+        return fail(socket, 409, { reason: "context" });
+      }
+    } else if (typeof msg.rev !== "number" || msg.rev !== loaded.file.rev) {
+      return fail(socket, 409);
+    }
     const result = reviseCommentNote(found.thread.body, msg.note, msg.text, socket.session.username);
     if (result.error) return fail(socket, result.error);
     if (result.unchanged) {
@@ -1745,16 +1859,45 @@ export async function createHub(stateDir, sourceRoot) {
 
   // The question is note 0 on the new fence. One publish writes the marks and
   // the note, or neither: a refused question must not leave an empty thread.
+  function linePosition(value) {
+    if (!value || typeof value !== "object") return null;
+    if (!Number.isInteger(value.line) || !Number.isInteger(value.offset)) return null;
+    return value;
+  }
+
   async function onCommentAdd(socket, msg) {
     const loaded = await loadCommentFile(socket, msg);
     if (loaded.error) return fail(socket, loaded.error);
     const file = loaded.file;
-    if (typeof msg.rev !== "number" || msg.rev !== file.rev) return fail(socket, 409);
-    if (!Number.isInteger(msg.anchor) || !Number.isInteger(msg.cursor)) return fail(socket, 400);
     if (typeof msg.text !== "string") return fail(socket, 400);
-    const added = addComment(file.text, msg.anchor, msg.cursor);
+    const start = linePosition(msg.start);
+    const end = linePosition(msg.end);
+    let anchor;
+    let cursor;
+    if (start && end) {
+      const from = offsetAt(file.text, start.line, start.offset);
+      const to = offsetAt(file.text, end.line, end.offset);
+      if (from.error || to.error) return fail(socket, 400);
+      anchor = from.offset;
+      cursor = to.offset;
+    } else if (!Number.isInteger(msg.anchor) || !Number.isInteger(msg.cursor)) {
+      return fail(socket, 400);
+    } else {
+      anchor = msg.anchor;
+      cursor = msg.cursor;
+    }
+    const hasExpect = Object.prototype.hasOwnProperty.call(msg, "expect");
+    if (hasExpect) {
+      if (typeof msg.expect !== "string") return fail(socket, 400);
+      const lo = Math.min(anchor, cursor);
+      const hi = Math.max(anchor, cursor);
+      if (file.text.slice(lo, hi) !== msg.expect) return fail(socket, 409, { reason: "context" });
+    } else if (typeof msg.rev !== "number" || msg.rev !== file.rev) {
+      return fail(socket, 409);
+    }
+    const added = addComment(file.text, anchor, cursor);
     if (!added) {
-      const reason = commentRangeReason(file.text, msg.anchor, msg.cursor);
+      const reason = commentRangeReason(file.text, anchor, cursor);
       if (reason) return fail(socket, 409, { reason });
       return fail(socket, 409);
     }
@@ -1826,6 +1969,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "delete") return onDelete(socket, msg);
     if (msg.type === "ticket.delete") return onTicketDelete(socket, msg);
     if (msg.type === "lock") return onLock(socket, msg);
+    if (msg.type === "diff") return onDiff(socket, msg);
     if (msg.type === "edit") return onEdit(socket, msg);
     if (msg.type === "undo") return onHistory(socket, msg, "undo");
     if (msg.type === "redo") return onHistory(socket, msg, "redo");

@@ -64,10 +64,10 @@ Document commands require `--user` and `--repo`. Add `--json` when a program wil
 viewmark --user ada --repo notes list
 viewmark --user ada --repo notes show welcome.md
 printf 'Hello\n' | viewmark --user ada --repo notes create welcome.md
-viewmark --user ada --repo notes edit welcome.md --rev 0 --find Hello --replace Hi
+printf '%s\n' '@@' '-Hello' '+Hi' | viewmark --user ada --repo notes edit welcome.md
 ```
 
-`show` prints the document on stdout and `rev N` on stderr. `create` reads the body from stdin when stdin is not a terminal. Pass `--file` to read a file instead. A path without a markdown suffix is stored with `.md` added. `edit` replaces one occurrence of `--find`. The rev must be the current rev, and the find text must occur once. A stale rev changes nothing.
+`show` prints the document on stdout and `rev N` on stderr. `create` reads the body from stdin when stdin is not a terminal. Pass `--file` to read a file instead. A path without a markdown suffix is stored with `.md` added. `edit` reads a unified diff on stdin. `--start` and `--end` together limit the slice. The old lines must occur once inside that slice. A context mismatch changes nothing.
 
 You send the text of one comment note. The hub writes the note id and the author line.
 
@@ -76,7 +76,7 @@ viewmark --user ada --repo notes comment list welcome.md
 printf 'A correction.\n' | viewmark --user ada --repo notes comment reply welcome.md THREAD
 ```
 
-`comment edit` addresses one note by id and requires `--rev`. A reply does not take `--rev`.
+`comment edit` addresses one note by id and requires `--expect`, the note text after the poster line. `comment add` requires `--expect` equal to the bytes at the range. A reply does not take `--rev`. `ticket set` writes a field of the current body. Later field writes win. `--rev` on those writes is rejected.
 
 Tickets use the same repo:
 

@@ -2121,3 +2121,168 @@ export function cut(state) {
   if (state.anchor === state.cursor) return { state, text };
   return { state: deleteForward(state), text };
 }
+
+// Same rows the CLI used, including the empty row after a final newline.
+export function lineRows(text) {
+  const lines = [];
+  let start = 0;
+  for (let i = 0; i <= text.length; i += 1) {
+    if (i === text.length || text[i] === "\n") {
+      lines.push({ start, text: text.slice(start, i) });
+      start = i + 1;
+      if (i === text.length) break;
+    }
+  }
+  return lines;
+}
+
+// The end offset is exclusive. An offset equal to the line length is the
+// position after the last character, which is still on this line.
+export function offsetAt(text, line, column) {
+  if (line < 1 || column < 0) return { error: 400 };
+  const row = lineRows(text)[line - 1];
+  if (!row || column > row.text.length) return { error: 400 };
+  return { offset: row.start + column };
+}
+
+const DIFF_HEADER = /^(?:diff |index |--- |\+\+\+ )/;
+const DIFF_NO_NEWLINE = "\\ No newline at end of file";
+
+// @@ numbers are not a location. Old lines are the ' ' and '-' texts.
+export function parseUnifiedDiff(text) {
+  if (typeof text !== "string") return { error: "invalid" };
+  const rows = text.split("\n");
+  if (text.endsWith("\n")) rows.pop();
+  const hunks = [];
+  let current = null;
+  const finish = () => {
+    if (!current) return null;
+    const hunk = current;
+    current = null;
+    if (hunk.old.length === 0) return { error: "no-context" };
+    hunks.push(hunk);
+    return null;
+  };
+  for (const line of rows) {
+    if (DIFF_HEADER.test(line)) {
+      const bad = finish();
+      if (bad) return bad;
+      continue;
+    }
+    if (line === DIFF_NO_NEWLINE) continue;
+    if (line.startsWith("@@")) {
+      const bad = finish();
+      if (bad) return bad;
+      current = { old: [], new: [] };
+      continue;
+    }
+    if (!current) {
+      if (line === "") continue;
+      return { error: "invalid" };
+    }
+    if (line === "") return { error: "invalid" };
+    const tag = line[0];
+    const body = line.slice(1);
+    if (tag === " ") {
+      current.old.push(body);
+      current.new.push(body);
+    } else if (tag === "-") {
+      current.old.push(body);
+    } else if (tag === "+") {
+      current.new.push(body);
+    } else {
+      return { error: "invalid" };
+    }
+  }
+  const bad = finish();
+  if (bad) return bad;
+  return { hunks };
+}
+
+function sliceLines(slice) {
+  if (slice === "") return { lines: [], trailing: false };
+  const trailing = slice.endsWith("\n");
+  const lines = slice.split("\n");
+  if (trailing) lines.pop();
+  return { lines, trailing };
+}
+
+function textAt(lines, trailing) {
+  const body = lines.join("\n");
+  return trailing ? `${body}\n` : body;
+}
+
+function findRuns(lines, oldLines) {
+  const runs = [];
+  const width = oldLines.length;
+  if (width === 0) return runs;
+  for (let i = 0; i + width <= lines.length; i += 1) {
+    let same = true;
+    for (let j = 0; j < width; j += 1) {
+      if (lines[i + j] !== oldLines[j]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) runs.push(i);
+  }
+  return runs;
+}
+
+function spansOverlap(ranges) {
+  const ordered = ranges.slice().sort((a, b) => a.start - b.start || a.end - b.end);
+  for (let i = 1; i < ordered.length; i += 1) {
+    if (ordered[i].start < ordered[i - 1].end) return true;
+  }
+  return false;
+}
+
+function tightSplice(before, after) {
+  if (before === after) return null;
+  let prefix = 0;
+  const shared = Math.min(before.length, after.length);
+  while (prefix < shared && before.charCodeAt(prefix) === after.charCodeAt(prefix)) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < before.length - prefix &&
+    suffix < after.length - prefix &&
+    before.charCodeAt(before.length - 1 - suffix) === after.charCodeAt(after.length - 1 - suffix)
+  ) {
+    suffix += 1;
+  }
+  return {
+    from: prefix,
+    to: before.length - suffix,
+    inserted: after.slice(prefix, after.length - suffix),
+  };
+}
+
+// Each hunk is diffed against the original slice, so unchanged text between
+// hunks is not part of either splice.
+export function planDiff(text, hunks, startOff, endOff) {
+  const base = startOff == null ? 0 : startOff;
+  const end = endOff == null ? text.length : endOff;
+  const { lines, trailing } = sliceLines(text.slice(base, end));
+  const located = [];
+  for (const hunk of hunks) {
+    const runs = findRuns(lines, hunk.old);
+    const ranges = runs.map((start) => ({ start, end: start + hunk.old.length }));
+    if (spansOverlap(ranges)) return { error: "overlap" };
+    if (runs.length === 0) return { error: "context" };
+    if (runs.length !== 1) return { error: "matches", matches: runs.length };
+    located.push({ hunk, at: runs[0] });
+  }
+  const spans = located.map(({ hunk, at }) => ({ start: at, end: at + hunk.old.length }));
+  if (spansOverlap(spans)) return { error: "overlap" };
+  const before = textAt(lines, trailing);
+  const splices = [];
+  for (const { hunk, at } of located) {
+    const nextLines = lines.slice(0, at).concat(hunk.new, lines.slice(at + hunk.old.length));
+    const local = tightSplice(before, textAt(nextLines, trailing));
+    if (!local) continue;
+    splices.push({ from: base + local.from, to: base + local.to, inserted: local.inserted });
+  }
+  const bytes = splices.map((splice) => ({ start: splice.from, end: splice.to }));
+  if (spansOverlap(bytes)) return { error: "overlap" };
+  return { splices };
+}
