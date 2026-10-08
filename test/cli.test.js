@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { start } from "../server.js";
 import { acceptKey, createParser, encodeFrame } from "../src/ws.js";
-import { commentThreads, parseCommentNotes, splitCommentNote } from "../src/doc.js";
+import { commentThreads, lockIndexAt, parseCommentNotes, splitCommentNote } from "../src/doc.js";
 import { composeTicket, parseTicket } from "../src/ticket.js";
 import { validUsername } from "../cli.js";
 
@@ -3609,5 +3609,176 @@ test("T-comment-add", async () => {
     assert.equal(gone.code, shellStatus(404));
     assert.equal(gone.stdout, "");
     assert.equal(gone.stderr, "error 404\n");
+  });
+});
+
+const PARAS = "Alpha paragraph stays put.\n\nBeta paragraph has a tail the bot would change.\n\nGamma paragraph stays put.\n";
+const TAIL_QUESTION = "Is the tail right?\n";
+
+function linePos(text, needle) {
+  const at = text.indexOf(needle);
+  const lineStart = text.lastIndexOf("\n", at - 1) + 1;
+  const offset = at - lineStart;
+  return { line: text.slice(0, at).split("\n").length, offset, end: offset + needle.length };
+}
+
+function botEditArgs(port, rel) {
+  return ["--port", String(port), "--user", "bot", "--repo", "docs", "edit", rel];
+}
+
+function tailDiff() {
+  return diffText([[
+    "-Beta paragraph has a tail the bot would change.",
+    "+Beta paragraph has a tail the bot did change.",
+  ]]);
+}
+
+function tailComment(port, rel) {
+  const pos = linePos(PARAS, "would change");
+  return commentArgs(port, "bot", [
+    "add",
+    rel,
+    "--start", `${pos.line}:${pos.offset}`,
+    "--end", `${pos.line}:${pos.end}`,
+    "--expect", "would change",
+  ]);
+}
+
+test("a caret in one paragraph does not hold the next paragraph or the blank line between them", async () => {
+  await withDocs(async ({ dir, port }) => {
+    const would = linePos(PARAS, "would change");
+    const gamma = linePos(PARAS, "Gamma");
+    assert.equal(would.line, 3);
+    assert.equal(gamma.line, 5);
+    assert.equal(gamma.offset, 0);
+
+    async function place(rel, caret) {
+      await fs.writeFile(path.join(dir, rel), PARAS);
+      const ada = await hello(port, "Ada");
+      const witness = await hello(port, "witness");
+      const opened = await openDoc(ada, "Ada", rel);
+      await openDoc(witness, "witness", rel);
+      assert.equal(opened.text, PARAS);
+      assert.equal(opened.rev, 0);
+      const lineEnd = PARAS.indexOf("\n", caret);
+      const heldIndex = lockIndexAt(PARAS, caret);
+      assert.notEqual(heldIndex, lockIndexAt(PARAS, lineEnd + 1));
+      assert.notEqual(heldIndex, lockIndexAt(PARAS, lineEnd + 2));
+      ada.send({
+        type: "lock",
+        username: "Ada",
+        path: rel,
+        anchor: caret,
+        cursor: caret,
+        rev: 0,
+      });
+      const locks = await ada.next((msg) => msg.type === "locks" && msg.path === rel);
+      assert.deepEqual(locks.lines, [{ index: heldIndex, username: "Ada" }]);
+      await witness.next((msg) => msg.type === "locks" && msg.path === rel);
+      return { ada, witness };
+    }
+
+    async function rejectBot(rel) {
+      const blocked = await run(botEditArgs(port, rel), {}, tailDiff());
+      assert.equal(blocked.code, shellStatus(409));
+      assert.equal(blocked.stdout, PARAS);
+      assert.equal(blocked.stderr, "rev 0\nconflict\nheld by Ada\n");
+      const comment = await run(tailComment(port, rel), {}, TAIL_QUESTION);
+      assert.equal(comment.code, shellStatus(409));
+      assert.equal(comment.stdout, "");
+      assert.equal(comment.stderr, "error 409\nheld by Ada\n");
+      assert.equal(await fs.readFile(path.join(dir, rel), "utf8"), PARAS);
+      assert.equal((await fs.readFile(path.join(dir, rel), "utf8")).includes("```comment"), false);
+    }
+
+    const heldAt = PARAS.indexOf("Beta");
+    const held = await place("held.md", heldAt);
+    try {
+      await rejectBot("held.md");
+      await delay(50);
+      assert.equal(held.witness.queue.some((msg) => msg.type === "doc"), false);
+
+      held.ada.send({
+        type: "edit",
+        username: "Ada",
+        path: "held.md",
+        rev: 0,
+        op: "insert",
+        text: "X",
+        anchor: heldAt,
+        cursor: heldAt,
+      });
+      const inserted = await held.ada.next((msg) => msg.type === "doc" || msg.type === "error");
+      assert.equal(inserted.type, "doc");
+      const xBody = `${PARAS.slice(0, heldAt)}X${PARAS.slice(heldAt)}`;
+      assert.equal(xBody.split("\n")[2].startsWith("X"), true);
+      assert.equal(inserted.actor, "Ada");
+      assert.equal(inserted.inserted, "X");
+      assert.equal(inserted.text, xBody);
+      const seen = await held.witness.next((msg) => msg.type === "doc" && msg.path === "held.md");
+      assert.equal(seen.actor, "Ada");
+      assert.equal(seen.inserted, "X");
+      assert.equal(seen.text, xBody);
+      assert.equal(await fs.readFile(path.join(dir, "held.md"), "utf8"), xBody);
+
+      const again = await run(botEditArgs(port, "held.md"), {}, tailDiff());
+      assert.equal(again.code, shellStatus(409));
+      const commented = await run(tailComment(port, "held.md"), {}, TAIL_QUESTION);
+      assert.equal(commented.code, shellStatus(409));
+      assert.equal(await fs.readFile(path.join(dir, "held.md"), "utf8"), xBody);
+      assert.equal(xBody.includes("```comment"), false);
+      await delay(50);
+      assert.equal(held.witness.queue.some((msg) => msg.type === "doc"), false);
+    } finally {
+      held.ada.ws.close();
+      held.witness.ws.close();
+    }
+
+    const inside = await place("inside.md", PARAS.indexOf("the bot would change"));
+    try {
+      await rejectBot("inside.md");
+      await delay(50);
+      assert.equal(inside.witness.queue.some((msg) => msg.type === "doc"), false);
+    } finally {
+      inside.ada.ws.close();
+      inside.witness.ws.close();
+    }
+
+    const other = await place("other.md", PARAS.indexOf("Alpha"));
+    try {
+      const edited = await run(botEditArgs(port, "other.md"), {}, tailDiff());
+      assert.equal(edited.code, 0);
+      const changed = PARAS.replace("the bot would change", "the bot did change");
+      assert.equal(edited.stdout, changed);
+      assert.equal(edited.stdout.split("\n")[0], "Alpha paragraph stays put.");
+      assert.equal(edited.stdout.split("\n")[2].endsWith("the bot did change."), true);
+      assert.equal(await fs.readFile(path.join(dir, "other.md"), "utf8"), changed);
+
+      const added = await run(
+        commentArgs(port, "bot", [
+          "add",
+          "other.md",
+          "--start", `${gamma.line}:${gamma.offset}`,
+          "--end", `${gamma.line}:${gamma.end}`,
+          "--expect", "Gamma",
+        ]),
+        {},
+        TAIL_QUESTION,
+      );
+      assert.equal(added.code, 0);
+      const stored = await fs.readFile(path.join(dir, "other.md"), "utf8");
+      assert.equal(stored.split("\n")[0], "Alpha paragraph stays put.");
+      assert.match(stored, /\{c1\}Gamma\{\/c1\}/);
+      assert.match(stored, /```comment c1/);
+      const thread = commentThreads(stored).find((item) => item.id === "c1");
+      assert.ok(thread);
+      const note = splitCommentNote(parseCommentNotes(thread.body)[0].raw);
+      assert.equal(note.author, "bot");
+      assert.equal(note.text, TAIL_QUESTION);
+      assert.equal(stored.split("\n")[2], "Beta paragraph has a tail the bot did change.");
+    } finally {
+      other.ada.ws.close();
+      other.witness.ws.close();
+    }
   });
 });
