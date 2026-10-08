@@ -831,6 +831,10 @@ export async function createHub(stateDir, sourceRoot) {
       rev: file.rev,
       lines: lockSnapshot(file),
     });
+    // titlesFor reads the cached text, which is assigned above.
+    if (!file.ticket && headingTitle(before) !== headingTitle(after)) {
+      broadcastDocs(socket.session.repo, await docsPayload(socket.session.repo));
+    }
     return true;
   }
 

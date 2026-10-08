@@ -3095,3 +3095,144 @@ test("T-comment-add", async () => {
     }
   });
 });
+
+test("T-heading-title", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "page.md"), "# Old\n\nbody\n");
+    await fs.writeFile(path.join(dir, "plain.md"), "plain\n");
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    const opened = await openDoc(a, "A", "page.md");
+    await openDoc(b, "B", "page.md");
+    let rev = opened.rev;
+    await syncLock(a, [b], "A", "page.md", 0, rev);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "page.md",
+      rev,
+      anchor: 2,
+      cursor: 5,
+      op: "insert",
+      text: "New",
+    });
+    const renamedA = await takeDoc(a);
+    const renamedB = await takeDoc(b);
+    assert.equal(renamedA.text, "# New\n\nbody\n");
+    assert.deepEqual(renamedB, renamedA);
+    const docsA = await a.next((msg) => msg.type === "docs");
+    const docsB = await b.next((msg) => msg.type === "docs");
+    assert.deepEqual(docsB, docsA);
+    assert.equal(docsA.titles["page.md"], "New");
+    assert.equal(await readDoc(dir, "page.md"), "# New\n\nbody\n");
+    assert.equal(a.all.length, 0);
+    assert.equal(b.all.length, 0);
+
+    rev = renamedA.rev;
+    const bodyAt = renamedA.text.indexOf("body");
+    await syncLock(a, [b], "A", "page.md", bodyAt, rev);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "page.md",
+      rev,
+      anchor: bodyAt,
+      cursor: bodyAt,
+      op: "insert",
+      text: "X",
+    });
+    const bodyA = await takeDoc(a);
+    const bodyB = await takeDoc(b);
+    assert.equal(bodyA.text, "# New\n\nXbody\n");
+    assert.deepEqual(bodyB, bodyA);
+    await delay(200);
+    assert.equal(a.all.some((msg) => msg.type === "docs"), false);
+    assert.equal(b.all.some((msg) => msg.type === "docs"), false);
+    assert.equal(await readDoc(dir, "page.md"), "# New\n\nXbody\n");
+
+    const plain = await openDoc(a, "A", "plain.md");
+    await b.next((msg) => msg.type === "locks" && msg.path === "page.md");
+    rev = plain.rev;
+    await syncLock(a, [], "A", "plain.md", 0, rev, "plain".length);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "plain.md",
+      rev,
+      anchor: 0,
+      cursor: "plain".length,
+      op: "insert",
+      text: "# Title",
+    });
+    const titled = await takeDoc(a);
+    assert.equal(titled.text, "# Title\n");
+    const titleDocsA = await a.next((msg) => msg.type === "docs");
+    const titleDocsB = await b.next((msg) => msg.type === "docs");
+    assert.equal(titleDocsA.titles["plain.md"], "Title");
+    assert.equal(titleDocsB.titles["plain.md"], "Title");
+    assert.equal(await readDoc(dir, "plain.md"), "# Title\n");
+    assert.equal(a.all.length, 0);
+    assert.equal(b.all.length, 0);
+
+    rev = titled.rev;
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "plain.md",
+      rev,
+      anchor: 0,
+      cursor: "# Title".length,
+      op: "insert",
+      text: "plain",
+    });
+    const cleared = await takeDoc(a);
+    assert.equal(cleared.text, "plain\n");
+    const clearDocsA = await a.next((msg) => msg.type === "docs");
+    const clearDocsB = await b.next((msg) => msg.type === "docs");
+    assert.equal(clearDocsA.titles["plain.md"], undefined);
+    assert.equal(clearDocsB.titles["plain.md"], undefined);
+    assert.equal(Object.hasOwn(clearDocsA.titles, "plain.md"), false);
+    assert.equal(await readDoc(dir, "plain.md"), "plain\n");
+    assert.equal(a.all.length, 0);
+    assert.equal(b.all.length, 0);
+
+    rev = cleared.rev;
+    a.send({ type: "edit", username: "A", path: "plain.md", rev, op: "insert", text: "X" });
+    const plainBody = await takeDoc(a);
+    assert.equal(plainBody.text, "plainX\n");
+    await delay(200);
+    assert.equal(a.all.some((msg) => msg.type === "docs"), false);
+    assert.equal(b.all.some((msg) => msg.type === "docs"), false);
+    assert.equal(await readDoc(dir, "plain.md"), "plainX\n");
+
+    const ticketRel = "tickets/bbbbbbbb.md";
+    await writeTicket(dir, {
+      id: "bbbbbbbb",
+      title: "Ticket",
+      state: "new",
+      created: "2020-01-01T00:00:00.000Z",
+      body: "# Old\n",
+    });
+    const ticket = await openDoc(a, "A", ticketRel);
+    assert.equal(ticket.text, "# Old\n");
+    await syncLock(a, [], "A", ticketRel, 0, ticket.rev);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: ticketRel,
+      rev: ticket.rev,
+      anchor: 2,
+      cursor: 5,
+      op: "insert",
+      text: "New",
+    });
+    const ticketDoc = await takeDoc(a);
+    assert.equal(ticketDoc.text, "# New\n");
+    assert.equal(parseTicket("bbbbbbbb", await readDoc(dir, ticketRel)).body, "# New\n");
+    await delay(200);
+    assert.equal(a.all.some((msg) => msg.type === "docs"), false);
+    assert.equal(b.all.some((msg) => msg.type === "docs"), false);
+    a.ws.close();
+    b.ws.close();
+  });
+});
