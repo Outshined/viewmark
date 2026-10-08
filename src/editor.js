@@ -3046,7 +3046,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
     }
     if (state.anchor === state.cursor && state.cursor > 0 && state.doc[state.cursor - 1] === "\n") {
-      return claimLines(state.cursor - 1, state.cursor);
+      // coveringSplice drops the later newline of a blank line, so that following span is in the splice.
+      const through = state.doc[state.cursor] === "\n" ? Math.min(state.doc.length, state.cursor + 1) : state.cursor;
+      return claimLines(state.cursor - 1, through);
     }
     return true;
   }

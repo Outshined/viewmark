@@ -2994,13 +2994,29 @@ test("backspace at the visual start of a line joins it upward", () => {
     assert.equal(word.getState().cursor, 6);
     word.destroy();
 
+    const blankLine = () => mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.dataset.start === node.dataset.end && node.textContent === "")[0];
+    const emptyTransport = holdingTransport();
+    const emptyHeld = createEditor(mounted.root, "hello\n\nworld", 0, emptyTransport);
+    caret(blankLine(), 0);
+    press();
+    const blankEdit = emptyTransport.sent.find((message) => message.type === "edit");
+    assert.equal(blankEdit.op, "backspace");
+    assert.equal(blankEdit.anchor, 6);
+    assert.equal(blankEdit.cursor, 6);
+    const blankLock = emptyTransport.sent.filter((message) => message.type === "lock").at(-1);
+    assert.ok(blankLock);
+    assert.equal(Math.min(blankLock.anchor, blankLock.cursor), 5);
+    assert.equal(Math.max(blankLock.anchor, blankLock.cursor), 7);
+    assert.ok(emptyTransport.sent.indexOf(blankLock) < emptyTransport.sent.indexOf(blankEdit));
+    emptyHeld.destroy();
+
     const empty = createEditor(mounted.root, "hello\n\nworld", 0);
-    const blank = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.dataset.start === node.dataset.end && node.textContent === "")[0];
-    caret(blank, 0);
+    caret(blankLine(), 0);
     press();
     assert.equal(empty.getState().doc, "hello\nworld");
     assert.equal(empty.getState().cursor, 5);
     assert.equal(empty.getState().anchor, 5);
+    assert.equal(empty.getState().doc[empty.getState().cursor], "\n");
     empty.destroy();
 
     const heading = createEditor(mounted.root, "hello\n# Title\n", 0);
