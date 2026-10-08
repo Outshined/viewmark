@@ -7755,6 +7755,11 @@ test("T-ticket-filter", () => {
 });
 
 test("T-ticket-create", () => {
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const titleRule = css.match(/\.ticket-form \.md-ticket-title-input\s*\{[^}]*\}/);
+  assert.ok(titleRule);
+  assert.match(titleRule[0], /margin:\s*0 0 0\.8rem/);
+  assert.equal(/margin-top:\s*0\.2rem/.test(titleRule[0]), false);
   const mounted = mountTicketPage();
   const transport = holdingTransport();
   try {
@@ -7788,6 +7793,8 @@ test("T-ticket-create", () => {
     assert.equal(input.hidden, false);
     assert.equal(input.focused, true);
     assert.equal(input.value, "New ticket");
+    assert.equal(input.selectionStart, 0);
+    assert.equal(input.selectionEnd, "New ticket".length);
     const deletes = () => transport.sent.filter((message) => message.type === "ticket.delete");
     input.listeners.keydown({ key: "Escape", preventDefault() {} });
     assert.equal(deletes().length, 0);
@@ -7843,6 +7850,7 @@ test("T-ticket-title", () => {
     const sets = () => transport.sent.filter((message) => message.type === "ticket.set");
     heading().listeners.click();
     assert.equal(input().hidden, false);
+    assert.equal(input().selectionStart, input().selectionEnd);
     input().value = "Nope";
     input().listeners.keydown({ key: "Escape", preventDefault() {} });
     assert.equal(sets().length, 0);

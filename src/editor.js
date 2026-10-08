@@ -4102,6 +4102,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       hideElement(heading);
       showElement(titleInput);
       if (typeof titleInput.focus === "function") titleInput.focus();
+      selectInput(titleInput, 0, titleInput.value.length);
     }
   }
 
