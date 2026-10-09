@@ -20,6 +20,40 @@ function readLiteral(text, at) {
   return { value, end: LITERAL.lastIndex };
 }
 
+// The plan's named texts. LONG@n is LONG with the caret after its n-th character.
+const LONG = `${"alpha beta gamma delta ".repeat(15)}end`;
+const NAMES = {
+  CM,
+  LONG,
+  URL: `https://x.test/${"a".repeat(385)}`,
+  FILL: Array.from({ length: 60 }, (_, i) => `filler ${i + 1}\n\n`).join(""),
+};
+const NAME = /(CM|LONG|URL|FILL)(?:@(\d+))?/y;
+export const FILL = NAMES.FILL;
+
+// A source or an expectation: literals and names joined by " + ".
+function readPieces(text, at) {
+  let value = "";
+  let end = at;
+  for (;;) {
+    const literal = readLiteral(text, end);
+    if (literal) {
+      value += literal.value;
+      end = literal.end;
+    } else {
+      NAME.lastIndex = end;
+      const name = NAME.exec(text);
+      if (!name) break;
+      const named = NAMES[name[1]];
+      value += name[2] == null ? named : named.slice(0, Number(name[2])) + "‸" + named.slice(Number(name[2]));
+      end = NAME.lastIndex;
+    }
+    if (!text.startsWith(" + ", end)) break;
+    end += 3;
+  }
+  return end === at ? null : { value, end };
+}
+
 // The marks are not file bytes: ‸ is the focus and « the anchor.
 export function marked(text) {
   const bytes = text.replace(/[‸«]/g, "");
@@ -93,33 +127,39 @@ export function parseCell(line) {
   if (!head) return null;
   const id = head[1];
   let rest = line.slice(head[0].length);
-  const source = readLiteral(rest, 0);
+  const source = readPieces(rest, 0);
   if (!source) return { id, prose: rest };
-  let sourceText = source.value;
-  rest = rest.slice(source.end);
-  if (rest.startsWith(" + CM")) {
-    sourceText += CM;
-    rest = rest.slice(5);
-  }
-  rest = rest.replace(/^,?\s*/, "");
-  const arrow = rest.lastIndexOf(" → ");
+  const sourceText = source.value;
+  rest = rest.slice(source.end).replace(/^,?\s*/, "");
+  const otherAt = rest.indexOf("; B → ");
+  const arrow = rest.lastIndexOf(" → ", otherAt < 0 ? rest.length : otherAt);
   const keyText = arrow < 0 ? rest : rest.slice(0, arrow);
   let after = arrow < 0 ? "" : rest.slice(arrow + 3);
   const dot = after.indexOf(" · ");
   const notes = dot < 0 ? "" : after.slice(dot + 3);
-  const main = dot < 0 ? after : after.slice(0, dot);
+  const both = dot < 0 ? after : after.slice(0, dot);
+  const split = both.indexOf("; B → ");
+  const main = split < 0 ? both : both.slice(0, split);
+  const other = split < 0 ? null : readPieces(both.slice(split + 6), 0);
   let expectText = null;
   let expectKind = "bytes";
+  let position = null;
   if (main.startsWith("same")) {
     expectText = sourceText;
     expectKind = "same";
+  } else if (main.startsWith("at ")) {
+    expectKind = "position";
+    position = { at: readLiteral(main, 3).value };
+  } else if (main.startsWith("on ")) {
+    expectKind = "position";
+    position = { on: readLiteral(main, 3).value };
+  } else if (/^(later in the block|earlier in the block|later in the file)/.test(main)) {
+    expectKind = "position";
+    position = { move: /^(later in the block|earlier in the block|later in the file)/.exec(main)[1] };
   } else {
-    const expect = readLiteral(main, 0);
-    if (expect) {
-      expectText = expect.value + (main.slice(expect.end).startsWith(" + CM") ? CM : "");
-    } else {
-      expectKind = "prose";
-    }
+    const expect = readPieces(main, 0);
+    if (expect) expectText = expect.value;
+    else expectKind = "prose";
   }
   const routes = /\broutes? ((?:`[^`]+`(?:, |,? and )?)+)/.exec(notes);
   return {
@@ -129,6 +169,9 @@ export function parseCell(line) {
     keys: splitKeys(keyText),
     expect: expectText == null ? null : marked(expectText),
     expectKind,
+    position,
+    other: other ? marked(other.value) : null,
+    labels: [...notes.matchAll(/B (no longer )?sees the name (\S+) on (.+?)(?= \[|$)/g)].map((m) => ({ shown: !m[1], name: m[2], text: m[3] })),
     notes,
     routes: routes ? [...routes[1].matchAll(/`([^`]+)`/g)].map((m) => m[1]) : [],
     thenBoundary: /then the boundary/.test(notes),

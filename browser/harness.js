@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import net from "node:net";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +11,8 @@ const CLI = path.join(ROOT, "cli.js");
 const CHROMIUM = process.env.VIEWMARK_CHROMIUM || "/usr/bin/chromium";
 const LIVE_PORT = Number(process.env.VIEWMARK_PORT || 8765);
 export const USER = "qa-bot";
+export const OTHER = "qa-two";
+export const AGENT = "qa-cli";
 export const REPO = "qa";
 
 const BOX_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40" viewBox="0 0 120 40"><rect width="120" height="40" fill="#888"/></svg>\n';
@@ -55,8 +58,14 @@ export async function startHub() {
       const made = await cli(port, ["--user", USER, "--repo", REPO, "create", file], text);
       if (made.code !== 0) throw new Error(`create ${file}: ${made.stderr}`);
     },
-    async show(file) {
-      const shown = await cli(port, ["--user", USER, "--repo", REPO, "show", file]);
+    edit(file, diff, user = AGENT) {
+      return cli(port, ["--user", user, "--repo", REPO, "edit", file], diff);
+    },
+    comment(file, start, end, expect, text, user = AGENT) {
+      return cli(port, ["--user", user, "--repo", REPO, "comment", "add", file, "--start", start, "--end", end, "--expect", expect], text);
+    },
+    async show(file, user = USER) {
+      const shown = await cli(port, ["--user", user, "--repo", REPO, "show", file]);
       if (shown.code !== 0) throw new Error(`show ${file}: ${shown.stderr}`);
       const rev = /rev (\d+)/.exec(shown.stderr);
       return { text: shown.stdout, rev: rev ? Number(rev[1]) : NaN };
@@ -67,6 +76,35 @@ export async function startHub() {
       await exited;
       rmSync(state, { recursive: true, force: true });
       rmSync(repo, { recursive: true, force: true });
+    },
+  };
+}
+
+// A TCP proxy in front of the test hub. The pages connect through it, so the harness can drop
+// their sockets the way a network would.
+export async function startProxy(target) {
+  const open = new Set();
+  const server = net.createServer((client) => {
+    const upstream = net.connect(target, "127.0.0.1");
+    for (const socket of [client, upstream]) {
+      open.add(socket);
+      socket.on("close", () => open.delete(socket));
+      socket.on("error", () => {});
+    }
+    client.pipe(upstream);
+    upstream.pipe(client);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  if (port === LIVE_PORT) throw new Error(`the proxy came up on ${LIVE_PORT}, the live hub's port`);
+  return {
+    port,
+    drop() {
+      for (const socket of open) socket.destroy();
+    },
+    close() {
+      for (const socket of open) socket.destroy();
+      return new Promise((resolve) => server.close(() => resolve()));
     },
   };
 }
@@ -132,10 +170,32 @@ export async function launchBrowser() {
     ws.addEventListener("open", resolve, { once: true });
     ws.addEventListener("error", reject, { once: true });
   });
+  const base = `http://127.0.0.1:${devtools}`;
+  const sockets = [ws];
   return {
     session: new Session(ws),
+    targetId: target.id,
+    async newSession() {
+      const made = await (await fetch(`${base}/json/new?about:blank`, { method: "PUT" })).json();
+      const other = new WebSocket(made.webSocketDebuggerUrl);
+      await new Promise((resolve, reject) => {
+        other.addEventListener("open", resolve, { once: true });
+        other.addEventListener("error", reject, { once: true });
+      });
+      sockets.push(other);
+      return { session: new Session(other), targetId: made.id };
+    },
+    async openBlank() {
+      return (await (await fetch(`${base}/json/new?about:blank`, { method: "PUT" })).json()).id;
+    },
+    async activate(id) {
+      await fetch(`${base}/json/activate/${id}`);
+    },
+    async closeTarget(id) {
+      await fetch(`${base}/json/close/${id}`);
+    },
     async close() {
-      ws.close();
+      for (const socket of sockets) socket.close();
       proc.kill();
       await new Promise((resolve) => proc.once("exit", resolve));
       if (process.env.VIEWMARK_KEEP_PROFILE !== "1") rmSync(profile, { recursive: true, force: true });
@@ -194,12 +254,23 @@ window.__qaBreak = (offset) => {
   }
   return null;
 };
-// Where a caret at this offset belongs on screen, by the plan's rule.
+// Where a caret at this offset belongs on screen, by the plan's rule. At a soft wrap the same
+// offset ends one visual line and starts the next, and the browser may draw it on either, so
+// the end of the earlier line is offered as an alternative.
 window.__qaBoundary = (offset) => {
+  const main = window.__qaBoundaryMain(offset);
   const before = offset > 0 ? window.__qaGlyph(offset - 1) : null;
   const after = window.__qaGlyph(offset);
-  if (before && (!after || Math.abs(after.top - before.top) < 2)) return { x: before.right, top: before.top, bottom: before.bottom };
-  if (after) return { x: after.left, top: after.top, bottom: after.bottom };
+  if (main && before && after && Math.abs(after.top - before.top) >= 2) {
+    main.alt = { x: window.__qaRtl(offset - 1) ? before.left : before.right, top: before.top, bottom: before.bottom };
+  }
+  return main;
+};
+window.__qaBoundaryMain = (offset) => {
+  const before = offset > 0 ? window.__qaGlyph(offset - 1) : null;
+  const after = window.__qaGlyph(offset);
+  if (before && (!after || Math.abs(after.top - before.top) < 2)) return { x: window.__qaRtl(offset - 1) ? before.left : before.right, top: before.top, bottom: before.bottom };
+  if (after) return { x: window.__qaRtl(offset) ? after.right : after.left, top: after.top, bottom: after.bottom };
   const empty = window.__qaEmptyLine(offset);
   if (empty) return { x: empty.left, top: empty.top, bottom: empty.bottom };
   if (before) return { x: before.right, top: before.top, bottom: before.bottom };
@@ -208,11 +279,16 @@ window.__qaBoundary = (offset) => {
   return null;
 };
 // 1 px inside the glyph after the boundary, or inside the glyph before it at a line end.
+// A right-to-left glyph starts at its right edge.
+window.__qaRtl = (offset) => {
+  const hit = window.__qaTextAt(offset);
+  return !!hit && /[\u0590-\u08ff]/.test(hit.node.data[hit.index]);
+};
 window.__qaClickPoint = (offset) => {
   const after = window.__qaGlyph(offset);
-  if (after) return { x: after.left + 1, y: (after.top + after.bottom) / 2, how: "after" };
+  if (after) return { x: window.__qaRtl(offset) ? after.right - 1 : after.left + 1, y: (after.top + after.bottom) / 2, how: "after" };
   const before = offset > 0 ? window.__qaGlyph(offset - 1) : null;
-  if (before) return { x: before.right - 1, y: (before.top + before.bottom) / 2, how: "before" };
+  if (before) return { x: window.__qaRtl(offset - 1) ? before.left + 1 : before.right - 1, y: (before.top + before.bottom) / 2, how: "before" };
   const empty = window.__qaEmptyLine(offset);
   if (empty) return { x: empty.left + 4, y: (empty.top + empty.bottom) / 2, how: "empty" };
   const br = window.__qaBreak(offset);
@@ -445,11 +521,12 @@ export class Page {
     return result.result.value;
   }
 
-  async login() {
+  async login(user = USER) {
+    this.user = user;
     await this.session.send("Page.navigate", { url: `http://127.0.0.1:${this.port}/` });
     await this.until(() => this.eval("!!document.querySelector('.md-login-name') && document.readyState === 'complete'"), "login field");
     await this.eval("document.querySelector('.md-login-name').focus(); true");
-    await this.type(USER);
+    await this.type(user);
     await this.key("Enter");
     await this.until(() => this.frames.some((frame) => frame.dir === "in" && frame.data && frame.data.type === "hello"), "hello");
     // Ticket zgdygbcf: dismissLogin leaves the closed dialog modal, so nothing is clickable
@@ -483,9 +560,24 @@ export class Page {
     await this.eval("new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))");
   }
 
-  // Two frames, then 100 ms with no socket frame, then no selectionchange in the next frame.
+  // Edits this page sent that the hub has not answered yet, by its own doc or by an error.
+  unanswered() {
+    let count = 0;
+    for (const frame of this.frames) {
+      const data = frame.data;
+      if (!data) continue;
+      if (frame.dir === "out" && (data.type === "edit" || data.type === "undo" || data.type === "redo")) count += 1;
+      else if (frame.dir === "in" && ((data.type === "doc" && data.actor === this.user) || data.type === "error")) count = Math.max(0, count - 1);
+    }
+    return count;
+  }
+
+  // Every edit answered (for at most 2 s, so a page that never hears back still finishes the
+  // cell), then two frames, then 100 ms with no socket frame, then no selectionchange in the
+  // next frame.
   async quiet(timeout = 5000) {
     const started = Date.now();
+    while (this.unanswered() > 0 && Date.now() - started < 2000) await sleep(10);
     while (Date.now() - started < timeout) {
       await this.frame();
       while (Date.now() - this.lastFrameAt < 100) await sleep(10);
