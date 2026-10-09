@@ -1202,6 +1202,29 @@ export async function createHub(stateDir, sourceRoot) {
     send(socket, await docsPayload(repo));
   }
 
+  async function onRev(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const rel = safeRel(msg.path);
+    if (!rel) return fail(socket, 404);
+    const cached = repo.files.get(rel);
+    let bytes;
+    if (cached) bytes = Buffer.from(cached.text, "utf8");
+    else {
+      const full = path.resolve(repo.path, rel);
+      let real;
+      try { real = await fs.realpath(full); }
+      catch { return fail(socket, 404); }
+      if (!inside(repo.path, real)) return fail(socket, 404);
+      let info;
+      try { info = await fs.stat(real); }
+      catch { return fail(socket, 404); }
+      if (!info.isFile()) return fail(socket, 404);
+      bytes = await fs.readFile(real);
+    }
+    send(socket, { type: "rev", path: rel, sha256: createHash("sha256").update(bytes).digest("hex") });
+  }
+
   async function onMove(socket, msg) {
     const repo = socket.session.repo;
     if (!repo) return fail(socket, 400);
@@ -2247,6 +2270,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "comment.add") return onCommentAdd(socket, msg);
     if (msg.type === "list") return onList(socket);
     if (msg.type === "move") return onMove(socket, msg);
+    if (msg.type === "rev") return onRev(socket, msg);
     if (msg.type === "open") return onOpen(socket, msg);
     if (msg.type === "create") return onCreate(socket, msg);
     if (msg.type === "tickets") return onTickets(socket);

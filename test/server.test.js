@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import http from "node:http";
 import fs from "node:fs/promises";
@@ -3858,5 +3858,60 @@ test("the hub ignores a session token outside the accepted pattern", async () =>
     assert.equal(file.cursor, 4);
     assert.equal(file.anchor, 4);
     again.ws.close();
+  });
+});
+
+test("T-rev", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const helloText = "hello line\nsecond line\n";
+    await fs.writeFile(path.join(dir, "hello.md"), helloText);
+    const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+    const opener = await hello(port, "A");
+    const other = await hello(port, "B");
+    const asker = await hello(port, "C");
+    const opened = await openDoc(opener, "A", "hello.md");
+    const noted = opened.rev;
+    asker.send({ type: "rev", username: "C", path: "hello.md" });
+    const reply = await asker.next((msg) => msg.type === "rev" || msg.type === "error");
+    assert.deepEqual(reply, { type: "rev", path: "hello.md", sha256: sha(helloText) });
+    await delay(100);
+    assert.equal(opener.all.some((msg) => msg.type === "rev"), false);
+    assert.equal(other.all.some((msg) => msg.type === "rev"), false);
+    const again = await openDoc(opener, "A", "hello.md");
+    assert.equal(again.rev, noted);
+    assert.equal(again.text, helloText);
+
+    await syncLock(opener, [], "A", "hello.md", 0, noted);
+    opener.send({ type: "edit", username: "A", path: "hello.md", rev: noted, op: "insert", text: "Z" });
+    const doc = await takeDoc(opener);
+    assert.equal(doc.rev, noted + 1);
+    assert.equal(doc.text, `Z${helloText}`);
+    const disk = "disk only\n";
+    await fs.writeFile(path.join(dir, "hello.md"), disk);
+    asker.send({ type: "rev", username: "C", path: "hello.md" });
+    const cached = await asker.next((msg) => msg.type === "rev" || msg.type === "error");
+    assert.deepEqual(cached, { type: "rev", path: "hello.md", sha256: sha(doc.text) });
+    assert.notEqual(cached.sha256, sha(disk));
+    const still = await openDoc(opener, "A", "hello.md");
+    assert.equal(still.rev, doc.rev);
+    assert.equal(still.text, doc.text);
+
+    const sealed = Buffer.from("never opened\n", "utf8");
+    await fs.writeFile(path.join(dir, "sealed.md"), sealed);
+    const raw = Buffer.from([0xff, 0x00, 0xfe]);
+    await fs.writeFile(path.join(dir, "raw.bin"), raw);
+    asker.send({ type: "rev", username: "C", path: "sealed.md" });
+    const fresh = await asker.next((msg) => msg.type === "rev" && msg.path === "sealed.md");
+    assert.equal(fresh.sha256, sha(await fs.readFile(path.join(dir, "sealed.md"))));
+    asker.send({ type: "rev", username: "C", path: "raw.bin" });
+    const bytes = await asker.next((msg) => msg.type === "rev" && msg.path === "raw.bin");
+    assert.equal(bytes.sha256, sha(raw));
+    await delay(100);
+    assert.equal(opener.all.some((msg) => msg.type === "rev"), false);
+    assert.equal(other.all.some((msg) => msg.type === "rev"), false);
+    assert.equal(asker.all.some((msg) => msg.type === "doc"), false);
+    opener.ws.close();
+    other.ws.close();
+    asker.ws.close();
   });
 });

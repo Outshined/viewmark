@@ -17,6 +17,7 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME edit <path> [--start LINE:OFFSET --end LINE:OFFSET]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME delete <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME move <path> [--dir DIR]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME rev <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment list <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment show <path> <thread>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment reply <path> <thread>
@@ -42,7 +43,7 @@ Usage:
 --port or VIEWMARK_PORT, default 8765. --user or VIEWMARK_USER; the flag wins.
 Missing, empty, NUL, CR, LF, <, or > is rejected. There is no default name.
 --json is global. --help, help, or no args exits 0.
---repo is required on list, show, create, edit, delete, move, comment, commit, and ticket.
+--repo is required on list, show, create, edit, delete, move, rev, comment, commit, and ticket.
 serve keeps running. The default directory is \`state\` beside the program, and --user is not required.
 
 stdout and stderr:
@@ -560,6 +561,19 @@ async function runList(hub, username, json) {
     return 0;
   }
   if (msg.files.length > 0) process.stdout.write(msg.files.map((file) => `${file}\n`).join(""));
+  return 0;
+}
+
+async function runRev(hub, username, docPath, json) {
+  hub.send({ type: "rev", username, path: docPath });
+  const msg = await hub.next((item) => item.type === "rev" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  if (typeof msg.path !== "string" || typeof msg.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(msg.sha256)) return 1;
+  if (json) {
+    writeJson({ path: msg.path, sha256: msg.sha256 });
+    return 0;
+  }
+  process.stdout.write(`${msg.sha256}\n`);
   return 0;
 }
 
@@ -1587,7 +1601,7 @@ async function main() {
     return;
   }
 
-  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "delete" && cmd !== "move" && cmd !== "comment" && cmd !== "ticket" && cmd !== "commit") {
+  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "delete" && cmd !== "move" && cmd !== "rev" && cmd !== "comment" && cmd !== "ticket" && cmd !== "commit") {
     usage("unknown command");
     return;
   }
@@ -1665,6 +1679,10 @@ async function main() {
     return;
   }
 
+  if (cmd === "rev") {
+    await withHub(port, user, (hub) => runRev(hub, user, rest[0], args.json), args.repo);
+    return;
+  }
   if (cmd === "show") {
     await withHub(port, user, (hub) => runShow(hub, user, rest[0], args.json), args.repo);
     return;

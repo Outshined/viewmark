@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import http from "node:http";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -63,6 +64,7 @@ const HELP_NEEDLES = [
   "ticket purge",
   "delete <path>",
   "move <path> [--dir DIR]",
+  "viewmark [--port PORT] [--user NAME] [--json] --repo NAME rev <path>",
   "comment list <path>",
   "comment show <path> <thread>",
   "comment reply <path> <thread>",
@@ -73,7 +75,7 @@ const HELP_NEEDLES = [
   "comment delete <path> <thread>",
   "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin.",
   "Lines count from 1. Offset counts from 0. The end offset is exclusive.",
-  "--repo is required on list, show, create, edit, delete, move, comment, commit, and ticket.",
+  "--repo is required on list, show, create, edit, delete, move, rev, comment, commit, and ticket.",
   "ticket delete",
   "--title",
   "--state",
@@ -662,6 +664,75 @@ test("T-cli-show", async () => {
     assert.equal(missing.stdout, "");
     assert.equal(missing.stderr, "error 404\n");
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
+    watcher.ws.close();
+  });
+});
+
+test("T-cli-rev", async () => {
+  const sha = createHash("sha256").update(HELLO).digest("hex");
+  const gate = await trap();
+  try {
+    const noRepo = await run(["--port", String(gate.port), "--user", "user", "rev", "hello.md"]);
+    assert.equal(noRepo.code, 2);
+    assert.equal(noRepo.stdout, "");
+    assert.equal(noRepo.stderr, "viewmark: --repo is required\n");
+    const missingPath = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "rev"]);
+    assert.equal(missingPath.code, 2);
+    assert.equal(missingPath.stdout, "");
+    assert.equal(missingPath.stderr, "viewmark: path required\n");
+    assert.equal(gate.hits.length, 0);
+  } finally {
+    await gate.close();
+  }
+
+  await withDocs(async ({ dir, port }) => {
+    const watcher = await hello(port, "watch");
+    const opened = await openDoc(watcher, "watch", "hello.md");
+    const noted = opened.rev;
+    const shown = await run(["--port", String(port), "--user", "user", "--repo", "docs", "rev", "hello.md"]);
+    assert.equal(shown.code, 0);
+    assert.equal(shown.stderr, "");
+    assert.equal(shown.stdout, `${sha}\n`);
+    assert.equal(shown.stdout.includes(HELLO), false);
+    await delay(100);
+    assert.equal(watcher.queue.some((msg) => msg.type === "rev"), false);
+    const again = await openDoc(watcher, "watch", "hello.md");
+    assert.equal(again.rev, noted);
+    assert.equal(again.text, HELLO);
+
+    const json = await run(["--json", "--port", String(port), "--user", "user", "--repo", "docs", "rev", "hello.md"]);
+    assert.equal(json.code, 0);
+    assert.equal(json.stderr, "");
+    assert.equal(json.stdout, `${JSON.stringify({ path: "hello.md", sha256: sha })}\n`);
+
+    const missing = await run(["--port", String(port), "--user", "user", "--repo", "docs", "rev", "missing.md"]);
+    assert.equal(missing.code, shellStatus(404));
+    assert.equal(missing.stdout, "");
+    assert.equal(missing.stderr, "error 404\n");
+    assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
+
+    watcher.send({ type: "edit", username: "watch", path: "hello.md", rev: noted, op: "insert", text: "Z" });
+    const doc = await watcher.next((msg) => msg.type === "doc" || msg.type === "error");
+    assert.equal(doc.type, "doc");
+    assert.equal(doc.path, "hello.md");
+    assert.equal(doc.rev, noted + 1);
+    assert.equal(doc.text, `Z${HELLO}`);
+    const disk = "disk only\n";
+    await fs.writeFile(path.join(dir, "hello.md"), disk);
+    const cached = await run(["--port", String(port), "--user", "user", "--repo", "docs", "rev", "hello.md"]);
+    assert.equal(cached.code, 0);
+    assert.equal(cached.stderr, "");
+    assert.equal(cached.stdout, `${createHash("sha256").update(doc.text).digest("hex")}\n`);
+    assert.notEqual(cached.stdout, `${createHash("sha256").update(disk).digest("hex")}\n`);
+
+    const sealed = "never opened\n";
+    await fs.writeFile(path.join(dir, "sealed.md"), sealed);
+    const fresh = await run(["--port", String(port), "--user", "user", "--repo", "docs", "rev", "sealed.md"]);
+    assert.equal(fresh.code, 0);
+    assert.equal(fresh.stderr, "");
+    assert.equal(fresh.stdout, `${createHash("sha256").update(await fs.readFile(path.join(dir, "sealed.md"))).digest("hex")}\n`);
+    await delay(100);
+    assert.equal(watcher.queue.some((msg) => msg.type === "rev"), false);
     watcher.ws.close();
   });
 });
@@ -3252,7 +3323,7 @@ test("T-comment-usage", async () => {
   ]) {
     assert.ok(help.stdout.includes(line), line);
   }
-  assert.match(help.stdout, /--repo is required on list, show, create, edit, delete, move, comment, commit, and ticket\./);
+  assert.match(help.stdout, /--repo is required on list, show, create, edit, delete, move, rev, comment, commit, and ticket\./);
 
   const gate = await trap();
   try {
