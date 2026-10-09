@@ -1,0 +1,113 @@
+import { spawnSync } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// The plan in the hub is authoritative. Every run reads its cells from there; there is no copy.
+const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "cli.js");
+const PLAN = { repo: "viewmark", path: "qa/editor-matrix-test-plan.md" };
+const CM = "\n\n```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nNote.\n```\n";
+const LITERAL = /`([^`]*)`|"((?:[^"\\]|\\.)*)"/y;
+
+function decodeBackticks(body) {
+  return body.replace(/\\([nt\\])/g, (_, ch) => (ch === "n" ? "\n" : ch === "t" ? "\t" : "\\"));
+}
+
+function readLiteral(text, at) {
+  LITERAL.lastIndex = at;
+  const match = LITERAL.exec(text);
+  if (!match) return null;
+  const value = match[1] != null ? decodeBackticks(match[1]) : JSON.parse(`"${match[2]}"`);
+  return { value, end: LITERAL.lastIndex };
+}
+
+// The marks are not file bytes: ‸ is the focus and « the anchor.
+export function marked(text) {
+  const bytes = text.replace(/[‸«]/g, "");
+  const focusAt = text.indexOf("‸");
+  const anchorAt = text.indexOf("«");
+  const position = (at) => at - (anchorAt >= 0 && anchorAt < at ? 1 : 0) - (focusAt >= 0 && focusAt < at ? 1 : 0);
+  const focus = focusAt < 0 ? null : position(focusAt);
+  const anchor = anchorAt < 0 ? focus : position(anchorAt);
+  return { bytes, focus, anchor };
+}
+
+function splitKeys(text) {
+  const keys = [];
+  let at = 0;
+  let current = "";
+  while (at < text.length) {
+    if (text[at] === '"' || text[at] === "`") {
+      const literal = readLiteral(text, at);
+      if (literal) {
+        keys.push({ text: literal.value });
+        at = literal.end;
+        continue;
+      }
+    }
+    if (text.startsWith(", ", at)) {
+      if (current.trim()) keys.push({ key: current.trim() });
+      current = "";
+      at += 2;
+      continue;
+    }
+    current += text[at];
+    at += 1;
+  }
+  if (current.trim()) keys.push({ key: current.trim() });
+  return keys.filter((item) => item.text != null || item.key);
+}
+
+export function parseCell(line) {
+  const head = /^- `([A-Z][A-Z0-9]*\.[^`\s]+)` /.exec(line);
+  if (!head) return null;
+  const id = head[1];
+  let rest = line.slice(head[0].length);
+  const source = readLiteral(rest, 0);
+  if (!source) return { id, prose: rest };
+  let sourceText = source.value;
+  rest = rest.slice(source.end);
+  if (rest.startsWith(" + CM")) {
+    sourceText += CM;
+    rest = rest.slice(5);
+  }
+  rest = rest.replace(/^,?\s*/, "");
+  const arrow = rest.lastIndexOf(" → ");
+  const keyText = arrow < 0 ? rest : rest.slice(0, arrow);
+  let after = arrow < 0 ? "" : rest.slice(arrow + 3);
+  const dot = after.indexOf(" · ");
+  const notes = dot < 0 ? "" : after.slice(dot + 3);
+  const main = dot < 0 ? after : after.slice(0, dot);
+  let expectText = null;
+  let expectKind = "bytes";
+  if (main.startsWith("same")) {
+    expectText = sourceText;
+    expectKind = "same";
+  } else {
+    const expect = readLiteral(main, 0);
+    if (expect) {
+      expectText = expect.value + (main.slice(expect.end).startsWith(" + CM") ? CM : "");
+    } else {
+      expectKind = "prose";
+    }
+  }
+  const routes = /routes? ([^·[]+)/.exec(notes);
+  return {
+    id,
+    line,
+    source: marked(sourceText),
+    keys: splitKeys(keyText),
+    expect: expectText == null ? null : marked(expectText),
+    expectKind,
+    notes,
+    routes: routes ? [...routes[1].matchAll(/`([^`]+)`/g)].map((m) => m[1]) : [],
+    tags: [...line.matchAll(/\[(U|D\d+)\]/g)].map((m) => m[1]),
+  };
+}
+
+// VIEWMARK_PLAN_PORT names the hub that holds the plan when it is not on the default port.
+export function loadCells(prefix) {
+  const port = process.env.VIEWMARK_PLAN_PORT ? ["--port", process.env.VIEWMARK_PLAN_PORT] : [];
+  const shown = spawnSync(process.execPath, [CLI, ...port, "--user", "qa-bot", "--repo", PLAN.repo, "show", PLAN.path], { encoding: "utf8" });
+  if (shown.status !== 0) throw new Error(`cannot read ${PLAN.path} from the ${PLAN.repo} hub repo: ${shown.stderr.trim()}`);
+  return shown.stdout.split("\n").map(parseCell).filter((cell) => cell && cell.id.startsWith(prefix));
+}
