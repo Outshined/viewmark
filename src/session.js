@@ -32,6 +32,15 @@ export function createMemoryTransport(doc, cursor = 0) {
   let rev = 0;
   const listeners = new Set();
 
+  function deliverNoop(message) {
+    const note = {
+      type: "noop",
+      path: typeof message.path === "string" ? message.path : "",
+      rev,
+    };
+    for (const fn of listeners) fn(note);
+  }
+
   function deliver(from, to, inserted, actor) {
     rev += 1;
     const message = {
@@ -93,7 +102,10 @@ export function createMemoryTransport(doc, cursor = 0) {
       if (message.type === "undo" || message.type === "redo") {
         const before = state.doc.length;
         const next = message.type === "undo" ? undo(state) : redo(state);
-        if (next === state) return;
+        if (next === state) {
+          deliverNoop(message);
+          return;
+        }
         state = next;
         deliver(0, before, state.doc, message.username);
         return;
@@ -132,7 +144,10 @@ export function createMemoryTransport(doc, cursor = 0) {
       } else {
         return;
       }
-      if (next === base) return;
+      if (next === base) {
+        deliverNoop(message);
+        return;
+      }
       const oldLength = base.doc.length;
       state = next;
       if (message.op === "insert" || message.op === "backspace" || message.op === "delete") {

@@ -1128,7 +1128,8 @@ export async function createHub(stateDir, sourceRoot) {
     const file = await loadFile(repo, rel);
     if (!file) return fail(socket, 404);
     const session = socket.session;
-    if (session.docPath !== rel) {
+    const already = session.docPath === rel;
+    if (!already) {
       await releaseFile(socket);
       session.docPath = rel;
       session.anchor = 0;
@@ -1145,6 +1146,12 @@ export async function createHub(stateDir, sourceRoot) {
       text: file.text,
       locks: lockSnapshot(file),
     };
+    // A fresh open has no caret yet. Reopening the file this socket holds
+    // returns the caret so a replayed edit lands where the session left it.
+    if (already) {
+      message.cursor = session.cursor;
+      message.anchor = session.anchor;
+    }
     if (file.ticket) message.ticket = ticketView(file.ticket, file.rev);
     send(socket, message);
   }
@@ -1561,6 +1568,8 @@ export async function createHub(stateDir, sourceRoot) {
       session.anchor = savedAnchor;
       if (produced === undefined) return fail(socket, 400);
       if (produced === null) return reason ? fail(socket, 409, { reason }) : fail(socket, 409);
+      // The bytes did not change, so rev and disk stay and nobody else hears a doc.
+      send(socket, { type: "noop", path: file.rel, rev: file.rev });
       return;
     }
     const splice = coveringSplice(file.text, produced.doc);
@@ -1607,7 +1616,10 @@ export async function createHub(stateDir, sourceRoot) {
     if (typeof msg.rev !== "number" || msg.rev !== file.rev) return fail(socket, 409);
     const stack = direction === "undo" ? session.undo : session.redo;
     const entry = stack[stack.length - 1];
-    if (!entry) return fail(socket, 409);
+    if (!entry) {
+      send(socket, { type: "noop", path: file.rel, rev: file.rev });
+      return;
+    }
     const present = direction === "undo" ? entry.inserted : entry.removed;
     const replacement = direction === "undo" ? entry.removed : entry.inserted;
     const at = entry.at;

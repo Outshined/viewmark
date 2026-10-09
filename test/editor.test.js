@@ -5339,6 +5339,159 @@ test("a 409 on an edit drops held keystrokes", () => {
   }
 });
 
+test("a collapsed boundary delete is not sent", () => {
+  const mounted = mountEditor();
+  const rejecting = {
+    username: "",
+    sent: [],
+    subscribe(fn) {
+      this.listener = fn;
+      return () => {};
+    },
+    send(message) {
+      this.sent.push(message);
+      if (message.type === "lock" && this.listener) this.listener({ type: "error", status: 409 });
+    },
+  };
+  const press = (inputType) => {
+    mounted.listeners.beforeinput({
+      inputType,
+      preventDefault() {},
+    });
+  };
+  const caret = (node, anchor, focus) => {
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: node,
+      anchorOffset: anchor,
+      focusNode: node,
+      focusOffset: focus,
+      removeAllRanges() {},
+      addRange() {},
+      getRangeAt() {
+        const start = Math.min(anchor, focus);
+        const end = Math.max(anchor, focus);
+        return {
+          startContainer: node,
+          startOffset: start,
+          endContainer: node,
+          endOffset: end,
+          collapsed: start === end,
+        };
+      },
+    });
+  };
+  try {
+    const view = createEditor(mounted.root, "hello", 0, rejecting);
+    const node = mounted.findAll((item) => item.nodeType === 3 && item.textContent === "hello")[0];
+    assert.ok(node);
+    caret(node, 0, 0);
+    press("deleteContentBackward");
+    caret(node, node.length, node.length);
+    press("deleteContentForward");
+    assert.equal(rejecting.sent.some((message) => message.type === "edit"), false);
+    assert.equal(view.getState().doc, "hello");
+    caret(node, 0, 4);
+    press("deleteContentForward");
+    const edit = rejecting.sent.find((message) => message.type === "edit");
+    assert.equal(edit.op, "delete");
+    assert.notEqual(edit.anchor, edit.cursor);
+    assert.equal(view.getState().doc, "hello");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a noop sends the queued insert at the same rev", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "ab", 1, transport);
+    insertText(mounted, "X");
+    insertText(mounted, "Y");
+    assert.equal(transport.sent.filter((message) => message.type === "edit").length, 1);
+    transport.deliver({ type: "noop", path: "other.md", rev: 0 });
+    transport.deliver({ type: "noop", path: "", rev: 1 });
+    assert.equal(transport.sent.filter((message) => message.type === "edit").length, 1);
+    assert.equal(view.getState().doc, "ab");
+    assert.equal(view.getState().cursor, 1);
+    transport.deliver({ type: "noop", path: "", rev: 0 });
+    const edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 2);
+    assert.equal(edits[1].op, "insert");
+    assert.equal(edits[1].text, "Y");
+    assert.equal(edits[1].rev, 0);
+    assert.equal(edits[1].cursor, 1);
+    assert.equal(edits[1].anchor, 1);
+    assert.equal(view.getState().doc, "ab");
+    assert.equal(view.getState().cursor, 1);
+    assert.equal(view.getState().anchor, 1);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("silence reopens and the file sends the queued insert at its caret", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "ab", 1, transport);
+    insertText(mounted, "X");
+    insertText(mounted, "Y");
+    insertText(mounted, "Z");
+    assert.equal(transport.sent.filter((message) => message.type === "edit").length, 1);
+    t.mock.timers.tick(1999);
+    assert.equal(transport.sent.some((message) => message.type === "open"), false);
+    t.mock.timers.tick(1);
+    assert.equal(transport.sent.some((message) => message.type === "open" && message.path === "" && message.rev === 0), true);
+    assert.equal(transport.sent.filter((message) => message.type === "edit").length, 1);
+    transport.deliver({ type: "noop", path: "", rev: 0 });
+    transport.deliver({
+      type: "doc",
+      rev: 1,
+      text: "ZZ",
+      from: 0,
+      to: 0,
+      inserted: "ZZ",
+      actor: "",
+      cursor: 2,
+      anchor: 2,
+    });
+    assert.equal(view.getState().doc, "ab");
+    assert.equal(view.getState().cursor, 1);
+    assert.equal(transport.sent.filter((message) => message.type === "edit").length, 1);
+    transport.deliver({ type: "file", path: "", rev: 4, text: "ab", cursor: 0, anchor: 0 });
+    assert.equal(view.getState().doc, "ab");
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(view.getState().anchor, 0);
+    let edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 2);
+    assert.equal(edits[1].op, "insert");
+    assert.equal(edits[1].text, "Y");
+    assert.equal(edits[1].rev, 4);
+    assert.equal(edits[1].cursor, 0);
+    assert.equal(edits[1].anchor, 0);
+    assert.equal(edits.some((message) => message.text === "Z"), false);
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(transport.sent.filter((message) => message.type === "edit").some((message) => message.text === "Z"), false);
+    assert.equal(view.getState().doc, "ab");
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(view.getState().anchor, 0);
+    insertText(mounted, "W");
+    edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.at(-1).text, "W");
+    assert.equal(edits.at(-1).rev, 4);
+    assert.equal(edits.at(-1).cursor, 0);
+    assert.equal(edits.some((message) => message.text === "Z"), false);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("undo waits until the in-flight edit's doc", () => {
   const mounted = mountEditor();
   const transport = holdingTransport();

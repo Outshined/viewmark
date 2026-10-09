@@ -1233,8 +1233,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const conflictWaiters = [];
   const fileWaiters = [];
   // The hub rejects an edit that repeats the mirror rev. Remember the op and
-  // send it after this actor's doc advances rev and the caret.
+  // send it after this actor's doc advances rev and the caret. A noop keeps
+  // the rev, so the next op goes at once. Silence reopens; the file brings
+  // the caret and only then does the queue move.
   const pendingEdits = [];
+  let editTimer = null;
+  let resumeAfterFile = false;
   let lockTable = [];
   let expectNewComment = false;
   let unsubscribe = () => {};
@@ -1298,7 +1302,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // A snapshot restates a caret it already stored. Waiting on that lock
     // would stand in front of a later ticket.set and turn its 409 into a caret restore.
     if (type === "lock" && track) conflictWaiters.push("lock");
-    if (type === "edit" || type === "undo" || type === "redo") conflictWaiters.push("edit");
+    if (type === "edit" || type === "undo" || type === "redo") {
+      conflictWaiters.push("edit");
+      // The memory transport answers in send. A socket that stays quiet is reopened.
+      if (active.memory !== true) armEditTimer();
+    }
     if (type === "open") fileWaiters.push("open");
     // The caller puts rev on ticket.set. A later 400 or 409 is a rejected field, not a lost caret.
     if (type === "ticket.set") conflictWaiters.push("ticket");
@@ -1317,11 +1325,44 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function editHeld() {
-    return conflictWaiters.includes("edit");
+    return resumeAfterFile || conflictWaiters.includes("edit");
   }
 
   function dropPendingEdits() {
     pendingEdits.length = 0;
+    resumeAfterFile = false;
+    clearEditTimer();
+  }
+
+  function clearEditTimer() {
+    if (editTimer == null) return;
+    clearTimeout(editTimer);
+    editTimer = null;
+  }
+
+  // Two seconds of silence means the reply was lost. Keep the queue, drop the
+  // one in-flight waiter, and wait for this file before sending anything else.
+  function armEditTimer() {
+    clearEditTimer();
+    editTimer = setTimeout(() => {
+      editTimer = null;
+      if (closed) return;
+      const index = conflictWaiters.indexOf("edit");
+      if (index < 0) return;
+      conflictWaiters.splice(index, 1);
+      resumeAfterFile = true;
+      waitingForFile = true;
+      emit({ type: "open", path: openPath });
+    }, 2000);
+  }
+
+  function boundaryNoop(partial) {
+    const anchor = typeof partial.anchor === "number" ? partial.anchor : state.anchor;
+    const cursor = typeof partial.cursor === "number" ? partial.cursor : state.cursor;
+    if (anchor !== cursor) return false;
+    if (partial.op === "backspace" && cursor === 0) return true;
+    if (partial.op === "delete" && cursor === state.doc.length) return true;
+    return false;
   }
 
   function dropEditWaiters() {
@@ -1344,6 +1385,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function emitEdit(partial) {
     if (!live) return;
+    if (boundaryNoop(partial)) return;
     if (editHeld()) {
       pendingEdits.push({ edit: partial });
       return;
@@ -2885,7 +2927,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       render();
       return;
     }
+    if (message.type === "noop") {
+      // A doc or noop while the file is still out must not release the queue.
+      if (waitingForFile || resumeAfterFile) return;
+      if (typeof message.path !== "string" || message.path !== openPath) return;
+      if (Number(message.rev) !== rev) return;
+      clearEditTimer();
+      const index = conflictWaiters.indexOf("edit");
+      if (index >= 0) conflictWaiters.splice(index, 1);
+      flushPendingEdit();
+      return;
+    }
     if (message.type === "error") {
+      clearEditTimer();
       // A rejected delete left the file in place. It is not a lost caret grant.
       if (conflictWaiters[0] === "delete") {
         conflictWaiters.shift();
@@ -2939,6 +2993,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     let ownEdit = false;
     if (message.type === "doc") {
+      clearEditTimer();
       if (waitingForFile) return;
       const nextRev = Number(message.rev);
       if (!Number.isFinite(nextRev) || nextRev !== rev + 1) {
@@ -2959,6 +3014,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (message.type === "doc" || message.type === "file") applySnapshot(message);
     if (message.type === "file") syncFileTicket(message);
+    if (message.type === "file" && resumeAfterFile) {
+      resumeAfterFile = false;
+      flushPendingEdit();
+    }
     if (ownEdit) flushPendingEdit();
   }
 
@@ -5039,6 +5098,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     },
     destroy() {
       closed = true;
+      clearEditTimer();
       unsubscribe();
       unbindRepoSelect();
       unbindDocMenu();

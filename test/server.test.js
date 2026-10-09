@@ -433,6 +433,144 @@ test("T-edit", async () => {
   });
 });
 
+test("backspace at cursor 0 answers noop and the next insert applies", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), ALPHA);
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    const opened = await openDoc(a, "A", "a.md");
+    assert.equal(Object.hasOwn(opened, "cursor"), false);
+    await openDoc(b, "B", "a.md");
+    a.send({ type: "edit", username: "A", path: "a.md", rev: opened.rev, op: "nope" });
+    assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "noop" || msg.type === "doc"), {
+      type: "error",
+      status: 400,
+    });
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev: opened.rev,
+      op: "comment.add",
+      anchor: 0,
+      cursor: 0,
+    });
+    assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "noop" || msg.type === "doc"), {
+      type: "error",
+      status: 409,
+    });
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev: opened.rev,
+      cursor: 0,
+      anchor: 0,
+      op: "backspace",
+    });
+    assert.deepEqual(await a.next((msg) => msg.type === "noop" || msg.type === "doc" || msg.type === "error"), {
+      type: "noop",
+      path: "a.md",
+      rev: opened.rev,
+    });
+    assert.equal(b.all.some((msg) => msg.type === "doc"), false);
+    assert.equal(await readDoc(dir, "a.md"), ALPHA);
+    await syncLock(a, [b], "A", "a.md", 0, opened.rev);
+    a.send({ type: "edit", username: "A", path: "a.md", rev: opened.rev, op: "insert", text: "Q" });
+    const doc = await takeDoc(a);
+    const other = await takeDoc(b);
+    assert.equal(doc.rev, opened.rev + 1);
+    assert.equal(doc.text, `Q${ALPHA}`);
+    assert.deepEqual(other, doc);
+    assert.equal(await readDoc(dir, "a.md"), doc.text);
+    a.send({ type: "open", username: "A", path: "a.md" });
+    const again = await a.next((msg) => msg.type === "file" && msg.path === "a.md");
+    assert.equal(again.rev, doc.rev);
+    assert.equal(again.text, doc.text);
+    assert.equal(again.cursor, doc.cursor);
+    assert.equal(again.anchor, doc.anchor);
+    a.ws.close();
+    b.ws.close();
+  });
+});
+
+test("delete at the end of the text answers noop", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), ALPHA);
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    const opened = await openDoc(a, "A", "a.md");
+    await openDoc(b, "B", "a.md");
+    const end = ALPHA.length;
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev: opened.rev,
+      cursor: end,
+      anchor: end,
+      op: "delete",
+    });
+    assert.deepEqual(await a.next((msg) => msg.type === "noop" || msg.type === "doc" || msg.type === "error"), {
+      type: "noop",
+      path: "a.md",
+      rev: opened.rev,
+    });
+    assert.equal(b.all.some((msg) => msg.type === "doc"), false);
+    assert.equal(await readDoc(dir, "a.md"), ALPHA);
+    a.send({ type: "open", username: "A", path: "a.md" });
+    const again = await a.next((msg) => msg.type === "file" && msg.path === "a.md");
+    assert.equal(again.rev, opened.rev);
+    assert.equal(again.text, ALPHA);
+    assert.equal(again.cursor, 0);
+    assert.equal(again.anchor, 0);
+    a.ws.close();
+    b.ws.close();
+  });
+});
+
+test("empty undo and empty redo answer noop", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), ALPHA);
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    let rev = (await openDoc(a, "A", "a.md")).rev;
+    await openDoc(b, "B", "a.md");
+    const noop = async () => a.next((msg) => msg.type === "noop" || msg.type === "error" || msg.type === "doc");
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    assert.deepEqual(await noop(), { type: "noop", path: "a.md", rev });
+    a.send({ type: "redo", username: "A", path: "a.md", rev });
+    assert.deepEqual(await noop(), { type: "noop", path: "a.md", rev });
+    assert.equal(b.all.some((msg) => msg.type === "doc"), false);
+    assert.equal(await readDoc(dir, "a.md"), ALPHA);
+
+    await syncLock(a, [b], "A", "a.md", 0, rev);
+    a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "Q" });
+    let doc = await takeDoc(a);
+    assert.deepEqual(await takeDoc(b), doc);
+    assert.equal(doc.text, `Q${ALPHA}`);
+    rev = doc.rev;
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    assert.deepEqual(await takeDoc(b), doc);
+    assert.equal(doc.text, ALPHA);
+    assert.equal(await readDoc(dir, "a.md"), ALPHA);
+    rev = doc.rev;
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    assert.deepEqual(await noop(), { type: "noop", path: "a.md", rev });
+    a.send({ type: "redo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    assert.deepEqual(await takeDoc(b), doc);
+    assert.equal(doc.text, `Q${ALPHA}`);
+    rev = doc.rev;
+    a.send({ type: "redo", username: "A", path: "a.md", rev });
+    assert.deepEqual(await noop(), { type: "noop", path: "a.md", rev });
+    assert.equal(await readDoc(dir, "a.md"), `Q${ALPHA}`);
+    a.ws.close();
+    b.ws.close();
+  });
+});
+
 test("T-undo", async () => {
   await withDocs(async ({ port, dir }) => {
     const lines = "alpha\n\nbeta\n\ngamma\n";
@@ -571,7 +709,11 @@ test("T-redo", async () => {
     rev = doc.rev;
     assert.equal(doc.text, "Yalpha\nbeta\ngamma\n");
     a.send({ type: "redo", username: "A", path: "a.md", rev });
-    assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+    assert.deepEqual(await a.next((msg) => msg.type === "noop" || msg.type === "error" || msg.type === "doc"), {
+      type: "noop",
+      path: "a.md",
+      rev,
+    });
     assert.equal(await readDoc(dir, "a.md"), "Yalpha\nbeta\ngamma\n");
     a.ws.close();
   });
@@ -595,7 +737,11 @@ test("T-cap", async () => {
     }
     assert.equal(await readDoc(dir, "a.md"), "qqqqqz\n");
     a.send({ type: "undo", username: "A", path: "a.md", rev });
-    assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+    assert.deepEqual(await a.next((msg) => msg.type === "noop" || msg.type === "error" || msg.type === "doc"), {
+      type: "noop",
+      path: "a.md",
+      rev,
+    });
     assert.equal(await readDoc(dir, "a.md"), "qqqqqz\n");
     a.ws.close();
   });
@@ -2292,7 +2438,11 @@ test("T-repo-switch", async () => {
     assert.equal(await fs.readFile(path.join(one, "a.md"), "utf8"), "Xalpha\n");
     await assert.rejects(() => git(two, ["rev-parse", "HEAD"]));
     client.send({ type: "undo", username: "A", path: "a.md", rev: next.rev });
-    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+    assert.deepEqual(await client.next((msg) => msg.type === "noop" || msg.type === "error" || msg.type === "doc"), {
+      type: "noop",
+      path: "a.md",
+      rev: next.rev,
+    });
     assert.equal(await fs.readFile(path.join(two, "a.md"), "utf8"), "alpha\n");
     client.ws.close();
   } finally {
