@@ -979,6 +979,30 @@ test("T-comment", async () => {
   });
 });
 
+test("backspace that breaks a comment marker answers 409 and the file stays", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "See {c1}this{/c1} now.\n\n```comment c1\n:: 0\nnote\n```\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const a = await hello(port, "A");
+    const opened = await openDoc(a, "A", "a.md");
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev: opened.rev,
+      cursor: 8,
+      anchor: 8,
+      op: "backspace",
+    });
+    assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "doc" || msg.type === "noop"), {
+      type: "error",
+      status: 409,
+    });
+    assert.equal(await readDoc(dir, "a.md"), text);
+    a.ws.close();
+  });
+});
+
 test("T-shrink", async () => {
   await withDocs(async ({ port, dir }) => {
     const text = `${ALPHA}\n# H\n`;

@@ -508,6 +508,7 @@ function runOp(text, cursor, anchor, msg) {
     if (msg.op === "insert") next = insert(state, typeof msg.text === "string" ? msg.text : "");
     else if (msg.op === "backspace") next = backspace(state);
     else next = deleteForward(state);
+    if (next === null) return null;
     return producedFrom(next, state);
   }
   if (msg.op === "comment.add") {

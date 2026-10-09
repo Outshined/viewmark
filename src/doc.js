@@ -518,14 +518,17 @@ function shiftReplace(index, from, to, inserted) {
   return from + inserted;
 }
 
-// Empty interiors and threads whose span is gone leave in the same edit, so one
-// undo restores the string from before the keystroke.
+// An intact empty interior is removed in this edit, so one undo restores the
+// string from before the keystroke. A thread that is not that span is left
+// in place; the caller refuses the splice instead of keeping half a mark.
 function cleanupComments(doc, cursor) {
   const spans = findSpans(doc);
   const fences = commentThreads(doc);
   const live = new Set();
+  const empty = new Set();
   for (const span of spans) {
     if (span.interiorStart < span.interiorEnd) live.add(span.id);
+    else if (span.interiorStart === span.interiorEnd) empty.add(span.id);
   }
   const ranges = [];
   const dropped = new Set();
@@ -537,8 +540,11 @@ function cleanupComments(doc, cursor) {
       dropped.add(span.id);
     }
   }
+  let broken = false;
   for (const fence of fences) {
-    if (!live.has(fence.id)) dropped.add(fence.id);
+    if (live.has(fence.id)) continue;
+    dropped.add(fence.id);
+    if (!empty.has(fence.id)) broken = true;
   }
   if (dropped.size > 0) {
     const hidden = hiddenFenceRanges(doc);
@@ -551,7 +557,8 @@ function cleanupComments(doc, cursor) {
     }
   }
   const merged = mergeRanges(ranges);
-  if (merged.length === 0) return { doc, cursor, changes: [] };
+  if (merged.length === 0) return { doc, cursor, changes: [], broken: false };
+  if (broken) return { doc, cursor, changes: [], broken: true };
   let next = doc;
   let nextCursor = cursor;
   const changes = [];
@@ -563,7 +570,7 @@ function cleanupComments(doc, cursor) {
     next = next.slice(0, from) + next.slice(to);
     nextCursor = shiftDelete(nextCursor, from, to);
   }
-  return { doc: next, cursor: nextCursor, changes };
+  return { doc: next, cursor: nextCursor, changes, broken: false };
 }
 
 function commentBodyRange(doc, fence) {
@@ -2051,8 +2058,11 @@ function splice(state, from, to, text, cursor) {
 function applySplice(state, from, to, text, cursor) {
   const next = splice(state, from, to, text, cursor);
   if (next === state) return state;
-  const changes = [{ from, to, inserted: text, removed: state.doc.slice(from, to) }];
   const cleaned = cleanupComments(next.doc, next.cursor);
+  // Only an intact empty span may lose its thread. Breaking a mark, or
+  // selecting through one, is not that span, so the caller keeps the old text.
+  if (cleaned.broken) return null;
+  const changes = [{ from, to, inserted: text, removed: state.doc.slice(from, to) }];
   if (cleaned.changes.length > 0) changes.push(...cleaned.changes);
   if (cleaned.doc === next.doc && cleaned.cursor === next.cursor) return { ...next, changes };
   return { ...next, doc: cleaned.doc, cursor: cleaned.cursor, anchor: cleaned.cursor, changes };

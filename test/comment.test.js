@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   appendCommentReply,
+  backspace,
   commentNotes,
+  createState,
+  deleteForward,
   formatCommentNotes,
   parseCommentNotes,
   reviseCommentNote,
@@ -271,4 +274,27 @@ test("reviseCommentNote checks the record, the text, then the author", () => {
   assert.equal(replaced.error, 403);
   assert.equal(replaced.body, embedded);
   assert.equal(reviseCommentNote(embedded, 1, "Updated.", "Grok").note.raw, `${GROK_AT}\nUpdated.`);
+});
+
+test("a splice that breaks a comment marker returns null and an empty interior still drops", () => {
+  const fence = "\n\n```comment c1\n:: 0\nnote\n```\n";
+  const doc = `See {c1}this{/c1} now.${fence}`;
+  assert.equal(doc[7], "}");
+  assert.equal(doc[8], "t");
+  assert.equal(doc[12], "{");
+  assert.equal(doc[16], "}");
+  assert.equal(backspace(createState(doc, 8)), null);
+  assert.equal(backspace(createState(doc, 17)), null);
+  assert.equal(deleteForward(createState(doc, 12)), null);
+  assert.equal(backspace(createState(doc, 10, 0)), null);
+
+  const emptied = `See {c1}x{/c1} now.${fence}`;
+  assert.equal(emptied[8], "x");
+  assert.equal(deleteForward(createState(emptied, 8)).doc, "See  now.\n\n");
+
+  const kept = deleteForward(createState(doc, 8));
+  assert.equal(kept.doc, `See {c1}his{/c1} now.${fence}`);
+  assert.equal(kept.doc.includes("{c1}"), true);
+  assert.equal(kept.doc.includes("{/c1}"), true);
+  assert.equal(kept.doc.includes("```comment c1"), true);
 });
