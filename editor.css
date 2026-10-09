@@ -538,8 +538,7 @@ nav.files .md-ticket-filter-menu input {
 }
 
 .md-file-wide {
-  position: fixed;
-  left: 0;
+  position: relative;
   z-index: 4;
   box-sizing: border-box;
   background: #1c1b19;

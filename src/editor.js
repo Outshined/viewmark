@@ -4558,8 +4558,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       fileDrawerTimer = null;
       const block = fileBlockEl;
       if (block && block.classList) block.classList.remove("md-file-wide");
-      setStyle(block, "top", "");
-      setStyle(block, "height", "");
       setStyle(block, "width", "");
       setStyle(block, "transition", "");
     }, 200);
@@ -4589,16 +4587,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         fileDrawerTimer = null;
       }
       const alreadyWide = Boolean(block.classList && block.classList.contains("md-file-wide"));
-      // Fixed positioning replaces the pane box, so read that box before the wide class.
-      // An inline width while transition is on starts from the flex item. Commit the
-      // measured width with the transition off, then widen to the title.
-      const rect = typeof block.getBoundingClientRect === "function" ? block.getBoundingClientRect() : null;
-      const width = alreadyWide ? "" : `${filePaneWidth(block, rect)}px`;
-      if (rect) {
-        setStyle(block, "top", `${rect.top}px`);
-        setStyle(block, "height", `${rect.height}px`);
-      }
       if (alreadyWide) return;
+      // Transition would start from the flex width. Commit the compact width with
+      // the transition off, then widen. Top, height, and left stay with the column.
+      const rect = typeof block.getBoundingClientRect === "function" ? block.getBoundingClientRect() : null;
+      const width = `${filePaneWidth(block, rect)}px`;
       setStyle(block, "transition", "none");
       if (rect && typeof rect.width === "number" && Number.isFinite(rect.width)) setStyle(block, "width", `${rect.width}px`);
       if (block.classList) block.classList.add("md-file-wide");
