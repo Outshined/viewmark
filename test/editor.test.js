@@ -9525,6 +9525,7 @@ test("a double-click selects the word under the first press", () => {
     press(foo, 1);
     assert.equal(mounted.root.textContent.includes("```"), false);
     assert.equal(view.getState().anchor, view.getState().cursor);
+    assert.equal(doc.slice(view.getState().cursor, view.getState().cursor + 3), "foo");
     globalThis.document.caretPositionFromPoint = () => ({ offsetNode: foo, offset: 0 });
     press(foo, 2);
     assert.equal(selectedSlice(view.getState()), "foo");
@@ -9538,6 +9539,7 @@ test("a double-click selects the word under the first press", () => {
     globalThis.document.caretPositionFromPoint = () => ({ offsetNode: zed, offset: zed.textContent.indexOf("z") });
     press(zed, 1);
     assert.equal(mounted.root.textContent.includes("```"), false);
+    assert.equal(tripleDoc.slice(triple.getState().cursor, triple.getState().cursor + 1), "z");
     press(zed, 2);
     const opener = mounted.findAll((node) => node.nodeType === 3 && node.textContent.includes("```"))[0];
     globalThis.document.caretPositionFromPoint = () => ({ offsetNode: opener || zed, offset: 0 });

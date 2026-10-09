@@ -1512,8 +1512,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let gestureOffset = null;
   let gestureArmed = false;
   let gestureTimer = null;
-  // The slow double-click route waits 250ms. A lone click renders only after
-  // this, so the second press still hits the block the first press measured.
+  // True from the click's state write through placeCaret. selectionchange in
+  // that window still describes the DOM replaceChildren just tore down.
+  let gestureHold = false;
   const DOUBLE_CLICK_MS = 500;
   let pasteSeen = false;
   let composing = false;
@@ -1944,6 +1945,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function adoptDomSelection() {
+    if (gestureHold) return true;
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return true;
     const holder = sel.anchorNode || sel.getRangeAt(0).commonAncestorContainer;
@@ -1970,7 +1972,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onSelectionChange() {
-    if (closed || placingCaret || composing) return;
+    if (closed || placingCaret || composing || gestureHold) return;
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return;
     const holder = sel.anchorNode || sel.getRangeAt(0).commonAncestorContainer;
@@ -2739,34 +2741,42 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function render() {
-    cancelGestureRender();
-    const planned = plan(state.doc, state.cursor);
-    let blocks = planned.blocks;
-    if (rawSelectionLines) {
-      rawSelectionLines = false;
-      blocks = blocksWithSelectionSource(blocks);
+    if (gestureTimer != null) {
+      clearTimeout(gestureTimer);
+      gestureTimer = null;
     }
-    blocks = blocksForCaret(blocks);
-    const flashBlock = refusal && !refusal.name ? tightestBlock(blocks, refusal.offset) : null;
-    const nodes = blocks.map((block) => {
-      const el = renderBlock(block);
-      appendLockMarks(el, block);
-      if (block === flashBlock) el.classList.add("md-flash");
-      return el;
-    });
-    const priorTop = caretTop();
-    root.replaceChildren(...nodes);
-    markEditingHighlights();
-    hideResolvedHighlights();
-    renderCommentAside(planned.comments);
-    layoutComments();
-    if (commentFocus) focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
-    else placeCaret(priorTop);
-    updateCommentButton();
-    if (scrollCommentId) {
-      const card = findCommentCard(scrollCommentId);
-      scrollCommentId = null;
-      if (card && typeof card.scrollIntoView === "function") card.scrollIntoView();
+    const gestureHeld = gestureHold;
+    try {
+      const planned = plan(state.doc, state.cursor);
+      let blocks = planned.blocks;
+      if (rawSelectionLines) {
+        rawSelectionLines = false;
+        blocks = blocksWithSelectionSource(blocks);
+      }
+      blocks = blocksForCaret(blocks);
+      const flashBlock = refusal && !refusal.name ? tightestBlock(blocks, refusal.offset) : null;
+      const nodes = blocks.map((block) => {
+        const el = renderBlock(block);
+        appendLockMarks(el, block);
+        if (block === flashBlock) el.classList.add("md-flash");
+        return el;
+      });
+      const priorTop = caretTop();
+      root.replaceChildren(...nodes);
+      markEditingHighlights();
+      hideResolvedHighlights();
+      renderCommentAside(planned.comments);
+      layoutComments();
+      if (commentFocus) focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
+      else placeCaret(priorTop);
+      updateCommentButton();
+      if (scrollCommentId) {
+        const card = findCommentCard(scrollCommentId);
+        scrollCommentId = null;
+        if (card && typeof card.scrollIntoView === "function") card.scrollIntoView();
+      }
+    } finally {
+      if (gestureHeld) gestureHold = false;
     }
   }
 
@@ -3825,15 +3835,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   });
 
   function cancelGestureRender() {
+    gestureHold = false;
     if (gestureTimer == null) return;
     clearTimeout(gestureTimer);
     gestureTimer = null;
   }
 
-  // A lone click renders after the double-click interval. The next press
-  // cancels that, so a closed block stays closed between the presses.
   function scheduleGestureRender() {
-    cancelGestureRender();
+    if (gestureTimer != null) {
+      clearTimeout(gestureTimer);
+      gestureTimer = null;
+    }
+    gestureHold = true;
     gestureTimer = setTimeout(() => {
       gestureTimer = null;
       gestureOffset = null;
@@ -3956,10 +3969,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (belowLastBlock(event)) {
       const end = state.doc.length;
       if (!keepCurrent) clearCurrentComment();
+      if (event.detail === 1) gestureHold = true;
       state = { ...state, anchor: end, cursor: end };
-      if (!claimLines(end, end)) return;
-      if (event.detail === 1) scheduleGestureRender();
-      else render();
+      if (!claimLines(end, end)) {
+        if (event.detail === 1) gestureHold = false;
+        return;
+      }
+      if (event.detail === 1) {
+        placeCaret();
+        scheduleGestureRender();
+      } else render();
       return;
     }
     const detail = event.detail;
@@ -3980,20 +3999,32 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (atom && root.contains(atom)) {
       event.preventDefault();
       if (!keepCurrent) currentCommentId = null;
+      if (detail === 1) gestureHold = true;
       const next = atomClickOffset(atom, target);
       state = { ...state, anchor: next, cursor: next };
-      if (!claimLines(next, next)) return;
-      if (detail === 1) scheduleGestureRender();
-      else render();
+      if (!claimLines(next, next)) {
+        if (detail === 1) gestureHold = false;
+        return;
+      }
+      if (detail === 1) {
+        placeCaret();
+        scheduleGestureRender();
+      } else render();
       return;
     }
     if (!keepCurrent) clearCurrentComment();
     const offset = stored != null ? stored : pointOffset(event);
     if (offset == null) return;
+    if (detail === 1) gestureHold = true;
     state = { ...state, anchor: offset, cursor: offset };
-    if (!claimLines(offset, offset)) return;
-    if (detail === 1) scheduleGestureRender();
-    else render();
+    if (!claimLines(offset, offset)) {
+      if (detail === 1) gestureHold = false;
+      return;
+    }
+    if (detail === 1) {
+      placeCaret();
+      scheduleGestureRender();
+    } else render();
   });
 
   listen("auxclick", (event) => {
