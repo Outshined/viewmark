@@ -7417,7 +7417,7 @@ test("T-ticket-rows", () => {
   assert.match(css, /div\.md-repo-row\s*\{[^}]*flex:\s*none/);
   assert.match(css, /\.file-block\s*\{[^}]*flex:\s*1 1 0/);
   assert.match(css, /\.file-block\s*\{[^}]*min-height:\s*0/);
-  assert.match(css, /\.file-block\s*\{[^}]*overflow:\s*auto/);
+  assert.match(css, /\.file-tree\s*\{[^}]*overflow:\s*auto/);
   assert.match(css, /\.file-block\s*\{[^}]*margin-bottom:\s*0\.4rem/);
   assert.match(css, /\.ticket-block\s*\{[^}]*flex:\s*1 1 0/);
   assert.match(css, /\.ticket-block\s*\{[^}]*min-height:\s*0/);
@@ -7671,6 +7671,130 @@ test("T-ticket-rows", () => {
     view.destroy();
     assert.equal(plus.listeners.click, undefined);
   } finally {
+    mounted.restore();
+  }
+});
+
+test("T-file-drawer", () => {
+  const mounted = mountTicketPage();
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const buttonRule = css.match(/\.file-tree button\s*\{[^}]*\}/)[0];
+  assert.match(buttonRule, /white-space:\s*nowrap/);
+  assert.match(buttonRule, /overflow:\s*hidden/);
+  assert.match(buttonRule, /text-overflow:\s*ellipsis/);
+  const treeRule = css.match(/\.file-tree\s*\{[^}]*\}/)[0];
+  assert.match(treeRule, /overflow:\s*auto/);
+  assert.match(treeRule, /min-height:\s*0/);
+  const blockRule = css.match(/\.file-block\s*\{[^}]*\}/)[0];
+  assert.match(blockRule, /display:\s*flex/);
+  assert.match(blockRule, /flex-direction:\s*column/);
+  assert.match(blockRule, /flex:\s*1 1 0/);
+  assert.match(blockRule, /min-height:\s*0/);
+  assert.equal(/overflow:\s*auto/.test(blockRule), false);
+  const wideRule = css.match(/\.md-file-wide\s*\{[^}]*\}/)[0];
+  assert.match(wideRule, /position:\s*fixed/);
+  assert.match(wideRule, /left:\s*0/);
+  assert.match(wideRule, /z-index:\s*4/);
+  assert.match(wideRule, /box-sizing:\s*border-box/);
+  assert.equal(/width:\s*80vw/.test(wideRule), false);
+  assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.md-file-wide\s*\{[^}]*position:\s*static/);
+  assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.md-file-wide\s*\{[^}]*width:\s*auto/);
+  const transport = holdingTransport();
+  const pending = [];
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms) => {
+    const handle = { fn, ms };
+    pending.push(handle);
+    return handle;
+  };
+  globalThis.clearTimeout = (handle) => {
+    const index = pending.indexOf(handle);
+    if (index >= 0) pending.splice(index, 1);
+  };
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    transport.deliver({ type: "docs", files: ["alpha.md", "bravo.md"] });
+    const fileBlock = byClass(mounted.nav, "file-block")[0];
+    const tree = byClass(fileBlock, "file-tree")[0];
+    const head = byClass(fileBlock, "md-pane-head")[0];
+    assert.equal(head.parentElement, fileBlock);
+    assert.equal(tree.parentElement, fileBlock);
+    assert.equal(byClass(tree, "md-pane-head").length, 0);
+    assert.ok(fileBlock.childNodes.indexOf(head) < fileBlock.childNodes.indexOf(tree));
+    const buttons = byClass(tree, "md-file");
+    assert.equal(buttons.length, 2);
+    buttons[0].scrollWidth = 100;
+    buttons[1].scrollWidth = 300;
+    const plus = byClass(head, "md-new-file")[0];
+    plus.scrollWidth = 5000;
+    fileBlock.getBoundingClientRect = () => ({ top: 18, left: 8, right: 168, bottom: 218, width: 160, height: 200 });
+    globalThis.window.getComputedStyle = (el) => (
+      el === fileBlock
+        ? { paddingLeft: "20px", paddingRight: "20px" }
+        : { paddingLeft: "0px", paddingRight: "0px" }
+    );
+    globalThis.window.innerWidth = 400;
+    fileBlock.listeners.pointerenter();
+    assert.equal(fileBlock.classList.contains("md-file-wide"), true);
+    assert.equal(fileBlock.classList.contains("md-ticket-wide"), false);
+    assert.equal(fileBlock.styleProps.top, "18px");
+    assert.equal(fileBlock.styleProps.height, "200px");
+    assert.equal(fileBlock.styleProps.width, "320px");
+    assert.equal(fileBlock.styleProps.transition, "");
+    fileBlock.listeners.pointerleave();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].ms, 200);
+    assert.equal(fileBlock.classList.contains("md-file-wide"), true);
+    assert.equal(fileBlock.styleProps.width, "320px");
+    fileBlock.listeners.pointerenter();
+    assert.equal(pending.length, 0);
+    assert.equal(fileBlock.classList.contains("md-file-wide"), true);
+    assert.equal(fileBlock.styleProps.top, "18px");
+    assert.equal(fileBlock.styleProps.height, "200px");
+    assert.equal(fileBlock.styleProps.width, "320px");
+    fileBlock.listeners.pointerleave();
+    assert.equal(pending.length, 1);
+    pending.pop().fn();
+    assert.equal(fileBlock.classList.contains("md-file-wide"), false);
+    assert.equal(fileBlock.styleProps.top, "");
+    assert.equal(fileBlock.styleProps.height, "");
+    assert.equal(fileBlock.styleProps.width, "");
+    assert.equal(fileBlock.styleProps.transition, "");
+    buttons[0].scrollWidth = 0;
+    delete buttons[1].scrollWidth;
+    globalThis.window.innerWidth = 100;
+    fileBlock.listeners.pointerenter();
+    assert.equal(fileBlock.styleProps.width, "160px");
+    assert.equal(fileBlock.styleProps.top, "18px");
+    assert.equal(fileBlock.styleProps.height, "200px");
+    fileBlock.listeners.pointerleave();
+    pending.pop().fn();
+    buttons[1].scrollWidth = 300;
+    globalThis.window.innerWidth = 0;
+    fileBlock.listeners.pointerenter();
+    assert.equal(fileBlock.styleProps.width, "340px");
+    fileBlock.listeners.pointerleave();
+    pending.pop().fn();
+    delete globalThis.window.innerWidth;
+    fileBlock.listeners.pointerenter();
+    assert.equal(fileBlock.styleProps.width, "340px");
+    globalThis.window.innerWidth = 1000;
+    fileBlock.listeners.pointerleave();
+    pending.pop().fn();
+    buttons[1].scrollWidth = 100;
+    fileBlock.listeners.pointerenter();
+    assert.equal(fileBlock.styleProps.width, "140px");
+    fileBlock.listeners.pointerleave();
+    assert.equal(pending.length, 1);
+    view.destroy();
+    assert.equal(pending.length, 0);
+    assert.equal(fileBlock.listeners.pointerenter, undefined);
+    assert.equal(fileBlock.listeners.pointerleave, undefined);
+    assert.equal(fileBlock.classList.contains("md-file-wide"), true);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
     mounted.restore();
   }
 });

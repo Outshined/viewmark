@@ -1128,6 +1128,67 @@ function setStyle(el, name, value) {
   else el.style[name] = value;
 }
 
+function cssPx(value) {
+  const n = typeof value === "number" ? value : Number.parseFloat(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function fileTreeButtons(block) {
+  const tree = findClassChild(block, "file-tree");
+  const buttons = [];
+  const walk = (node) => {
+    for (const child of childArray(node)) {
+      if (!child || child.nodeType !== 1) continue;
+      if (String(child.tagName || "").toUpperCase() === "BUTTON") buttons.push(child);
+      walk(child);
+    }
+  };
+  if (tree) walk(tree);
+  return buttons;
+}
+
+// The title's scrollWidth is the button. A zero or missing one cannot size the pane.
+function widestFileButton(block) {
+  let best = 0;
+  for (const button of fileTreeButtons(block)) {
+    const scroll = button.scrollWidth;
+    if (typeof scroll !== "number" || !Number.isFinite(scroll) || scroll <= 0) continue;
+    if (scroll > best) best = scroll;
+  }
+  return best;
+}
+
+// Border-box width eats the pane padding, which would clip the title we just measured.
+function horizontalPadding(el) {
+  const view = globalThis.window;
+  const read = view && typeof view.getComputedStyle === "function"
+    ? view.getComputedStyle.bind(view)
+    : (typeof globalThis.getComputedStyle === "function" ? globalThis.getComputedStyle : null);
+  if (!read || !el) return 0;
+  let style = null;
+  try {
+    style = read(el);
+  } catch {
+    return 0;
+  }
+  if (!style) return 0;
+  return cssPx(style.paddingLeft) + cssPx(style.paddingRight);
+}
+
+function capPaneWidth(width) {
+  const inner = globalThis.window ? globalThis.window.innerWidth : undefined;
+  if (typeof inner !== "number" || !Number.isFinite(inner) || inner <= 0) return width;
+  const cap = inner * 0.8;
+  return width > cap ? cap : width;
+}
+
+function filePaneWidth(block, rect) {
+  const compact = rect && typeof rect.width === "number" && Number.isFinite(rect.width) ? rect.width : 0;
+  const scroll = widestFileButton(block);
+  if (!(scroll > 0)) return compact;
+  return capPaneWidth(scroll + horizontalPadding(block));
+}
+
 function commentsAsideOf(root) {
   const parent = root && root.parentElement;
   if (!parent || !parent.childNodes) return null;
@@ -1204,6 +1265,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let ticketDrawerEnter = null;
   let ticketDrawerLeave = null;
   let ticketDrawerTimer = null;
+  let fileBlockEl = null;
+  let fileDrawerEnter = null;
+  let fileDrawerLeave = null;
+  let fileDrawerTimer = null;
   let ticketSort = null;
   const wiredSortButtons = new WeakSet();
   let activeRepo = "";
@@ -4476,7 +4541,73 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof field.setAttribute === "function") field.setAttribute("hidden", "");
   }
 
+  // A pointer that slips off and comes back inside 200ms keeps the wide list.
+  function scheduleHideFileDrawer() {
+    if (fileDrawerTimer != null) clearTimeout(fileDrawerTimer);
+    fileDrawerTimer = setTimeout(() => {
+      fileDrawerTimer = null;
+      const block = fileBlockEl;
+      if (block && block.classList) block.classList.remove("md-file-wide");
+      setStyle(block, "top", "");
+      setStyle(block, "height", "");
+      setStyle(block, "width", "");
+      setStyle(block, "transition", "");
+    }, 200);
+  }
+
+  function releaseFileDrawer() {
+    if (fileDrawerTimer != null) {
+      clearTimeout(fileDrawerTimer);
+      fileDrawerTimer = null;
+    }
+    if (fileBlockEl && typeof fileBlockEl.removeEventListener === "function") {
+      if (fileDrawerEnter) fileBlockEl.removeEventListener("pointerenter", fileDrawerEnter);
+      if (fileDrawerLeave) fileBlockEl.removeEventListener("pointerleave", fileDrawerLeave);
+    }
+    fileBlockEl = null;
+    fileDrawerEnter = null;
+    fileDrawerLeave = null;
+  }
+
+  function bindFileDrawer(block) {
+    if (!block) return;
+    if (fileBlockEl === block && fileDrawerEnter) return;
+    releaseFileDrawer();
+    fileDrawerEnter = () => {
+      if (fileDrawerTimer != null) {
+        clearTimeout(fileDrawerTimer);
+        fileDrawerTimer = null;
+      }
+      const alreadyWide = Boolean(block.classList && block.classList.contains("md-file-wide"));
+      // Fixed positioning replaces the pane box, so read that box before the wide class.
+      // An inline width while transition is on starts from the flex item. Commit the
+      // measured width with the transition off, then widen to the title.
+      const rect = typeof block.getBoundingClientRect === "function" ? block.getBoundingClientRect() : null;
+      const width = alreadyWide ? "" : `${filePaneWidth(block, rect)}px`;
+      if (rect) {
+        setStyle(block, "top", `${rect.top}px`);
+        setStyle(block, "height", `${rect.height}px`);
+      }
+      if (alreadyWide) return;
+      setStyle(block, "transition", "none");
+      if (rect && typeof rect.width === "number" && Number.isFinite(rect.width)) setStyle(block, "width", `${rect.width}px`);
+      if (block.classList) block.classList.add("md-file-wide");
+      void block.offsetWidth;
+      setStyle(block, "transition", "");
+      setStyle(block, "width", width);
+    };
+    fileDrawerLeave = () => {
+      scheduleHideFileDrawer();
+    };
+    fileBlockEl = block;
+    if (typeof block.addEventListener === "function") {
+      block.addEventListener("pointerenter", fileDrawerEnter);
+      block.addEventListener("pointerleave", fileDrawerLeave);
+    }
+  }
+
   function unbindNewFile() {
+    releaseFileDrawer();
     if (!newFileButton || !newFileOnClick) return;
     const binding = newFileBindings.get(newFileButton);
     if (!binding || binding.onClick !== newFileOnClick) return;
@@ -4565,6 +4696,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     newFileBindings.set(button, { onClick, onKey, field, deleteButton: remove, onDelete });
     newFileButton = button;
     newFileOnClick = onClick;
+    bindFileDrawer(block);
   }
 
   function readStoredRepo() {

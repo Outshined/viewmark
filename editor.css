@@ -532,7 +532,18 @@ nav.files .md-ticket-filter-menu input {
   margin-bottom: 0.4rem;
   flex: 1 1 0;
   min-height: 0;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  transition: width 0.5s, left 0.5s;
+}
+
+.md-file-wide {
+  position: fixed;
+  left: 0;
+  z-index: 4;
+  box-sizing: border-box;
+  background: #1c1b19;
+  transition: width 0.5s, left 0.5s;
 }
 
 .ticket-block {
@@ -547,6 +558,9 @@ nav.files .md-ticket-filter-menu input {
 }
 
 .file-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
   padding: 0.4rem 0;
 }
 
@@ -564,6 +578,9 @@ nav.files .md-ticket-filter-menu input {
   border: 0;
   border-radius: 0.35rem;
   cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .file-tree button svg {
@@ -1299,6 +1316,12 @@ a.md-link {
   }
 
   .md-ticket-wide {
+    position: static;
+    left: auto;
+    width: auto;
+  }
+
+  .md-file-wide {
     position: static;
     left: auto;
     width: auto;
