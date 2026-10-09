@@ -1122,6 +1122,110 @@ function lineSpan(doc, offset) {
   return [start, end];
 }
 
+function separatorWidth(text, index) {
+  if (text[index] === "\t") return 1;
+  let count = 0;
+  while (count < 4 && text[index + count] === " ") count += 1;
+  return count;
+}
+
+function listMarkerLength(text) {
+  let index = 0;
+  while (index < text.length && (text[index] === " " || text[index] === "\t")) index += 1;
+  const bullet = text[index];
+  if (bullet === "-" || bullet === "+" || bullet === "*") {
+    const separator = separatorWidth(text, index + 1);
+    return separator === 0 ? 0 : index + 1 + separator;
+  }
+  const ordered = /^(\d{1,9})[.)]/.exec(text.slice(index));
+  if (!ordered) return 0;
+  const separator = separatorWidth(text, index + ordered[0].length);
+  return separator === 0 ? 0 : index + ordered[0].length + separator;
+}
+
+// Source characters of the marker drawn at the start of this line, or hidden there.
+function markerLength(line) {
+  if (line === "---" || line === "***" || line === "___") return 0;
+  const heading = /^(#{1,6}) /.exec(line);
+  if (heading) return heading[1].length + 1;
+  if (line.startsWith("> ")) {
+    const nested = listMarkerLength(line.slice(2));
+    return nested > 0 ? 2 + nested : 2;
+  }
+  return listMarkerLength(line);
+}
+
+function plainListItem(line) {
+  if (line.startsWith("> ")) return false;
+  return listMarkerLength(line) > 0;
+}
+
+// Fence body is code. A line there that looks like an item is not one.
+function offsetInFence(doc, offset) {
+  let open = false;
+  let start = 0;
+  for (let i = 0; i <= doc.length; i += 1) {
+    if (i !== doc.length && doc[i] !== "\n") continue;
+    const line = doc.slice(start, i);
+    if (line.startsWith("```")) open = !open;
+    else if (open && offset >= start && offset <= i) return true;
+    start = i + 1;
+    if (i === doc.length) break;
+  }
+  return false;
+}
+
+function sourceLines(doc) {
+  const lines = [];
+  let start = 0;
+  for (let i = 0; i <= doc.length; i += 1) {
+    if (i === doc.length || doc[i] === "\n") {
+      lines.push({ start, end: i, text: doc.slice(start, i) });
+      start = i + 1;
+      if (i === doc.length) break;
+    }
+  }
+  return lines;
+}
+
+// One tab at the start of each selected item. The edit replaces that span, and
+// the returned caret still covers the characters the selection covered.
+function listIndent(doc, anchor, cursor) {
+  const from = Math.min(anchor, cursor);
+  const to = Math.max(anchor, cursor);
+  let lines;
+  if (from === to) {
+    const [start, end] = lineSpan(doc, from);
+    lines = [{ start, end, text: doc.slice(start, end) }];
+  } else {
+    lines = sourceLines(doc).filter((line) => line.start < to && line.end > from);
+  }
+  if (lines.length === 0) return null;
+  if (lines.some((line) => !plainListItem(line.text) || offsetInFence(doc, line.start))) return null;
+  const spliceFrom = lines[0].start;
+  const spliceTo = lines[lines.length - 1].end;
+  let insert = "";
+  let prev = spliceFrom;
+  for (const line of lines) {
+    insert += doc.slice(prev, line.start) + "\t";
+    prev = line.start;
+  }
+  insert += doc.slice(prev, spliceTo);
+  const shift = (offset) => {
+    let next = offset;
+    for (const line of lines) if (line.start <= offset) next += 1;
+    return next;
+  };
+  return {
+    insert,
+    spliceFrom,
+    spliceTo,
+    text: doc.slice(0, spliceFrom) + insert + doc.slice(spliceTo),
+    anchor: shift(anchor),
+    cursor: shift(cursor),
+  };
+}
+
 function setStyle(el, name, value) {
   if (!el || !el.style) return;
   if (typeof el.style.setProperty === "function") el.style.setProperty(name, value);
@@ -1350,6 +1454,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let pasteSeen = false;
   let composing = false;
   let composed = "";
+  // placeCaret and moveCaret write the selection from state. The selectionchange
+  // those writes fire must not copy that selection back over state.
+  let placingCaret = false;
+  let compositionOrigin = null;
+  // insert collapses at the end of its replacement. This is the selection that
+  // still covers the same characters after a list indent.
+  let keptCaret = null;
+  // The anchor can sit on a marker the cursor line does not open.
+  let rawSelectionLines = false;
 
   function lineSet(anchor, cursor) {
     const from = Math.min(anchor, cursor);
@@ -1611,6 +1724,22 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function placeCaret() {
+    placingCaret = true;
+    try {
+      placeCaretFromState();
+    } finally {
+      placingCaret = false;
+    }
+  }
+
+  function scrollCaret(node) {
+    const host = (node && node.parentElement) || root;
+    if (host && typeof host.scrollIntoView === "function") {
+      host.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }
+
+  function placeCaretFromState() {
     const sel = window.getSelection();
     if (!sel) return;
     // Chromium focuses the editing host when a range is added.
@@ -1635,8 +1764,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const to = pointFor(caret);
       if (from && to) {
         sel.setBaseAndExtent(from.node, from.offset, to.node, to.offset);
-        const host = to.node.parentElement || root;
-        host.scrollIntoView({ block: "nearest", inline: "nearest" });
+        scrollCaret(to.node);
         return;
       }
     }
@@ -1646,8 +1774,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       placePoint(range, point);
       sel.removeAllRanges();
       sel.addRange(range);
-      const host = point.node.parentElement || root;
-      host.scrollIntoView({ block: "nearest", inline: "nearest" });
+      scrollCaret(point.node);
       return;
     }
     const range = document.createRange();
@@ -1712,6 +1839,34 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!mapped) return true;
     state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
     return claimLines(mapped.anchor, mapped.cursor);
+  }
+
+  // Home lands on the source start of the line, before a drawn marker. The first
+  // press stops after that marker; a later one, already there, keeps the line start.
+  function homeSnap(mapped) {
+    if (!mapped || mapped.anchor !== mapped.cursor) return mapped;
+    const landed = mapped.cursor;
+    const [start, end] = lineSpan(state.doc, landed);
+    if (landed !== start) return mapped;
+    const textAt = start + markerLength(state.doc.slice(start, end));
+    if (textAt <= start) return mapped;
+    if (state.anchor !== state.cursor) return mapped;
+    const [prevStart] = lineSpan(state.doc, state.cursor);
+    if (prevStart !== start || state.cursor <= textAt) return mapped;
+    return { anchor: textAt, cursor: textAt };
+  }
+
+  function onSelectionChange() {
+    if (closed || placingCaret || composing) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const holder = sel.anchorNode || sel.getRangeAt(0).commonAncestorContainer;
+    if (!holder || !root.contains(holder)) return;
+    const mapped = selectionFromDom(sel);
+    if (!mapped) return;
+    const next = pointer ? mapped : homeSnap(mapped);
+    state = { ...state, anchor: next.anchor, cursor: next.cursor };
+    if (next.anchor !== mapped.anchor || next.cursor !== mapped.cursor) placeCaret();
   }
 
   function findCommentBox(id, note) {
@@ -2403,19 +2558,59 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     walk(root);
   }
 
+  function appendLockMarks(el, block) {
+    for (const name of lockNames(block)) {
+      const mark = document.createElement("span");
+      mark.className = "md-lock";
+      if (refusal && refusal.name === name) mark.classList.add("md-flash");
+      mark.contentEditable = "false";
+      mark.textContent = name;
+      el.appendChild(mark);
+    }
+  }
+
+  function stripLockMarks(el) {
+    const doomed = [];
+    for (const child of el.childNodes || []) {
+      if (child.classList && child.classList.contains("md-lock")) doomed.push(child);
+    }
+    for (const mark of doomed) detachNode(mark);
+  }
+
+  // A locks message names holders. The bytes did not change, so the nodes stay.
+  function refreshLockMarks() {
+    const blocks = plan(state.doc, state.cursor).blocks;
+    const children = root.childNodes || [];
+    const count = Math.min(blocks.length, children.length);
+    for (let i = 0; i < count; i += 1) {
+      stripLockMarks(children[i]);
+      appendLockMarks(children[i], blocks[i]);
+    }
+  }
+
+  // A non-collapsed selection can begin on a marker the cursor line does not open.
+  function blocksWithSelectionSource(blocks) {
+    const from = Math.min(state.anchor, state.cursor);
+    const to = Math.max(state.anchor, state.cursor);
+    if (from === to) return blocks;
+    return blocks.map((block) => {
+      if (!block || block.type !== "line" || block.raw || block.empty) return block;
+      if (!(block.start < to && block.end > from)) return block;
+      const opened = plan(state.doc, block.start).blocks.find((item) => item && item.type === "line" && item.start === block.start);
+      return opened && opened.raw ? opened : block;
+    });
+  }
+
   function render() {
     const planned = plan(state.doc, state.cursor);
+    if (rawSelectionLines) {
+      rawSelectionLines = false;
+      planned.blocks = blocksWithSelectionSource(planned.blocks);
+    }
     const flashBlock = refusal && !refusal.name ? tightestBlock(planned.blocks, refusal.offset) : null;
     const nodes = planned.blocks.map((block) => {
       const el = renderBlock(block);
-      for (const name of lockNames(block)) {
-        const mark = document.createElement("span");
-        mark.className = "md-lock";
-        if (refusal && refusal.name === name) mark.classList.add("md-flash");
-        mark.contentEditable = "false";
-        mark.textContent = name;
-        el.appendChild(mark);
-      }
+      appendLockMarks(el, block);
       if (block === flashBlock) el.classList.add("md-flash");
       return el;
     });
@@ -2920,6 +3115,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function caretFor(message) {
     const length = typeof message.text === "string" ? message.text.length : 0;
+    const kept = keptCaret;
+    if (message.type === "doc" && kept && message.actor === selfName() && message.text === kept.text) {
+      keptCaret = null;
+      if (kept.anchor !== kept.cursor) rawSelectionLines = true;
+      return { cursor: clampCaret(kept.cursor, length), anchor: clampCaret(kept.anchor, length) };
+    }
+    if (message.type === "doc" || message.type === "file") keptCaret = null;
     if (message.type === "file" || message.actor === selfName()) {
       const cursor = Number.isFinite(message.cursor) ? message.cursor : (message.type === "file" ? 0 : state.cursor);
       const anchor = Number.isFinite(message.anchor) ? message.anchor : cursor;
@@ -3057,7 +3259,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           if (index >= 0) conflictWaiters.splice(index, 1);
         }
       }
-      render();
+      refreshLockMarks();
       return;
     }
     if (message.type === "noop") {
@@ -3073,6 +3275,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (message.type === "error") {
       clearEditTimer();
+      keptCaret = null;
+      rawSelectionLines = false;
       // A rejected delete left the file in place. It is not a lost caret grant.
       if (conflictWaiters[0] === "delete") {
         conflictWaiters.shift();
@@ -3130,9 +3334,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     let ownEdit = false;
     if (message.type === "doc") {
       clearEditTimer();
-      if (waitingForFile) return;
+      if (waitingForFile) {
+        keptCaret = null;
+        return;
+      }
       const nextRev = Number(message.rev);
       if (!Number.isFinite(nextRev) || nextRev !== rev + 1) {
+        keptCaret = null;
+        rawSelectionLines = false;
         waitingForFile = true;
         expectNewComment = false;
         dropPendingEdits();
@@ -3181,11 +3390,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const before = lineIndexAt(state.doc, beforeCursor);
     // modify("move") on an extended range collapses to the focus and does not advance.
     const caretPoint = pointFor(state.cursor);
-    if (caretPoint) sel.collapse(caretPoint.node, caretPoint.offset);
-    sel.modify("move", direction, granularity);
-    if (sel.rangeCount === 0) return;
-    const range = sel.getRangeAt(0);
-    const landed = mapOffset(range.startContainer, range.startOffset);
+    placingCaret = true;
+    let landed = null;
+    try {
+      if (caretPoint) sel.collapse(caretPoint.node, caretPoint.offset);
+      sel.modify("move", direction, granularity);
+      if (sel.rangeCount !== 0) {
+        const range = sel.getRangeAt(0);
+        landed = mapOffset(range.startContainer, range.startOffset);
+      }
+    } finally {
+      placingCaret = false;
+    }
+    if (landed == null) return;
     const next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
     const anchor = extend ? beforeAnchor : next;
     state = { ...state, cursor: next, anchor };
@@ -3370,13 +3587,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   });
 
   listen("compositionstart", () => {
+    if (!composing) compositionOrigin = { anchor: state.anchor, cursor: state.cursor };
     composing = true;
   });
 
+  // The browser has already put the composed characters in the DOM, one caret
+  // past where composition started. Insert at that saved caret, not the DOM one.
   listen("compositionend", (event) => {
+    const origin = compositionOrigin;
+    compositionOrigin = null;
     composing = false;
     composed = event.data || "";
-    if (adoptDomSelection() && composed) emitEdit({ op: "insert", text: composed });
+    if (origin) state = { ...state, anchor: origin.anchor, cursor: origin.cursor };
+    if (composed && claimLines(state.anchor, state.cursor)) emitEdit({ op: "insert", text: composed });
     queueMicrotask(() => {
       composed = "";
     });
@@ -3387,7 +3610,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       if (!adoptDomSelection()) return;
-      emitEdit({ op: "insert", text: "\t" });
+      const indent = listIndent(state.doc, state.anchor, state.cursor);
+      if (indent && live) keptCaret = { text: indent.text, anchor: indent.anchor, cursor: indent.cursor };
+      if (indent) emitEdit({ op: "insert", text: indent.insert, anchor: indent.spliceFrom, cursor: indent.spliceTo });
+      else emitEdit({ op: "insert", text: "\t" });
       return;
     }
     const mod = event.ctrlKey || event.metaKey;
@@ -3410,6 +3636,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   });
 
+  listen("keyup", () => {
+    if (closed || composing || pointer) return;
+    claimLines(state.anchor, state.cursor);
+  });
+
   listen("mousedown", (event) => {
     commentFocus = null;
     pointer = { x: event.clientX, y: event.clientY };
@@ -3421,19 +3652,23 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const moved = Math.abs(event.clientX - pointer.x) > 3 || Math.abs(event.clientY - pointer.y) > 3;
     pointer = null;
     const sel = window.getSelection();
-    if (!moved || !sel || sel.rangeCount === 0) return;
-    const range = sel.getRangeAt(0);
-    if (range.collapsed) return;
-    if (!root.contains(range.commonAncestorContainer)) return;
-    const mapped = selectionFromDom(sel);
-    if (!mapped) return;
-    didDrag = true;
-    const before = lineIndexAt(state.doc, state.cursor);
-    state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
-    if (!claimLines(mapped.anchor, mapped.cursor)) return;
-    const after = lineIndexAt(state.doc, state.cursor);
-    if (before !== after) render();
-    else updateCommentButton();
+    if (moved && sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      if (!range.collapsed && root.contains(range.commonAncestorContainer)) {
+        const mapped = selectionFromDom(sel);
+        if (mapped) {
+          didDrag = true;
+          const before = lineIndexAt(state.doc, state.cursor);
+          state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
+          if (!claimLines(mapped.anchor, mapped.cursor)) return;
+          const after = lineIndexAt(state.doc, state.cursor);
+          if (before !== after) render();
+          else updateCommentButton();
+          return;
+        }
+      }
+    }
+    if (!composing) claimLines(state.anchor, state.cursor);
   });
 
   listen("click", (event) => {
@@ -3508,6 +3743,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const target = event.target.nodeType === 1 ? event.target : event.target.parentElement;
     if (target?.closest?.("a")) event.preventDefault();
   });
+
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    document.addEventListener("selectionchange", onSelectionChange, { signal: ac.signal });
+  }
 
   if (commentsAside && typeof commentsAside.addEventListener === "function") {
     commentsAside.addEventListener("click", (event) => {
@@ -5288,6 +5527,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       unbindNewFile();
       unbindTickets();
       unbindTreeDrop();
+      if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
+        document.removeEventListener("selectionchange", onSelectionChange);
+      }
       ac.abort();
       if (addCommentButton && addCommentButton.parentElement && typeof addCommentButton.parentElement.removeChild === "function") {
         addCommentButton.parentElement.removeChild(addCommentButton);

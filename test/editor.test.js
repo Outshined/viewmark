@@ -2897,6 +2897,7 @@ function mountEditor(options = {}) {
   };
   const previousDocument = globalThis.document;
   const previousWindow = globalThis.window;
+  const documentListeners = new Map();
   globalThis.document = {
     createElement: (tag) => makeElement(tag),
     createElementNS: (_ns, tag) => makeElement(tag),
@@ -2909,6 +2910,17 @@ function mountEditor(options = {}) {
       setStartAfter() {},
       setStartBefore() {},
     }),
+    addEventListener(type, fn) {
+      const list = documentListeners.get(type);
+      if (list) list.push(fn);
+      else documentListeners.set(type, [fn]);
+    },
+    removeEventListener(type, fn) {
+      const list = documentListeners.get(type);
+      if (!list) return;
+      const index = list.indexOf(fn);
+      if (index >= 0) list.splice(index, 1);
+    },
   };
   globalThis.window = { getSelection: () => null };
   const findAll = (predicate) => {
@@ -2923,6 +2935,7 @@ function mountEditor(options = {}) {
   return {
     root,
     listeners,
+    documentListeners,
     findAll,
     restore() {
       if (previousDocument === undefined) delete globalThis.document;
@@ -11190,6 +11203,422 @@ test("a file message marks only the open path", () => {
     assert.equal(currentFiles().length, 1);
     assert.equal(currentFiles()[0].dataset.path, "notes.md");
     assert.equal(view.getState().doc, "back\n");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+function fireDocument(mounted, type) {
+  for (const fn of mounted.documentListeners.get(type) || []) fn();
+}
+
+function textNode(root, value) {
+  const found = walkNodes(root, (node) => node.nodeType === 3 && node.textContent === value);
+  return found[0];
+}
+
+test("a selectionchange stores the caret and sends no lock", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  const doc = "one\n\ntwo\n";
+  try {
+    const view = createEditor(mounted.root, doc, 0, transport);
+    const two = textNode(mounted.root, "two");
+    assert.ok(two);
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: two,
+      anchorOffset: 1,
+      focusNode: two,
+      focusOffset: 1,
+      getRangeAt() {
+        return {
+          startContainer: two,
+          startOffset: 1,
+          endContainer: two,
+          endOffset: 1,
+          collapsed: true,
+          commonAncestorContainer: two,
+        };
+      },
+    });
+    transport.sent.length = 0;
+    fireDocument(mounted, "selectionchange");
+    assert.equal(view.getState().cursor, doc.indexOf("two") + 1);
+    assert.equal(view.getState().anchor, view.getState().cursor);
+    assert.equal(transport.sent.some((message) => message.type === "lock"), false);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("placeCaret does not move state", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  try {
+    const view = createEditor(mounted.root, "alpha beta\n", 1);
+    const text = textNode(mounted.root, "alpha beta");
+    assert.ok(text);
+    text.parentElement.scrollIntoView = () => {};
+    let reported = 6;
+    globalThis.document.createTreeWalker = () => {
+      let pending = text;
+      return {
+        nextNode() {
+          const node = pending;
+          pending = null;
+          return node;
+        },
+      };
+    };
+    const selection = {
+      rangeCount: 1,
+      get anchorNode() { return text; },
+      get anchorOffset() { return reported; },
+      get focusNode() { return text; },
+      get focusOffset() { return reported; },
+      removeAllRanges() {},
+      addRange() {
+        fireDocument(mounted, "selectionchange");
+      },
+      setBaseAndExtent() {
+        fireDocument(mounted, "selectionchange");
+      },
+      getRangeAt() {
+        return {
+          startContainer: text,
+          startOffset: reported,
+          endContainer: text,
+          endOffset: reported,
+          collapsed: true,
+          commonAncestorContainer: text,
+        };
+      },
+    };
+    globalThis.window.getSelection = () => selection;
+    reported = 1;
+    fireDocument(mounted, "selectionchange");
+    assert.equal(view.getState().cursor, 1);
+    assert.equal(view.getState().anchor, 1);
+    reported = 6;
+    view.focus();
+    assert.equal(view.getState().cursor, 1);
+    assert.equal(view.getState().anchor, 1);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a locks message leaves that caret", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  transport.username = "me";
+  const doc = "one\n\ntwo\n";
+  try {
+    const view = createEditor(mounted.root, doc, 0, transport);
+    const one = textNode(mounted.root, "one");
+    const block = one.parentElement.closest(".md-line");
+    assert.ok(block);
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: one,
+      anchorOffset: 2,
+      focusNode: one,
+      focusOffset: 2,
+      getRangeAt() {
+        return {
+          startContainer: one,
+          startOffset: 2,
+          endContainer: one,
+          endOffset: 2,
+          collapsed: true,
+          commonAncestorContainer: one,
+        };
+      },
+    });
+    fireDocument(mounted, "selectionchange");
+    assert.equal(view.getState().cursor, 2);
+    const replaced = [];
+    const original = mounted.root.replaceChildren;
+    mounted.root.replaceChildren = (...nodes) => {
+      replaced.push(nodes);
+      return original.apply(mounted.root, nodes);
+    };
+    let placed = 0;
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: one,
+      anchorOffset: 2,
+      focusNode: one,
+      focusOffset: 2,
+      removeAllRanges() { placed += 1; },
+      addRange() { placed += 1; },
+      setBaseAndExtent() { placed += 1; },
+      getRangeAt() {
+        return { collapsed: true, commonAncestorContainer: one, startContainer: one, startOffset: 2, endContainer: one, endOffset: 2 };
+      },
+    });
+    transport.deliver({
+      type: "locks",
+      lines: [
+        { index: 0, username: "ada" },
+        { index: 2, username: "bea" },
+      ],
+    });
+    assert.equal(replaced.length, 0);
+    assert.equal(placed, 0);
+    assert.equal(block.isConnected, true);
+    assert.equal(mounted.root.childNodes.includes(block), true);
+    const ada = walkNodes(block, (node) => node.classList && node.classList.contains("md-lock") && node.textContent === "ada");
+    assert.equal(ada.length, 1);
+    assert.equal(view.getState().cursor, 2);
+    assert.equal(view.getState().anchor, 2);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("compositionend inserts at the caret from compositionstart", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  const doc = "- alpha\n";
+  try {
+    const view = createEditor(mounted.root, doc, 4, transport);
+    const text = textNode(mounted.root, "- alpha");
+    assert.ok(text);
+    assert.equal(view.getState().cursor, 4);
+    mounted.listeners.compositionstart();
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: text,
+      anchorOffset: 5,
+      focusNode: text,
+      focusOffset: 5,
+      getRangeAt() {
+        return {
+          startContainer: text,
+          startOffset: 5,
+          endContainer: text,
+          endOffset: 5,
+          collapsed: true,
+          commonAncestorContainer: text,
+        };
+      },
+    });
+    fireDocument(mounted, "selectionchange");
+    assert.equal(view.getState().cursor, 4);
+    assert.equal(view.getState().anchor, 4);
+    assert.equal(transport.sent.some((message) => message.type === "edit"), false);
+    mounted.listeners.compositionend({ data: "é" });
+    const edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].op, "insert");
+    assert.equal(edits[0].text, "é");
+    assert.equal(edits[0].cursor, 4);
+    assert.equal(edits[0].anchor, 4);
+    assert.equal(view.getState().cursor, 4);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("the first Home stops after a marker and the second keeps the line start", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  try {
+    const view = createEditor(mounted.root, "- alpha\n", 4);
+    const text = textNode(mounted.root, "- alpha");
+    assert.ok(text);
+    text.parentElement.scrollIntoView = () => {};
+    globalThis.document.createTreeWalker = () => {
+      let pending = text;
+      return {
+        nextNode() {
+          const node = pending;
+          pending = null;
+          return node;
+        },
+      };
+    };
+    let offset = 0;
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: text,
+      anchorOffset: offset,
+      focusNode: text,
+      focusOffset: offset,
+      removeAllRanges() {},
+      addRange() {},
+      setBaseAndExtent() {},
+      getRangeAt() {
+        return {
+          startContainer: text,
+          startOffset: offset,
+          endContainer: text,
+          endOffset: offset,
+          collapsed: true,
+          commonAncestorContainer: text,
+        };
+      },
+    });
+    fireDocument(mounted, "selectionchange");
+    assert.equal(view.getState().cursor, 2);
+    assert.equal(view.getState().anchor, 2);
+    fireDocument(mounted, "selectionchange");
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(view.getState().anchor, 0);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("keyup claims the caret selectionchange stored", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  const doc = "one\n\ntwo\n";
+  try {
+    const view = createEditor(mounted.root, doc, 0, transport);
+    const two = textNode(mounted.root, "two");
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: two,
+      anchorOffset: 0,
+      focusNode: two,
+      focusOffset: 0,
+      getRangeAt() {
+        return {
+          startContainer: two,
+          startOffset: 0,
+          endContainer: two,
+          endOffset: 0,
+          collapsed: true,
+          commonAncestorContainer: two,
+        };
+      },
+    });
+    transport.sent.length = 0;
+    fireDocument(mounted, "selectionchange");
+    assert.equal(transport.sent.some((message) => message.type === "lock"), false);
+    mounted.listeners.keyup();
+    const locks = transport.sent.filter((message) => message.type === "lock");
+    assert.equal(locks.length, 1);
+    assert.equal(locks[0].anchor, doc.indexOf("two"));
+    assert.equal(locks[0].cursor, doc.indexOf("two"));
+    assert.equal(view.getState().cursor, doc.indexOf("two"));
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+function pressTab(mounted) {
+  mounted.listeners.keydown({
+    key: "Tab",
+    shiftKey: false,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    preventDefault() {},
+  });
+}
+
+function sourceSelection(mounted, doc, anchor, cursor) {
+  const el = {
+    nodeType: 1,
+    dataset: { start: "0", end: String(doc.length) },
+    classList: { contains() { return false; } },
+    parentElement: mounted.root,
+  };
+  const node = { nodeType: 3, textContent: doc, length: doc.length, parentElement: el };
+  globalThis.window.getSelection = () => ({
+    rangeCount: 1,
+    anchorNode: node,
+    anchorOffset: anchor,
+    focusNode: node,
+    focusOffset: cursor,
+    getRangeAt() {
+      return {
+        startContainer: node,
+        startOffset: Math.min(anchor, cursor),
+        endContainer: node,
+        endOffset: Math.max(anchor, cursor),
+        collapsed: anchor === cursor,
+        commonAncestorContainer: node,
+      };
+    },
+  });
+}
+
+test("tab on a dragged list selection indents each item and keeps the selection", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  const doc = "- a\n- b\n- c\n";
+  try {
+    const view = createEditor(mounted.root, doc, 0, transport);
+    sourceSelection(mounted, doc, 4, 11);
+    transport.sent.length = 0;
+    pressTab(mounted);
+    const edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].op, "insert");
+    assert.equal(edits[0].text, "\t- b\n\t- c");
+    assert.equal(edits[0].anchor, 4);
+    assert.equal(edits[0].cursor, 11);
+    transport.deliver({
+      type: "doc",
+      rev: 1,
+      text: "- a\n\t- b\n\t- c\n",
+      actor: "",
+      cursor: 13,
+      anchor: 13,
+      undo: [],
+      redo: [],
+    });
+    assert.equal(view.getState().doc, "- a\n\t- b\n\t- c\n");
+    assert.equal(view.getState().anchor, 5);
+    assert.equal(view.getState().cursor, 13);
+    const raw = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-raw")).map((node) => node.textContent);
+    assert.ok(raw.some((text) => text.includes("\t- b")));
+    assert.ok(raw.some((text) => text.includes("\t- c")));
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("tab on a list item writes the tab at the line start and keeps the caret", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  const doc = "- a\n- b\n";
+  try {
+    const view = createEditor(mounted.root, doc, 7, transport);
+    globalThis.window.getSelection = () => null;
+    transport.sent.length = 0;
+    pressTab(mounted);
+    const edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].text, "\t- b");
+    assert.equal(edits[0].anchor, 4);
+    assert.equal(edits[0].cursor, 7);
+    transport.deliver({
+      type: "doc",
+      rev: 1,
+      text: "- a\n\t- b\n",
+      actor: "",
+      cursor: 8,
+      anchor: 8,
+      undo: [],
+      redo: [],
+    });
+    assert.equal(view.getState().doc, "- a\n\t- b\n");
+    assert.equal(view.getState().cursor, 8);
+    assert.equal(view.getState().anchor, 8);
     view.destroy();
   } finally {
     mounted.restore();
