@@ -132,6 +132,57 @@ function classifyList(text) {
   };
 }
 
+// A caret in a fence body gets one newline. The opener and the closer are not body.
+function fenceBody(doc, offset) {
+  const lines = lineSpans(doc);
+  let open = false;
+  for (const line of lines) {
+    if (line.start > offset) break;
+    if (!open) {
+      const opened = fenceOpen(line.text);
+      if (opened && opened.lang !== "comment" && offset > line.end) open = true;
+      continue;
+    }
+    if (isFenceClose(line.text)) {
+      if (offset <= line.end) return false;
+      open = false;
+    }
+  }
+  return open;
+}
+
+// Enter at the end of a paragraph that would swallow the new line writes the
+// blank line that keeps the caret's line its own block. A newline already
+// under the caret is that blank line.
+function paragraphBlank(doc, line, cursor) {
+  if (cursor !== line.end || line.text === "") return false;
+  if (cursor < doc.length && doc[cursor] === "\n") return false;
+  if (imageLine(line.text) || line.text.startsWith("|")) return false;
+  return classify(line.text).kind === "p";
+}
+
+// Text Enter inserts, and where it replaces when an empty item leaves the list.
+// anchor and cursor are the splice; omitted, the caret's own range is the splice.
+export function enterInsert(doc, cursor) {
+  const text = typeof doc === "string" ? doc : "";
+  const at = Math.max(0, Math.min(text.length, Number.isFinite(cursor) ? cursor : 0));
+  const line = sourceLine(text, at);
+  const opened = fenceOpen(line.text);
+  if ((opened && opened.lang !== "comment") || fenceBody(text, at) || line.text.startsWith("|")) return { text: "\n" };
+  const mode = classify(line.text);
+  if ((mode.kind === "li" || mode.kind === "ol") && at === line.end) {
+    const head = line.text.slice(0, mode.marker || 0);
+    // A nested or quoted empty item is not this exit. A top-level one becomes the blank line.
+    if (head !== "" && line.text === head && !/^[ \t>]/.test(head)) {
+      return { text: "\n", anchor: line.start, cursor: line.end };
+    }
+  }
+  const marker = continuedMarker(text, at);
+  if (marker) return { text: `\n${marker}` };
+  if (paragraphBlank(text, line, at)) return { text: "\n\n" };
+  return { text: "\n" };
+}
+
 // The marker of the next item of the same kind, or null when the caret's line is not an item.
 export function continuedMarker(doc, cursor) {
   const text = typeof doc === "string" ? doc : "";
@@ -1754,6 +1805,25 @@ function hardenBreak(block, line, doc) {
   block.parts = parts;
   block.runs = parts.filter((part) => part.type === "run");
   block.text = block.runs.map((run) => run.text).join("");
+  // The line is only the marker, so the one caret on it is the line start.
+  // The break still owns the newline, which a click on that br has to reach.
+  if (hide === line.text.length) block.slot = line.start;
+}
+
+function bareBreakLine(line, doc) {
+  if (!line || line.end >= doc.length || doc[line.end] !== "\n") return false;
+  const hide = hardHideCount(line.text);
+  return hide > 0 && hide === line.text.length;
+}
+
+// A line move on a spaces-only hard break rests on the newline that break draws.
+// The line start stays the character stop.
+export function lineCaret(doc, offset) {
+  const text = typeof doc === "string" ? doc : "";
+  const at = Math.max(0, Math.min(text.length, Number.isFinite(offset) ? offset : 0));
+  const line = sourceLine(text, at);
+  if (bareBreakLine(line, text)) return line.end;
+  return at;
 }
 
 function wrappedBlock(group, doc, cursor, spans) {
@@ -1847,7 +1917,7 @@ function fenceBlock(slot, cursor, spans) {
   };
 }
 
-// cursor === end stays closed so backspace still deletes the whole atom.
+// end is the newline after the last line. A caret there is inside, so the atom opens.
 function expandAtom(blocks, doc, atom, cursor, spans) {
   const lines = linesBetween(doc, atom.start, atom.end);
   const code = atom.type === "diagram";
@@ -1884,6 +1954,35 @@ function addQuoteBar(block) {
   block.classes = names;
 }
 
+function pushLine(blocks, slot, text, cursor, spans) {
+  const { line, mode, parsed } = slot;
+  const onLine = cursor >= line.start && cursor <= line.end;
+  const block = onLine ? rawBlock(line, mode, parsed, spans) : renderedBlock(line, mode, parsed, spans);
+  if (mode.kind === "p" && !imageLine(line.text)) hardenBreak(block, line, text);
+  blocks.push(block);
+}
+
+// A line that is only a hard-break marker is its own caret slot. Leaving it inside
+// the wrap gives that offset no element the caret can sit on.
+function pushGroup(blocks, group, text, cursor, spans) {
+  let chunk = [];
+  const flush = () => {
+    if (chunk.length === 0) return;
+    if (chunk.length > 1) blocks.push(wrappedBlock(chunk, text, cursor, spans));
+    else pushLine(blocks, chunk[0], text, cursor, spans);
+    chunk = [];
+  };
+  for (const item of group) {
+    if (bareBreakLine(item.line, text)) {
+      flush();
+      pushLine(blocks, item, text, cursor, spans);
+    } else {
+      chunk.push(item);
+    }
+  }
+  flush();
+}
+
 function continueQuoteBars(blocks) {
   let index = 0;
   while (index < blocks.length) {
@@ -1911,7 +2010,7 @@ export function plan(doc, cursor) {
     const slot = slots[index];
     if (slot.kind === "atom") {
       const atom = slot.atom;
-      if ((atom.type === "table" || atom.type === "diagram") && cursor >= atom.start && cursor < atom.end) {
+      if ((atom.type === "table" || atom.type === "diagram") && cursor >= atom.start && cursor <= atom.end) {
         expandAtom(blocks, doc, atom, cursor, spans);
       } else {
         blocks.push(atom);
@@ -1933,16 +2032,12 @@ export function plan(doc, cursor) {
         next += 1;
       }
       if (group.length > 1) {
-        blocks.push(wrappedBlock(group, text, cursor, spans));
+        pushGroup(blocks, group, text, cursor, spans);
         index = next;
         continue;
       }
     }
-    const { line, mode, parsed } = slot;
-    const onLine = cursor >= line.start && cursor <= line.end;
-    const block = onLine ? rawBlock(line, mode, parsed, spans) : renderedBlock(line, mode, parsed, spans);
-    if (mode.kind === "p" && !imageLine(line.text)) hardenBreak(block, line, text);
-    blocks.push(block);
+    pushLine(blocks, slot, text, cursor, spans);
     index += 1;
   }
   // A blank run between two quoted blocks keeps the bar. The blanks stay blocks.
@@ -2007,13 +2102,13 @@ function skippedFence(doc, from, landed, forward) {
 }
 
 // A closed table is not editable, so the caret can land past it. Line granularity
-// still steps over a diagram. end - 1 opens the atom; cursor === end stays closed.
+// still steps over a diagram. Backward entry lands on end, which opens the atom.
 function opensInward(atom, granularity) {
   return atom.type === "table" || (atom.type === "diagram" && granularity === "character");
 }
 
 function inwardOffset(atom, forward) {
-  return forward ? atom.start : atom.end - 1;
+  return forward ? atom.start : atom.end;
 }
 
 function crossedAtom(doc, cursor, landed, forward, granularity) {
@@ -2041,6 +2136,114 @@ export function placeMove(doc, cursor, landed, direction, granularity) {
 
 function renderedAtomAt(doc, cursor, hit) {
   return plan(doc, cursor).atoms.find(hit) || null;
+}
+
+function sourceLine(doc, offset) {
+  let start = offset;
+  while (start > 0 && doc[start - 1] !== "\n") start -= 1;
+  let end = offset;
+  while (end < doc.length && doc[end] !== "\n") end += 1;
+  return { start, end, text: doc.slice(start, end), newline: end < doc.length && doc[end] === "\n" };
+}
+
+// The caret rests on the first offset of a hard-break marker. Offsets after that,
+// including the newline, are the hidden tail.
+function hardBreakEdge(doc, offset) {
+  const re = /( {2,}|\\)\n/g;
+  let match = re.exec(doc);
+  while (match) {
+    const last = match.index + match[1].length;
+    if (offset > match.index && offset <= last) return match.index;
+    match = re.exec(doc);
+  }
+  return null;
+}
+
+function visualEnd(doc, newlineIndex) {
+  if (newlineIndex < 0) return 0;
+  const line = sourceLine(doc, newlineIndex);
+  return line.end - hardHideCount(line.text);
+}
+
+function markerAt(doc, index) {
+  if (index < 0 || index >= doc.length) return null;
+  for (const token of commentTokens(doc)) {
+    if (index >= token.start && index < token.end) return token;
+  }
+  return null;
+}
+
+// A selection that covers one marker of a span and not the other keeps that marker.
+// The caret stays outside the comment: before an opener, after a closer.
+function markerSplice(doc, from, to) {
+  for (const span of findSpans(doc)) {
+    const openHit = from < span.openEnd && to > span.openStart;
+    const closeHit = from < span.closeEnd && to > span.closeStart;
+    if (openHit === closeHit) continue;
+    if (openHit && span.openStart >= from && span.openEnd <= to) {
+      return { from, to, text: doc.slice(span.openStart, span.openEnd), caret: from };
+    }
+    if (closeHit && span.closeStart >= from && span.closeEnd <= to) {
+      const text = doc.slice(span.closeStart, span.closeEnd);
+      return { from, to, text, caret: from + text.length };
+    }
+  }
+  return null;
+}
+
+function snapBreak(next) {
+  if (!next) return next;
+  // A caret left on a hidden space, a backslash, or the newline of a visible
+  // line moves to the marker's first offset. The newline of a spaces-only
+  // break is itself a caret, so it stays.
+  const text = next.doc;
+  const at = next.cursor;
+  const re = /( {2,}|\\)\n/g;
+  let match = re.exec(text);
+  while (match) {
+    const last = match.index + match[1].length;
+    if (at > match.index && at <= last) {
+      const line = sourceLine(text, match.index);
+      if (bareBreakLine(line, text) && at === last) return next;
+      return { ...next, cursor: match.index, anchor: match.index };
+    }
+    match = re.exec(text);
+  }
+  return next;
+}
+
+// A drawn comment marker, or the hidden tail of a hard break. direction "nearer"
+// is a click. The break's br is the newline and stays; a hidden space takes the line start.
+export function skipHidden(doc, offset, direction) {
+  const text = typeof doc === "string" ? doc : "";
+  const at = Math.max(0, Math.min(text.length, Number.isFinite(offset) ? Math.trunc(offset) : 0));
+  for (const token of commentTokens(text)) {
+    if (at > token.start && at < token.end) {
+      if (direction === "nearer") return at - token.start <= token.end - at ? token.start : token.end;
+      return direction === "backward" || direction === "left" ? token.start : token.end;
+    }
+  }
+  if (direction === "nearer") {
+    const re = /( {2,}|\\)\n/g;
+    let match = re.exec(text);
+    while (match) {
+      const last = match.index + match[1].length;
+      if (at > match.index && at < last) return match.index;
+      match = re.exec(text);
+    }
+    return at;
+  }
+  const edge = hardBreakEdge(text, at);
+  if (edge == null) return at;
+  if (direction === "backward" || direction === "left") return edge;
+  const re = /( {2,}|\\)\n/g;
+  let match = re.exec(text);
+  while (match) {
+    const last = match.index + match[1].length;
+    if (at > match.index && at <= last) return last + 1;
+    match = re.exec(text);
+  }
+  return at;
 }
 
 function splice(state, from, to, text, cursor) {
@@ -2087,33 +2290,62 @@ export function insert(state, text) {
   return applySplice(state, from, to, value, from + value.length);
 }
 
+function deleteSelection(state) {
+  const from = Math.min(state.anchor, state.cursor);
+  const to = Math.max(state.anchor, state.cursor);
+  const kept = markerSplice(state.doc, from, to);
+  if (kept) return snapBreak(applySplice(state, kept.from, kept.to, kept.text, kept.caret));
+  return snapBreak(applySplice(state, from, to, "", from));
+}
+
+function deleteBareLine(state, line) {
+  const caret = line.start === 0 ? 0 : visualEnd(state.doc, line.start - 1);
+  return snapBreak(applySplice(state, line.start, line.end + 1, "", caret));
+}
+
 export function backspace(state) {
-  if (state.anchor !== state.cursor) {
-    const from = Math.min(state.anchor, state.cursor);
-    return applySplice(state, from, Math.max(state.anchor, state.cursor), "", from);
-  }
+  if (state.anchor !== state.cursor) return deleteSelection(state);
   if (state.cursor <= 0) return state;
-  const atom = renderedAtomAt(state.doc, state.cursor, (item) => state.cursor > item.start && state.cursor <= item.end);
+  const doc = state.doc;
+  const cutting = markerAt(doc, state.cursor - 1);
+  if (cutting) {
+    if (cutting.start === 0) return state;
+    return snapBreak(applySplice(state, cutting.start - 1, cutting.start, "", cutting.end - 1));
+  }
+  const line = sourceLine(doc, state.cursor);
+  if (bareBreakLine(line, doc)) return deleteBareLine(state, line);
+  const atom = renderedAtomAt(doc, state.cursor, (item) => state.cursor > item.start && state.cursor <= item.end);
   if (atom) return applySplice(state, atom.start, atom.end, "", atom.start);
-  return applySplice(state, state.cursor - 1, state.cursor, "", state.cursor - 1);
+  return snapBreak(applySplice(state, state.cursor - 1, state.cursor, "", state.cursor - 1));
 }
 
 export function deleteForward(state) {
-  if (state.anchor !== state.cursor) {
-    const from = Math.min(state.anchor, state.cursor);
-    return applySplice(state, from, Math.max(state.anchor, state.cursor), "", from);
-  }
+  if (state.anchor !== state.cursor) return deleteSelection(state);
   if (state.cursor >= state.doc.length) return state;
-  const atom = renderedAtomAt(state.doc, state.cursor, (item) => state.cursor >= item.start && state.cursor < item.end);
+  const doc = state.doc;
+  const cutting = markerAt(doc, state.cursor);
+  if (cutting) {
+    if (cutting.end >= doc.length) return state;
+    return snapBreak(applySplice(state, cutting.end, cutting.end + 1, "", cutting.start));
+  }
+  const line = sourceLine(doc, state.cursor);
+  if (bareBreakLine(line, doc)) return deleteBareLine(state, line);
+  // Only the hard-break tail sits between the caret and the newline, so the
+  // newline goes and the marker characters stay where they are.
+  const hide = line.newline ? hardHideCount(line.text) : 0;
+  if (hide > 0 && state.cursor >= line.end - hide && state.cursor < line.end) {
+    return snapBreak(applySplice(state, line.end, line.end + 1, "", state.cursor));
+  }
+  const atom = renderedAtomAt(doc, state.cursor, (item) => state.cursor >= item.start && state.cursor < item.end);
   if (atom) return applySplice(state, atom.start, atom.end, "", atom.start);
   const at = state.cursor;
   // The last byte of a trailing empty line is a newline. Leaving the caret at
   // the new length sits past that remaining newline, where no block is drawn.
   let cursor = at;
-  if (at === state.doc.length - 1 && state.doc[at] === "\n" && at > 0 && state.doc[at - 1] === "\n") {
+  if (at === state.doc.length - 1 && doc[at] === "\n" && at > 0 && doc[at - 1] === "\n") {
     cursor = at - 1;
   }
-  return applySplice(state, at, at + 1, "", cursor);
+  return snapBreak(applySplice(state, at, at + 1, "", cursor));
 }
 
 export function undo(state) {

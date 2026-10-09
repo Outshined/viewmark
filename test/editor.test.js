@@ -24,7 +24,7 @@ import {
   formatHash,
   parseHash,
 } from "../src/editor.js";
-import { splitCommentNote, lockSpans, lockIndexAt, commentRangeReason } from "../src/doc.js";
+import { splitCommentNote, lockSpans, lockIndexAt, commentRangeReason, skipHidden, lineCaret } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
@@ -444,6 +444,24 @@ test("a trailing newline is not its own block", () => {
   assert.equal(bareBlocks.length, 1);
   assert.equal(bareBlocks[0].end, bare.length);
   assert.equal(bareBlocks[0].raw, true);
+
+  // The empty line after a final newline is drawn only while the caret is on it.
+  const mounted = mountEditor();
+  try {
+    const away = createEditor(mounted.root, doc, 0);
+    const hidden = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.dataset && node.dataset.start === String(doc.length));
+    assert.equal(hidden.length, 0);
+    away.destroy();
+    const onIt = createEditor(mounted.root, doc, doc.length);
+    const line = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.dataset && node.dataset.start === String(doc.length) && node.dataset.end === String(doc.length))[0];
+    assert.ok(line);
+    const br = line.childNodes.find((node) => String(node.nodeName).toUpperCase() === "BR");
+    assert.ok(br);
+    assert.equal(mapOffset(br, 0), doc.length);
+    onIt.destroy();
+  } finally {
+    mounted.restore();
+  }
 });
 
 test("a blank between quotes keeps the quote bar", () => {
@@ -1421,8 +1439,12 @@ test("a quoted list keeps the bar with the parent quote", () => {
   try {
     const view = createEditor(mounted.root, doc, doc.length);
     const lines = mounted.findAll((node) => node.classList && node.classList.contains("md-line"));
-    assert.equal(lines.length, 5);
-    for (const line of lines) assert.ok(line.classList.contains("md-quote"));
+    // The caret is past the final newline, so the empty line is drawn after the quotes.
+    assert.equal(lines.length, 6);
+    for (const line of lines.slice(0, 5)) assert.ok(line.classList.contains("md-quote"));
+    assert.equal(lines[5].classList.contains("md-quote"), false);
+    assert.equal(lines[5].dataset.start, String(doc.length));
+    assert.equal(lines[5].dataset.end, String(doc.length));
     assert.equal(lines[0].classList.contains("md-li"), false);
     assert.equal(lines[3].classList.contains("md-li"), true);
     assert.ok(Number(lines[3].styleProps["--indent"]) > Number(lines[1].styleProps["--indent"]));
@@ -1676,7 +1698,14 @@ test("collapsed caret removes a blank line and keeps a joining newline", () => {
 });
 
 test("T-backspace-atom", () => {
+  // The caret on the newline after the last row is inside the atom, so backspace
+  // deletes one source character.
   let s = createState(D, 33);
+  s = backspace(s);
+  assert.equal(s.doc, "| a | b |\n| --- | --- |\n| 1 | 2 \n");
+  assert.equal(s.cursor, 32);
+
+  s = createState(D, 33, 0);
   s = backspace(s);
   assert.equal(s.doc, "\n");
   assert.equal(s.cursor, 0);
@@ -1696,9 +1725,153 @@ test("T-raw-image-backspace", () => {
   assert.equal(s.cursor, 17);
 });
 
+const CM_FENCE = "\n\n```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nNote.\n```\n";
+const CM_DOC = `See {c1}this{/c1} now.${CM_FENCE}`;
+
+function bothMarkers(next) {
+  assert.ok(next);
+  assert.equal(next.doc.includes("{c1}"), true);
+  assert.equal(next.doc.includes("{/c1}"), true);
+  assert.equal(next.doc.includes("```comment c1"), true);
+  assert.equal(next.changes[0].removed.includes("{c1}"), false);
+  assert.equal(next.changes[0].removed.includes("{/c1}"), false);
+}
+
+test("BS.cm.2", () => {
+  const next = backspace(createState(CM_DOC, 8));
+  bothMarkers(next);
+  assert.equal(next.doc, `See{c1}this{/c1} now.${CM_FENCE}`);
+  assert.equal(next.cursor, 7);
+  assert.equal(next.anchor, 7);
+});
+
+test("BS.cm.4", () => {
+  const next = backspace(createState(CM_DOC, 17));
+  bothMarkers(next);
+  assert.equal(next.doc, `See {c1}thi{/c1} now.${CM_FENCE}`);
+  assert.equal(next.cursor, 16);
+  assert.equal(next.anchor, 16);
+});
+
+test("DL.cm.2", () => {
+  const next = deleteForward(createState(CM_DOC, 12));
+  bothMarkers(next);
+  assert.equal(next.doc, `See {c1}this{/c1}now.${CM_FENCE}`);
+  assert.equal(next.cursor, 12);
+  assert.equal(next.anchor, 12);
+});
+
+test("SX.10", () => {
+  const next = backspace(createState(CM_DOC, 10, 0));
+  assert.ok(next);
+  assert.equal(next.doc, `{c1}is{/c1} now.${CM_FENCE}`);
+  assert.equal(next.cursor, 0);
+  assert.equal(next.anchor, 0);
+  assert.equal(next.changes[0].inserted, "{c1}");
+  assert.equal(next.doc.includes("{/c1}"), true);
+  assert.equal(next.doc.includes("```comment c1"), true);
+});
+
+test("BG.ws.3", () => {
+  const doc = "a  \n  \nb\n";
+  assert.equal(doc[4], " ");
+  assert.equal(doc[6], "\n");
+  for (const cursor of [4, 6]) {
+    const next = backspace(createState(doc, cursor));
+    assert.equal(next.doc, "a  \nb\n");
+    assert.equal(next.cursor, 1);
+    assert.equal(next.anchor, 1);
+  }
+  const blocks = plan(doc, 4).blocks;
+  const slot = blocks.find((block) => block.slot === 4);
+  assert.ok(slot);
+  assert.equal(slot.start, 4);
+  assert.equal(blocks.filter((block) => block.type === "line").length, 3);
+  // Deleting the character in front of that newline leaves the caret on it.
+  const probed = backspace(createState("a  \n  x\nb\n", 7));
+  assert.equal(probed.doc, doc);
+  assert.equal(probed.cursor, 6);
+  assert.equal(lineCaret(doc, 4), 6);
+  assert.equal(lineCaret(doc, 5), 6);
+  assert.equal(lineCaret(doc, 6), 6);
+  assert.equal(lineCaret(doc, 3), 3);
+  assert.equal(lineCaret("red  \n", 5), 5);
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, doc, 6);
+    const slotBr = mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.dataset.start === "4" && node.parentElement.dataset.end === "4")[0];
+    const breakBr = mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.classList && node.parentElement.classList.contains("md-break") && node.parentElement.dataset.start === "6")[0];
+    assert.ok(slotBr);
+    assert.ok(breakBr);
+    assert.equal(mapOffset(slotBr, 0), 4);
+    assert.equal(mapOffset(breakBr, 0), 6);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("BG.hbe-p", () => {
+  const next = backspace(createState("red  \n\ntwo\n", 6));
+  assert.equal(next.doc, "red  \ntwo\n");
+  assert.equal(next.cursor, 3);
+});
+
+test("BG.bse-p", () => {
+  const next = backspace(createState("red\\\n\ntwo\n", 5));
+  assert.equal(next.doc, "red\\\ntwo\n");
+  assert.equal(next.cursor, 3);
+});
+
+test("DL.hb.1", () => {
+  const next = deleteForward(createState("red  \nblue\n", 3));
+  assert.equal(next.doc, "red  blue\n");
+  assert.equal(next.cursor, 3);
+  assert.equal(next.doc.includes("  "), true);
+});
+
+test("DL.hb.2", () => {
+  const next = deleteForward(createState("red\\\nblue\n", 3));
+  assert.equal(next.doc, "red\\blue\n");
+  assert.equal(next.cursor, 3);
+});
+
+test("BS.tb.1", () => {
+  let s = createState("| a | b |\n| --- | --- |\n| 1 | 2 |\n\n", 34);
+  s = backspace(s);
+  assert.equal(s.doc, "| a | b |\n| --- | --- |\n| 1 | 2 |\n");
+  assert.equal(s.cursor, 33);
+  assert.equal(plan(s.doc, s.cursor).blocks.some((block) => block.type === "table"), false);
+  s = backspace(s);
+  assert.equal(s.doc, "| a | b |\n| --- | --- |\n| 1 | 2 \n");
+  assert.equal(s.cursor, 32);
+});
+
+test("a click or an arrow leaves a hidden marker", () => {
+  const comment = "See {c1}this{/c1} now.";
+  assert.equal(skipHidden(comment, 5, "nearer"), 4);
+  assert.equal(skipHidden(comment, 7, "nearer"), 8);
+  assert.equal(skipHidden(comment, 5, "forward"), 8);
+  assert.equal(skipHidden(comment, 16, "backward"), 12);
+  assert.equal(skipHidden(comment, 4, "forward"), 4);
+  assert.equal(skipHidden(comment, 8, "backward"), 8);
+  const spaces = "red  \nblue\n";
+  assert.equal(skipHidden(spaces, 4, "forward"), 6);
+  assert.equal(skipHidden(spaces, 5, "backward"), 3);
+  assert.equal(skipHidden(spaces, 3, "forward"), 3);
+  assert.equal(skipHidden(spaces, 5, "nearer"), 5);
+  assert.equal(skipHidden(spaces, 4, "nearer"), 3);
+  const slash = "red\\\nblue\n";
+  assert.equal(skipHidden(slash, 4, "forward"), 5);
+  assert.equal(skipHidden(slash, 4, "backward"), 3);
+  const widened = backspace(createState("red   \n", 5));
+  assert.equal(widened.doc, "red  \n");
+  assert.equal(widened.cursor, 3);
+});
+
 test("T-table-atom", () => {
   assert.equal(D.length, 34);
-  for (const cursor of [0, 4]) {
+  for (const cursor of [0, 4, 33]) {
     const open = plan(D, cursor);
     assert.equal(open.blocks.filter((b) => b.type === "table").length, 0);
     const pipes = open.lines.filter((line) => line.text.includes("|"));
@@ -1710,7 +1883,7 @@ test("T-table-atom", () => {
       assert.ok(line.text.includes("|"));
     }
   }
-  const closed = plan(D, 33);
+  const closed = plan(D, D.length);
   const tables = closed.blocks.filter((b) => b.type === "table");
   assert.equal(tables.length, 1);
   assert.equal(tables[0].start, 0);
@@ -1826,7 +1999,7 @@ test("code fence is one block", () => {
 
 test("T-diagram-atom", () => {
   assert.equal(E.length, 21);
-  for (const cursor of [0, 12]) {
+  for (const cursor of [0, 12, 20]) {
     const open = plan(E, cursor);
     assert.equal(open.blocks.filter((b) => b.type === "diagram").length, 0);
     const code = open.lines.filter((line) => line.classes.includes("md-codeblock"));
@@ -1834,7 +2007,7 @@ test("T-diagram-atom", () => {
     assert.equal(code.map((line) => line.text).join("\n"), "```mermaid\nA-->B\n```");
     assert.ok(code.every((line) => line.runs.map((run) => run.text).join("") === line.text));
   }
-  const closed = plan(E, 20);
+  const closed = plan(E, E.length);
   const diagrams = closed.blocks.filter((b) => b.type === "diagram");
   assert.equal(diagrams.length, 1);
   assert.equal(diagrams[0].start, 0);
@@ -1862,20 +2035,24 @@ test("T-snap-rendered", () => {
   assert.equal(snapMove("![alt](sample.svg)", 0, 1, "forward"), 1);
   assert.equal(snapMove("Go\n![alt](sample.svg)\n", 0, 10, "forward"), 21);
   assert.equal(snapMove(D, 0, 4, "forward"), 4);
-  assert.equal(snapMove(D, 33, 4, "forward"), 33);
+  assert.equal(snapMove(D, 33, 4, "forward"), 4);
+  assert.equal(snapMove(D, D.length, 4, "forward"), 33);
   assert.equal(snapMove(E, 0, 12, "forward"), 12);
-  assert.equal(snapMove(E, 20, 12, "forward"), 20);
-  assert.equal(placeMove(D, 33, 4, "forward", "line"), 0);
-  assert.equal(placeMove(D, 33, 4, "forward", "character"), 0);
-  assert.equal(placeMove(D, 33, 4, "backward", "character"), 32);
+  assert.equal(snapMove(E, 20, 12, "forward"), 12);
+  assert.equal(snapMove(E, E.length, 12, "forward"), 20);
+  assert.equal(placeMove(D, D.length, 4, "forward", "line"), 0);
+  assert.equal(placeMove(D, D.length, 4, "forward", "character"), 0);
+  assert.equal(placeMove(D, D.length, 4, "backward", "character"), 33);
+  assert.equal(placeMove(D, 33, 4, "forward", "character"), 4);
   assert.equal(placeMove(D, 0, 4, "forward", "character"), 4);
-  assert.equal(placeMove(E, 20, 12, "forward", "line"), 20);
-  assert.equal(placeMove(E, 20, 12, "backward", "line"), 0);
-  assert.equal(placeMove(E, 20, 12, "forward", "character"), 0);
-  assert.equal(placeMove(E, 20, 12, "backward", "character"), 19);
+  assert.equal(placeMove(E, E.length, 12, "forward", "line"), 20);
+  assert.equal(placeMove(E, E.length, 12, "backward", "line"), 0);
+  assert.equal(placeMove(E, E.length, 12, "forward", "character"), 0);
+  assert.equal(placeMove(E, E.length, 12, "backward", "character"), 20);
+  assert.equal(placeMove(E, 20, 12, "forward", "character"), 12);
   assert.equal(placeMove(F, 0, 10, "forward", "character"), 21);
   assert.equal(placeMove("x\n" + D, 0, 40, "forward", "line"), 2);
-  assert.equal(placeMove("x\n" + D, 40, 0, "backward", "line"), 34);
+  assert.equal(placeMove("x\n" + D, 40, 0, "backward", "line"), 35);
   assert.equal(placeMove("x\n" + E, 0, 30, "forward", "line"), 30);
   assert.equal(placeMove("x\n" + E, 0, 30, "forward", "character"), 2);
 
@@ -3098,8 +3275,12 @@ test("enter on a list item continues that item", () => {
     assert.equal(split.doc[split.cursor], "p");
 
     const prose = enter("hello", 5);
-    assert.equal(prose.doc, "hello\n");
-    assert.equal(prose.cursor, 6);
+    assert.equal(prose.doc, "hello\n\n");
+    assert.equal(prose.cursor, 7);
+
+    const left = enter("- a\n- ", 6);
+    assert.equal(left.doc, "- a\n\n");
+    assert.equal(left.cursor, 5);
 
     for (const inputType of ["insertLineBreak", "insertParagraph"]) {
       const again = enter("- alpha", 7, inputType);
@@ -3520,7 +3701,7 @@ test("word delete on an empty line removes that line", () => {
 test("fence clicks open source", () => {
   const mounted = mountEditor();
   try {
-    const table = createEditor(mounted.root, D, 33);
+    const table = createEditor(mounted.root, D, D.length);
     const header = mounted.findAll((node) => node.tagName === "TH" && node.textContent === "a")[0];
     const body = mounted.findAll((node) => node.tagName === "TD" && node.textContent === "1")[0];
     assert.equal(header.dataset.start, "2");
@@ -3534,7 +3715,7 @@ test("fence clicks open source", () => {
     assert.ok(mounted.findAll((node) => node.className && node.className.includes("|")).length > 0 || mounted.findAll((node) => (node.textContent || "").includes("|")).length > 0);
     table.destroy();
 
-    const closed = createEditor(mounted.root, D, 33);
+    const closed = createEditor(mounted.root, D, D.length);
     const atom = mounted.findAll((node) => node.classList && node.classList.contains("md-table"))[0];
     mounted.listeners.click({ target: atom, clientX: 0, clientY: 0, preventDefault() {} });
     assert.equal(closed.getState().cursor, 0);
@@ -3550,7 +3731,7 @@ test("fence clicks open source", () => {
     assert.ok(mounted.findAll((node) => (node.textContent || "").includes("![alt]")).length > 0);
     imageView.destroy();
 
-    const diagram = createEditor(mounted.root, E, 20);
+    const diagram = createEditor(mounted.root, E, E.length);
     const box = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
     const pre = mounted.findAll((node) => node.tagName === "PRE")[0];
     assert.equal(box.dataset.bodyStart, "11");
@@ -3638,7 +3819,7 @@ test("mermaid render replaces source", async () => {
     globalThis.mermaid.render = () => new Promise((resolve) => {
       release = resolve;
     });
-    const pending = createEditor(mounted.root, E, 20);
+    const pending = createEditor(mounted.root, E, E.length);
     await Promise.resolve();
     assert.equal(typeof release, "function");
     const old = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
@@ -3653,7 +3834,7 @@ test("mermaid render replaces source", async () => {
     pending.destroy();
 
     globalThis.mermaid.render = () => Promise.reject(new Error("bad diagram"));
-    const failed = createEditor(mounted.root, E, 20);
+    const failed = createEditor(mounted.root, E, E.length);
     const failedBox = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
     assert.equal(failedBox.textContent, "A-->B");
     await new Promise((resolve) => setImmediate(resolve));
@@ -5946,6 +6127,25 @@ test("another user's doc shifts a caret at or after to", () => {
     assert.equal(shifted.getState().doc[shifted.getState().cursor], "p");
     assert.ok(shifted.getState().cursor < added.doc.indexOf("```"));
     shifted.destroy();
+
+    const endTransport = holdingTransport();
+    endTransport.username = "me";
+    const atEnd = createEditor(mounted.root, "one\n", 4, endTransport);
+    endTransport.deliver({
+      type: "doc",
+      rev: 1,
+      text: "one\n\n\nlast\n",
+      from: 4,
+      to: 4,
+      inserted: "\n\nlast\n",
+      actor: "other",
+      cursor: 11,
+      anchor: 11,
+    });
+    assert.equal(atEnd.getState().doc, "one\n\n\nlast\n");
+    assert.equal(atEnd.getState().cursor, 4);
+    assert.equal(atEnd.getState().anchor, 4);
+    atEnd.destroy();
   } finally {
     mounted.restore();
   }

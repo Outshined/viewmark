@@ -27,7 +27,9 @@ import {
   lineIndexAt,
   lockIndexAt,
   lockSpans,
-  continuedMarker,
+  skipHidden,
+  enterInsert,
+  lineCaret,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./ticket.js";
@@ -812,6 +814,13 @@ function isBreak(node) {
   return !!node && String(node.nodeName || "").toUpperCase() === "BR";
 }
 
+// The newline of a spaces-only hard break is a line-move stop. The offset before
+// it is on that same line, so it aims at the same newline. A visible line's
+// break does not: up and down there rest on the marker's first offset.
+function bareBreakNewline(doc, offset) {
+  return offset > 0 && lineCaret(doc, offset) === offset && lineCaret(doc, offset - 1) === offset;
+}
+
 // selectNode reports the atom as a child index on its parent, not a text offset.
 export function mapOffset(startOrNode, offset) {
   if (typeof startOrNode === "number") return startOrNode + offset;
@@ -1028,6 +1037,22 @@ function renderCollapsed(block) {
   return line;
 }
 
+// A br, not a text node: an empty text node does not survive in the editing host.
+// It is its own line, so up and down can stop on the line start. The break br
+// below it is the newline.
+function renderCaretSlot(offset) {
+  const el = document.createElement("span");
+  el.dataset.start = String(offset);
+  el.dataset.end = String(offset);
+  el.appendChild(document.createElement("br"));
+  return el;
+}
+
+function appendParts(el, block) {
+  if (block.slot != null) el.appendChild(renderCaretSlot(block.slot));
+  for (const part of block.parts) el.appendChild(part.type === "image" ? renderImage(part) : renderRun(part));
+}
+
 function renderBlock(block) {
   if (block.type === "table") return renderTable(block);
   if (block.type === "diagram") return renderDiagram(block);
@@ -1040,18 +1065,22 @@ function renderBlock(block) {
     el.dataset.start = String(block.start);
     el.dataset.end = String(block.end);
   }
+  // The slot is the line's only caret. Tagging the line with it lets a click
+  // and the empty-line boundary find the start, while the break still maps the newline.
+  if (block.slot != null) {
+    el.dataset.start = String(block.slot);
+    el.dataset.end = String(block.slot);
+  }
   if (block.raw) {
     if (block.empty) el.appendChild(document.createElement("br"));
-    else for (const part of block.parts) el.appendChild(part.type === "image" ? renderImage(part) : renderRun(part));
+    else appendParts(el, block);
     return el;
   }
   if (block.empty || block.hr) {
     if (block.empty) el.appendChild(document.createElement("br"));
     return el;
   }
-  for (const part of block.parts) {
-    el.appendChild(part.type === "image" ? renderImage(part) : renderRun(part));
-  }
+  appendParts(el, block);
   if (!el.childNodes || el.childNodes.length === 0) {
     el.dataset.start = String(block.end);
     el.dataset.end = String(block.end);
@@ -2601,14 +2630,34 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
   }
 
+  // The empty line after a final newline exists only while the caret is on it.
+  function blocksForCaret(blocks) {
+    const doc = state.doc;
+    if (state.cursor !== doc.length || !doc.endsWith("\n")) return blocks;
+    return blocks.concat([{
+      type: "line",
+      raw: true,
+      empty: true,
+      start: doc.length,
+      end: doc.length,
+      text: "",
+      classes: ["md-raw", "md-p"],
+      runs: [],
+      parts: [],
+      indent: 0,
+    }]);
+  }
+
   function render() {
     const planned = plan(state.doc, state.cursor);
+    let blocks = planned.blocks;
     if (rawSelectionLines) {
       rawSelectionLines = false;
-      planned.blocks = blocksWithSelectionSource(planned.blocks);
+      blocks = blocksWithSelectionSource(blocks);
     }
-    const flashBlock = refusal && !refusal.name ? tightestBlock(planned.blocks, refusal.offset) : null;
-    const nodes = planned.blocks.map((block) => {
+    blocks = blocksForCaret(blocks);
+    const flashBlock = refusal && !refusal.name ? tightestBlock(blocks, refusal.offset) : null;
+    const nodes = blocks.map((block) => {
       const el = renderBlock(block);
       appendLockMarks(el, block);
       if (block === flashBlock) el.classList.add("md-flash");
@@ -3092,8 +3141,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const to = Number(change.to);
       const inserted = typeof change.inserted === "string" ? change.inserted : "";
       if (!Number.isFinite(from) || !Number.isFinite(to)) return pos;
-      const delta = inserted.length - (to - from);
-      if (next >= to) next += delta;
+      // A caret on the insertion point stays in front of a remote insert.
+      // The hub shifts the same way; following the insert would leave the line.
+      if (next <= from) continue;
+      if (next >= to) next += inserted.length - (to - from);
+      else next = from + inserted.length;
     }
     return next;
   }
@@ -3403,7 +3455,44 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       placingCaret = false;
     }
     if (landed == null) return;
-    const next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
+    const forward = direction === "forward" || direction === "right";
+    let next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
+    // Up and down on a line that is only a hard break mean its newline.
+    // The slot at the line start stays the character stop.
+    if (granularity === "line") next = lineCaret(state.doc, next);
+    // The browser stops inside a drawn marker, and on the br of a hard break.
+    // One press crosses the whole marker. A press that did not move still crosses
+    // a marker that has no text node of its own. The newline of a spaces-only
+    // break is where up and down stop, so that press does not cross it.
+    for (let hop = 0; hop < 4; hop += 1) {
+      if (granularity === "line" && bareBreakNewline(state.doc, next)) break;
+      const skipped = skipHidden(state.doc, next, forward ? "forward" : "backward");
+      if (skipped === next) break;
+      next = skipped;
+    }
+    if (next === beforeCursor) {
+      const neighbor = beforeCursor + (forward ? 1 : -1);
+      if (neighbor >= 0 && neighbor <= state.doc.length) {
+        if (granularity === "character") {
+          const skipped = skipHidden(state.doc, neighbor, forward ? "forward" : "backward");
+          if (skipped !== neighbor && skipped !== beforeCursor) next = skipped;
+        }
+        // A closed atom has no caret, so modify stays put. The neighbor is the entry.
+        if (next === beforeCursor) {
+          const atoms = plan(state.doc, beforeCursor).atoms;
+          const into = atoms.some((atom) => (forward
+            ? neighbor >= atom.start && neighbor < atom.end
+            : neighbor > atom.start && neighbor <= atom.end));
+          if (into) next = placeMove(state.doc, beforeCursor, neighbor, direction, granularity);
+        }
+      }
+    }
+    // No line is drawn after the final newline until the caret is on it, so the
+    // browser cannot move there. The step is that offset.
+    if (forward && next === beforeCursor && state.doc.endsWith("\n")) {
+      const end = lineSpan(state.doc, beforeCursor)[1];
+      if (end === state.doc.length - 1) next = state.doc.length;
+    }
     const anchor = extend ? beforeAnchor : next;
     state = { ...state, cursor: next, anchor };
     if (!claimLines(anchor, next)) return;
@@ -3488,11 +3577,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return true;
   }
 
-  // Enter on an item inserts the same kind of marker. A plain line stays a newline.
-  function breakText() {
-    if (state.anchor !== state.cursor) return "\n";
-    const marker = continuedMarker(state.doc, state.cursor);
-    return marker ? `\n${marker}` : "\n";
+  // Enter on an item inserts the same kind of marker. A paragraph whose next
+  // line would join it inserts the blank line that keeps them apart.
+  function emitBreak() {
+    const brk = state.anchor === state.cursor ? enterInsert(state.doc, state.cursor) : { text: "\n" };
+    if (typeof brk.anchor === "number") emitEdit({ op: "insert", text: brk.text, anchor: brk.anchor, cursor: brk.cursor });
+    else emitEdit({ op: "insert", text: brk.text });
   }
 
   listen("beforeinput", (event) => {
@@ -3514,7 +3604,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (event.data === "\t") return;
       if (event.data === "\n") {
         if (event.data === composed) return;
-        emitEdit({ op: "insert", text: breakText() });
+        emitBreak();
         return;
       }
       if (event.data && event.data !== composed) emitEdit({ op: "insert", text: event.data });
@@ -3522,7 +3612,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (type === "insertCompositionText" || type === "insertFromComposition") return;
     if (type === "insertParagraph" || type === "insertLineBreak") {
-      emitEdit({ op: "insert", text: breakText() });
+      emitBreak();
       return;
     }
     if (type === "deleteContentBackward") {
@@ -3533,10 +3623,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (type === "deleteContentForward") {
       if (state.anchor === state.cursor) {
         const [start, end] = lineSpan(state.doc, state.cursor);
-        if (start === end && state.cursor > 0) {
+        if (start === end && state.cursor > 0 && state.cursor < state.doc.length) {
           // Delete on an empty line is the backspace of the preceding break,
           // which is the caret the page already sends. A leading empty line
-          // still deletes forward.
+          // still deletes forward. The line after the final newline is not a
+          // character, so Delete there changes nothing.
           emitEdit({ op: "backspace" });
           return;
         }
@@ -3671,6 +3762,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!composing) claimLines(state.anchor, state.cursor);
   });
 
+  // A click in the padding under the last block is the end of the file, including
+  // the empty line after a final newline, which is not drawn until the caret arrives.
+  function belowLastBlock(event) {
+    if (!event || !Number.isFinite(event.clientY)) return false;
+    let bottom = null;
+    for (const el of root.childNodes || []) {
+      if (!hasClass(el, "md-line") && !hasClass(el, "md-atom")) continue;
+      if (typeof el.getBoundingClientRect !== "function") return false;
+      const rect = el.getBoundingClientRect();
+      if (!rect || !Number.isFinite(rect.bottom)) return false;
+      if (bottom == null || rect.bottom > bottom) bottom = rect.bottom;
+    }
+    if (bottom == null) return false;
+    // One pixel under the last line is the undrawn line after a final newline.
+    // The gap route clicks there, short of the padding below the line.
+    return event.clientY > bottom;
+  }
+
   listen("click", (event) => {
     const target = event.target.nodeType === 1 ? event.target : event.target.parentElement;
     const link = target?.closest?.("a");
@@ -3708,6 +3817,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         keepCurrent = true;
       }
     }
+    if (belowLastBlock(event)) {
+      const end = state.doc.length;
+      if (!keepCurrent) clearCurrentComment();
+      state = { ...state, anchor: end, cursor: end };
+      if (!claimLines(end, end)) return;
+      render();
+      return;
+    }
     const atom = target?.closest?.(".md-atom");
     if (atom && root.contains(atom)) {
       event.preventDefault();
@@ -3722,7 +3839,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof document.caretPositionFromPoint !== "function") return;
     const pos = document.caretPositionFromPoint(event.clientX, event.clientY);
     if (!pos) return;
-    const offset = mapOffset(pos.offsetNode, pos.offset);
+    const offset = skipHidden(state.doc, mapOffset(pos.offsetNode, pos.offset), "nearer");
     let anchor = offset;
     let cursor = offset;
     if (event.detail === 2) {

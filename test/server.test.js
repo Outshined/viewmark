@@ -990,7 +990,7 @@ test("T-comment", async () => {
   });
 });
 
-test("backspace that breaks a comment marker answers 409 and the file stays", async () => {
+test("an insert that cuts a comment marker answers 409 and the file stays", async () => {
   await withDocs(async ({ port, dir }) => {
     const text = "See {c1}this{/c1} now.\n\n```comment c1\n:: 0\nnote\n```\n";
     await fs.writeFile(path.join(dir, "a.md"), text);
@@ -1001,9 +1001,10 @@ test("backspace that breaks a comment marker answers 409 and the file stays", as
       username: "A",
       path: "a.md",
       rev: opened.rev,
-      cursor: 8,
-      anchor: 8,
-      op: "backspace",
+      cursor: 6,
+      anchor: 5,
+      op: "insert",
+      text: "X",
     });
     assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "doc" || msg.type === "noop"), {
       type: "error",
