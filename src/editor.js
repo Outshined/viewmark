@@ -2761,13 +2761,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function shiftPos(pos, message) {
-    const from = Number(message.from);
-    const to = Number(message.to);
-    const inserted = typeof message.inserted === "string" ? message.inserted : "";
-    if (!Number.isFinite(from) || !Number.isFinite(to)) return pos;
-    const delta = inserted.length - (to - from);
-    if (pos >= to) return pos + delta;
-    return pos;
+    const list = Array.isArray(message.changes) && message.changes.length > 0
+      ? message.changes
+      : [{ from: message.from, to: message.to, inserted: message.inserted }];
+    let next = pos;
+    for (const change of list) {
+      const from = Number(change.from);
+      const to = Number(change.to);
+      const inserted = typeof change.inserted === "string" ? change.inserted : "";
+      if (!Number.isFinite(from) || !Number.isFinite(to)) return pos;
+      const delta = inserted.length - (to - from);
+      if (next >= to) next += delta;
+    }
+    return next;
   }
 
   function noteFreshComment(previousDoc, message) {
@@ -3120,8 +3126,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   // A rendered line hides its marker, so the caret at the visual start is not
-  // the source line start. The newline sits on the previous line; the hub
-  // rejects the splice unless that line is held too.
+  // the source line start. Snap there so backspace deletes the preceding newline.
   function prepareBackwardDelete() {
     const caret = collapsedCaret();
     if (caret && atVisualLineStart(caret.node, caret.offset)) {
@@ -3133,22 +3138,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         }
       }
     }
-    if (state.anchor === state.cursor && state.cursor > 0 && state.doc[state.cursor - 1] === "\n") {
-      // coveringSplice drops the later newline of a blank line, so that following span is in the splice.
-      const through = state.doc[state.cursor] === "\n" ? Math.min(state.doc.length, state.cursor + 1) : state.cursor;
-      return claimLines(state.cursor - 1, through);
-    }
     return true;
-  }
-
-  // coveringSplice keeps a shared run of newlines in the prefix, so the
-  // inserted break lands after that run. Hold every line the splice touches.
-  function claimFollowingBreaks() {
-    if (state.anchor !== state.cursor) return true;
-    let at = state.cursor;
-    while (at < state.doc.length && state.doc[at] === "\n") at += 1;
-    if (at === state.cursor) return true;
-    return claimLines(state.cursor, at);
   }
 
   // Enter on an item inserts the same kind of marker. A plain line stays a newline.
@@ -3177,7 +3167,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (event.data === "\t") return;
       if (event.data === "\n") {
         if (event.data === composed) return;
-        if (!claimFollowingBreaks()) return;
         emitEdit({ op: "insert", text: breakText() });
         return;
       }
@@ -3186,7 +3175,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (type === "insertCompositionText" || type === "insertFromComposition") return;
     if (type === "insertParagraph" || type === "insertLineBreak") {
-      if (!claimFollowingBreaks()) return;
       emitEdit({ op: "insert", text: breakText() });
       return;
     }
@@ -3198,17 +3186,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (type === "deleteContentForward") {
       if (state.anchor === state.cursor) {
         const [start, end] = lineSpan(state.doc, state.cursor);
-        if (start === end) {
-          // The normalized splice deletes the later newline and the next line.
-          // Backspace the preceding break and hold that line. A leading empty
-          // line still deletes forward, but the next line has to be held.
-          if (state.cursor > 0) {
-            const through = Math.min(state.doc.length, state.cursor + 1);
-            if (!claimLines(state.cursor - 1, through)) return;
-            emitEdit({ op: "backspace" });
-            return;
-          }
-          if (!claimLines(0, 1)) return;
+        if (start === end && state.cursor > 0) {
+          // Delete on an empty line is the backspace of the preceding break,
+          // which is the caret the page already sends. A leading empty line
+          // still deletes forward.
+          emitEdit({ op: "backspace" });
+          return;
         }
       }
       emitEdit({ op: "delete" });
@@ -3217,6 +3200,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (type === "deleteWordBackward" || type === "deleteWordForward") {
       if (state.anchor !== state.cursor) {
         emitEdit({ op: "delete" });
+        return;
+      }
+      const [start, end] = lineSpan(state.doc, state.cursor);
+      if (start === end) {
+        // An empty line has no word, so this is Backspace or Delete. Taking the
+        // neighboring word would delete different bytes.
+        if (type === "deleteWordForward" && state.cursor === 0) emitEdit({ op: "delete" });
+        else emitEdit({ op: "backspace" });
         return;
       }
       const edges = wordEdges(state.doc, state.cursor, type === "deleteWordBackward" ? -1 : 1);

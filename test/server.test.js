@@ -11,7 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { start } from "../server.js";
 import { readBuild } from "../src/hub.js";
-import { commentThreads, parseCommentNotes, splitCommentNote } from "../src/doc.js";
+import { commentThreads, lockIndexAt, lockSpans, parseCommentNotes, splitCommentNote } from "../src/doc.js";
 import { TICKET_ALPHABET, composeTicket, parseTicket } from "../src/ticket.js";
 import { createParser, encodeFrame } from "../src/ws.js";
 
@@ -416,6 +416,7 @@ test("T-edit", async () => {
       from: 0,
       to: 0,
       inserted: "X",
+      changes: [{ from: 0, to: 0, inserted: "X" }],
       actor: "A",
       cursor: 1,
       anchor: 1,
@@ -432,6 +433,181 @@ test("T-edit", async () => {
     b.ws.close();
   });
 });
+
+test("backspace in a blank run deletes that newline and leaves a later blank", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "a\n\n\n\nb\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    const opened = await openDoc(a, "A", "a.md");
+    await openDoc(b, "B", "a.md");
+    assert.equal(lockIndexAt(text, 2), 1);
+    assert.equal(lockIndexAt(text, 4), 3);
+    await syncLock(a, [b], "A", "a.md", 2, opened.rev);
+    await syncLock(b, [a], "B", "a.md", 4, opened.rev);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev: opened.rev,
+      anchor: 2,
+      cursor: 2,
+      op: "backspace",
+    });
+    const doc = await takeDoc(a);
+    assert.deepEqual(await takeDoc(b), doc);
+    assert.equal(doc.rev, opened.rev + 1);
+    assert.equal(doc.text, "a\n\n\nb\n");
+    assert.deepEqual(doc.changes, [{ from: 1, to: 2, inserted: "" }]);
+    assert.equal(doc.from, 1);
+    assert.equal(doc.to, 2);
+    assert.equal(doc.inserted, "");
+    assert.equal(await readDoc(dir, "a.md"), doc.text);
+    b.send({ type: "open", username: "B", path: "a.md" });
+    const again = await b.next((msg) => msg.type === "file" && msg.path === "a.md");
+    assert.equal(again.cursor, 3);
+    assert.equal(again.anchor, 3);
+    assert.equal(lockIndexAt(doc.text, again.cursor), 2);
+    assert.deepEqual(again.locks.find((line) => line.username === "B"), { index: 2, username: "B" });
+    a.ws.close();
+    b.ws.close();
+  });
+});
+
+test("append after a held paragraph applies", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "alpha\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    const opened = await openDoc(a, "A", "a.md");
+    await openDoc(b, "B", "a.md");
+    assert.equal(lockIndexAt(text, 0), 0);
+    assert.ok(text.length > lockSpans(text)[0].end);
+    await syncLock(b, [a], "B", "a.md", 0, opened.rev);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev: opened.rev,
+      anchor: text.length,
+      cursor: text.length,
+      op: "insert",
+      text: "\nlast\n",
+    });
+    const doc = await takeDoc(a);
+    assert.deepEqual(await takeDoc(b), doc);
+    assert.equal(doc.rev, opened.rev + 1);
+    assert.equal(doc.text, "alpha\n\nlast\n");
+    assert.deepEqual(doc.changes, [{ from: text.length, to: text.length, inserted: "\nlast\n" }]);
+    b.send({ type: "open", username: "B", path: "a.md" });
+    const again = await b.next((msg) => msg.type === "file" && msg.path === "a.md");
+    assert.equal(again.cursor, 0);
+    assert.deepEqual(again.locks.find((line) => line.username === "B"), { index: 0, username: "B" });
+    assert.equal(await readDoc(dir, "a.md"), doc.text);
+    a.ws.close();
+    b.ws.close();
+  });
+});
+
+test("zero newline at a held paragraph is refused and a blank line before it is not", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "hello\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    const opened = await openDoc(a, "A", "a.md");
+    await openDoc(b, "B", "a.md");
+    await syncLock(b, [a], "B", "a.md", 1, opened.rev);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev: opened.rev,
+      anchor: 0,
+      cursor: 0,
+      op: "insert",
+      text: "zero\n",
+    });
+    assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "doc"), {
+      type: "error",
+      status: 409,
+      heldBy: "B",
+    });
+    assert.equal(b.all.some((msg) => msg.type === "doc"), false);
+    assert.equal(await readDoc(dir, "a.md"), text);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev: opened.rev,
+      anchor: 0,
+      cursor: 0,
+      op: "insert",
+      text: "zero\n\n",
+    });
+    const doc = await takeDoc(a);
+    assert.deepEqual(await takeDoc(b), doc);
+    assert.equal(doc.text, "zero\n\nhello\n");
+    assert.equal(doc.rev, opened.rev + 1);
+    b.send({ type: "open", username: "B", path: "a.md" });
+    const again = await b.next((msg) => msg.type === "file" && msg.path === "a.md");
+    assert.equal(again.cursor, 7);
+    assert.equal(again.anchor, 7);
+    assert.equal(lockIndexAt(doc.text, again.cursor), 2);
+    assert.deepEqual(again.locks.find((line) => line.username === "B"), { index: 2, username: "B" });
+    assert.equal(again.locks.some((line) => line.username === "A" && line.index === 2), false);
+    assert.equal(await readDoc(dir, "a.md"), doc.text);
+    a.ws.close();
+    b.ws.close();
+  });
+});
+
+test("undo and redo of comment.add restore the bytes in one rev each", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "hello fox\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const a = await hello(port, "A");
+    let rev = (await openDoc(a, "A", "a.md")).rev;
+    await syncLock(a, [], "A", "a.md", 0, rev);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev,
+      anchor: 6,
+      cursor: 9,
+      op: "comment.add",
+    });
+    let doc = await takeDoc(a);
+    assert.equal(doc.rev, rev + 1);
+    assert.equal(doc.changes.length, 2);
+    assert.equal(applyListed(text, doc.changes), doc.text);
+    assert.equal(doc.changes.some((change) => change.from <= 6 && change.to >= doc.text.indexOf("```comment")), false);
+    assert.equal(await readDoc(dir, "a.md"), doc.text);
+    const commented = doc.text;
+    rev = doc.rev;
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    assert.equal(doc.rev, rev + 1);
+    assert.equal(doc.text, text);
+    assert.equal(await readDoc(dir, "a.md"), text);
+    rev = doc.rev;
+    a.send({ type: "redo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    assert.equal(doc.rev, rev + 1);
+    assert.equal(doc.text, commented);
+    assert.equal(await readDoc(dir, "a.md"), commented);
+    a.ws.close();
+  });
+});
+
+function applyListed(text, changes) {
+  let doc = text;
+  for (const change of changes) doc = doc.slice(0, change.from) + change.inserted + doc.slice(change.to);
+  return doc;
+}
 
 test("backspace at cursor 0 answers noop and the next insert applies", async () => {
   await withDocs(async ({ port, dir }) => {

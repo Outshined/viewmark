@@ -12,6 +12,7 @@ import {
   deleteForward,
   insert,
   lockIndexAt,
+  lockSpans,
   offsetAt,
   parseCommentNotes,
   parseUnifiedDiff,
@@ -290,24 +291,80 @@ function clampOffset(value, length) {
   return index;
 }
 
-function coveringSplice(before, after) {
-  if (before === after) return null;
-  let prefix = 0;
-  const shared = Math.min(before.length, after.length);
-  while (prefix < shared && before.charCodeAt(prefix) === after.charCodeAt(prefix)) prefix += 1;
-  let suffix = 0;
-  while (
-    suffix < before.length - prefix &&
-    suffix < after.length - prefix &&
-    before.charCodeAt(before.length - 1 - suffix) === after.charCodeAt(after.length - 1 - suffix)
-  ) {
-    suffix += 1;
+function applyOne(text, change) {
+  return text.slice(0, change.from) + change.inserted + text.slice(change.to);
+}
+
+function overlapsSpan(span, change) {
+  const { from, to } = change;
+  if (from === to) return from > span.start && from <= span.end;
+  return from <= span.end && to > span.start;
+}
+
+function shiftClosed(span, change) {
+  const delta = change.inserted.length - (change.to - change.from);
+  if (change.to <= span.start) return { start: span.start + delta, end: span.end + delta };
+  if (change.from > span.end) return span;
+  return null;
+}
+
+// A span is touched when the change overlaps it, or when a change that misses
+// it leaves the shifted bounds no longer exactly one lock span. lockIndexAt's
+// fallthrough to the last span is not this rule.
+function touchedIndices(doc, change) {
+  const spans = lockSpans(doc);
+  const after = applyOne(doc, change);
+  const next = lockSpans(after);
+  const hit = [];
+  for (let i = 0; i < spans.length; i += 1) {
+    const span = spans[i];
+    if (overlapsSpan(span, change)) {
+      hit.push(i);
+      continue;
+    }
+    const shifted = shiftClosed(span, change);
+    if (!shifted || !next.some((item) => item.start === shifted.start && item.end === shifted.end)) hit.push(i);
   }
-  return {
-    from: prefix,
-    to: before.length - suffix,
-    inserted: after.slice(prefix, after.length - suffix),
-  };
+  return { spans, after, next, hit };
+}
+
+function rebaseLineSet(lines, touched, change) {
+  const { spans, next, hit } = touched;
+  const hitSet = new Set(hit);
+  const mapped = new Map();
+  for (let i = 0; i < spans.length; i += 1) {
+    if (hitSet.has(i)) continue;
+    const shifted = shiftClosed(spans[i], change);
+    mapped.set(i, next.findIndex((item) => item.start === shifted.start && item.end === shifted.end));
+  }
+  const runs = [];
+  let run = null;
+  for (const index of hit) {
+    if (!run || index !== run[run.length - 1] + 1) {
+      run = [index];
+      runs.push(run);
+    } else {
+      run.push(index);
+    }
+  }
+  const held = new Set(lines);
+  const out = new Set();
+  for (const index of held) {
+    if (hitSet.has(index)) continue;
+    const at = mapped.get(index);
+    if (at != null && at >= 0) out.add(at);
+  }
+  for (const indexes of runs) {
+    let owns = false;
+    for (const index of indexes) if (held.has(index)) owns = true;
+    if (!owns) continue;
+    const left = indexes[0] - 1;
+    const right = indexes[indexes.length - 1] + 1;
+    const start = left < 0 ? 0 : mapped.get(left) + 1;
+    const end = right >= spans.length ? next.length : mapped.get(right);
+    for (let i = start; i < end; i += 1) out.add(i);
+  }
+  return out;
 }
 
 function touchedLines(doc, from, to) {
@@ -331,31 +388,117 @@ function shiftCaret(entry, from, to, insertedLen) {
   entry.anchorAfter = shiftOffset(entry.anchorAfter, from, to, insertedLen);
 }
 
+// An insertion that ends at a change's from is before that change, not an overlap.
+function rebaseUndoChanges(entry, ext) {
+  let eFrom = ext.from;
+  let eTo = ext.to;
+  const eLen = ext.inserted.length;
+  for (let i = entry.changes.length - 1; i >= 0; i -= 1) {
+    const change = entry.changes[i];
+    const regionEnd = change.from + change.inserted.length;
+    if (eTo <= change.from) {
+      const delta = eLen - (eTo - eFrom);
+      change.from += delta;
+      change.to += delta;
+      continue;
+    }
+    if (eFrom >= regionEnd) {
+      const delta = change.removed.length - change.inserted.length;
+      eFrom += delta;
+      eTo += delta;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+function rebaseRedoChanges(entry, ext) {
+  let eFrom = ext.from;
+  let eTo = ext.to;
+  const eLen = ext.inserted.length;
+  for (const change of entry.changes) {
+    if (eTo <= change.from) {
+      const delta = eLen - (eTo - eFrom);
+      change.from += delta;
+      change.to += delta;
+      continue;
+    }
+    if (eFrom >= change.to) {
+      const delta = change.inserted.length - (change.to - change.from);
+      eFrom += delta;
+      eTo += delta;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 // Entries stay in current-document coordinates. A splice that overlaps the
 // bytes an entry expects is left in place so the later byte check fails.
-function rebaseStack(stack, from, to, inserted, kind, skip) {
-  const insertedLen = inserted.length;
-  const delta = insertedLen - (to - from);
+function rebaseStack(stack, change, kind, skip) {
   for (const entry of stack) {
     if (entry === skip || entry.poison) continue;
-    const span = kind === "undo" ? entry.inserted.length : entry.removed.length;
-    const regionEnd = entry.at + span;
-    if (to <= entry.at) {
-      entry.at += delta;
-      shiftCaret(entry, from, to, insertedLen);
+    const ok = kind === "undo" ? rebaseUndoChanges(entry, change) : rebaseRedoChanges(entry, change);
+    if (!ok) {
+      entry.poison = true;
       continue;
     }
-    if (from >= regionEnd) {
-      shiftCaret(entry, from, to, insertedLen);
-      continue;
-    }
-    entry.poison = true;
+    shiftCaret(entry, change.from, change.to, change.inserted.length);
   }
+}
+
+function copyChanges(changes) {
+  return changes.map((change) => ({
+    from: change.from,
+    to: change.to,
+    inserted: change.inserted,
+    removed: change.removed,
+  }));
+}
+
+function inverseChanges(changes) {
+  const out = [];
+  for (let i = changes.length - 1; i >= 0; i -= 1) {
+    const change = changes[i];
+    out.push({
+      from: change.from,
+      to: change.from + change.inserted.length,
+      inserted: change.removed,
+      removed: change.inserted,
+    });
+  }
+  return out;
+}
+
+function changesApply(text, changes, direction) {
+  let doc = text;
+  if (direction === "undo") {
+    for (let i = changes.length - 1; i >= 0; i -= 1) {
+      const change = changes[i];
+      const end = change.from + change.inserted.length;
+      if (change.from < 0 || end > doc.length || doc.slice(change.from, end) !== change.inserted) return false;
+      doc = doc.slice(0, change.from) + change.removed + doc.slice(end);
+    }
+    return true;
+  }
+  for (const change of changes) {
+    if (change.from < 0 || change.to > doc.length || change.from > change.to) return false;
+    if (doc.slice(change.from, change.to) !== change.removed) return false;
+    doc = doc.slice(0, change.from) + change.inserted + doc.slice(change.to);
+  }
+  return true;
 }
 
 function pushCap(stack, entry) {
   stack.push(entry);
   if (stack.length > STACK_CAP) stack.shift();
+}
+
+function producedFrom(next, state) {
+  const changes = next !== state && next.doc !== state.doc && Array.isArray(next.changes) ? next.changes : [];
+  return { doc: next.doc, cursor: next.cursor, anchor: next.anchor, changes };
 }
 
 function runOp(text, cursor, anchor, msg) {
@@ -365,12 +508,12 @@ function runOp(text, cursor, anchor, msg) {
     if (msg.op === "insert") next = insert(state, typeof msg.text === "string" ? msg.text : "");
     else if (msg.op === "backspace") next = backspace(state);
     else next = deleteForward(state);
-    return { doc: next.doc, cursor: next.cursor, anchor: next.anchor };
+    return producedFrom(next, state);
   }
   if (msg.op === "comment.add") {
     const result = addComment(text, anchor, cursor);
     if (!result) return null;
-    return { doc: result.doc, cursor: result.cursor, anchor: result.cursor };
+    return { doc: result.doc, cursor: result.cursor, anchor: result.cursor, changes: result.changes };
   }
   const state = createState(text, cursor, anchor);
   let next = state;
@@ -386,7 +529,7 @@ function runOp(text, cursor, anchor, msg) {
   } else {
     return undefined;
   }
-  return { doc: next.doc, cursor: next.cursor, anchor: next.cursor };
+  return producedFrom(next, state);
 }
 
 async function listMarkdown(dir, prefix) {
@@ -782,45 +925,32 @@ export async function createHub(stateDir, sourceRoot) {
     }
   }
 
-  function rebaseFile(file, actor, before, after, splice, skip) {
-    const oldSpan = touchedLines(before, splice.from, splice.to);
-    const newSpan = touchedLines(after, splice.from, splice.from + splice.inserted.length);
-    const oldCount = oldSpan.length;
-    const newCount = newSpan.length;
-    const delta = newCount - oldCount;
-    const oldStart = oldSpan[0];
-    const oldEnd = oldSpan[oldSpan.length - 1];
-    for (const sock of file.subscribers) {
-      const next = new Set();
-      let cover = false;
-      for (const index of sock.session.lines) {
-        if (index < oldStart) next.add(index);
-        else if (index > oldEnd) next.add(index + delta);
-        else cover = true;
+  // Claims are previewed on copies. A span another socket holds aborts before the write.
+  function replayClaims(socket, file, before, changes, mode) {
+    const sets = new Map();
+    for (const sock of file.subscribers) sets.set(sock, new Set(sock.session.lines));
+    if (!sets.has(socket)) sets.set(socket, new Set(socket.session.lines));
+    let doc = before;
+    const claims = mode === "edit" || mode === "comment" || mode === "diff" || mode === "history";
+    for (const change of changes) {
+      const touched = touchedIndices(doc, change);
+      const actor = sets.get(socket);
+      for (const index of touched.hit) {
+        for (const [sock, lines] of sets) {
+          if (sock !== socket && lines.has(index)) return { heldBy: sock.session.username };
+        }
+        if (claims) actor.add(index);
       }
-      if (cover) {
-        for (let i = 0; i < newCount; i += 1) next.add(oldStart + i);
-      }
-      sock.session.lines = next;
-      if (sock !== actor) {
-        sock.session.cursor = shiftOffset(sock.session.cursor, splice.from, splice.to, splice.inserted.length);
-        sock.session.anchor = shiftOffset(sock.session.anchor, splice.from, splice.to, splice.inserted.length);
-      }
-      rebaseStack(sock.session.undo, splice.from, splice.to, splice.inserted, "undo", skip);
-      rebaseStack(sock.session.redo, splice.from, splice.to, splice.inserted, "redo", skip);
+      for (const [sock, lines] of [...sets]) sets.set(sock, rebaseLineSet(lines, touched, change));
+      doc = applyOne(doc, change);
     }
-    syncLocks(file);
+    return { doc, sets };
   }
 
-  async function publish(socket, file, before, splice, caret, entry, mode, retain) {
-    const touched = touchedLines(before, splice.from, splice.to);
-    for (const index of touched) {
-      const owner = file.locks.get(index);
-      if (owner === socket) continue;
-      if (owner) return { heldBy: owner.session.username };
-      if (mode === "edit") return false;
-    }
-    const after = before.slice(0, splice.from) + splice.inserted + before.slice(splice.to);
+  async function publish(socket, file, before, changes, caret, entry, mode, retain) {
+    const preview = replayClaims(socket, file, before, changes, mode);
+    if (preview.heldBy) return { heldBy: preview.heldBy };
+    const after = preview.doc;
     if (file.ticket) {
       const composed = composeTicket({ ...file.ticket, id: file.ticket.id, body: after });
       if (composed == null) return false;
@@ -830,32 +960,57 @@ export async function createHub(stateDir, sourceRoot) {
     }
     file.text = after;
     file.rev += 1;
-    if (mode !== "edit") {
-      for (const index of touched) {
-        if (file.locks.get(index) !== socket) socket.session.lines.add(index);
+    for (const [sock, lines] of preview.sets) sock.session.lines = lines;
+    for (const change of changes) {
+      for (const sock of file.subscribers) {
+        if (sock !== socket) {
+          sock.session.cursor = shiftOffset(sock.session.cursor, change.from, change.to, change.inserted.length);
+          sock.session.anchor = shiftOffset(sock.session.anchor, change.from, change.to, change.inserted.length);
+        }
+        rebaseStack(sock.session.undo, change, "undo", entry);
+        rebaseStack(sock.session.redo, change, "redo", entry);
+      }
+      if (!file.subscribers.has(socket)) {
+        rebaseStack(socket.session.undo, change, "undo", entry);
+        rebaseStack(socket.session.redo, change, "redo", entry);
       }
     }
-    rebaseFile(file, socket, before, after, splice, entry);
     socket.session.cursor = caret.cursor;
     socket.session.anchor = caret.anchor;
     mark(socket.session.repo, file.rel, socket.session.username);
-    // The preparatory lock covers the splice, including a fence through EOF.
-    // Keep the caret line so the rest can be taken. A ranged diff keeps every
-    // splice span instead, including the ones already rebased.
-    if (!retain) socket.session.lines = new Set(touchedLines(file.text, caret.cursor, caret.cursor));
+    // The preparatory lock covers every span the change list claimed.
+    // Keep the caret line so the rest can be taken, unless that line is still
+    // someone else's. A ranged diff keeps every splice span instead.
+    if (!retain) {
+      const caretLines = touchedLines(file.text, caret.cursor, caret.cursor);
+      const kept = new Set();
+      for (const index of caretLines) {
+        let taken = false;
+        for (const sock of file.subscribers) {
+          if (sock !== socket && sock.session.lines.has(index)) taken = true;
+        }
+        if (!taken) kept.add(index);
+      }
+      socket.session.lines = kept;
+    }
     syncLocks(file);
-    broadcast(file, {
+    const wire = changes.map((change) => ({ from: change.from, to: change.to, inserted: change.inserted }));
+    const body = {
       type: "doc",
       path: file.rel,
       rev: file.rev,
       text: file.text,
-      from: splice.from,
-      to: splice.to,
-      inserted: splice.inserted,
+      changes: wire,
       actor: socket.session.username,
       cursor: caret.cursor,
       anchor: caret.anchor,
-    });
+    };
+    if (wire.length === 1) {
+      body.from = wire[0].from;
+      body.to = wire[0].to;
+      body.inserted = wire[0].inserted;
+    }
+    broadcast(file, body);
     broadcast(file, {
       type: "locks",
       path: file.rel,
@@ -1450,7 +1605,7 @@ export async function createHub(stateDir, sourceRoot) {
 
   function holderOf(file, socket, splices) {
     for (const splice of splices) {
-      for (const index of touchedLines(file.text, splice.from, splice.to)) {
+      for (const index of touchedIndices(file.text, splice).hit) {
         const owner = file.locks.get(index);
         if (owner && owner !== socket) return owner.session.username;
       }
@@ -1519,7 +1674,7 @@ export async function createHub(stateDir, sourceRoot) {
     await ensureSubscribed(socket, file);
     const held = new Set();
     for (const splice of splices) {
-      for (const index of touchedLines(file.text, splice.from, splice.to)) held.add(index);
+      for (const index of touchedIndices(file.text, splice).hit) held.add(index);
     }
     socket.session.lines = held;
     syncLocks(file);
@@ -1529,7 +1684,12 @@ export async function createHub(stateDir, sourceRoot) {
         socket,
         file,
         file.text,
-        splice,
+        [{
+          from: splice.from,
+          to: splice.to,
+          inserted: splice.inserted,
+          removed: file.text.slice(splice.from, splice.to),
+        }],
         { cursor: caret, anchor: caret },
         null,
         "diff",
@@ -1560,7 +1720,8 @@ export async function createHub(stateDir, sourceRoot) {
       session.cursor = cursor;
     }
     const produced = runOp(file.text, session.cursor, session.anchor, msg);
-    if (produced === undefined || produced === null || coveringSplice(file.text, produced.doc) == null) {
+    const changes = produced && Array.isArray(produced.changes) ? produced.changes : [];
+    if (produced === undefined || produced === null || changes.length === 0 || produced.doc === file.text) {
       const reason = produced === null && msg.op === "comment.add"
         ? commentRangeReason(file.text, session.anchor, session.cursor)
         : null;
@@ -1572,20 +1733,16 @@ export async function createHub(stateDir, sourceRoot) {
       send(socket, { type: "noop", path: file.rel, rev: file.rev });
       return;
     }
-    const splice = coveringSplice(file.text, produced.doc);
     const entry = {
-      at: splice.from,
-      removed: file.text.slice(splice.from, splice.to),
-      inserted: splice.inserted,
+      changes: copyChanges(changes),
       cursor: session.cursor,
       anchor: session.anchor,
       cursorAfter: produced.cursor,
       anchorAfter: produced.anchor,
       poison: false,
     };
-    // comment.add must already hold every spliced line. A later fence edit
-    // runs after publish shrinks that hold to the caret, so free lines stay
-    // editable and another owner's lines do not.
+    // comment.save, resolve, and delete rewrite the fence after the caret
+    // hold has shrunk. edit claims every free span the change list touches.
     const mode = msg.op === "comment.save" || msg.op === "comment.resolve" || msg.op === "comment.delete"
       ? "comment"
       : "edit";
@@ -1593,7 +1750,7 @@ export async function createHub(stateDir, sourceRoot) {
       socket,
       file,
       file.text,
-      splice,
+      changes,
       { cursor: produced.cursor, anchor: produced.anchor },
       null,
       mode,
@@ -1620,17 +1777,14 @@ export async function createHub(stateDir, sourceRoot) {
       send(socket, { type: "noop", path: file.rel, rev: file.rev });
       return;
     }
-    const present = direction === "undo" ? entry.inserted : entry.removed;
-    const replacement = direction === "undo" ? entry.removed : entry.inserted;
-    const at = entry.at;
-    if (entry.poison || at < 0 || at > file.text.length || file.text.slice(at, at + present.length) !== present) {
+    if (entry.poison || !Array.isArray(entry.changes) || !changesApply(file.text, entry.changes, direction)) {
       return fail(socket, 409);
     }
-    const splice = { from: at, to: at + present.length, inserted: replacement };
+    const changes = direction === "undo" ? inverseChanges(entry.changes) : copyChanges(entry.changes);
     const caret = direction === "undo"
       ? { cursor: entry.cursor, anchor: entry.anchor }
       : { cursor: entry.cursorAfter, anchor: entry.anchorAfter };
-    const wrote = await publish(socket, file, file.text, splice, caret, entry, "history");
+    const wrote = await publish(socket, file, file.text, changes, caret, entry, "history");
     if (wrote !== true) return failHeld(socket, wrote);
     stack.pop();
     if (direction === "undo") pushCap(session.redo, entry);
@@ -1827,13 +1981,13 @@ export async function createHub(stateDir, sourceRoot) {
   }
 
   async function applyCommentBody(socket, file, threadId, body, noteId) {
-    const produced = replaceCommentBody(createState(file.text), threadId, body);
-    const splice = coveringSplice(file.text, produced.doc);
-    if (splice == null) {
+    const before = createState(file.text);
+    const produced = replaceCommentBody(before, threadId, body);
+    if (produced === before || !Array.isArray(produced.changes) || produced.changes.length === 0) {
       sendComment(socket, file, threadId, noteId);
       return;
     }
-    const wrote = await publish(socket, file, file.text, splice, { cursor: 0, anchor: 0 }, null, "comment");
+    const wrote = await publish(socket, file, file.text, produced.changes, { cursor: 0, anchor: 0 }, null, "comment");
     if (wrote !== true) return failHeld(socket, wrote);
     sendComment(socket, file, threadId, noteId);
   }
@@ -1902,9 +2056,9 @@ export async function createHub(stateDir, sourceRoot) {
     const denied = denyUnlessAuthor(socket, found.thread);
     if (denied) return fail(socket, denied);
     const file = loaded.file;
-    const produced = setCommentResolved(createState(file.text), msg.id, msg.resolved);
-    const splice = coveringSplice(file.text, produced.doc);
-    if (splice == null) {
+    const before = createState(file.text);
+    const produced = setCommentResolved(before, msg.id, msg.resolved);
+    if (produced === before || !Array.isArray(produced.changes) || produced.changes.length === 0) {
       send(socket, {
         type: "comment",
         path: file.rel,
@@ -1915,7 +2069,7 @@ export async function createHub(stateDir, sourceRoot) {
       });
       return;
     }
-    const wrote = await publish(socket, file, file.text, splice, { cursor: 0, anchor: 0 }, null, "comment");
+    const wrote = await publish(socket, file, file.text, produced.changes, { cursor: 0, anchor: 0 }, null, "comment");
     if (wrote !== true) return failHeld(socket, wrote);
     send(socket, { type: "comment", path: file.rel, id: msg.id, resolved: msg.resolved, rev: file.rev });
   }
@@ -1928,10 +2082,10 @@ export async function createHub(stateDir, sourceRoot) {
     const denied = denyUnlessAuthor(socket, found.thread);
     if (denied) return fail(socket, denied);
     const file = loaded.file;
-    const produced = removeCommentThread(createState(file.text), msg.id);
-    const splice = coveringSplice(file.text, produced.doc);
-    if (splice == null) return fail(socket, 404);
-    const wrote = await publish(socket, file, file.text, splice, { cursor: 0, anchor: 0 }, null, "comment");
+    const before = createState(file.text);
+    const produced = removeCommentThread(before, msg.id);
+    if (produced === before || !Array.isArray(produced.changes) || produced.changes.length === 0) return fail(socket, 404);
+    const wrote = await publish(socket, file, file.text, produced.changes, { cursor: 0, anchor: 0 }, null, "comment");
     if (wrote !== true) return failHeld(socket, wrote);
     send(socket, { type: "comment", path: file.rel, id: msg.id, rev: file.rev });
   }
@@ -1985,13 +2139,13 @@ export async function createHub(stateDir, sourceRoot) {
     const reply = appendCommentReply(thread.body, msg.text, socket.session.username, new Date().toISOString());
     if (reply.error) return fail(socket, reply.error);
     const replaced = replaceCommentBody(createState(added.doc, added.cursor, added.cursor), added.id, reply.body);
-    const splice = coveringSplice(file.text, replaced.doc);
-    if (splice == null) return fail(socket, 409);
+    const changes = added.changes.concat(Array.isArray(replaced.changes) ? replaced.changes : []);
+    if (changes.length === 0 || replaced.doc === file.text) return fail(socket, 409);
     const wrote = await publish(
       socket,
       file,
       file.text,
-      splice,
+      changes,
       { cursor: replaced.cursor, anchor: replaced.anchor },
       null,
       "comment",

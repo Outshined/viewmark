@@ -551,15 +551,19 @@ function cleanupComments(doc, cursor) {
     }
   }
   const merged = mergeRanges(ranges);
-  if (merged.length === 0) return { doc, cursor };
+  if (merged.length === 0) return { doc, cursor, changes: [] };
   let next = doc;
   let nextCursor = cursor;
+  const changes = [];
+  // High to low, so each later offset is still the index in the doc after the
+  // earlier deletions.
   for (let i = merged.length - 1; i >= 0; i -= 1) {
     const [from, to] = merged[i];
+    changes.push({ from, to, inserted: "", removed: next.slice(from, to) });
     next = next.slice(0, from) + next.slice(to);
     nextCursor = shiftDelete(nextCursor, from, to);
   }
-  return { doc: next, cursor: nextCursor };
+  return { doc: next, cursor: nextCursor, changes };
 }
 
 function commentBodyRange(doc, fence) {
@@ -577,7 +581,8 @@ export function replaceCommentBody(state, id, body) {
   const range = commentBodyRange(state.doc, fence);
   if (!range) return state;
   const text = `${body}\n`;
-  if (state.doc.slice(range.from, range.to) === text) return state;
+  const removed = state.doc.slice(range.from, range.to);
+  if (removed === text) return state;
   const doc = state.doc.slice(0, range.from) + text + state.doc.slice(range.to);
   return {
     doc,
@@ -585,6 +590,7 @@ export function replaceCommentBody(state, id, body) {
     anchor: shiftReplace(state.anchor, range.from, range.to, text.length),
     undo: state.undo.concat([{ doc: state.doc, cursor: state.cursor, anchor: state.anchor }]),
     redo: [],
+    changes: [{ from: range.from, to: range.to, inserted: text, removed }],
   };
 }
 
@@ -610,8 +616,10 @@ export function removeCommentThread(state, id) {
   let next = doc;
   let cursor = state.cursor;
   let anchor = state.anchor;
+  const changes = [];
   for (let i = merged.length - 1; i >= 0; i -= 1) {
     const [from, to] = merged[i];
+    changes.push({ from, to, inserted: "", removed: next.slice(from, to) });
     next = next.slice(0, from) + next.slice(to);
     cursor = shiftDelete(cursor, from, to);
     anchor = shiftDelete(anchor, from, to);
@@ -622,6 +630,7 @@ export function removeCommentThread(state, id) {
     anchor,
     undo: state.undo.concat([{ doc: state.doc, cursor: state.cursor, anchor: state.anchor }]),
     redo: [],
+    changes,
   };
 }
 
@@ -640,6 +649,7 @@ export function setCommentResolved(state, id, resolved) {
     anchor: shiftReplace(state.anchor, open.start, open.end, nextHead.length),
     undo: state.undo.concat([{ doc: state.doc, cursor: state.cursor, anchor: state.anchor }]),
     redo: [],
+    changes: [{ from: open.start, to: open.end, inserted: nextHead, removed: open.text }],
   };
 }
 
@@ -678,10 +688,18 @@ export function addComment(doc, anchor, cursor) {
   const id = nextCommentId(text);
   const open = `{${id}}`;
   const close = `{/${id}}`;
-  let next = text.slice(0, from) + open + text.slice(from, to) + close + text.slice(to);
-  if (!next.endsWith("\n")) next += "\n";
-  next += `\n\`\`\`comment ${id}\n\n\`\`\`\n`;
-  return { doc: next, id, cursor: from + open.length };
+  const removed = text.slice(from, to);
+  const inserted = open + removed + close;
+  const marked = text.slice(0, from) + inserted + text.slice(to);
+  // The fence is its own site. Bytes between the marks and the fence are not a change.
+  let fence = "";
+  if (!marked.endsWith("\n")) fence += "\n";
+  fence += `\n\`\`\`comment ${id}\n\n\`\`\`\n`;
+  const changes = [
+    { from, to, inserted, removed },
+    { from: marked.length, to: marked.length, inserted: fence, removed: "" },
+  ];
+  return { doc: marked + fence, id, cursor: from + open.length, changes };
 }
 
 function isDelimiterRow(text) {
@@ -2033,9 +2051,11 @@ function splice(state, from, to, text, cursor) {
 function applySplice(state, from, to, text, cursor) {
   const next = splice(state, from, to, text, cursor);
   if (next === state) return state;
+  const changes = [{ from, to, inserted: text, removed: state.doc.slice(from, to) }];
   const cleaned = cleanupComments(next.doc, next.cursor);
-  if (cleaned.doc === next.doc && cleaned.cursor === next.cursor) return next;
-  return { ...next, doc: cleaned.doc, cursor: cleaned.cursor, anchor: cleaned.cursor };
+  if (cleaned.changes.length > 0) changes.push(...cleaned.changes);
+  if (cleaned.doc === next.doc && cleaned.cursor === next.cursor) return { ...next, changes };
+  return { ...next, doc: cleaned.doc, cursor: cleaned.cursor, anchor: cleaned.cursor, changes };
 }
 
 export function replaceDocument(state, doc, cursor) {

@@ -3003,11 +3003,11 @@ test("backspace at the visual start of a line joins it upward", () => {
     assert.equal(blankEdit.op, "backspace");
     assert.equal(blankEdit.anchor, 6);
     assert.equal(blankEdit.cursor, 6);
-    const blankLock = emptyTransport.sent.filter((message) => message.type === "lock").at(-1);
-    assert.ok(blankLock);
-    assert.equal(Math.min(blankLock.anchor, blankLock.cursor), 5);
-    assert.equal(Math.max(blankLock.anchor, blankLock.cursor), 7);
-    assert.ok(emptyTransport.sent.indexOf(blankLock) < emptyTransport.sent.indexOf(blankEdit));
+    const blankLocks = emptyTransport.sent.filter((message) => message.type === "lock");
+    assert.equal(blankLocks.length, 1);
+    assert.equal(blankLocks[0].anchor, 6);
+    assert.equal(blankLocks[0].cursor, 6);
+    assert.ok(emptyTransport.sent.indexOf(blankLocks[0]) < emptyTransport.sent.indexOf(blankEdit));
     emptyHeld.destroy();
 
     const empty = createEditor(mounted.root, "hello\n\nworld", 0);
@@ -3185,7 +3185,7 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
   }
 });
 
-test("enter before a blank line inserts one newline and holds the run", () => {
+test("enter before a blank line inserts one newline without claiming the run", () => {
   const mounted = mountEditor();
   const press = (inputType, data) => {
     mounted.listeners.beforeinput({
@@ -3219,14 +3219,6 @@ test("enter before a blank line inserts one newline and holds the run", () => {
     assert.ok(node);
     caret(node, node.length);
   };
-  const covers = (sent, offset) => {
-    const lock = sent.filter((message) => message.type === "lock").at(-1);
-    assert.ok(lock);
-    const lo = Math.min(lock.anchor, lock.cursor);
-    const hi = Math.max(lock.anchor, lock.cursor);
-    assert.ok(lo <= offset && hi >= offset);
-    return lock;
-  };
   const rejecting = () => ({
     username: "",
     sent: [],
@@ -3255,10 +3247,7 @@ test("enter before a blank line inserts one newline and holds the run", () => {
       assert.equal(edit.text, "\n");
       assert.equal(edit.cursor, 5);
       assert.equal(edit.anchor, 5);
-      const lock = covers(transport.sent, 7);
-      assert.equal(Math.min(lock.anchor, lock.cursor), 5);
-      assert.equal(Math.max(lock.anchor, lock.cursor), 7);
-      assert.ok(transport.sent.indexOf(lock) < transport.sent.indexOf(edit));
+      assert.equal(transport.sent.some((message) => message.type === "lock"), false);
       held.destroy();
 
       const view = createEditor(mounted.root, "hello\n\nworld\n", 0);
@@ -3273,7 +3262,8 @@ test("enter before a blank line inserts one newline and holds the run", () => {
       const blocked = createEditor(mounted.root, "hello\n\nworld\n", 0, blockedTransport);
       helloEnd();
       press(event.inputType, event.data);
-      assert.equal(blockedTransport.sent.some((message) => message.type === "edit"), false);
+      assert.equal(blockedTransport.sent.some((message) => message.type === "lock"), false);
+      assert.equal(blockedTransport.sent.some((message) => message.type === "edit"), true);
       assert.equal(blocked.getState().doc, "hello\n\nworld\n");
       blocked.destroy();
     }
@@ -3319,14 +3309,6 @@ test("delete on an empty line removes that line", () => {
     assert.ok(br);
     return br;
   };
-  const covers = (sent, offset) => {
-    const lock = sent.filter((message) => message.type === "lock").at(-1);
-    assert.ok(lock);
-    const lo = Math.min(lock.anchor, lock.cursor);
-    const hi = Math.max(lock.anchor, lock.cursor);
-    assert.ok(lo <= offset && hi >= offset);
-    return lock;
-  };
   const rejecting = () => ({
     username: "",
     sent: [],
@@ -3348,10 +3330,11 @@ test("delete on an empty line removes that line", () => {
     assert.equal(edit.op, "backspace");
     assert.equal(edit.cursor, 6);
     assert.equal(edit.anchor, 6);
-    const lock = covers(transport.sent, 7);
-    assert.equal(Math.min(lock.anchor, lock.cursor), 5);
-    assert.equal(Math.max(lock.anchor, lock.cursor), 7);
-    assert.ok(transport.sent.indexOf(lock) < transport.sent.indexOf(edit));
+    const locks = transport.sent.filter((message) => message.type === "lock");
+    assert.equal(locks.length, 1);
+    assert.equal(locks[0].anchor, 6);
+    assert.equal(locks[0].cursor, 6);
+    assert.ok(transport.sent.indexOf(locks[0]) < transport.sent.indexOf(edit));
     held.destroy();
 
     const view = createEditor(mounted.root, "hello\n\nworld", 0);
@@ -3381,10 +3364,7 @@ test("delete on an empty line removes that line", () => {
     assert.equal(leadingEdit.op, "delete");
     assert.equal(leadingEdit.cursor, 0);
     assert.equal(leadingEdit.anchor, 0);
-    const leadingLock = covers(leadingTransport.sent, 1);
-    assert.equal(Math.min(leadingLock.anchor, leadingLock.cursor), 0);
-    assert.equal(Math.max(leadingLock.anchor, leadingLock.cursor), 1);
-    assert.ok(leadingTransport.sent.indexOf(leadingLock) < leadingTransport.sent.indexOf(leadingEdit));
+    assert.equal(leadingTransport.sent.some((message) => message.type === "lock"), false);
     leadingHeld.destroy();
 
     const leading = createEditor(mounted.root, "\nworld", 0);
@@ -3429,6 +3409,96 @@ test("delete on an empty line removes that line", () => {
     assert.equal(blockedTransport.sent.some((message) => message.type === "edit"), false);
     assert.equal(blocked.getState().doc, "hello\n\nworld");
     blocked.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("word delete on an empty line removes that line", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const press = (inputType) => {
+    mounted.listeners.beforeinput({ inputType, preventDefault() {} });
+  };
+  const caret = (node, offset) => {
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: node,
+      anchorOffset: offset,
+      focusNode: node,
+      focusOffset: offset,
+      removeAllRanges() {},
+      addRange() {},
+      getRangeAt() {
+        return {
+          startContainer: node,
+          startOffset: offset,
+          endContainer: node,
+          endOffset: offset,
+          collapsed: true,
+        };
+      },
+    });
+  };
+  const emptyBr = (start) => {
+    const br = mounted.findAll((node) => {
+      if (node.tagName !== "BR") return false;
+      const line = node.parentElement;
+      return line && line.dataset && line.dataset.start === start && line.dataset.start === line.dataset.end;
+    })[0];
+    assert.ok(br);
+    return br;
+  };
+  try {
+    const back = holdingTransport();
+    const backHeld = createEditor(mounted.root, "one\n\ntwo\n", 0, back);
+    caret(emptyBr("4"), 0);
+    press("deleteWordBackward");
+    const backEdit = back.sent.find((message) => message.type === "edit");
+    assert.equal(backEdit.op, "backspace");
+    assert.equal(backEdit.anchor, 4);
+    assert.equal(backEdit.cursor, 4);
+    assert.equal(back.sent.some((message) => message.type === "edit" && message.anchor !== 4), false);
+    backHeld.destroy();
+
+    const forward = holdingTransport();
+    const forwardHeld = createEditor(mounted.root, "one\n\ntwo\n", 0, forward);
+    caret(emptyBr("4"), 0);
+    press("deleteWordForward");
+    const forwardEdit = forward.sent.find((message) => message.type === "edit");
+    assert.equal(forwardEdit.op, "backspace");
+    assert.equal(forwardEdit.cursor, 4);
+    forwardHeld.destroy();
+
+    const applied = createEditor(mounted.root, "one\n\ntwo\n", 0);
+    caret(emptyBr("4"), 0);
+    press("deleteWordBackward");
+    assert.equal(applied.getState().doc, "one\ntwo\n");
+    assert.equal(applied.getState().cursor, 3);
+    applied.destroy();
+
+    const appliedForward = createEditor(mounted.root, "one\n\ntwo\n", 0);
+    caret(emptyBr("4"), 0);
+    press("deleteWordForward");
+    assert.equal(appliedForward.getState().doc, "one\ntwo\n");
+    assert.equal(appliedForward.getState().cursor, 3);
+    appliedForward.destroy();
+
+    const leading = holdingTransport();
+    const leadingHeld = createEditor(mounted.root, "\ntwo\n", 0, leading);
+    caret(emptyBr("0"), 0);
+    press("deleteWordForward");
+    const leadingEdit = leading.sent.find((message) => message.type === "edit");
+    assert.equal(leadingEdit.op, "delete");
+    assert.equal(leadingEdit.cursor, 0);
+    leadingHeld.destroy();
+
+    const word = createEditor(mounted.root, "alpha beta\n", 0);
+    const text = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "alpha beta")[0];
+    caret(text, "alpha beta".length);
+    press("deleteWordBackward");
+    assert.equal(word.getState().doc, "alpha \n");
+    word.destroy();
   } finally {
     mounted.restore();
   }
@@ -3673,16 +3743,34 @@ test("comment threads stay out of the editor lines", () => {
   }
 });
 
+function applyChanges(text, changes) {
+  let doc = text;
+  for (const change of changes) doc = doc.slice(0, change.from) + change.inserted + doc.slice(change.to);
+  return doc;
+}
+
 test("addComment wraps a free range and appends an empty thread", () => {
   const added = addComment("hello fox\n", 6, 9);
+  const marks = { from: 6, to: 9, inserted: "{c1}fox{/c1}", removed: "fox" };
+  const fence = "\n```comment c1\n\n```\n";
   assert.deepEqual(added, {
     id: "c1",
     cursor: 10,
     doc: "hello {c1}fox{/c1}\n\n```comment c1\n\n```\n",
+    changes: [
+      marks,
+      { from: "hello {c1}fox{/c1}\n".length, to: "hello {c1}fox{/c1}\n".length, inserted: fence, removed: "" },
+    ],
   });
+  assert.equal(applyChanges("hello fox\n", added.changes), added.doc);
+  assert.ok(added.changes[0].to < added.changes[1].from);
+  assert.equal(added.changes.some((change) => change.from <= 6 && change.to >= added.doc.indexOf("```comment")), false);
   assert.deepEqual(addComment("hello fox\n", 9, 6), added);
+  const bare = addComment("hello fox", 6, 9);
+  assert.equal(bare.doc, "hello {c1}fox{/c1}\n\n```comment c1\n\n```\n");
+  assert.equal(applyChanges("hello fox", bare.changes), bare.doc);
+  assert.equal(bare.changes.length, 2);
   assert.equal(addComment("hello fox\n", 6, 6), null);
-  assert.equal(addComment("hello fox", 6, 9).doc, "hello {c1}fox{/c1}\n\n```comment c1\n\n```\n");
 
   const nested = addComment(added.doc, 10, 12);
   assert.equal(nested.id, "c2");
@@ -5695,6 +5783,44 @@ test("another user's doc shifts a caret at or after to", () => {
     assert.equal(stayed.getState().cursor, 2);
     assert.equal(stayed.getState().anchor, 2);
     stayed.destroy();
+
+    const doc = "hello fox\n\nalpha\n";
+    const added = addComment(doc, 6, 9);
+    const caret = doc.indexOf("alpha") + 2;
+    const page = holdingTransport();
+    page.username = "me";
+    const shifted = createEditor(mounted.root, doc, caret, page);
+    page.deliver({
+      type: "doc",
+      rev: 1,
+      text: added.doc,
+      changes: added.changes.map(({ from, to, inserted }) => ({ from, to, inserted })),
+      actor: "other",
+      cursor: added.cursor,
+      anchor: added.cursor,
+    });
+    const markDelta = added.changes[0].inserted.length - (added.changes[0].to - added.changes[0].from);
+    assert.equal(shifted.getState().cursor, caret + markDelta);
+    assert.equal(shifted.getState().anchor, caret + markDelta);
+    assert.equal(shifted.getState().doc[shifted.getState().cursor], "p");
+    assert.ok(shifted.getState().cursor < added.doc.indexOf("```"));
+    shifted.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("local undo snapshots omit change lists", () => {
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, "ab", 1);
+    mounted.listeners.beforeinput({ inputType: "insertText", data: "X", preventDefault() {} });
+    const state = view.getState();
+    assert.equal(state.doc, "aXb");
+    assert.equal(Object.hasOwn(state, "changes"), false);
+    assert.equal(state.undo.length, 1);
+    assert.deepEqual(state.undo[0], { doc: "ab", cursor: 1, anchor: 1 });
+    view.destroy();
   } finally {
     mounted.restore();
   }
