@@ -31,30 +31,61 @@ export function marked(text) {
   return { bytes, focus, anchor };
 }
 
+const ACTIONS = /^(?:Shift\+click|middle-click|click|dblclick|tripleclick|drag|compose|commit) /;
+
+// Comma-separated keys. A token that is only a literal is typed text, a token that starts with
+// a pointer or IME verb is an action, and anything else is a key. A compose takes the bare
+// literals after it as further steps.
 function splitKeys(text) {
-  const keys = [];
+  const tokens = [];
   let at = 0;
   let current = "";
+  const push = () => {
+    const raw = current.trim();
+    current = "";
+    if (raw) tokens.push(raw);
+  };
   while (at < text.length) {
     if (text[at] === '"' || text[at] === "`") {
       const literal = readLiteral(text, at);
       if (literal) {
-        keys.push({ text: literal.value });
+        current += text.slice(at, literal.end);
         at = literal.end;
         continue;
       }
     }
     if (text.startsWith(", ", at)) {
-      if (current.trim()) keys.push({ key: current.trim() });
-      current = "";
+      push();
       at += 2;
       continue;
     }
     current += text[at];
     at += 1;
   }
-  if (current.trim()) keys.push({ key: current.trim() });
-  return keys.filter((item) => item.text != null || item.key);
+  push();
+  const keys = [];
+  for (const raw of tokens) {
+    const whole = readLiteral(raw, 0);
+    const previous = keys[keys.length - 1];
+    if (whole && whole.end === raw.length) {
+      if (previous && previous.compose && !previous.commit) previous.compose.push(whole.value);
+      else keys.push({ text: whole.value });
+    } else if (raw.startsWith("compose ")) {
+      keys.push({ compose: [readLiteral(raw, 8).value] });
+    } else if (raw.startsWith("commit ") && previous && previous.compose) {
+      previous.commit = readLiteral(raw, 7).value;
+    } else if (ACTIONS.test(raw)) {
+      keys.push({ action: raw });
+    } else {
+      keys.push({ key: raw });
+    }
+  }
+  return keys;
+}
+
+export function literalIn(text) {
+  const at = text.search(/[`"]/);
+  return at < 0 ? null : readLiteral(text, at);
 }
 
 export function parseCell(line) {
@@ -90,7 +121,7 @@ export function parseCell(line) {
       expectKind = "prose";
     }
   }
-  const routes = /routes? ([^·[]+)/.exec(notes);
+  const routes = /\broutes? ((?:`[^`]+`(?:, |,? and )?)+)/.exec(notes);
   return {
     id,
     line,
@@ -100,6 +131,7 @@ export function parseCell(line) {
     expectKind,
     notes,
     routes: routes ? [...routes[1].matchAll(/`([^`]+)`/g)].map((m) => m[1]) : [],
+    thenBoundary: /then the boundary/.test(notes),
     tags: [...line.matchAll(/\[(U|D\d+)\]/g)].map((m) => m[1]),
   };
 }

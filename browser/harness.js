@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { start } from "../server.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = path.join(ROOT, "cli.js");
 const CHROMIUM = process.env.VIEWMARK_CHROMIUM || "/usr/bin/chromium";
+const LIVE_PORT = Number(process.env.VIEWMARK_PORT || 8765);
 export const USER = "qa-bot";
 export const REPO = "qa";
 
@@ -29,13 +29,24 @@ export function cli(port, args, input = "") {
   });
 }
 
-// A throwaway hub with one repo. Documents are created and read only through the CLI.
+// A throwaway hub in its own process, on a free port, over a temporary state directory, with
+// one temporary repo. The cells' documents are created and read only through the CLI on that
+// port; nothing here writes to the hub a person uses.
 export async function startHub() {
   const state = mkdtempSync(path.join(tmpdir(), "viewmark-qa-state-"));
   const repo = mkdtempSync(path.join(tmpdir(), "viewmark-qa-repo-"));
   writeFileSync(path.join(repo, "box.svg"), BOX_SVG);
-  const server = await start(0, state);
-  const port = server.address().port;
+  const child = spawn(process.execPath, [CLI, "--port", "0", "serve", state], { stdio: ["ignore", "pipe", "inherit"] });
+  const port = await new Promise((resolve, reject) => {
+    let out = "";
+    child.stdout.on("data", (chunk) => {
+      out += chunk;
+      const bound = /^127\.0\.0\.1:(\d+)\t/m.exec(out);
+      if (bound) resolve(Number(bound[1]));
+    });
+    child.once("exit", (code) => reject(new Error(`serve exited with ${code}`)));
+  });
+  if (port === LIVE_PORT) throw new Error(`the test hub came up on ${LIVE_PORT}, the live hub's port`);
   const registered = await cli(port, ["--user", USER, "repo", "register", "--name", REPO, "--description", "qa", "--path", repo]);
   if (registered.code !== 0) throw new Error(`repo register: ${registered.stderr}`);
   return {
@@ -51,10 +62,9 @@ export async function startHub() {
       return { text: shown.stdout, rev: rev ? Number(rev[1]) : NaN };
     },
     async close() {
-      await new Promise((resolve) => {
-        server.close(() => resolve());
-        server.closeAllConnections();
-      });
+      const exited = new Promise((resolve) => child.once("exit", resolve));
+      child.kill("SIGTERM");
+      await exited;
       rmSync(state, { recursive: true, force: true });
       rmSync(repo, { recursive: true, force: true });
     },
@@ -219,10 +229,133 @@ window.__qaBelow = () => {
   }
   return { x: left + 20, y: bottom + 40 };
 };
+// The drawn text of the editor, flattened, with each piece's text node.
+window.__qaDrawn = () => {
+  const root = window.__qaRoot();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const pieces = [];
+  let text = "";
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.parentElement && node.parentElement.closest(".md-lock")) continue;
+    pieces.push({ node, at: text.length });
+    text += node.data;
+  }
+  return { text, pieces };
+};
+window.__qaDrawnRect = (drawn, index) => {
+  for (let i = drawn.pieces.length - 1; i >= 0; i -= 1) {
+    const piece = drawn.pieces[i];
+    if (index >= piece.at && index < piece.at + piece.node.length) {
+      const range = document.createRange();
+      range.setStart(piece.node, index - piece.at);
+      range.setEnd(piece.node, index - piece.at + 1);
+      return range.getClientRects()[0] || range.getBoundingClientRect();
+    }
+  }
+  return null;
+};
+window.__qaFindText = (needle, nth) => {
+  const drawn = window.__qaDrawn();
+  let from = -1;
+  for (let k = 0; k < nth; k += 1) {
+    from = drawn.text.indexOf(needle, from + 1);
+    if (from < 0) return null;
+  }
+  return { drawn, from };
+};
+// A press at the boundary marked with ¦ in drawn text.
+window.__qaTextPoint = (marked, nth) => {
+  const bar = marked.indexOf("¦");
+  const plain = marked.replace("¦", "");
+  const found = window.__qaFindText(plain, nth);
+  if (!found) return null;
+  const at = found.from + bar;
+  if (bar < plain.length) {
+    const r = window.__qaDrawnRect(found.drawn, at);
+    return r && { x: r.left + 1, y: (r.top + r.bottom) / 2 };
+  }
+  const r = window.__qaDrawnRect(found.drawn, at - 1);
+  return r && { x: r.right - 1, y: (r.top + r.bottom) / 2 };
+};
+// 1 px left of the centre of a glyph, the middle one of a word or the index-th of a run.
+window.__qaWordPoint = (word, nth, index) => {
+  const found = window.__qaFindText(word, nth);
+  if (!found) return null;
+  const at = found.from + (index == null ? Math.floor((word.length - 1) / 2) : index);
+  const r = window.__qaDrawnRect(found.drawn, at);
+  return r && { x: (r.left + r.right) / 2 - 1, y: (r.top + r.bottom) / 2 };
+};
+window.__qaTarget = (name, arg) => {
+  const root = window.__qaRoot();
+  const centre = (el) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
+  };
+  if (name === "image") return centre(root.querySelector(".md-image"));
+  if (name === "diagram") return centre(root.querySelector(".md-diagram"));
+  if (name === "cell") return centre([...root.querySelectorAll("td, th")].find((cell) => cell.textContent.trim() === arg));
+  if (name === "rule") {
+    const rule = root.querySelector(".md-hr");
+    if (!rule) return null;
+    const r = rule.getBoundingClientRect();
+    return { x: r.left + 20, y: r.top + r.height / 2 };
+  }
+  if (name === "table edge") {
+    const box = root.querySelector(".md-table");
+    if (!box) return null;
+    const table = box.querySelector("table").getBoundingClientRect();
+    const outer = box.getBoundingClientRect();
+    return outer.right > table.right + 4 ? { x: table.right + 3, y: table.top + 3 } : { x: table.left + 1, y: table.top + 1 };
+  }
+  if (name === "bullet") {
+    const line = root.querySelector(".md-li");
+    if (!line) return null;
+    const r = line.getBoundingClientRect();
+    return { x: r.left - 8, y: r.top + Math.min(12, r.height / 2) };
+  }
+  if (name === "bar") {
+    const line = root.querySelector(".md-quote");
+    if (!line) return null;
+    const r = line.getBoundingClientRect();
+    return { x: r.left + 1, y: (r.top + r.bottom) / 2 };
+  }
+  if (name === "below") return window.__qaBelow();
+  if (name === "joining space") {
+    const drawn = window.__qaDrawn();
+    for (const piece of drawn.pieces) {
+      const tagged = piece.node.parentElement.closest("[data-start]");
+      if (piece.node.data === " " && tagged && Number(tagged.dataset.end) - Number(tagged.dataset.start) === 1) {
+        const range = document.createRange();
+        range.selectNodeContents(piece.node);
+        const r = range.getClientRects()[0];
+        return arg === "left" ? { x: r.left + 1, y: (r.top + r.bottom) / 2 } : { x: r.right - 1, y: (r.top + r.bottom) / 2 };
+      }
+    }
+    return null;
+  }
+  if (name === "empty line under") {
+    const lines = [...root.querySelectorAll(".md-line")];
+    const after = lines.findIndex((line) => line.textContent.includes(arg.word));
+    const empties = lines.slice(after + 1).filter((line) => line.textContent === "" && !line.classList.contains("md-hr"));
+    const line = empties[arg.nth - 1];
+    if (!line) return null;
+    const r = line.getBoundingClientRect();
+    return { x: r.left + 4, y: (r.top + r.bottom) / 2 };
+  }
+  if (name === "tab") {
+    const found = window.__qaFindText("\t", 1);
+    const r = found && window.__qaDrawnRect(found.drawn, found.from);
+    return r && { x: r.right - 1, y: (r.top + r.bottom) / 2 };
+  }
+  return null;
+};
 window.__qaPath = (node) => {
   const parts = [];
   for (let at = node; at && at !== window.__qaRoot(); at = at.parentNode) {
+    if (at.nodeType === 9) return "outside the editor: " + parts.join(" > ");
     if (at.nodeType === 3) parts.unshift("#text");
+    else if (!at.tagName) parts.unshift(at.nodeName);
     else parts.unshift(at.tagName.toLowerCase() + (at.className ? "." + String(at.className).trim().split(/\s+/).join(".") : "") + (at.dataset && at.dataset.start != null ? "[" + at.dataset.start + "-" + at.dataset.end + "]" : ""));
   }
   return parts.join(" > ");
@@ -365,9 +498,15 @@ export class Page {
   }
 
   async key(name, modifiers = []) {
-    const spec = KEYS[name] || (name.length === 1 ? { key: name, code: /[a-z]/i.test(name) ? `Key${name.toUpperCase()}` : "", windowsVirtualKeyCode: name.toUpperCase().charCodeAt(0), text: name } : null);
-    if (!spec) throw new Error(`unknown key ${name}`);
     const bits = modifiers.reduce((sum, mod) => sum | MODIFIERS[mod], 0);
+    // A chord reports the letter as the keyboard does: lower case unless Shift is held.
+    const letter = /^[a-z]$/i.test(name) && bits & (MODIFIERS.Ctrl | MODIFIERS.Alt | MODIFIERS.Meta) ? (bits & MODIFIERS.Shift ? name.toUpperCase() : name.toLowerCase()) : name;
+    // Only letters, digits, and space have a key code of their own; punctuation gets 0, so a
+    // code like 35 for "#" is not read as End.
+    const code = /[a-z]/i.test(name) ? `Key${name.toUpperCase()}` : /[0-9]/.test(name) ? `Digit${name}` : name === " " ? "Space" : "";
+    const vk = /[a-z0-9 ]/i.test(name) ? name.toUpperCase().charCodeAt(0) : 0;
+    const spec = KEYS[name] || (name.length === 1 ? { key: letter, code, windowsVirtualKeyCode: vk, text: letter } : null);
+    if (!spec) throw new Error(`unknown key ${name}`);
     const text = bits & (MODIFIERS.Ctrl | MODIFIERS.Alt | MODIFIERS.Meta) ? undefined : spec.text;
     const base = { key: spec.key, code: spec.code, windowsVirtualKeyCode: spec.windowsVirtualKeyCode, modifiers: bits };
     await this.session.send("Input.dispatchKeyEvent", { ...base, type: text ? "keyDown" : "rawKeyDown", text, unmodifiedText: text });
@@ -381,12 +520,24 @@ export class Page {
     }
   }
 
-  async click(x, y, { clickCount = 1, button = "left", modifiers = 0 } = {}) {
+  async click(x, y, { clickCount = 1, button = "left", modifiers = 0, interval = 30 } = {}) {
     await this.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers });
     for (let count = 1; count <= clickCount; count += 1) {
-      await this.session.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, clickCount: count, modifiers });
-      await this.session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, clickCount: count, modifiers });
+      if (count > 1) await sleep(interval);
+      await this.session.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, clickCount: count, modifiers, buttons: button === "left" ? 1 : 4 });
+      await this.session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, clickCount: count, modifiers, buttons: 0 });
     }
+  }
+
+  async drag(from, to) {
+    await this.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: from.x, y: from.y });
+    await this.session.send("Input.dispatchMouseEvent", { type: "mousePressed", x: from.x, y: from.y, button: "left", clickCount: 1, buttons: 1 });
+    for (let step = 1; step <= 10; step += 1) {
+      const x = from.x + ((to.x - from.x) * step) / 10;
+      const y = from.y + ((to.y - from.y) * step) / 10;
+      await this.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "left", buttons: 1 });
+    }
+    await this.session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: to.x, y: to.y, button: "left", clickCount: 1, buttons: 0 });
   }
 
   async clickOffset(offset) {
