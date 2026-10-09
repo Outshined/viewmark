@@ -1,4 +1,4 @@
-import { after, before, test } from "node:test";
+import { after, test } from "node:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { launchBrowser, OTHER, Page, startHub, startProxy } from "./harness.js";
@@ -15,7 +15,10 @@ export function defineSuite(name, prefixes) {
   let otherPage = null;
   let serial = 0;
 
-  before(async () => {
+  // Started by the first cell that runs, so a suite whose cells a name pattern filters out
+  // starts no hub and no browser, and leaves nothing running to hold the test process open.
+  let starting = null;
+  const start = () => (starting ||= (async () => {
     suite.hub = await startHub();
     suite.proxy = await startProxy(suite.hub.port);
     suite.browser = await launchBrowser();
@@ -32,7 +35,7 @@ export function defineSuite(name, prefixes) {
       }
       return otherPage;
     };
-  });
+  })());
 
   after(async () => {
     if (process.env.VIEWMARK_QA_RESULTS) {
@@ -51,6 +54,7 @@ export function defineSuite(name, prefixes) {
         t.skip("prose cell, not automated yet");
         return;
       }
+      await start();
       for (const route of routesFor(cell)) {
         await t.test(route, async (sub) => {
           serial += 1;

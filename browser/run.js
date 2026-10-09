@@ -624,8 +624,14 @@ export async function runCell(suite, cell, routeName, serial) {
     const height = await page.eval("innerHeight");
     if (caret.rect.top < 0 || caret.rect.bottom > height) result.failed.push(`I10 view: the caret is drawn at y ${caret.rect.top.toFixed(1)}, outside the viewport`);
   }
-  const errors = page.frames.filter((frame) => frame.dir === "exception" || (frame.dir === "in" && frame.data && frame.data.type === "error"));
+  // A cell that wants a holder's label to flash wants the 409 naming that holder (D26).
+  const refusedBy = new Set(cell.flashes.map((flash) => flash.name));
+  const errors = page.frames.filter((frame) => frame.dir === "exception" || (frame.dir === "in" && frame.data && frame.data.type === "error" && !(frame.data.status === 409 && refusedBy.has(frame.data.heldBy))));
   if (errors.length) result.failed.push(`I7 quiet: ${errors.map((frame) => JSON.stringify(frame.data)).join(", ")}`);
+  for (const flash of cell.flashes) {
+    const flashed = await page.eval(`window.__qa.flashes.some((seen) => seen.name.includes(${JSON.stringify(flash.name)}) && seen.block.includes(${JSON.stringify(flash.text)}))`);
+    if (!flashed) result.failed.push(`A flash: wanted the name ${flash.name} to flash on ${JSON.stringify(flash.text)}, got none`);
+  }
   if (usesOther(cell)) {
     const other = await suite.other();
     if (cell.other) {

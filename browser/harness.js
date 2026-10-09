@@ -225,6 +225,27 @@ for (const type of ["keydown", "beforeinput"]) {
     window.__qa.log.push({ type, key: event.key, inputType: event.inputType, at: performance.now() });
   }, true);
 }
+// A lock label that flashes (D26): a class besides md-lock, or an animation, CSS or scripted.
+window.__qa.flashes = [];
+const qaFlash = (label) => {
+  const block = label.closest(".md-line, .md-atom");
+  window.__qa.flashes.push({ name: label.textContent, block: block ? block.textContent : "", at: performance.now() });
+};
+new MutationObserver(() => {
+  for (const label of document.querySelectorAll(".md-lock")) {
+    if (label.className !== "md-lock" || label.getAnimations().length > 0) qaFlash(label);
+  }
+}).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "style"] });
+document.addEventListener("animationstart", (event) => {
+  const label = event.target.closest && event.target.closest(".md-lock");
+  if (label) qaFlash(label);
+}, true);
+const qaAnimate = Element.prototype.animate;
+Element.prototype.animate = function (...args) {
+  const label = this.closest(".md-lock");
+  if (label) qaFlash(label);
+  return qaAnimate.apply(this, args);
+};
 window.__qaRoot = () => document.getElementById("editor");
 window.__qaTextAt = (offset) => {
   const root = window.__qaRoot();
@@ -570,14 +591,14 @@ export class Page {
     await this.eval("new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))");
   }
 
-  // Edits this page sent that the hub has not answered yet, by its own doc or by an error.
+  // Edits this page sent that the hub has not answered yet, by its own doc, a noop, or an error.
   unanswered() {
     let count = 0;
     for (const frame of this.frames) {
       const data = frame.data;
       if (!data) continue;
       if (frame.dir === "out" && (data.type === "edit" || data.type === "undo" || data.type === "redo")) count += 1;
-      else if (frame.dir === "in" && ((data.type === "doc" && data.actor === this.user) || data.type === "error")) count = Math.max(0, count - 1);
+      else if (frame.dir === "in" && ((data.type === "doc" && data.actor === this.user) || data.type === "noop" || data.type === "error")) count = Math.max(0, count - 1);
     }
     return count;
   }

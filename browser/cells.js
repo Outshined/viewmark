@@ -172,6 +172,7 @@ export function parseCell(line) {
     position,
     other: other ? marked(other.value) : null,
     labels: [...notes.matchAll(/B (no longer )?sees the name (\S+) on (.+?)(?= \[|$)/g)].map((m) => ({ shown: !m[1], name: m[2], text: m[3] })),
+    flashes: [...notes.matchAll(/A sees the name (\S+) flash on (.+?)(?= \[|$)/g)].map((m) => ({ name: m[1], text: m[2] })),
     notes,
     routes: routes ? [...routes[1].matchAll(/`([^`]+)`/g)].map((m) => m[1]) : [],
     thenBoundary: /then the boundary/.test(notes),
