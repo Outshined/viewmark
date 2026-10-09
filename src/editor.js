@@ -1158,21 +1158,31 @@ function widestFileButton(block) {
   return best;
 }
 
-// Border-box width eats the pane padding, which would clip the title we just measured.
-function horizontalPadding(el) {
+function readComputedStyle(el) {
   const view = globalThis.window;
   const read = view && typeof view.getComputedStyle === "function"
     ? view.getComputedStyle.bind(view)
     : (typeof globalThis.getComputedStyle === "function" ? globalThis.getComputedStyle : null);
-  if (!read || !el) return 0;
-  let style = null;
+  if (!read || !el) return null;
   try {
-    style = read(el);
+    return read(el) || null;
   } catch {
-    return 0;
+    return null;
   }
+}
+
+// Border-box width eats the pane padding, which would clip the title we just measured.
+function horizontalPadding(el) {
+  const style = readComputedStyle(el);
   if (!style) return 0;
   return cssPx(style.paddingLeft) + cssPx(style.paddingRight);
+}
+
+// The same border-box also eats the file-block border. The button's scrollWidth does not.
+function horizontalBorder(el) {
+  const style = readComputedStyle(el);
+  if (!style) return 0;
+  return cssPx(style.borderLeft) + cssPx(style.borderRight);
 }
 
 function capPaneWidth(width) {
@@ -1186,7 +1196,7 @@ function filePaneWidth(block, rect) {
   const compact = rect && typeof rect.width === "number" && Number.isFinite(rect.width) ? rect.width : 0;
   const scroll = widestFileButton(block);
   if (!(scroll > 0)) return compact;
-  return capPaneWidth(scroll + horizontalPadding(block));
+  return capPaneWidth(scroll + horizontalPadding(block) + horizontalBorder(block));
 }
 
 function commentsAsideOf(root) {

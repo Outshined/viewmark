@@ -7776,6 +7776,20 @@ test("T-file-drawer", () => {
     assert.equal(fileBlock.styleProps.width, "340px");
     fileBlock.listeners.pointerleave();
     pending.pop().fn();
+    globalThis.window.getComputedStyle = (el) => (
+      el === fileBlock
+        ? { paddingLeft: "20px", paddingRight: "20px", borderLeft: "1px", borderRight: "1px" }
+        : { paddingLeft: "0px", paddingRight: "0px" }
+    );
+    fileBlock.listeners.pointerenter();
+    assert.equal(fileBlock.styleProps.width, "342px");
+    fileBlock.listeners.pointerleave();
+    pending.pop().fn();
+    globalThis.window.getComputedStyle = (el) => (
+      el === fileBlock
+        ? { paddingLeft: "20px", paddingRight: "20px" }
+        : { paddingLeft: "0px", paddingRight: "0px" }
+    );
     delete globalThis.window.innerWidth;
     fileBlock.listeners.pointerenter();
     assert.equal(fileBlock.styleProps.width, "340px");
