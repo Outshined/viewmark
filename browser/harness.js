@@ -84,7 +84,12 @@ export async function startHub() {
 // their sockets the way a network would.
 export async function startProxy(target) {
   const open = new Set();
+  let accepting = true;
   const server = net.createServer((client) => {
+    if (!accepting) {
+      client.destroy();
+      return;
+    }
     const upstream = net.connect(target, "127.0.0.1");
     for (const socket of [client, upstream]) {
       open.add(socket);
@@ -101,6 +106,14 @@ export async function startProxy(target) {
     port,
     drop() {
       for (const socket of open) socket.destroy();
+    },
+    // Drop every socket and refuse new ones until online().
+    offline() {
+      accepting = false;
+      for (const socket of open) socket.destroy();
+    },
+    online() {
+      accepting = true;
     },
     close() {
       for (const socket of open) socket.destroy();
@@ -413,7 +426,9 @@ window.__qaTarget = (name, arg) => {
   if (name === "empty line under") {
     const lines = [...root.querySelectorAll(".md-line")];
     const after = lines.findIndex((line) => line.textContent.includes(arg.word));
-    const empties = lines.slice(after + 1).filter((line) => line.textContent === "" && !line.classList.contains("md-hr"));
+    // Another session's lock label is not text on the line.
+    const text = (line) => [...line.childNodes].filter((node) => !(node.classList && node.classList.contains("md-lock"))).map((node) => node.textContent).join("");
+    const empties = lines.slice(after + 1).filter((line) => text(line) === "" && !line.classList.contains("md-hr"));
     const line = empties[arg.nth - 1];
     if (!line) return null;
     const r = line.getBoundingClientRect();

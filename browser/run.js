@@ -5,7 +5,7 @@ import { FILL, literalIn } from "./cells.js";
 
 const PHANTOM = (bytes, offset) => offset === bytes.length && bytes.endsWith("\n");
 const HISTORY = new Set(["Ctrl+Z", "Ctrl+Y", "Ctrl+Shift+Z"]);
-const NO_EDIT = new Set(["read", "reconnect", "Shift+End", "←", "→", "↑", "↓", "Home", "End", "PageDown", "Escape", "Ctrl+A", "Ctrl+C", "Ctrl+Home", "Ctrl+End", "Ctrl+→", "Shift+←", "Shift+→", "Shift+↑", "Shift+↓", "Shift+Home", "Shift+End"]);
+const NO_EDIT = new Set(["read", "reconnect", "offline", "online", "walk", "Shift+End", "←", "→", "↑", "↓", "Home", "End", "PageDown", "Escape", "Ctrl+A", "Ctrl+C", "Ctrl+Home", "Ctrl+End", "Ctrl+→", "Shift+←", "Shift+→", "Shift+↑", "Shift+↓", "Shift+Home", "Shift+End"]);
 const POINTER = /^(Shift\+click|middle-click|click|dblclick|tripleclick|drag) /;
 
 // Seven BG cells also run every other route the plan names.
@@ -191,7 +191,7 @@ async function pointer(page, action, interval) {
     else if (what.startsWith("cell ")) at = await point(page, `window.__qaTarget("cell", ${JSON.stringify(what.slice(5))})`, what);
     else if (["rule", "image", "diagram", "below", "bullet", "bar", "table edge"].includes(what)) at = await point(page, `window.__qaTarget(${JSON.stringify(what)})`, what);
     else if ((match = /^the (left|right) half of the joining space$/.exec(what))) at = await point(page, `window.__qaTarget("joining space", "${match[1]}")`, what);
-    else if ((match = /^the (first|second) empty line under (`[^`]+`)$/.exec(what))) at = await point(page, `window.__qaTarget("empty line under", { word: ${JSON.stringify(quoted(match[2]))}, nth: ${match[1] === "first" ? 1 : 2} })`, what);
+    else if ((match = /^the (first|second|third) empty line under (`[^`]+`)$/.exec(what))) at = await point(page, `window.__qaTarget("empty line under", { word: ${JSON.stringify(quoted(match[2]))}, nth: ${["first", "second", "third"].indexOf(match[1]) + 1} })`, what);
     else if (what === "the right half of the tab") at = await point(page, `window.__qaTarget("tab")`, what);
     else throw new NotAutomated(action);
     await page.click(at.x, at.y, { modifiers: verb === "Shift+click" ? 8 : 0, button: verb === "middle-click" ? "middle" : "left" });
@@ -288,6 +288,12 @@ async function act(page, token, interval, context) {
   }
   if (token.key && token.key.startsWith("agent: ")) return agent(context, token.key.slice(7));
   if (token.key === "reconnect") return reconnect(page, context);
+  if (token.key === "offline") return context.proxy.offline();
+  if (token.key === "online") {
+    const since = page.frames.length;
+    context.proxy.online();
+    return page.until(() => page.frames.slice(since).some((frame) => frame.dir === "in" && frame.data && frame.data.type === "file"), "the file after coming back online", 20000);
+  }
   if (token.text != null) return page.type(token.text);
   // Another client opens the file, as an agent reading it would.
   if (token.key === "read") return context.hub.show(context.file, "qa-cli");
@@ -447,6 +453,49 @@ function positionExpect(cell, caret, result, shownText) {
   return { bytes, focus: at, anchor: at };
 }
 
+// Where a caret is drawn against where its offset belongs; null when they agree.
+async function drawnProblem(page, caret, offset) {
+  const boundary = await page.boundary(offset);
+  if (!boundary) return `offset ${offset} has no drawn boundary`;
+  if (!caret.rect) return "the caret has no rect";
+  const middle = (caret.rect.top + caret.rect.bottom) / 2;
+  const on = (spot) => Math.abs(caret.rect.x - spot.x) <= 2 && middle >= spot.top && middle <= spot.bottom;
+  if (on(boundary) || (boundary.alt && on(boundary.alt))) return null;
+  return `caret at x ${caret.rect.x.toFixed(1)} y ${middle.toFixed(1)}${caret.fallback ? " (fallback)" : ""}, boundary at x ${boundary.x.toFixed(1)} y ${boundary.top.toFixed(1)}-${boundary.bottom.toFixed(1)}`;
+}
+
+// Offsets strictly inside a hidden marker: hard-break spaces or a backslash after the end of
+// a line's text (D17), and the inside of a comment marker (D6).
+function hiddenOffsets(bytes) {
+  const inside = new Set();
+  for (const m of bytes.matchAll(/( {2,}|\\)\n/g)) for (let i = m.index + 1; i <= m.index + m[1].length; i += 1) inside.add(i);
+  for (const m of bytes.matchAll(/\{\/?[A-Za-z][\w-]*\}/g)) for (let i = m.index + 1; i < m.index + m[0].length; i += 1) inside.add(i);
+  return inside;
+}
+
+// Press → until the caret stops, checking each stop.
+async function walk(page, bytes, failed) {
+  const inside = hiddenOffsets(bytes);
+  const problems = [];
+  let at = await page.caret();
+  for (let step = 0; step <= bytes.length + 2; step += 1) {
+    await page.key("→");
+    await page.quiet();
+    const next = await page.caret();
+    if (next.none || !next.inside) {
+      problems.push(`after ${at.focus}, no selection in the editor`);
+      break;
+    }
+    if (next.focus === at.focus) return problems.length ? failed.push(`walk: ${problems.length} bad stops: ${problems.slice(0, 6).join("; ")}`) : null;
+    if (next.focus < at.focus) problems.push(`from ${at.focus} back to ${next.focus}`);
+    if (inside.has(next.focus)) problems.push(`stopped at ${next.focus}, inside a hidden marker`);
+    const drawn = await drawnProblem(page, next, next.focus);
+    if (drawn) problems.push(`at ${next.focus}: ${drawn}`);
+    at = next;
+  }
+  failed.push(`walk: never stopped${problems.length ? `; ${problems.slice(0, 6).join("; ")}` : ""}`);
+}
+
 function withProbe(marked, letter) {
   const { bytes, focus, anchor } = marked;
   const from = Math.min(focus, anchor);
@@ -531,8 +580,10 @@ export async function runCell(suite, cell, routeName, serial) {
     return { ...result, status: "BLOCKED", routeFailed: true, failed: [`placement: wanted ${range(start.anchor, start.focus)}, got ${got}${placed.text !== start.bytes ? `, bytes ${JSON.stringify(placed.text)}` : ""}${seen}`] };
   }
   const revBefore = placed.rev;
+  const walking = cell.keys.length === 1 && cell.keys[0].key === "walk";
+  if (walking) await walk(page, cell.source.bytes, result.failed);
   try {
-    for (const key of cell.keys) {
+    for (const key of walking ? [] : cell.keys) {
       await act(page, key, interval, context);
       await page.quiet();
       if (suite.hasOther()) await (await suite.other()).quiet();
