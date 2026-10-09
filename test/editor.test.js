@@ -5427,6 +5427,134 @@ test("a 409 on an edit drops held keystrokes", () => {
   }
 });
 
+test("a 409 naming qa-two flashes that lock, drops the queued edit, and keeps the granted caret", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  transport.username = "me";
+  const doc = "one\n\ntwo\n";
+  const locks = {
+    type: "locks",
+    lines: [
+      { index: 0, username: "qa-two" },
+      { index: 2, username: "ada" },
+    ],
+  };
+  const lineHolding = (text) => {
+    const node = walkNodes(mounted.root, (item) => item.nodeType === 3 && item.textContent === text)[0];
+    assert.ok(node, text);
+    const line = node.parentElement.closest(".md-line");
+    assert.ok(line);
+    return line;
+  };
+  const lockNamed = (name) => {
+    const marks = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-lock") && node.textContent === name);
+    assert.equal(marks.length, 1);
+    return marks[0];
+  };
+  try {
+    const view = createEditor(mounted.root, doc, 6, transport);
+    const granted = view.getState().cursor;
+    assert.equal(granted, 6);
+    transport.deliver(locks);
+    const holder = lockNamed("qa-two");
+    assert.equal(holder.className, "md-lock");
+    assert.equal(holder.closest(".md-line").textContent.includes("one"), true);
+    assert.equal(lockNamed("ada").closest(".md-line").textContent.includes("two"), true);
+    insertText(mounted, "X");
+    insertText(mounted, "Y");
+    transport.deliver({ type: "error", status: 409, heldBy: "qa-two" });
+    const flashed = lockNamed("qa-two");
+    assert.equal(flashed.classList.contains("md-lock"), true);
+    assert.equal(flashed.classList.contains("md-flash"), true);
+    assert.notEqual(flashed.className, "md-lock");
+    assert.equal(flashed.closest(".md-line").textContent.includes("one"), true);
+    assert.equal(flashed.closest(".md-line").textContent.includes("qa-two"), true);
+    assert.equal(lockNamed("ada").className, "md-lock");
+    assert.equal(lineHolding("two").classList.contains("md-flash"), false);
+    assert.equal(transport.sent.some((message) => message.type === "edit" && message.text === "Y"), false);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, granted);
+    assert.equal(view.getState().anchor, granted);
+    insertText(mounted, "Z");
+    assert.equal(transport.sent.filter((message) => message.type === "edit").at(-1).text, "Z");
+    t.mock.timers.tick(999);
+    transport.deliver(locks);
+    assert.equal(lockNamed("qa-two").classList.contains("md-flash"), true);
+    assert.notEqual(lockNamed("qa-two").className, "md-lock");
+    assert.equal(lockNamed("ada").className, "md-lock");
+    t.mock.timers.tick(1);
+    assert.equal(lockNamed("qa-two").className, "md-lock");
+    transport.deliver(locks);
+    assert.equal(lockNamed("qa-two").className, "md-lock");
+    assert.equal(view.getState().cursor, granted);
+    assert.equal(view.getState().anchor, granted);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a 409 with no holder marks the caret's line", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  transport.username = "me";
+  const doc = "one\n\ntwo\n";
+  const locks = {
+    type: "locks",
+    lines: [
+      { index: 0, username: "qa-two" },
+      { index: 2, username: "ada" },
+    ],
+  };
+  const lineHolding = (text) => {
+    const node = walkNodes(mounted.root, (item) => item.nodeType === 3 && item.textContent === text)[0];
+    assert.ok(node, text);
+    const line = node.parentElement.closest(".md-line");
+    assert.ok(line);
+    return line;
+  };
+  const lockNamed = (name) => {
+    const marks = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-lock") && node.textContent === name);
+    assert.equal(marks.length, 1);
+    return marks[0];
+  };
+  try {
+    const view = createEditor(mounted.root, doc, 6, transport);
+    const granted = view.getState().cursor;
+    assert.equal(granted, 6);
+    transport.deliver(locks);
+    insertText(mounted, "X");
+    insertText(mounted, "Y");
+    transport.deliver({ type: "error", status: 409 });
+    const caretLine = lineHolding("two");
+    assert.equal(caretLine.classList.contains("md-line"), true);
+    assert.equal(caretLine.classList.contains("md-flash"), true);
+    assert.equal(caretLine.textContent.includes("two"), true);
+    assert.equal(lineHolding("one").classList.contains("md-flash"), false);
+    assert.equal(lockNamed("qa-two").className, "md-lock");
+    assert.equal(lockNamed("ada").className, "md-lock");
+    assert.equal(transport.sent.some((message) => message.type === "edit" && message.text === "Y"), false);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, granted);
+    assert.equal(view.getState().anchor, granted);
+    t.mock.timers.tick(999);
+    transport.deliver(locks);
+    assert.equal(lineHolding("two").classList.contains("md-flash"), true);
+    assert.equal(lineHolding("one").classList.contains("md-flash"), false);
+    assert.equal(lockNamed("ada").className, "md-lock");
+    t.mock.timers.tick(1);
+    assert.equal(lineHolding("two").classList.contains("md-flash"), false);
+    transport.deliver(locks);
+    assert.equal(lineHolding("two").classList.contains("md-flash"), false);
+    assert.equal(view.getState().cursor, granted);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("a collapsed boundary delete is not sent", () => {
   const mounted = mountEditor();
   const rejecting = {

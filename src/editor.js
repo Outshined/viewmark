@@ -1238,6 +1238,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // the caret and only then does the queue move.
   const pendingEdits = [];
   let editTimer = null;
+  let refusalTimer = null;
+  // The refused edit stays marked for one second. render builds new nodes, so the mark is applied there.
+  let refusal = null;
   let resumeAfterFile = false;
   let lockTable = [];
   let expectNewComment = false;
@@ -1417,6 +1420,52 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     state = { ...state, anchor: restore.anchor, cursor: restore.cursor };
     sentLines = lineSet(restore.anchor, restore.cursor);
     render();
+  }
+
+  function dropRefusalClass(node) {
+    if (!node || node.nodeType !== 1) return;
+    if (node.classList && node.classList.contains("md-flash")) node.classList.remove("md-flash");
+    for (const child of node.childNodes || []) dropRefusalClass(child);
+  }
+
+  function clearRefusal() {
+    refusal = null;
+    if (refusalTimer == null) return;
+    clearTimeout(refusalTimer);
+    refusalTimer = null;
+  }
+
+  // outstandingLock is cleared by the restore that follows, so the caret offset is taken now.
+  function armRefusal(message) {
+    const named = typeof message.heldBy === "string" ? message.heldBy : "";
+    const restore = outstandingLock ? outstandingLock.restore : granted;
+    refusal = named ? { name: named } : { offset: restore.cursor };
+    if (refusalTimer != null) clearTimeout(refusalTimer);
+    refusalTimer = setTimeout(() => {
+      refusalTimer = null;
+      refusal = null;
+      if (!closed) dropRefusalClass(root);
+    }, 1000);
+  }
+
+  function blockContainsOffset(block, offset) {
+    const start = Number(block.start);
+    const end = Number(block.end);
+    return Number.isFinite(start) && Number.isFinite(end) && offset >= start && offset <= end;
+  }
+
+  function tightestBlock(blocks, offset) {
+    let best = null;
+    let bestSpan = Infinity;
+    for (const block of blocks) {
+      if (!blockContainsOffset(block, offset)) continue;
+      const span = Number(block.end) - Number(block.start);
+      if (span < bestSpan) {
+        best = block;
+        bestSpan = span;
+      }
+    }
+    return best;
   }
 
   // The line set is granted when this user already holds it, or when the memory
@@ -2281,15 +2330,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function render() {
     const planned = plan(state.doc, state.cursor);
+    const flashBlock = refusal && !refusal.name ? tightestBlock(planned.blocks, refusal.offset) : null;
     const nodes = planned.blocks.map((block) => {
       const el = renderBlock(block);
       for (const name of lockNames(block)) {
         const mark = document.createElement("span");
         mark.className = "md-lock";
+        if (refusal && refusal.name === name) mark.classList.add("md-flash");
         mark.contentEditable = "false";
         mark.textContent = name;
         el.appendChild(mark);
       }
+      if (block === flashBlock) el.classList.add("md-flash");
       return el;
     });
     root.replaceChildren(...nodes);
@@ -2975,7 +3027,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       if (isConflict(message)) {
         const waiter = conflictWaiters.shift();
-        if (waiter === "edit") dropPendingEdits();
+        if (waiter === "edit") {
+          dropPendingEdits();
+          armRefusal(message);
+        }
         expectNewComment = false;
         restoreGrantedCaret();
       }
@@ -4531,6 +4586,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function blankEditor() {
     // The next file has not arrived. Drop the previous mirror before asking.
     dropPendingEdits();
+    clearRefusal();
     conflictWaiters.length = 0;
     fileWaiters.length = 0;
     expectNewComment = false;
@@ -5090,6 +5146,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     destroy() {
       closed = true;
       clearEditTimer();
+      clearRefusal();
       unsubscribe();
       unbindRepoSelect();
       unbindDocMenu();

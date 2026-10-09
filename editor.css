@@ -616,6 +616,18 @@ nav.files .md-ticket-filter-menu input {
   pointer-events: none;
 }
 
+.md-lock.md-flash {
+  color: #1c1b19;
+  background: var(--danger);
+  border-radius: 0.2rem;
+}
+
+.md-line.md-flash,
+.md-atom.md-flash {
+  outline: 1px solid var(--danger);
+  outline-offset: 1px;
+}
+
 aside.comments {
   position: relative;
   min-width: 0;
