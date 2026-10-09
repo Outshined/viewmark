@@ -529,11 +529,6 @@ export class Page {
     await this.type(user);
     await this.key("Enter");
     await this.until(() => this.frames.some((frame) => frame.dir === "in" && frame.data && frame.data.type === "hello"), "hello");
-    // Ticket zgdygbcf: dismissLogin leaves the closed dialog modal, so nothing is clickable
-    // until a reload. Remove this reload when that ticket closes.
-    const since = this.frames.length;
-    await this.eval("location.reload(); true");
-    await this.until(() => this.frames.slice(since).some((frame) => frame.dir === "in" && frame.data && frame.data.type === "hello"), "hello after reload");
     await this.quiet();
   }
 

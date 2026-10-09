@@ -1619,7 +1619,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const noteId = Number(text.dataset.note || 0);
     const thread = threadById(id);
     const record = thread ? parseCommentNotes(thread.body).find((item) => item.id === noteId) : null;
-    const stored = record ? splitCommentNote(record.raw).text : "";
+    const parts = record ? splitCommentNote(record.raw) : null;
+    // reviseCommentNote rejects a missing poster and a poster who is not this session.
+    if (!parts || !parts.author || parts.author !== selfName()) return;
+    const stored = parts.text;
     noteDrafts.delete(draftKey(id, noteId));
     editingNotes.add(draftKey(id, noteId));
     currentCommentId = id;
@@ -1798,6 +1801,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     author.textContent = name || "";
     by.appendChild(author);
     if (time) {
+      const threadId = document.createElement("span");
+      threadId.className = "md-comment-time";
+      threadId.textContent = `(${id})`;
+      by.appendChild(threadId);
       const clock = document.createElement("time");
       clock.className = "md-comment-time";
       if (typeof clock.setAttribute === "function") clock.setAttribute("datetime", time);
@@ -2212,6 +2219,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return names;
   }
 
+  // plan paints every comment span. The checkbox decides whether a resolved thread keeps that paint.
+  function hideResolvedHighlights() {
+    if (showResolved) return;
+    const hidden = new Set();
+    for (const comment of commentThreads(state.doc)) {
+      if (comment && comment.resolved) hidden.add(comment.id);
+    }
+    if (hidden.size === 0) return;
+    const walk = (node) => {
+      if (!node) return;
+      if (node.nodeType === 1 && node.classList && node.classList.contains("md-comment") && node.dataset && hidden.has(node.dataset.comment)) {
+        node.classList.remove("md-comment");
+      }
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(root);
+  }
+
   function render() {
     const planned = plan(state.doc, state.cursor);
     const nodes = planned.blocks.map((block) => {
@@ -2227,6 +2252,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
     root.replaceChildren(...nodes);
     markEditingHighlights();
+    hideResolvedHighlights();
     renderCommentAside(planned.comments);
     layoutComments();
     if (commentFocus) focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
@@ -2903,7 +2929,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           if (index >= 0) conflictWaiters.splice(index, 1);
         }
       }
+      // Both lists mark openPath. Assign it before this render, or the previous
+      // document stays marked beside the ticket this file message just opened.
       if (typeof message.path === "string" && message.path) {
+        openPath = message.path;
         seedOpen(message.path);
         renderFileTree(fileList, false);
       }
@@ -5103,9 +5132,13 @@ function showLogin(dialog, input) {
 }
 
 function dismissLogin(dialog, input, blur) {
-  dialog.open = false;
+  // close() leaves the top layer only while the dialog is still open.
+  // Clearing open first keeps the backdrop, which then eats clicks.
   if (typeof dialog.close === "function") dialog.close();
-  else if (typeof dialog.removeAttribute === "function") dialog.removeAttribute("open");
+  else {
+    dialog.open = false;
+    if (typeof dialog.removeAttribute === "function") dialog.removeAttribute("open");
+  }
   if (blur && input && typeof input.blur === "function") input.blur();
 }
 
