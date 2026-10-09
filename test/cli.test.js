@@ -67,6 +67,9 @@ const HELP_NEEDLES = [
   "comment reply <path> <thread>",
   "comment add <path> --start LINE:OFFSET --end LINE:OFFSET",
   "comment edit <path> <thread> <note> --expect TEXT",
+  "comment resolve <path> <thread>",
+  "comment open <path> <thread>",
+  "comment delete <path> <thread>",
   "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin.",
   "Lines count from 1. Offset counts from 0. The end offset is exclusive.",
   "--repo is required on list, show, create, edit, delete, comment, commit, and ticket.",
@@ -3127,6 +3130,9 @@ test("T-comment-usage", async () => {
     "comment reply <path> <thread>",
     "comment add <path> --start LINE:OFFSET --end LINE:OFFSET",
     "comment edit <path> <thread> <note> --expect TEXT",
+    "comment resolve <path> <thread>",
+    "comment open <path> <thread>",
+    "comment delete <path> <thread>",
     "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin.",
   ]) {
     assert.ok(help.stdout.includes(line), line);
@@ -3157,6 +3163,21 @@ test("T-comment-usage", async () => {
       [["comment", "edit", "a.md", "c1", "1", "--rev", "nope"], "unexpected flag"],
       [["comment", "edit", "a.md", "c1", "1", "--rev", "1.5", "--expect", "x"], "unexpected flag"],
       [["comment", "reply", "a.md", "c1", "--rev", "1"], "unexpected flag"],
+      [["comment", "resolve"], "path required"],
+      [["comment", "open"], "path required"],
+      [["comment", "delete"], "path required"],
+      [["comment", "resolve", "a.md"], "unexpected argument"],
+      [["comment", "open", "a.md"], "unexpected argument"],
+      [["comment", "delete", "a.md"], "unexpected argument"],
+      [["comment", "resolve", "a.md", "c1", "extra"], "unexpected argument"],
+      [["comment", "open", "a.md", "c1", "extra"], "unexpected argument"],
+      [["comment", "delete", "a.md", "c1", "extra"], "unexpected argument"],
+      [["comment", "resolve", "a.md", "c1", "--rev", "1"], "unexpected flag"],
+      [["comment", "open", "a.md", "c1", "--rev", "0"], "unexpected flag"],
+      [["comment", "delete", "a.md", "c1", "--rev", "2"], "unexpected flag"],
+      [["comment", "resolve", "a.md", "c1", "--expect", "x"], "unexpected flag"],
+      [["comment", "open", "a.md", "c1", "--start", "1:0"], "unexpected flag"],
+      [["comment", "delete", "a.md", "c1", "--end", "1:1"], "unexpected flag"],
       [["comment", "add"], "path required"],
       [["comment", "add", "a.md"], "add requires --start and --end"],
       [["comment", "add", "a.md", "--start", "1:0"], "add requires --start and --end"],
@@ -3830,6 +3851,583 @@ test("a caret in one paragraph does not hold the next paragraph or the blank lin
     } finally {
       gap.ada.ws.close();
       gap.witness.ws.close();
+    }
+  });
+});
+
+function dropQueued(client, pred) {
+  for (let i = client.queue.length - 1; i >= 0; i -= 1) {
+    if (pred(client.queue[i])) client.queue.splice(i, 1);
+  }
+}
+
+async function lockWhole(port, username, rel) {
+  const holder = await hello(port, username);
+  const opened = await openDoc(holder, username, rel);
+  holder.send({
+    type: "lock",
+    username,
+    path: rel,
+    rev: opened.rev,
+    anchor: 0,
+    cursor: opened.text.length,
+  });
+  const locks = await holder.next((msg) => msg.type === "locks" && msg.path === rel);
+  assert.ok(locks.lines.some((line) => line && line.username === username));
+  return holder;
+}
+
+async function releaseHold(holder, witness, rel, username) {
+  dropQueued(witness, (msg) => msg.type === "locks" && msg.path === rel);
+  const released = witness.next((msg) => (
+    msg.type === "locks" && msg.path === rel && !msg.lines.some((line) => line && line.username === username)
+  ));
+  holder.ws.close();
+  await released;
+}
+
+async function captureCommentCommand(args, replyFor) {
+  const messages = [];
+  let peer = null;
+  const server = http.createServer();
+  server.on("upgrade", (req, socket) => {
+    peer = socket;
+    const key = req.headers["sec-websocket-key"];
+    socket.write(
+      "HTTP/1.1 101 Switching Protocols\r\n" +
+        "Upgrade: websocket\r\n" +
+        "Connection: Upgrade\r\n" +
+        `Sec-WebSocket-Accept: ${acceptKey(key)}\r\n` +
+        "\r\n",
+    );
+    const parser = createParser({
+      requireMask: true,
+      onText(payload) {
+        const msg = JSON.parse(payload.toString("utf8"));
+        messages.push(msg);
+        const reply = replyFor(msg);
+        if (reply) socket.write(encodeFrame(0x1, Buffer.from(JSON.stringify(reply))));
+      },
+      onPing(payload) {
+        socket.write(encodeFrame(0xa, payload));
+      },
+      onClose() {
+        socket.end();
+      },
+      onError() {
+        socket.destroy();
+      },
+    });
+    socket.on("data", (chunk) => parser.push(chunk));
+    socket.on("error", () => {});
+  });
+  await listen(server);
+  try {
+    const res = await run(
+      ["--port", String(server.address().port), "--user", "Ada", "--repo", "docs", ...args],
+    );
+    return { res, messages };
+  } finally {
+    peer?.destroy();
+    await new Promise((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections();
+    });
+  }
+}
+
+function commentCommandReply(msg) {
+  if (msg.type === "comment.resolve") {
+    const body = { type: "comment", path: msg.path, id: msg.id, resolved: msg.resolved, rev: 5 };
+    if (msg.id === "same") body.unchanged = true;
+    return body;
+  }
+  if (msg.type === "comment.delete") return { type: "comment", path: msg.path, id: msg.id, rev: 6 };
+  return null;
+}
+
+test("T-comment-resolve", async () => {
+  const agents = await fs.readFile(path.join(root, "AGENTS.md"), "utf8");
+  assert.ok(agents.includes("`comment resolve PATH ID` marks that thread resolved."));
+  assert.ok(agents.includes("`comment open PATH ID` clears it."));
+  assert.ok(agents.includes("`comment delete PATH ID` removes that thread's marks and its fence."));
+
+  const resolvedWire = await captureCommentCommand(
+    ["comment", "resolve", "notes/thread.md", "c1"],
+    commentCommandReply,
+  );
+  assert.equal(resolvedWire.res.code, 0);
+  assert.equal(resolvedWire.res.stdout, "c1 resolved\n");
+  assert.equal(resolvedWire.res.stderr, "rev 5\n");
+  assert.deepEqual(resolvedWire.messages.map((msg) => msg.type), ["hello", "repo", "comment.resolve"]);
+  assert.deepEqual(resolvedWire.messages[2], {
+    type: "comment.resolve",
+    username: "Ada",
+    path: "notes/thread.md",
+    id: "c1",
+    resolved: true,
+  });
+
+  const resolveJson = await captureCommentCommand(
+    ["--json", "comment", "resolve", "notes/thread.md", "c1"],
+    commentCommandReply,
+  );
+  assert.equal(resolveJson.res.code, 0);
+  assert.equal(resolveJson.res.stderr, "");
+  assert.deepEqual(JSON.parse(resolveJson.res.stdout), {
+    path: "notes/thread.md",
+    id: "c1",
+    resolved: true,
+    rev: 5,
+  });
+  assert.deepEqual(Object.keys(JSON.parse(resolveJson.res.stdout)), ["path", "id", "resolved", "rev"]);
+
+  const openedWire = await captureCommentCommand(
+    ["comment", "open", "notes/thread.md", "c1"],
+    commentCommandReply,
+  );
+  assert.equal(openedWire.res.code, 0);
+  assert.equal(openedWire.res.stdout, "c1 open\n");
+  assert.equal(openedWire.res.stderr, "rev 5\n");
+  assert.deepEqual(openedWire.messages[2], {
+    type: "comment.resolve",
+    username: "Ada",
+    path: "notes/thread.md",
+    id: "c1",
+    resolved: false,
+  });
+
+  const openJson = await captureCommentCommand(
+    ["--json", "comment", "open", "notes/thread.md", "c1"],
+    commentCommandReply,
+  );
+  assert.equal(openJson.res.code, 0);
+  assert.equal(openJson.res.stderr, "");
+  assert.deepEqual(JSON.parse(openJson.res.stdout), {
+    path: "notes/thread.md",
+    id: "c1",
+    resolved: false,
+    rev: 5,
+  });
+
+  const same = await captureCommentCommand(
+    ["comment", "resolve", "notes/thread.md", "same"],
+    commentCommandReply,
+  );
+  assert.equal(same.res.code, 0);
+  assert.equal(same.res.stdout, "");
+  assert.equal(same.res.stderr, "");
+  const sameJson = await captureCommentCommand(
+    ["--json", "comment", "open", "notes/thread.md", "same"],
+    commentCommandReply,
+  );
+  assert.equal(sameJson.res.code, 0);
+  assert.equal(sameJson.res.stdout, "");
+  assert.equal(sameJson.res.stderr, "");
+
+  const deletedWire = await captureCommentCommand(
+    ["comment", "delete", "notes/thread.md", "c1"],
+    commentCommandReply,
+  );
+  assert.equal(deletedWire.res.code, 0);
+  assert.equal(deletedWire.res.stdout, "c1\n");
+  assert.equal(deletedWire.res.stderr, "rev 6\n");
+  assert.deepEqual(deletedWire.messages.map((msg) => msg.type), ["hello", "repo", "comment.delete"]);
+  assert.deepEqual(deletedWire.messages[2], {
+    type: "comment.delete",
+    username: "Ada",
+    path: "notes/thread.md",
+    id: "c1",
+  });
+  const deleteJson = await captureCommentCommand(
+    ["--json", "comment", "delete", "notes/thread.md", "c1"],
+    commentCommandReply,
+  );
+  assert.equal(deleteJson.res.code, 0);
+  assert.equal(deleteJson.res.stderr, "");
+  assert.deepEqual(JSON.parse(deleteJson.res.stdout), { path: "notes/thread.md", id: "c1", rev: 6 });
+  assert.deepEqual(Object.keys(JSON.parse(deleteJson.res.stdout)), ["path", "id", "rev"]);
+
+  const adaLine = "@2026-10-05T16:00:00.000Z Ada";
+  const doc = [
+    "See {c1}this{/c1} and {c2}that{/c2}.",
+    "",
+    "```comment c1",
+    ":: 0",
+    adaLine,
+    "Question.",
+    "```",
+    "",
+    "```comment c2",
+    ":: 0",
+    adaLine,
+    "Other.",
+    "```",
+    "",
+  ].join("\n");
+  const rel = "notes/gate.md";
+
+  await withDocs(async ({ dir, port }) => {
+    const full = path.join(dir, rel);
+    await fs.writeFile(full, doc);
+    await writeThread(dir);
+    const anon = path.join(dir, THREAD_REL);
+
+    const grok = await run(commentArgs(port, "Grok", ["resolve", rel, "c1"]));
+    assert.equal(grok.code, shellStatus(403));
+    assert.equal(grok.stdout, "");
+    assert.equal(grok.stderr, "error 403\n");
+    const grokJson = await run(["--json", ...commentArgs(port, "Grok", ["delete", rel, "c1"])]);
+    assert.equal(grokJson.code, shellStatus(403));
+    assert.equal(grokJson.stdout, "");
+    assert.equal(grokJson.stderr, "error 403\n");
+    const grokOpen = await run(commentArgs(port, "Grok", ["open", rel, "c1"]));
+    assert.equal(grokOpen.code, shellStatus(403));
+    assert.equal(grokOpen.stdout, "");
+    assert.equal(await fs.readFile(full, "utf8"), doc);
+
+    const anonResolve = await run(commentArgs(port, "Grok", ["resolve", THREAD_REL, "c1"]));
+    assert.equal(anonResolve.code, shellStatus(403));
+    assert.equal(anonResolve.stdout, "");
+    assert.equal(anonResolve.stderr, "error 403\n");
+    assert.equal(await fs.readFile(anon, "utf8"), THREAD_DOC);
+
+    const probe = await hello(port, "Ada");
+    const witness = await hello(port, "witness");
+    try {
+      await openDoc(witness, "witness", rel);
+      probe.send({ type: "comment.resolve", username: "Ada", path: rel, id: "c1", resolved: "yes" });
+      assert.equal((await probe.next((msg) => msg.type === "error" || msg.type === "comment")).status, 400);
+      probe.send({ type: "comment.delete", username: "Ada", path: rel, id: "missing" });
+      assert.equal((await probe.next((msg) => msg.type === "error" || msg.type === "comment")).status, 404);
+      assert.equal(await fs.readFile(full, "utf8"), doc);
+
+      const resolved = await run(commentArgs(port, "Ada", ["resolve", rel, "c1"]));
+      assert.equal(resolved.code, 0);
+      assert.equal(resolved.stdout, "c1 resolved\n");
+      assert.equal(resolved.stderr, "rev 1\n");
+      const resolvedDoc = await witness.next((msg) => msg.type === "doc" && msg.path === rel && msg.rev === 1);
+      assert.equal(resolvedDoc.actor, "Ada");
+      assert.match(resolvedDoc.text, /```comment c1 resolved\n/);
+      assert.equal(await fs.readFile(full, "utf8"), resolvedDoc.text);
+      const resolvedBytes = resolvedDoc.text;
+      assert.equal((await run(commentArgs(port, "Ada", ["list", rel]))).stdout, "c1 resolved\nc2\n");
+
+      probe.send({ type: "comment.resolve", username: "Ada", path: rel, id: "c1", resolved: true });
+      const unchanged = await probe.next((msg) => msg.type === "comment" || msg.type === "error");
+      assert.equal(unchanged.type, "comment");
+      assert.equal(unchanged.unchanged, true);
+      assert.equal(unchanged.resolved, true);
+      assert.equal(unchanged.rev, 1);
+      assert.equal(unchanged.id, "c1");
+      const again = await run(commentArgs(port, "Ada", ["resolve", rel, "c1"]));
+      assert.equal(again.code, 0);
+      assert.equal(again.stdout, "");
+      assert.equal(again.stderr, "");
+      const againJson = await run(["--json", ...commentArgs(port, "Ada", ["resolve", rel, "c1"])]);
+      assert.equal(againJson.code, 0);
+      assert.equal(againJson.stdout, "");
+      assert.equal(againJson.stderr, "");
+      assert.equal(await fs.readFile(full, "utf8"), resolvedBytes);
+      assert.match(resolvedBytes, /```comment c1 resolved\n/);
+      dropQueued(witness, (msg) => msg.type === "doc" && msg.path === rel);
+      await delay(50);
+      assert.equal(witness.queue.some((msg) => msg.type === "doc" && msg.path === rel), false);
+
+      const holder = await lockWhole(port, "Bea", rel);
+      try {
+        const blocked = await run(["--json", ...commentArgs(port, "Ada", ["open", rel, "c1"])]);
+        assert.equal(blocked.code, shellStatus(409));
+        assert.equal(blocked.stdout, "");
+        assert.equal(blocked.stderr, "error 409\nheld by Bea\n");
+        assert.equal(await fs.readFile(full, "utf8"), resolvedBytes);
+        await delay(50);
+        assert.equal(witness.queue.some((msg) => msg.type === "doc" && msg.path === rel), false);
+      } finally {
+        await releaseHold(holder, witness, rel, "Bea");
+      }
+
+      const opened = await run(commentArgs(port, "Ada", ["open", rel, "c1"]));
+      assert.equal(opened.code, 0);
+      assert.equal(opened.stdout, "c1 open\n");
+      assert.equal(opened.stderr, "rev 2\n");
+      const openedDoc = await witness.next((msg) => msg.type === "doc" && msg.path === rel && msg.rev === 2);
+      assert.equal(await fs.readFile(full, "utf8"), openedDoc.text);
+      assert.equal(commentThreads(openedDoc.text).find((item) => item.id === "c1").resolved, false);
+      assert.equal(commentThreads(openedDoc.text).find((item) => item.id === "c2").resolved, false);
+      const openedBytes = openedDoc.text;
+      const openedAgain = await run(commentArgs(port, "Ada", ["open", rel, "c1"]));
+      assert.equal(openedAgain.code, 0);
+      assert.equal(openedAgain.stdout, "");
+      assert.equal(openedAgain.stderr, "");
+      const openedJson = await run(["--json", ...commentArgs(port, "Ada", ["open", rel, "c1"])]);
+      assert.equal(openedJson.code, 0);
+      assert.equal(openedJson.stdout, "");
+      assert.equal(openedJson.stderr, "");
+      assert.equal(await fs.readFile(full, "utf8"), openedBytes);
+
+      const resolveSecond = await run(["--json", ...commentArgs(port, "Ada", ["resolve", rel, "c2"])]);
+      assert.equal(resolveSecond.code, 0);
+      assert.equal(resolveSecond.stderr, "");
+      assert.deepEqual(JSON.parse(resolveSecond.stdout), { path: rel, id: "c2", resolved: true, rev: 3 });
+      const openSecond = await run(["--json", ...commentArgs(port, "Ada", ["open", rel, "c2"])]);
+      assert.equal(openSecond.code, 0);
+      assert.equal(openSecond.stderr, "");
+      assert.deepEqual(JSON.parse(openSecond.stdout), { path: rel, id: "c2", resolved: false, rev: 4 });
+      assert.equal(await fs.readFile(full, "utf8"), openedBytes);
+      const openSecondAgain = await run(["--json", ...commentArgs(port, "Ada", ["open", rel, "c2"])]);
+      assert.equal(openSecondAgain.code, 0);
+      assert.equal(openSecondAgain.stdout, "");
+      assert.equal(openSecondAgain.stderr, "");
+
+      const foreignDelete = await run(commentArgs(port, "Bea", ["delete", rel, "c1"]));
+      assert.equal(foreignDelete.code, shellStatus(403));
+      assert.equal(foreignDelete.stdout, "");
+      assert.equal(foreignDelete.stderr, "error 403\n");
+      assert.equal(await fs.readFile(full, "utf8"), openedBytes);
+
+      const deleter = await lockWhole(port, "Bea", rel);
+      try {
+        const blocked = await run(commentArgs(port, "Ada", ["delete", rel, "c1"]));
+        assert.equal(blocked.code, shellStatus(409));
+        assert.equal(blocked.stdout, "");
+        assert.equal(blocked.stderr, "error 409\nheld by Bea\n");
+        assert.equal(await fs.readFile(full, "utf8"), openedBytes);
+      } finally {
+        await releaseHold(deleter, witness, rel, "Bea");
+      }
+
+      const deletedSecond = await run(["--json", ...commentArgs(port, "Ada", ["delete", rel, "c2"])]);
+      assert.equal(deletedSecond.code, 0);
+      assert.equal(deletedSecond.stderr, "");
+      assert.deepEqual(JSON.parse(deletedSecond.stdout), { path: rel, id: "c2", rev: 5 });
+      const withoutSecond = await fs.readFile(full, "utf8");
+      assert.equal(withoutSecond, "See {c1}this{/c1} and that.\n\n```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nQuestion.\n```\n");
+      const deleted = await run(commentArgs(port, "Ada", ["delete", rel, "c1"]));
+      assert.equal(deleted.code, 0);
+      assert.equal(deleted.stdout, "c1\n");
+      assert.equal(deleted.stderr, "rev 6\n");
+      assert.equal(await fs.readFile(full, "utf8"), "See this and that.\n");
+      const gone = await run(commentArgs(port, "Ada", ["delete", rel, "c1"]));
+      assert.equal(gone.code, shellStatus(404));
+      assert.equal(gone.stdout, "");
+      assert.equal(gone.stderr, "error 404\n");
+      const missingPath = await run(commentArgs(port, "Ada", ["resolve", "notes/missing.md", "c1"]));
+      assert.equal(missingPath.code, shellStatus(404));
+      assert.equal(missingPath.stdout, "");
+      assert.equal(missingPath.stderr, "error 404\n");
+      const missingThread = await run(commentArgs(port, "Ada", ["open", "hello.md", "c1"]));
+      assert.equal(missingThread.code, shellStatus(404));
+      assert.equal(missingThread.stderr, "error 404\n");
+      const badId = await run(commentArgs(port, "Ada", ["delete", rel, "1c"]));
+      assert.equal(badId.code, shellStatus(400));
+      assert.equal(badId.stdout, "");
+      assert.equal(badId.stderr, "error 400\n");
+      assert.equal(await fs.readFile(full, "utf8"), "See this and that.\n");
+    } finally {
+      probe.ws.close();
+      witness.ws.close();
+    }
+  });
+});
+
+test("T-comment-ticket", async () => {
+  await withDocs(async ({ dir, port }) => {
+    const id = "abcdefgh";
+    const rel = `tickets/${id}.md`;
+    const body = "Alpha paragraph here.\n";
+    const fields = {
+      id,
+      title: "Door",
+      state: "new",
+      type: "task",
+      priority: "medium",
+      parent: "",
+      depends: [],
+      reporter: "indexer",
+      created: "2026-10-05T00:00:00.000Z",
+      body,
+    };
+    const full = path.join(dir, "tickets", `${id}.md`);
+    await writeTicket(dir, fields);
+    await fs.mkdir(path.join(dir, "tickets", "nested"), { recursive: true });
+    await fs.writeFile(path.join(dir, "tickets", "nested", "yyyyyyyy.md"), "x\n");
+    await fs.writeFile(path.join(dir, "tickets", "readme.md"), "x\n");
+    await fs.writeFile(path.join(dir, "tickets", "abcdefgh.markdown"), "x\n");
+    await fs.writeFile(path.join(dir, "tickets", "yyyyyyyy.txt"), "x\n");
+    await fs.writeFile(path.join(dir, "tickets", "zzzzzzzz.md"), "nope\n");
+
+    const rejected = [
+      ["list", "tickets"],
+      ["reply", "tickets/nested/yyyyyyyy.md", "c1"],
+      ["list", "tickets/readme.md"],
+      ["list", "tickets/iiiiiiii.md"],
+      ["resolve", "tickets/yyyyyyyy.txt", "c1"],
+      ["delete", "tickets/abcdefgh.markdown", "c1"],
+      ["open", "tickets", "c1"],
+    ];
+    for (const args of rejected) {
+      const res = await run(commentArgs(port, "Ada", args), {}, "No.\n");
+      assert.equal(res.code, shellStatus(400), args.join(" "));
+      assert.equal(res.stdout, "", args.join(" "));
+      assert.equal(res.stderr, "error 400\n", args.join(" "));
+    }
+    assert.equal(await fs.readFile(path.join(dir, "tickets", "readme.md"), "utf8"), "x\n");
+    assert.equal(await fs.readFile(path.join(dir, "tickets", "nested", "yyyyyyyy.md"), "utf8"), "x\n");
+    const missingTicket = await run(commentArgs(port, "Ada", ["resolve", "tickets/yyyyyyyy.md", "c1"]));
+    assert.equal(missingTicket.code, shellStatus(404));
+    assert.equal(missingTicket.stdout, "");
+    assert.equal(missingTicket.stderr, "error 404\n");
+    const garbage = await run(commentArgs(port, "Ada", ["reply", "tickets/zzzzzzzz.md", "c1"]), {}, "No.\n");
+    assert.equal(garbage.code, shellStatus(404));
+    assert.equal(garbage.stdout, "");
+    assert.equal(await fs.readFile(path.join(dir, "tickets", "zzzzzzzz.md"), "utf8"), "nope\n");
+
+    const ada = await hello(port, "Ada");
+    const witness = await hello(port, "witness");
+    try {
+      await openDoc(witness, "witness", rel);
+      const opened = await openDoc(ada, "Ada", rel);
+      assert.equal(opened.text, body);
+      assert.equal(opened.rev, 0);
+      ada.send({
+        type: "lock",
+        username: "Ada",
+        path: rel,
+        rev: opened.rev,
+        anchor: 0,
+        cursor: opened.text.length,
+      });
+      await ada.next((msg) => msg.type === "locks" && msg.path === rel);
+      ada.send({
+        type: "edit",
+        username: "Ada",
+        path: rel,
+        rev: opened.rev,
+        op: "comment.add",
+        anchor: 0,
+        cursor: 5,
+      });
+      const added = await ada.next((msg) => msg.type === "doc" && msg.path === rel);
+      assert.equal(added.rev, 1);
+      assert.match(added.text, /\{c1\}Alpha\{\/c1\}/);
+      const parked = parseTicket(id, await fs.readFile(full, "utf8"));
+      assert.equal(parked.body, added.text);
+      assert.equal(parked.title, "Door");
+      const empty = commentThreads(parked.body).find((item) => item.id === "c1");
+      assert.ok(empty);
+      assert.equal(empty.body, "");
+      assert.equal(empty.resolved, false);
+
+      const replied = await run(commentArgs(port, "Ada", ["reply", rel, "c1"]), {}, "A note.\n");
+      assert.equal(replied.code, 0);
+      assert.equal(replied.stdout, "note 0\n");
+      assert.equal(replied.stderr, "rev 2\n");
+      const noted = await witness.next((msg) => msg.type === "doc" && msg.path === rel && msg.rev === 2);
+      assert.equal(noted.actor, "Ada");
+      const stored = parseTicket(id, await fs.readFile(full, "utf8"));
+      assert.equal(stored.body, noted.text);
+      assert.equal(stored.title, fields.title);
+      assert.equal(stored.state, "new");
+      assert.equal(stored.type, "task");
+      assert.equal(stored.priority, "medium");
+      assert.equal(stored.parent, "");
+      assert.deepEqual(stored.depends, []);
+      assert.equal(stored.reporter, "indexer");
+      assert.equal(stored.created, fields.created);
+      assert.equal(await fs.readFile(full, "utf8"), composeTicket(stored));
+      const thread = commentThreads(stored.body).find((item) => item.id === "c1");
+      assert.match(thread.body, /^:: 0\n@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z Ada\nA note\.\n$/);
+      const notes = parseCommentNotes(thread.body);
+      assert.equal(notes.length, 1);
+      assert.equal(notes[0].id, 0);
+      assert.match(notes[0].raw, /^@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z Ada\nA note\.\n$/);
+      const parts = splitCommentNote(notes[0].raw);
+      assert.equal(parts.author, "Ada");
+      assert.equal(parts.text, "A note.\n");
+      assert.match(parts.time, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      assert.equal((await run(commentArgs(port, "Ada", ["list", rel]))).stdout, "c1\n");
+
+      const second = await run(commentArgs(port, "Bea", ["reply", rel, "c1"]), {}, "Second.\n");
+      assert.equal(second.code, 0);
+      assert.equal(second.stdout, "note 1\n");
+      assert.equal(second.stderr, "rev 3\n");
+      const both = parseTicket(id, await fs.readFile(full, "utf8"));
+      const bothNotes = parseCommentNotes(commentThreads(both.body).find((item) => item.id === "c1").body);
+      assert.equal(splitCommentNote(bothNotes[0].raw).author, "Ada");
+      assert.match(bothNotes[1].raw, /^@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z Bea\nSecond\.\n$/);
+      const afterReplies = await fs.readFile(full, "utf8");
+
+      await releaseHold(ada, witness, rel, "Ada");
+
+      const foreign = await run(commentArgs(port, "Bea", ["resolve", rel, "c1"]));
+      assert.equal(foreign.code, shellStatus(403));
+      assert.equal(foreign.stdout, "");
+      assert.equal(foreign.stderr, "error 403\n");
+      assert.equal(await fs.readFile(full, "utf8"), afterReplies);
+      const missingOnTicket = await run(commentArgs(port, "Ada", ["open", rel, "missing"]));
+      assert.equal(missingOnTicket.code, shellStatus(404));
+      assert.equal(missingOnTicket.stderr, "error 404\n");
+
+      const resolved = await run(commentArgs(port, "Ada", ["resolve", rel, "c1"]));
+      assert.equal(resolved.code, 0);
+      assert.equal(resolved.stdout, "c1 resolved\n");
+      assert.equal(resolved.stderr, "rev 4\n");
+      const resolvedTicket = parseTicket(id, await fs.readFile(full, "utf8"));
+      assert.equal(resolvedTicket.title, "Door");
+      assert.equal(commentThreads(resolvedTicket.body).find((item) => item.id === "c1").resolved, true);
+      assert.equal(splitCommentNote(parseCommentNotes(commentThreads(resolvedTicket.body)[0].body)[0].raw).author, "Ada");
+      const resolvedBytes = await fs.readFile(full, "utf8");
+      const resolvedAgain = await run(["--json", ...commentArgs(port, "Ada", ["resolve", rel, "c1"])]);
+      assert.equal(resolvedAgain.code, 0);
+      assert.equal(resolvedAgain.stdout, "");
+      assert.equal(resolvedAgain.stderr, "");
+      assert.equal(await fs.readFile(full, "utf8"), resolvedBytes);
+
+      const openedCmd = await run(commentArgs(port, "Ada", ["open", rel, "c1"]));
+      assert.equal(openedCmd.code, 0);
+      assert.equal(openedCmd.stdout, "c1 open\n");
+      assert.equal(openedCmd.stderr, "rev 5\n");
+      const openedTicket = parseTicket(id, await fs.readFile(full, "utf8"));
+      assert.equal(commentThreads(openedTicket.body).find((item) => item.id === "c1").resolved, false);
+      assert.equal(openedTicket.reporter, "indexer");
+      const openedBytes = await fs.readFile(full, "utf8");
+      const openedAgain = await run(commentArgs(port, "Ada", ["open", rel, "c1"]));
+      assert.equal(openedAgain.code, 0);
+      assert.equal(openedAgain.stdout, "");
+      assert.equal(openedAgain.stderr, "");
+      assert.equal(await fs.readFile(full, "utf8"), openedBytes);
+
+      const holder = await lockWhole(port, "Bea", rel);
+      try {
+        const blocked = await run(commentArgs(port, "Ada", ["delete", rel, "c1"]));
+        assert.equal(blocked.code, shellStatus(409));
+        assert.equal(blocked.stdout, "");
+        assert.equal(blocked.stderr, "error 409\nheld by Bea\n");
+        assert.equal(await fs.readFile(full, "utf8"), openedBytes);
+      } finally {
+        await releaseHold(holder, witness, rel, "Bea");
+      }
+
+      const foreignDelete = await run(commentArgs(port, "Bea", ["delete", rel, "c1"]));
+      assert.equal(foreignDelete.code, shellStatus(403));
+      assert.equal(foreignDelete.stdout, "");
+      assert.equal(await fs.readFile(full, "utf8"), openedBytes);
+
+      const deleted = await run(["--json", ...commentArgs(port, "Ada", ["delete", rel, "c1"])]);
+      assert.equal(deleted.code, 0);
+      assert.equal(deleted.stderr, "");
+      assert.deepEqual(JSON.parse(deleted.stdout), { path: rel, id: "c1", rev: 6 });
+      const after = parseTicket(id, await fs.readFile(full, "utf8"));
+      assert.equal(after.body, body);
+      assert.equal(after.title, "Door");
+      assert.equal(after.state, "new");
+      assert.equal(after.created, fields.created);
+      assert.equal(commentThreads(after.body).length, 0);
+      assert.equal(await fs.readFile(full, "utf8"), composeTicket(after));
+    } finally {
+      ada.ws.close();
+      witness.ws.close();
     }
   });
 });

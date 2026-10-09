@@ -76,7 +76,7 @@ viewmark --user ada --repo notes comment list welcome.md
 printf 'A correction.\n' | viewmark --user ada --repo notes comment reply welcome.md THREAD
 ```
 
-`comment edit` addresses one note by id and requires `--expect`, the note text after the poster line. `comment add` requires `--expect` equal to the bytes at the range. A reply does not take `--rev`. `ticket set` writes a field of the current body. Later field writes win. `--rev` on those writes is rejected.
+`comment edit` addresses one note by id and requires `--expect`, the note text after the poster line. `comment add` requires `--expect` equal to the bytes at the range. A reply does not take `--rev`. `comment resolve`, `comment open`, and `comment delete` act on one thread. `--rev` on those is rejected. A reply on a ticket stores the note, the author, and the time. `ticket set` writes a field of the current body. Later field writes win. `--rev` on those writes is rejected.
 
 Tickets use the same repo:
 

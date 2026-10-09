@@ -21,6 +21,9 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment reply <path> <thread>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment add <path> --start LINE:OFFSET --end LINE:OFFSET --expect TEXT
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment edit <path> <thread> <note> --expect TEXT
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment resolve <path> <thread>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment open <path> <thread>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment delete <path> <thread>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME commit [--message TEXT]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket list [--closed]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket show <id>
@@ -106,7 +109,11 @@ comment:
   comment edit <path> <thread> <note> --expect TEXT reads the replacement from stdin. --expect is the note text after the poster line. --rev is rejected.
   A negative note exits 400 and does not open a socket. A mismatched --expect exits 409 and does not write.
   The same text exits 0 and does not write.
-  --json: list {path,rev,threads}; show {path,rev,id,resolved,notes}; reply and edit {path,id,note,rev}; add {path,id,note:0,rev}.
+  comment resolve <path> <thread> marks that thread resolved and prints the id and resolved. stderr is rev N. Already resolved exits 0 and writes nothing.
+  comment open <path> <thread> clears resolved and prints the id and open. stderr is rev N. Already open exits 0 and writes nothing.
+  comment delete <path> <thread> removes that thread's marks and its fence and prints the id. stderr is rev N.
+  The author is note 0's author, the --user of the command. Anyone else exits 403 and writes nothing. A missing path or thread exits 404. A span held by another socket exits 409 and names that user. --rev on comment resolve, comment open, and comment delete is rejected.
+  --json: list {path,rev,threads}; show {path,rev,id,resolved,notes}; reply and edit {path,id,note,rev}; add {path,id,note:0,rev}; resolve {path,id,resolved:true,rev}; open {path,id,resolved:false,rev}; delete {path,id,rev}.
 
 delete:
   delete <path> removes that document. The path is sent unchanged. ticket delete <id> removes that ticket and clears it from other tickets' parent and depends. Another socket holding the file exits 409 and writes nothing. stdout is the removed path. --json is {path}.
@@ -1193,6 +1200,45 @@ function printCommentAdd(msg, json) {
   return 0;
 }
 
+function asCommentState(msg) {
+  if (!msg || typeof msg.path !== "string" || typeof msg.id !== "string") return null;
+  if (typeof msg.resolved !== "boolean" || typeof msg.rev !== "number") return null;
+  return {
+    path: msg.path,
+    id: msg.id,
+    resolved: msg.resolved,
+    rev: msg.rev,
+    unchanged: msg.unchanged === true,
+  };
+}
+
+function asCommentGone(msg) {
+  if (!msg || typeof msg.path !== "string" || typeof msg.id !== "string" || typeof msg.rev !== "number") return null;
+  if (typeof msg.note !== "undefined" || typeof msg.resolved !== "undefined") return null;
+  return { path: msg.path, id: msg.id, rev: msg.rev };
+}
+
+function printCommentResolve(msg, resolved, json) {
+  if (msg.unchanged) return 0;
+  if (json) {
+    writeJson({ path: msg.path, id: msg.id, resolved, rev: msg.rev });
+    return 0;
+  }
+  process.stdout.write(`${msg.id} ${resolved ? "resolved" : "open"}\n`);
+  process.stderr.write(`rev ${msg.rev}\n`);
+  return 0;
+}
+
+function printCommentDelete(msg, json) {
+  if (json) {
+    writeJson({ path: msg.path, id: msg.id, rev: msg.rev });
+    return 0;
+  }
+  process.stdout.write(`${msg.id}\n`);
+  process.stderr.write(`rev ${msg.rev}\n`);
+  return 0;
+}
+
 async function runCommentList(hub, username, docPath, json) {
   hub.send({ type: "comment.threads", username, path: docPath });
   const msg = await hub.next((item) => item.type === "comments" || item.type === "error");
@@ -1231,6 +1277,24 @@ async function runCommentEdit(hub, username, docPath, id, note, text, expect, js
   return printCommentWrite(parsed, json);
 }
 
+async function runCommentResolve(hub, username, docPath, id, resolved, json) {
+  hub.send({ type: "comment.resolve", username, path: docPath, id, resolved });
+  const msg = await hub.next((item) => item.type === "comment" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  const parsed = asCommentState(msg);
+  if (!parsed || parsed.path !== docPath || parsed.id !== id || parsed.resolved !== resolved) return 1;
+  return printCommentResolve(parsed, resolved, json);
+}
+
+async function runCommentDelete(hub, username, docPath, id, json) {
+  hub.send({ type: "comment.delete", username, path: docPath, id });
+  const msg = await hub.next((item) => item.type === "comment" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  const parsed = asCommentGone(msg);
+  if (!parsed || parsed.path !== docPath || parsed.id !== id) return 1;
+  return printCommentDelete(parsed, json);
+}
+
 async function runCommentAdd(hub, username, docPath, start, end, expect, text, json) {
   hub.send({
     type: "comment.add",
@@ -1258,6 +1322,9 @@ async function runComment(hub, username, command, text, json) {
   if (command.sub === "edit") {
     return runCommentEdit(hub, username, command.path, command.id, command.note, text, command.expect, json);
   }
+  if (command.sub === "resolve") return runCommentResolve(hub, username, command.path, command.id, true, json);
+  if (command.sub === "open") return runCommentResolve(hub, username, command.path, command.id, false, json);
+  if (command.sub === "delete") return runCommentDelete(hub, username, command.path, command.id, json);
   return 2;
 }
 
@@ -1307,7 +1374,7 @@ function prepareComment(args, rest) {
     if (more.length !== 1) return { error: "unexpected argument" };
     return { sub, path: more[0] };
   }
-  if (sub === "show" || sub === "reply") {
+  if (sub === "show" || sub === "reply" || sub === "resolve" || sub === "open" || sub === "delete") {
     if (more.length === 0) return { error: "path required" };
     if (more.length !== 2) return { error: "unexpected argument" };
     return { sub, path: more[0], id: more[1] };

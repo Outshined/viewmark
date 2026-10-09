@@ -26,6 +26,8 @@ printf 'A correction.\n' | viewmark --user ada --repo notes comment reply welcom
 
 `comment reply` takes the thread id and reads the note from stdin. `comment edit` requires `--expect`, the note text after the poster line, addresses one note by id, and uses the same username as the stored author. A mismatched `--expect` exits 409 and writes nothing. Edit a note that already has an author line. `comment list` and `comment show` print what is stored. A note whose text contains a line that is `::` or `::` plus a number is rejected. `--rev` on `comment edit`, `comment add`, and `comment reply` is rejected.
 
+`comment resolve PATH ID` marks that thread resolved. `comment open PATH ID` clears it. `comment delete PATH ID` removes that thread's marks and its fence. The author is note 0's author, the `--user` of the command. Anyone else exits 403 and writes nothing. Already resolved or already open exits 0 and writes nothing. A missing path or thread exits 404. A span held by another socket exits 409 and names that user. `--rev` on those three is rejected. A reply on a ticket document stores the note, the author, and the time, in the same shape as a reply on any other document.
+
 A thread is stored like this:
 
 ````

@@ -195,6 +195,14 @@ function isMarkdownPath(rel) {
   return rel.endsWith(".md") || rel.endsWith(".markdown");
 }
 
+// A comment may sit on a ticket document. The tickets directory, a deeper
+// path, and a non-markdown path are not documents.
+function commentPathAllowed(rel) {
+  if (!isMarkdownPath(rel)) return false;
+  if (rel === "tickets" || rel.startsWith("tickets/")) return ticketIdFromRel(rel) !== null;
+  return true;
+}
+
 const COMMENT_ID = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
 function commentView(thread) {
@@ -208,6 +216,15 @@ function commentView(thread) {
       return { id: note.id, author: parts.author, time: parts.time, text: parts.text };
     }),
   };
+}
+
+// Resolve, open, and delete belong to the thread's first note.
+function noteZeroAuthor(body) {
+  const notes = parseCommentNotes(body).filter((note) => note.id === 0);
+  if (notes.length !== 1) return { error: notes.length === 0 ? 403 : 400 };
+  const author = splitCommentNote(notes[0].raw).author;
+  if (!author) return { error: 403 };
+  return { author };
 }
 
 function containsPath(rootDir, candidate) {
@@ -1780,7 +1797,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (!repo) return { error: 400 };
     const rel = safeRel(msg.path);
     if (!rel) return { error: 404 };
-    if (isTicketTree(rel) || !isMarkdownPath(rel)) return { error: 400 };
+    if (!commentPathAllowed(rel)) return { error: 400 };
     const file = await loadFile(repo, rel);
     if (!file) return { error: 404 };
     return { file };
@@ -1855,6 +1872,56 @@ export async function createHub(stateDir, sourceRoot) {
       return;
     }
     await applyCommentBody(socket, loaded.file, msg.id, result.body, result.note.id);
+  }
+
+  function denyUnlessAuthor(socket, thread) {
+    const owner = noteZeroAuthor(thread.body);
+    if (owner.error) return owner.error;
+    if (owner.author !== socket.session.username) return 403;
+    return 0;
+  }
+
+  async function onCommentResolve(socket, msg) {
+    const loaded = await loadCommentFile(socket, msg);
+    if (loaded.error) return fail(socket, loaded.error);
+    const found = commentThread(loaded.file, msg.id);
+    if (found.error) return fail(socket, found.error);
+    if (typeof msg.resolved !== "boolean") return fail(socket, 400);
+    const denied = denyUnlessAuthor(socket, found.thread);
+    if (denied) return fail(socket, denied);
+    const file = loaded.file;
+    const produced = setCommentResolved(createState(file.text), msg.id, msg.resolved);
+    const splice = coveringSplice(file.text, produced.doc);
+    if (splice == null) {
+      send(socket, {
+        type: "comment",
+        path: file.rel,
+        id: msg.id,
+        resolved: msg.resolved,
+        rev: file.rev,
+        unchanged: true,
+      });
+      return;
+    }
+    const wrote = await publish(socket, file, file.text, splice, { cursor: 0, anchor: 0 }, null, "comment");
+    if (wrote !== true) return failHeld(socket, wrote);
+    send(socket, { type: "comment", path: file.rel, id: msg.id, resolved: msg.resolved, rev: file.rev });
+  }
+
+  async function onCommentDelete(socket, msg) {
+    const loaded = await loadCommentFile(socket, msg);
+    if (loaded.error) return fail(socket, loaded.error);
+    const found = commentThread(loaded.file, msg.id);
+    if (found.error) return fail(socket, found.error);
+    const denied = denyUnlessAuthor(socket, found.thread);
+    if (denied) return fail(socket, denied);
+    const file = loaded.file;
+    const produced = removeCommentThread(createState(file.text), msg.id);
+    const splice = coveringSplice(file.text, produced.doc);
+    if (splice == null) return fail(socket, 404);
+    const wrote = await publish(socket, file, file.text, splice, { cursor: 0, anchor: 0 }, null, "comment");
+    if (wrote !== true) return failHeld(socket, wrote);
+    send(socket, { type: "comment", path: file.rel, id: msg.id, rev: file.rev });
   }
 
   // The question is note 0 on the new fence. One publish writes the marks and
@@ -1957,6 +2024,8 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "comment.threads") return onCommentThreads(socket, msg);
     if (msg.type === "comment.reply") return onCommentReply(socket, msg);
     if (msg.type === "comment.edit") return onCommentEdit(socket, msg);
+    if (msg.type === "comment.resolve") return onCommentResolve(socket, msg);
+    if (msg.type === "comment.delete") return onCommentDelete(socket, msg);
     if (msg.type === "comment.add") return onCommentAdd(socket, msg);
     if (msg.type === "list") return onList(socket);
     if (msg.type === "move") return onMove(socket, msg);
