@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { backspace, createState } from "../src/doc.js";
 import { FILL, literalIn } from "./cells.js";
 
 // Runs one cell by one route and checks the invariants of qa/editor-matrix-test-plan.md.
@@ -55,6 +56,8 @@ function editRange(cell) {
     if (key && key.startsWith("B: ")) key = key.slice(3);
     if (token.text != null) low += [...token.text].length;
     else if (token.compose) low += 1;
+    // A middle-click pastes the primary selection. That insert is an edit (R88).
+    else if (token.action && token.action.startsWith("middle-click")) low += 1;
     else if (token.action || POINTER.test(key)) continue;
     else if (HISTORY.has(key)) high += 1;
     else if (!NO_EDIT.has(key)) low += 1;
@@ -503,6 +506,14 @@ function withProbe(marked, letter) {
   return bytes.slice(0, from) + letter + bytes.slice(to);
 }
 
+// Backspace removes the probe's Q. Emptying a comment interior drops that span
+// and its thread in the same edit, so the bytes are the model's, not the slice.
+function probeAfterBackspace(marked) {
+  const replaced = withProbe(marked, "Q");
+  const at = Math.min(marked.focus, marked.anchor) + 1;
+  return backspace(createState(replaced, at)).doc;
+}
+
 // The hub's bytes and rev for the open file, as it last sent them to the page. Reading them
 // from there adds no client: a second client opening the file makes the page redraw, which
 // would disturb the very caret being checked. The hub itself is read once, at the end.
@@ -656,7 +667,7 @@ export async function runCell(suite, cell, routeName, serial) {
     await page.key("Backspace");
     await page.quiet();
     const back = sent(page, file);
-    const restored = withProbe(expect, "");
+    const restored = probeAfterBackspace(expect);
     if (back.text !== restored) result.failed.push(`I9 probe: Backspace after Q wanted ${JSON.stringify(restored)}, got ${JSON.stringify(back.text)}`);
   }
   const held = await hub.show(file);

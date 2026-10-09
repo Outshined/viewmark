@@ -23,6 +23,7 @@ import {
   initialCursor,
   formatHash,
   parseHash,
+  wordSpan,
 } from "../src/editor.js";
 import { splitCommentNote, lockSpans, lockIndexAt, commentRangeReason, skipHidden, lineCaret } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
@@ -4327,10 +4328,19 @@ test("comment cards edit the thread and line up with the highlight", () => {
     const button = mounted.findAll((node) => node.className === "md-add-comment")[0];
     assert.equal(button.textContent, "Add comment");
     assert.equal(button.hidden, false);
-    assert.equal(button.styleProps.left, "72px");
-    assert.equal(button.styleProps.top, "40px");
+    assert.equal(button.styleProps.left, "8px");
+    assert.equal(button.styleProps.top, "10px");
     let prevented = false;
     button.listeners.mousedown({
+      button: 1,
+      preventDefault() {
+        prevented = true;
+      },
+    });
+    assert.equal(prevented, false);
+    assert.equal(view.getState().doc, "hello fox two deer\n");
+    button.listeners.mousedown({
+      button: 0,
       preventDefault() {
         prevented = true;
       },
@@ -4593,7 +4603,7 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(openedMenu.panel.hidden, true);
     chooseFox();
     const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
-    add.listeners.mousedown({ preventDefault() {} });
+    add.listeners.mousedown({ button: 0, preventDefault() {} });
     assert.equal(fresh.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n");
     assert.equal(buttons("Resolve").length, 0);
     assert.equal(buttons("Reply").length, 0);
@@ -4954,7 +4964,7 @@ test("comment cards mark the thread being acted on", () => {
     });
     mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
     const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
-    add.listeners.mousedown({ preventDefault() {} });
+    add.listeners.mousedown({ button: 0, preventDefault() {} });
     assert.equal(fresh.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n");
     assert.equal(currentCards().length, 1);
     assert.equal(currentCards()[0].dataset.comment, "c1");
@@ -5437,7 +5447,7 @@ test("a comment note keeps the poster who saved it", () => {
     });
     mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
     const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
-    add.listeners.mousedown({ preventDefault() {} });
+    add.listeners.mousedown({ button: 0, preventDefault() {} });
     assert.equal(authors()[0].textContent, "Ada");
     assert.equal(times().length, 0);
     assert.equal(areas()[0].value, "");
@@ -6471,7 +6481,7 @@ test("a comment.add focuses the id the doc message added", () => {
     });
     mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
     const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
-    add.listeners.mousedown({ preventDefault() {} });
+    add.listeners.mousedown({ button: 0, preventDefault() {} });
     assert.equal(view.getState().doc, "hello fox two deer\n");
     assert.equal(view.getState().anchor, 6);
     assert.equal(view.getState().cursor, 9);
@@ -9403,6 +9413,27 @@ test("ctrl-enter saves a comment body and enter does not", () => {
   }
 });
 
+test("wordSpan trims markers and keeps the host of a url", () => {
+  const bold = "a **bold** b";
+  const at = bold.indexOf("bold");
+  assert.deepEqual(wordSpan(bold, at), [at, at + "bold".length]);
+  assert.equal(bold.slice(at, at + 4), "bold");
+  const url = "https://x.test/p";
+  const host = wordSpan(url, url.indexOf("test"));
+  assert.equal(url.slice(host[0], host[1]), "x.test");
+  const em = "_em_";
+  assert.equal(em.slice(...wordSpan(em, 1)), "em");
+  assert.equal("snake_case".slice(...wordSpan("snake_case", 3)), "snake_case");
+  assert.equal("don't".slice(...wordSpan("don't", 2)), "don't");
+  assert.equal("~~gone~~".slice(...wordSpan("~~gone~~", 3)), "gone");
+  const spaces = "a    b";
+  const gap = spaces.indexOf("    ") + 2;
+  assert.deepEqual(wordSpan(spaces, gap), [gap, gap]);
+  const punct = "alpha, beta.";
+  const beta = punct.indexOf("beta");
+  assert.equal(punct.slice(...wordSpan(punct, beta + 1)), "beta");
+});
+
 test("detail 2 selects the word and detail 3 selects the line", () => {
   const mounted = mountSheet();
   globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
@@ -9466,6 +9497,119 @@ test("detail 2 selects the word and detail 3 selects the line", () => {
     assert.equal(selectedSlice(blank.getState()), "");
     blank.destroy();
   } finally {
+    mounted.restore();
+  }
+});
+
+test("a double-click selects the word under the first press", () => {
+  const mounted = mountEditor();
+  const press = (target, detail) => {
+    mounted.listeners.mousedown({ clientX: 4, clientY: 4, detail, button: 0 });
+    mounted.listeners.mouseup({ clientX: 4, clientY: 4, detail, button: 0 });
+    mounted.listeners.click({
+      target,
+      clientX: 4,
+      clientY: 4,
+      detail,
+      button: 0,
+      preventDefault() {},
+    });
+  };
+  try {
+    const doc = "x\n\n```js\nlet foo = 1\n```\n";
+    const view = createEditor(mounted.root, doc, 0);
+    assert.equal(mounted.root.textContent.includes("```"), false);
+    const foo = mounted.findAll((node) => node.nodeType === 3 && node.textContent.includes("foo"))[0];
+    assert.ok(foo);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: foo, offset: foo.textContent.indexOf("foo") });
+    press(foo, 1);
+    assert.equal(mounted.root.textContent.includes("```"), false);
+    assert.equal(view.getState().anchor, view.getState().cursor);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: foo, offset: 0 });
+    press(foo, 2);
+    assert.equal(selectedSlice(view.getState()), "foo");
+    assert.equal(mounted.root.textContent.includes("```"), true);
+    view.destroy();
+
+    const tripleDoc = "x\n\n```js\nlet y\nlet z\n```\n";
+    const triple = createEditor(mounted.root, tripleDoc, 0);
+    const zed = mounted.findAll((node) => node.nodeType === 3 && node.textContent.includes("z"))[0];
+    assert.ok(zed);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: zed, offset: zed.textContent.indexOf("z") });
+    press(zed, 1);
+    assert.equal(mounted.root.textContent.includes("```"), false);
+    press(zed, 2);
+    const opener = mounted.findAll((node) => node.nodeType === 3 && node.textContent.includes("```"))[0];
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: opener || zed, offset: 0 });
+    press(opener || zed, 3);
+    assert.equal(selectedSlice(triple.getState()), "let z");
+    triple.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
+    mounted.restore();
+  }
+});
+
+test("a same-line render does not scroll the caret", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  try {
+    const view = createEditor(mounted.root, "hello fox\n", 0);
+    const text = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "hello fox")[0];
+    assert.ok(text);
+    let scrolls = 0;
+    text.parentElement.scrollIntoView = () => {
+      scrolls += 1;
+    };
+    globalThis.document.createTreeWalker = () => {
+      let pending = text;
+      return {
+        nextNode() {
+          const node = pending;
+          pending = null;
+          return node;
+        },
+      };
+    };
+    let reads = 0;
+    let tops = [20, 20];
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: text,
+      anchorOffset: 1,
+      focusNode: text,
+      focusOffset: 1,
+      removeAllRanges() {},
+      addRange() {},
+      setBaseAndExtent() {},
+      getRangeAt() {
+        return {
+          getClientRects() {
+            const top = tops[Math.min(reads, tops.length - 1)];
+            reads += 1;
+            return [{ top, left: 0, right: 8, bottom: top + 16, width: 8, height: 16 }];
+          },
+        };
+      },
+    });
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: text, offset: 1 });
+    const click = () => {
+      reads = 0;
+      mounted.listeners.click({ target: text, clientX: 4, clientY: 4, preventDefault() {} });
+    };
+    click();
+    assert.equal(scrolls, 0);
+    tops = [20, 48];
+    click();
+    assert.equal(scrolls, 1);
+    globalThis.window.innerWidth = 800;
+    globalThis.window.innerHeight = 600;
+    tops = [20, 80];
+    click();
+    assert.equal(scrolls, 1);
+    view.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
     mounted.restore();
   }
 });
@@ -11294,7 +11438,7 @@ test("a saved note opens only for its author", () => {
       },
     });
     mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
-    mounted.findAll((node) => node.className === "md-add-comment")[0].listeners.mousedown({ preventDefault() {} });
+    mounted.findAll((node) => node.className === "md-add-comment")[0].listeners.mousedown({ button: 0, preventDefault() {} });
     areas()[0].value = "hi";
     press("Save");
     const saved = fresh.getState().doc;

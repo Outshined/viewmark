@@ -1121,23 +1121,50 @@ function wordEdges(doc, cursor, direction) {
   return [cursor, index];
 }
 
-// A caret sits between characters. Take the word touching that boundary, or
-// stay put when both sides are whitespace.
-function wordSpan(doc, offset) {
-  const at = Math.max(0, Math.min(doc.length, offset));
-  if (at > 0 && !/\s/.test(doc[at - 1])) {
-    let start = at;
-    let end = at;
-    while (start > 0 && !/\s/.test(doc[start - 1])) start -= 1;
-    while (end < doc.length && !/\s/.test(doc[end])) end += 1;
-    return [start, end];
+// Trim marker characters the segmenter attaches to either end of a word.
+const WORD_MARK = new Set(["*", "_", "~", "`"]);
+
+// The word-like segment touching this boundary, on this line. A run of spaces
+// has none, so the caret stays where the press landed.
+export function wordSpan(doc, offset) {
+  const text = typeof doc === "string" ? doc : "";
+  const at = Math.max(0, Math.min(text.length, Number.isFinite(offset) ? offset : 0));
+  let lineStart = at;
+  while (lineStart > 0 && text[lineStart - 1] !== "\n") lineStart -= 1;
+  let lineEnd = at;
+  while (lineEnd < text.length && text[lineEnd] !== "\n") lineEnd += 1;
+  const line = text.slice(lineStart, lineEnd);
+  const local = at - lineStart;
+  const segments = [...new Intl.Segmenter(undefined, { granularity: "word" }).segment(line)];
+  const covering = (index) => segments.find((part) => index >= part.index && index < part.index + part.segment.length);
+  let part = null;
+  if (local > 0) {
+    const left = covering(local - 1);
+    if (left && left.isWordLike) part = left;
   }
-  if (at < doc.length && !/\s/.test(doc[at])) {
-    let end = at;
-    while (end < doc.length && !/\s/.test(doc[end])) end += 1;
-    return [at, end];
+  if (!part && local < line.length) {
+    const right = covering(local);
+    if (right && right.isWordLike) part = right;
   }
-  return [at, at];
+  if (!part) return [at, at];
+  let start = part.index;
+  let end = part.index + part.segment.length;
+  // Chromium splits a host label at each dot. Node keeps `x.test` as one word.
+  const wordAt = (index) => segments.find((item) => item.isWordLike && index >= item.index && index < item.index + item.segment.length);
+  while (start > 0 && line[start - 1] === ".") {
+    const prev = wordAt(start - 2);
+    if (!prev || prev.index + prev.segment.length !== start - 1) break;
+    start = prev.index;
+  }
+  while (end < line.length && line[end] === ".") {
+    const next = wordAt(end + 1);
+    if (!next || next.index !== end + 1) break;
+    end = next.index + next.segment.length;
+  }
+  while (start < end && WORD_MARK.has(line[start])) start += 1;
+  while (end > start && WORD_MARK.has(line[end - 1])) end -= 1;
+  if (start >= end) return [at, at];
+  return [lineStart + start, lineStart + end];
 }
 
 // The source line, not the visual wrap. The newline stays outside the range,
@@ -1480,6 +1507,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   let pointer = null;
   let didDrag = false;
+  // The first press of a multi-click. Later presses reuse it after a render
+  // would have moved the text under the pointer.
+  let gestureOffset = null;
+  let gestureArmed = false;
+  let gestureTimer = null;
+  // The slow double-click route waits 250ms. A lone click renders only after
+  // this, so the second press still hits the block the first press measured.
+  const DOUBLE_CLICK_MS = 500;
   let pasteSeen = false;
   let composing = false;
   let composed = "";
@@ -1752,13 +1787,63 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     range.collapse(true);
   }
 
-  function placeCaret() {
-    placingCaret = true;
+  function caretRect() {
+    const view = typeof window !== "undefined" ? window : null;
+    const sel = view && typeof view.getSelection === "function" ? view.getSelection() : null;
+    if (!sel || !sel.rangeCount || typeof sel.getRangeAt !== "function") return null;
+    let range = null;
     try {
-      placeCaretFromState();
+      range = sel.getRangeAt(0);
+    } catch {
+      return null;
+    }
+    if (!range) return null;
+    let rect = null;
+    if (typeof range.getClientRects === "function") {
+      const rects = range.getClientRects();
+      if (rects && rects.length > 0) rect = rects[rects.length - 1];
+    }
+    if ((!rect || !Number.isFinite(rect.top)) && typeof range.getBoundingClientRect === "function") {
+      rect = range.getBoundingClientRect();
+    }
+    if (!rect || !Number.isFinite(rect.top)) return null;
+    return rect;
+  }
+
+  function caretTop() {
+    const rect = caretRect();
+    return rect ? rect.top : null;
+  }
+
+  function caretInView(rect) {
+    const view = typeof window !== "undefined" ? window : null;
+    if (!rect || !view) return false;
+    const height = view.innerHeight;
+    const width = view.innerWidth;
+    if (!Number.isFinite(height) || height <= 0 || !Number.isFinite(width) || width <= 0) return false;
+    const bottom = Number.isFinite(rect.bottom) ? rect.bottom : rect.top;
+    const right = Number.isFinite(rect.right) ? rect.right : rect.left;
+    const left = Number.isFinite(rect.left) ? rect.left : 0;
+    return rect.top >= 0 && bottom <= height && left >= 0 && right <= width;
+  }
+
+  // priorTop is the caret before this render replaced the line. A rebuild that
+  // keeps the same visual line, or a caret already in view, stays put.
+  function placeCaret(priorTop) {
+    placingCaret = true;
+    let node = null;
+    try {
+      node = placeCaretFromState();
     } finally {
       placingCaret = false;
     }
+    if (!node) return;
+    if (priorTop !== undefined) {
+      const after = caretRect();
+      if (after && caretInView(after)) return;
+      if (priorTop != null && after && Number.isFinite(after.top) && Math.abs(after.top - priorTop) <= 3) return;
+    }
+    scrollCaret(node);
   }
 
   function scrollCaret(node) {
@@ -1786,15 +1871,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           range.selectNode(el);
           sel.removeAllRanges();
           sel.addRange(range);
-          return;
+          return null;
         }
       }
       const from = pointFor(anchor);
       const to = pointFor(caret);
       if (from && to) {
         sel.setBaseAndExtent(from.node, from.offset, to.node, to.offset);
-        scrollCaret(to.node);
-        return;
+        return to.node;
       }
     }
     const point = pointFor(caret);
@@ -1803,8 +1887,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       placePoint(range, point);
       sel.removeAllRanges();
       sel.addRange(range);
-      scrollCaret(point.node);
-      return;
+      return point.node;
     }
     const range = document.createRange();
     for (const el of root.querySelectorAll(".md-atom")) {
@@ -1817,23 +1900,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         range.selectNode(el);
         sel.removeAllRanges();
         sel.addRange(range);
-        return;
+        return null;
       }
       if (caret === end) {
         range.setStartAfter(el);
         range.collapse(true);
         sel.removeAllRanges();
         sel.addRange(range);
-        return;
+        return null;
       }
       if (caret === start) {
         range.setStartBefore(el);
         range.collapse(true);
         sel.removeAllRanges();
         sel.addRange(range);
-        return;
+        return null;
       }
     }
+    return null;
   }
 
   function selectionFromDom(sel) {
@@ -2438,6 +2522,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       addCommentButton.hidden = true;
       host.appendChild(addCommentButton);
       addCommentButton.addEventListener("mousedown", (event) => {
+        // A middle button pastes the primary selection. Cancelling that press
+        // drops the paste, and only the primary button adds a comment.
+        if (!event || event.button !== 0) return;
         event.preventDefault();
         const result = addComment(state.doc, state.anchor, state.cursor);
         if (!result) return;
@@ -2459,9 +2546,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     addCommentButton.hidden = false;
     setStyle(addCommentButton, "position", "fixed");
-    if (rect) {
-      setStyle(addCommentButton, "left", `${rect.right}px`);
-      setStyle(addCommentButton, "top", `${rect.top}px`);
+    // Above the selection, clear of the characters that follow it.
+    if (rect && Number.isFinite(rect.top) && Number.isFinite(rect.left)) {
+      const height = Number(addCommentButton.offsetHeight);
+      const lift = Number.isFinite(height) ? height : 0;
+      setStyle(addCommentButton, "left", `${rect.left}px`);
+      setStyle(addCommentButton, "top", `${rect.top - lift}px`);
     }
   }
 
@@ -2649,6 +2739,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function render() {
+    cancelGestureRender();
     const planned = plan(state.doc, state.cursor);
     let blocks = planned.blocks;
     if (rawSelectionLines) {
@@ -2663,13 +2754,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (block === flashBlock) el.classList.add("md-flash");
       return el;
     });
+    const priorTop = caretTop();
     root.replaceChildren(...nodes);
     markEditingHighlights();
     hideResolvedHighlights();
     renderCommentAside(planned.comments);
     layoutComments();
     if (commentFocus) focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
-    else placeCaret();
+    else placeCaret(priorTop);
     updateCommentButton();
     if (scrollCommentId) {
       const card = findCommentCard(scrollCommentId);
@@ -3732,10 +3824,48 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     claimLines(state.anchor, state.cursor);
   });
 
+  function cancelGestureRender() {
+    if (gestureTimer == null) return;
+    clearTimeout(gestureTimer);
+    gestureTimer = null;
+  }
+
+  // A lone click renders after the double-click interval. The next press
+  // cancels that, so a closed block stays closed between the presses.
+  function scheduleGestureRender() {
+    cancelGestureRender();
+    gestureTimer = setTimeout(() => {
+      gestureTimer = null;
+      gestureOffset = null;
+      gestureArmed = false;
+      if (closed) return;
+      render();
+    }, DOUBLE_CLICK_MS);
+  }
+
+  function pointOffset(event) {
+    if (!event || typeof document.caretPositionFromPoint !== "function") return null;
+    if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return null;
+    const pos = document.caretPositionFromPoint(event.clientX, event.clientY);
+    if (!pos) return null;
+    const mapped = mapOffset(pos.offsetNode, pos.offset);
+    if (!Number.isFinite(mapped)) return null;
+    return skipHidden(state.doc, mapped, "nearer");
+  }
+
   listen("mousedown", (event) => {
     commentFocus = null;
+    cancelGestureRender();
     pointer = { x: event.clientX, y: event.clientY };
     didDrag = false;
+    if (event && typeof event.button === "number" && event.button !== 0) return;
+    const detail = event && event.detail ? event.detail : 1;
+    if (detail >= 2) {
+      gestureArmed = true;
+      return;
+    }
+    gestureOffset = pointOffset(event);
+    gestureArmed = true;
   });
 
   listen("mouseup", (event) => {
@@ -3749,6 +3879,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         const mapped = selectionFromDom(sel);
         if (mapped) {
           didDrag = true;
+          gestureArmed = false;
+          gestureOffset = null;
           const before = lineIndexAt(state.doc, state.cursor);
           state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
           if (!claimLines(mapped.anchor, mapped.cursor)) return;
@@ -3781,11 +3913,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   listen("click", (event) => {
+    const armed = gestureArmed;
+    gestureArmed = false;
+    const stored = armed ? gestureOffset : null;
     const target = event.target.nodeType === 1 ? event.target : event.target.parentElement;
     const link = target?.closest?.("a");
     if (link && root.contains(link)) event.preventDefault();
     if (didDrag) {
       didDrag = false;
+      gestureOffset = null;
       return;
     }
     if (link && root.contains(link)) {
@@ -3822,6 +3958,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (!keepCurrent) clearCurrentComment();
       state = { ...state, anchor: end, cursor: end };
       if (!claimLines(end, end)) return;
+      if (event.detail === 1) scheduleGestureRender();
+      else render();
+      return;
+    }
+    const detail = event.detail;
+    if (detail === 2 || detail === 3) {
+      const atom = target?.closest?.(".md-atom");
+      if (atom && root.contains(atom)) event.preventDefault();
+      const offset = stored != null ? stored : pointOffset(event);
+      if (offset == null) return;
+      if (detail === 3) gestureOffset = null;
+      if (!keepCurrent) clearCurrentComment();
+      const span = detail === 2 ? wordSpan(state.doc, offset) : lineSpan(state.doc, offset);
+      state = { ...state, anchor: span[0], cursor: span[1] };
+      if (!claimLines(span[0], span[1])) return;
       render();
       return;
     }
@@ -3832,28 +3983,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const next = atomClickOffset(atom, target);
       state = { ...state, anchor: next, cursor: next };
       if (!claimLines(next, next)) return;
-      render();
+      if (detail === 1) scheduleGestureRender();
+      else render();
       return;
     }
     if (!keepCurrent) clearCurrentComment();
-    if (typeof document.caretPositionFromPoint !== "function") return;
-    const pos = document.caretPositionFromPoint(event.clientX, event.clientY);
-    if (!pos) return;
-    const offset = skipHidden(state.doc, mapOffset(pos.offsetNode, pos.offset), "nearer");
-    let anchor = offset;
-    let cursor = offset;
-    if (event.detail === 2) {
-      const span = wordSpan(state.doc, offset);
-      anchor = span[0];
-      cursor = span[1];
-    } else if (event.detail === 3) {
-      const span = lineSpan(state.doc, offset);
-      anchor = span[0];
-      cursor = span[1];
-    }
-    state = { ...state, anchor, cursor };
-    if (!claimLines(anchor, cursor)) return;
-    render();
+    const offset = stored != null ? stored : pointOffset(event);
+    if (offset == null) return;
+    state = { ...state, anchor: offset, cursor: offset };
+    if (!claimLines(offset, offset)) return;
+    if (detail === 1) scheduleGestureRender();
+    else render();
   });
 
   listen("auxclick", (event) => {
@@ -5636,6 +5776,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     },
     destroy() {
       closed = true;
+      cancelGestureRender();
       clearEditTimer();
       clearRefusal();
       unsubscribe();
