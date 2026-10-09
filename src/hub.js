@@ -727,6 +727,8 @@ export async function createHub(stateDir, sourceRoot) {
   const build = await readBuild(sourceRoot);
   const repos = await loadRepos(stateDir);
   const sockets = new Set();
+  // token -> socket that currently owns that page's caret. A live second socket is not stored.
+  const sessionTokens = new Map();
   let queue = Promise.resolve();
   let stopped = false;
 
@@ -1792,11 +1794,51 @@ export async function createHub(stateDir, sourceRoot) {
     else pushCap(session.undo, entry);
   }
 
+  function acceptedSession(value) {
+    return typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value) ? value : "";
+  }
+
+  // The closed socket stays in file.subscribers until this runs, so an edit while it is
+  // down still shifts its caret. onSelect returns immediately when repo is already set.
+  function adoptSession(from, to) {
+    const old = from.session;
+    const next = to.session;
+    if (!old || !next) return;
+    next.lines = old.lines;
+    next.cursor = old.cursor;
+    next.anchor = old.anchor;
+    next.undo = old.undo;
+    next.redo = old.redo;
+    next.docPath = old.docPath;
+    next.repo = old.repo;
+    const file = old.repo && old.docPath ? old.repo.files.get(old.docPath) : null;
+    if (file) {
+      file.subscribers.delete(from);
+      file.subscribers.add(to);
+      syncLocks(file);
+    }
+    old.adopted = true;
+  }
+
+  function claimSession(socket, token) {
+    const previous = sessionTokens.get(token);
+    if (previous && previous !== socket) {
+      const live = !previous.destroyed && !previous.session?.gone;
+      if (live) return;
+      adoptSession(previous, socket);
+    }
+    sessionTokens.set(token, socket);
+    socket.session.token = token;
+  }
+
   async function disconnect(socket) {
     const session = socket.session;
     if (!session || session.gone) return;
     session.gone = true;
     sockets.delete(socket);
+    // Still subscribed, so replayClaims and shiftOffset keep running. A later close of a
+    // socket whose caret was already adopted must not release that file.
+    if (session.token || session.adopted) return;
     await releaseFile(socket);
     session.undo = [];
     session.redo = [];
@@ -2175,6 +2217,8 @@ export async function createHub(stateDir, sourceRoot) {
         return;
       }
       session.username = msg.username;
+      const token = acceptedSession(msg.session);
+      if (token) claimSession(socket, token);
       send(socket, { type: "hello", build });
       return;
     }
@@ -2247,6 +2291,11 @@ export async function createHub(stateDir, sourceRoot) {
       },
     });
     socket.on("data", (chunk) => parser.push(chunk));
+    socket.on("end", () => {
+      // The peer stopped sending. Until destroy, readyState stays writeOnly, so a
+      // new hello still sees this socket as live and will not take its caret.
+      if (!socket.destroyed) socket.destroy();
+    });
     socket.on("close", () => {
       enqueue(() => disconnect(socket)).catch((err) => console.error(err));
     });

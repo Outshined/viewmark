@@ -5419,6 +5419,32 @@ function bindLogin(dialog, form, input, storage, connect) {
   loginBindings.set(dialog, { form, onSubmit, onCancel, onKey });
 }
 
+const SESSION_TOKEN = /^[A-Za-z0-9_-]{1,80}$/;
+const SESSION_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+function mintSessionToken() {
+  const cryptoObj = globalThis.crypto;
+  if (cryptoObj && typeof cryptoObj.randomUUID === "function") return cryptoObj.randomUUID();
+  let token = "";
+  for (let i = 0; i < 32; i += 1) token += SESSION_ALPHABET[Math.floor(Math.random() * SESSION_ALPHABET.length)];
+  return token;
+}
+
+// One token for this page. Every hello of its transport carries it, including after a drop.
+function storedSession(storage) {
+  const key = "viewmark.session";
+  let current = "";
+  if (storage && typeof storage.getItem === "function") {
+    const raw = storage.getItem(key);
+    if (typeof raw === "string") current = raw;
+  }
+  if (!SESSION_TOKEN.test(current)) {
+    current = mintSessionToken();
+    if (storage && typeof storage.setItem === "function") storage.setItem(key, current);
+  }
+  return current;
+}
+
 export function startPage(env = {}) {
   const doc = env.document || globalThis.document;
   if (!doc || typeof doc.getElementById !== "function") return null;
@@ -5438,10 +5464,39 @@ export function startPage(env = {}) {
     shutdown();
     const transport = createSocketTransport({
       username,
+      session: storedSession(storage),
       socketFactory: env.socketFactory,
       location: env.location || globalThis.location,
     });
-    const editor = createEditor(root, "", 0, transport, storage);
+    // A move inside a held span sends no lock, so the hub still has the caret from
+    // the span claim. The same text on the same path keeps this page's caret. Another
+    // path, or text that changed while the socket was down, takes the caret the hub sent.
+    let editor = null;
+    let shownPath = "";
+    const send = transport.send.bind(transport);
+    transport.send = (message) => {
+      if (message && message.type === "open" && typeof message.path === "string" && message.path !== shownPath) shownPath = "";
+      send(message);
+    };
+    const subscribe = transport.subscribe.bind(transport);
+    transport.subscribe = (fn) => subscribe((message) => {
+      let next = message;
+      if (
+        editor &&
+        next &&
+        next.type === "file" &&
+        shownPath &&
+        (typeof next.path !== "string" || next.path === shownPath) &&
+        typeof next.text === "string" &&
+        next.text === editor.getState().doc
+      ) {
+        const state = editor.getState();
+        next = { ...next, cursor: state.cursor, anchor: state.anchor };
+      }
+      if (next && next.type === "file" && typeof next.path === "string") shownPath = next.path;
+      fn(next);
+    });
+    editor = createEditor(root, "", 0, transport, storage);
     current = { transport, editor, username };
   }
 

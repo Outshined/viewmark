@@ -176,7 +176,7 @@ export function retryDelay(attempt, roll) {
   return Math.round(Math.min(30000, 500 * 2 ** attempt) * factor);
 }
 
-export function createSocketTransport({ username, socketFactory, location, random, schedule } = {}) {
+export function createSocketTransport({ username, socketFactory, location, random, schedule, session } = {}) {
   const url = socketURL(location);
   const factory = socketFactory || ((address) => new WebSocket(address));
   const roll = typeof random === "function" ? random : Math.random;
@@ -192,6 +192,7 @@ export function createSocketTransport({ username, socketFactory, location, rando
   let sawOpen = false;
   let timer = null;
   const name = typeof username === "string" ? username : "";
+  const sessionToken = typeof session === "string" ? session : "";
 
   function transmit(message) {
     // A dropped socket does not queue. The next open sends hello and repos only.
@@ -237,7 +238,9 @@ export function createSocketTransport({ username, socketFactory, location, rando
   function onOpen() {
     // close() can run before the handshake finishes.
     if (closed) return;
-    socket.send(JSON.stringify({ type: "hello", username: name }));
+    const hello = { type: "hello", username: name };
+    if (sessionToken) hello.session = sessionToken;
+    socket.send(JSON.stringify(hello));
     socket.send(JSON.stringify({ type: "repos", username: name }));
     socketOpen = true;
     attempt = 0;

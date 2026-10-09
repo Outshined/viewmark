@@ -6448,7 +6448,8 @@ test("username opens, closes, and reopens the socket", () => {
     assert.equal(sockets[0].url, "ws://viewmark.test/api/ws");
     assert.equal(mounted.root.textContent.includes("Viewmark"), false);
     sockets[0].emit("open");
-    assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada" });
+    assert.match(storage.data["viewmark.session"], /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada", session: storage.data["viewmark.session"] });
     assert.deepEqual(JSON.parse(sockets[0].sent[1]), { type: "repos", username: "Ada" });
     assert.equal(sockets[0].sent.length, 2);
     assert.equal(sockets[0].sent.some((frame) => {
@@ -6514,7 +6515,8 @@ test("username opens, closes, and reopens the socket", () => {
     assert.equal(dialog.open, false);
     assert.equal(sockets.length, 2);
     sockets[1].emit("open");
-    assert.deepEqual(JSON.parse(sockets[1].sent[0]), { type: "hello", username: "ada" });
+    assert.deepEqual(JSON.parse(sockets[1].sent[0]), { type: "hello", username: "ada", session: storage.data["viewmark.session"] });
+    assert.equal(JSON.parse(sockets[1].sent[0]).session, JSON.parse(sockets[0].sent[0]).session);
     assert.deepEqual(JSON.parse(sockets[1].sent[1]), { type: "repos", username: "ada" });
     assert.equal(sockets[1].sent.length, 2);
     again.close();
@@ -6803,7 +6805,7 @@ test("T-repo-switch", () => {
     });
     assert.equal(sockets.length, 1);
     sockets[0].emit("open");
-    assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada" });
+    assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada", session: storage.data["viewmark.session"] });
     assert.deepEqual(JSON.parse(sockets[0].sent[1]), { type: "repos", username: "Ada" });
     assert.equal(sockets[0].sent.length, 2);
     sockets[0].emit("message", {
@@ -6962,7 +6964,9 @@ test("username focus stays on the field through the first character", () => {
     assert.equal(prevented, true);
     assert.equal(sockets.length, 1);
     sockets[0].emit("open");
-    assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada" });
+    const hello = JSON.parse(sockets[0].sent[0]);
+    assert.match(hello.session, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    assert.deepEqual(hello, { type: "hello", username: "Ada", session: hello.session });
     page.close();
     assert.equal(sockets[0].closed, true);
   } finally {
@@ -10488,6 +10492,207 @@ test("a dropped socket retries until close", () => {
   early.transport.close();
   early.timers[2].fn();
   assert.equal(early.sockets.length, 3);
+});
+
+test("createSocketTransport sends session on every hello when the option is set", () => {
+  const sockets = [];
+  const timers = [];
+  function factory(url) {
+    const handlers = {};
+    const socket = {
+      url,
+      sent: [],
+      closed: false,
+      addEventListener(type, fn) {
+        handlers[type] = fn;
+      },
+      removeEventListener(type, fn) {
+        if (handlers[type] === fn) delete handlers[type];
+      },
+      send(data) {
+        this.sent.push(JSON.parse(data));
+      },
+      close() {
+        this.closed = true;
+      },
+      emit(type, event) {
+        if (handlers[type]) handlers[type](event);
+      },
+    };
+    sockets.push(socket);
+    return socket;
+  }
+  const transport = createSocketTransport({
+    username: "Ada",
+    session: "tok_1",
+    socketFactory: factory,
+    location: { protocol: "http:", host: "viewmark.test" },
+    random: () => 0,
+    schedule(fn, ms) {
+      const timer = { fn, ms };
+      timers.push(timer);
+      return timer;
+    },
+  });
+  sockets[0].emit("open");
+  assert.deepEqual(sockets[0].sent, [
+    { type: "hello", username: "Ada", session: "tok_1" },
+    { type: "repos", username: "Ada" },
+  ]);
+  sockets[0].emit("close");
+  timers[0].fn();
+  sockets[1].emit("open");
+  assert.deepEqual(sockets[1].sent, [
+    { type: "hello", username: "Ada", session: "tok_1" },
+    { type: "repos", username: "Ada" },
+  ]);
+  transport.close();
+});
+
+test("startPage keeps one viewmark.session and mints 32 letters without randomUUID", () => {
+  const mounted = mountEditor();
+  document.getElementById = (id) => (id === "editor" ? mounted.root : null);
+  document.body = document.createElement("body");
+  const storage = {
+    data: { "viewmark.username": "Ada", "viewmark.session": "not a token" },
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
+    },
+    setItem(key, value) {
+      this.data[key] = String(value);
+    },
+  };
+  const sockets = [];
+  function factory(url) {
+    const handlers = {};
+    const socket = {
+      url,
+      sent: [],
+      closed: false,
+      addEventListener(type, fn) {
+        handlers[type] = fn;
+      },
+      send(data) {
+        this.sent.push(data);
+      },
+      close() {
+        this.closed = true;
+      },
+      emit(type, event) {
+        if (handlers[type]) handlers[type](event);
+      },
+    };
+    sockets.push(socket);
+    return socket;
+  }
+  const cryptoObj = globalThis.crypto;
+  const previousUUID = cryptoObj.randomUUID;
+  cryptoObj.randomUUID = undefined;
+  try {
+    const page = startPage({
+      document: globalThis.document,
+      sessionStorage: storage,
+      socketFactory: factory,
+      location: { protocol: "http:", host: "viewmark.test" },
+    });
+    const token = storage.data["viewmark.session"];
+    assert.match(token, /^[A-Za-z0-9]{32}$/);
+    sockets[0].emit("open");
+    assert.deepEqual(JSON.parse(sockets[0].sent[0]), { type: "hello", username: "Ada", session: token });
+    page.close();
+    const again = startPage({
+      document: globalThis.document,
+      sessionStorage: storage,
+      socketFactory: factory,
+      location: { protocol: "http:", host: "viewmark.test" },
+    });
+    sockets[1].emit("open");
+    assert.equal(storage.data["viewmark.session"], token);
+    assert.deepEqual(JSON.parse(sockets[1].sent[0]), { type: "hello", username: "Ada", session: token });
+    again.close();
+  } finally {
+    if (previousUUID === undefined) delete cryptoObj.randomUUID;
+    else cryptoObj.randomUUID = previousUUID;
+    mounted.restore();
+  }
+});
+
+test("a same-text file keeps the caret a same-span click did not lock", () => {
+  const mounted = mountEditor();
+  document.getElementById = (id) => (id === "editor" ? mounted.root : null);
+  document.body = document.createElement("body");
+  const storage = {
+    data: { "viewmark.username": "Ada" },
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
+    },
+    setItem(key, value) {
+      this.data[key] = String(value);
+    },
+  };
+  const sockets = [];
+  function factory(url) {
+    const handlers = {};
+    const socket = {
+      url,
+      sent: [],
+      closed: false,
+      addEventListener(type, fn) {
+        handlers[type] = fn;
+      },
+      send(data) {
+        this.sent.push(data);
+      },
+      close() {
+        this.closed = true;
+      },
+      emit(type, event) {
+        if (handlers[type]) handlers[type](event);
+      },
+    };
+    sockets.push(socket);
+    return socket;
+  }
+  const page = startPage({
+    document: globalThis.document,
+    sessionStorage: storage,
+    socketFactory: factory,
+    location: { protocol: "http:", host: "viewmark.test" },
+  });
+  try {
+    const doc = "alpha\n";
+    const at = 2;
+    sockets[0].emit("open");
+    sockets[0].emit("message", { data: JSON.stringify({ type: "file", rev: 1, text: doc, path: "a.md", cursor: 0, anchor: 0 }) });
+    sockets[0].sent.length = 0;
+    const node = mounted.findAll((item) => item.nodeType === 3 && item.textContent === "alpha")[0];
+    assert.ok(node);
+    document.caretPositionFromPoint = () => ({ offsetNode: node, offset: at });
+    mounted.listeners.click({ clientX: 4, clientY: 4, detail: 1, target: node });
+    assert.equal(sockets[0].sent.some((frame) => JSON.parse(frame).type === "lock"), false);
+    sockets[0].emit("message", { data: JSON.stringify({ type: "file", rev: 1, text: doc, path: "a.md", cursor: 0, anchor: 0 }) });
+    const locks = sockets[0].sent.map((frame) => JSON.parse(frame)).filter((message) => message.type === "lock");
+    assert.equal(locks.at(-1).cursor, at);
+    assert.equal(locks.at(-1).anchor, at);
+    mounted.listeners.beforeinput({ inputType: "insertText", data: "x", preventDefault() {} });
+    const edit = JSON.parse(sockets[0].sent.at(-1));
+    assert.equal(edit.type, "edit");
+    assert.equal(edit.cursor, at);
+    assert.equal(edit.anchor, at);
+    const changed = "Alpha\n";
+    sockets[0].emit("message", { data: JSON.stringify({ type: "file", rev: 2, text: changed, path: "a.md", cursor: 4, anchor: 4 }) });
+    const moved = sockets[0].sent.map((frame) => JSON.parse(frame)).filter((message) => message.type === "lock");
+    assert.equal(moved.at(-1).cursor, 4);
+    assert.equal(moved.at(-1).anchor, 4);
+    sockets[0].emit("message", { data: JSON.stringify({ type: "file", rev: 2, text: changed, path: "b.md", cursor: 1, anchor: 1 }) });
+    const other = sockets[0].sent.map((frame) => JSON.parse(frame)).filter((message) => message.type === "lock");
+    assert.equal(other.at(-1).cursor, 1);
+    assert.equal(other.at(-1).anchor, 1);
+  } finally {
+    delete document.caretPositionFromPoint;
+    page.close();
+    mounted.restore();
+  }
 });
 
 test("reconnect keeps the open document and sends no edit", () => {

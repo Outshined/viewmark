@@ -161,14 +161,25 @@ function connect(port) {
   };
 }
 
-async function hello(port, username, repo = "docs") {
+async function hello(port, username, repo = "docs", session) {
   const client = connect(port);
   await client.ready;
-  client.send({ type: "hello", username });
+  const greeting = { type: "hello", username };
+  if (typeof session === "string") greeting.session = session;
+  client.send(greeting);
   const greeted = await client.next((msg) => msg.type === "hello" || msg.type === "error");
   if (greeted.type !== "hello") throw new Error(`hello failed ${JSON.stringify(greeted)}`);
+  if (Object.prototype.hasOwnProperty.call(greeted, "session")) {
+    throw new Error(`hello reply includes session ${JSON.stringify(greeted)}`);
+  }
   if (repo) client.send({ type: "repo", username, name: repo });
   return client;
+}
+
+async function waitClosed(socket) {
+  socket.close();
+  await closed(socket);
+  await delay(30);
 }
 
 async function registerRepo(port, name, description, repoPath) {
@@ -3653,5 +3664,174 @@ test("T-heading-title", async () => {
     assert.equal(b.all.some((msg) => msg.type === "docs"), false);
     a.ws.close();
     b.ws.close();
+  });
+});
+
+test("a closed holder reconnects with its token and the file message carries its caret and the lock succeeds", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "alpha\nbeta\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const token = "sess_A-1";
+    const a = await hello(port, "A", "docs", token);
+    let rev = (await openDoc(a, "A", "a.md")).rev;
+    await syncLock(a, [], "A", "a.md", 1, rev, 4);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev,
+      anchor: 2,
+      cursor: 2,
+      op: "insert",
+      text: "Q",
+    });
+    const edited = await takeDoc(a);
+    assert.equal(edited.text, "alQpha\nbeta\n");
+    a.send({ type: "undo", username: "A", path: "a.md", rev: edited.rev });
+    const undone = await takeDoc(a);
+    assert.equal(undone.text, text);
+    await syncLock(a, [], "A", "a.md", 1, undone.rev, 4);
+    await waitClosed(a.ws);
+
+    const again = await hello(port, "A", "docs", token);
+    again.send({ type: "open", username: "A", path: "a.md" });
+    const file = await again.next((msg) => msg.type === "file" && msg.path === "a.md");
+    assert.equal(file.text, text);
+    assert.equal(file.anchor, 1);
+    assert.equal(file.cursor, 4);
+    const index = lockIndexAt(file.text, file.cursor);
+    assert.deepEqual(
+      file.locks.find((line) => line.username === "A" && line.index === index),
+      { index, username: "A" },
+    );
+    again.send({ type: "lock", username: "A", path: "a.md", anchor: 1, cursor: 4, rev: file.rev });
+    const locks = await again.next((msg) => msg.type === "locks" || msg.type === "error");
+    assert.equal(locks.type, "locks");
+    again.send({ type: "redo", username: "A", path: "a.md", rev: file.rev });
+    const redone = await takeDoc(again);
+    assert.equal(redone.text, "alQpha\nbeta\n");
+    assert.equal(redone.cursor, 3);
+    assert.equal(redone.anchor, 3);
+    again.ws.close();
+  });
+});
+
+test("a second live socket with that token gets 409 naming the holder", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "alpha\n\nbeta\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const token = "same-token";
+    const caret = text.indexOf("beta");
+    const a = await hello(port, "A", "docs", token);
+    const rev = (await openDoc(a, "A", "a.md")).rev;
+    await syncLock(a, [], "A", "a.md", caret, rev);
+    const b = await hello(port, "B", "docs", token);
+    const opened = await openDoc(b, "B", "a.md");
+    assert.equal(Object.hasOwn(opened, "cursor"), false);
+    assert.equal(Object.hasOwn(opened, "anchor"), false);
+    b.send({ type: "lock", username: "B", path: "a.md", anchor: caret, cursor: caret, rev });
+    assert.deepEqual(await b.next((msg) => msg.type === "error"), { type: "error", status: 409, heldBy: "A" });
+    const other = await syncLock(b, [a], "B", "a.md", 0, rev);
+    assert.deepEqual(
+      other.lines.find((line) => line.username === "B"),
+      { index: 0, username: "B" },
+    );
+
+    await waitClosed(a.ws);
+    const again = await hello(port, "A", "docs", token);
+    again.send({ type: "open", username: "A", path: "a.md" });
+    const file = await again.next((msg) => msg.type === "file" && msg.path === "a.md");
+    assert.equal(file.anchor, caret);
+    assert.equal(file.cursor, caret);
+    again.send({ type: "lock", username: "A", path: "a.md", anchor: caret, cursor: caret, rev: file.rev });
+    const locks = await again.next((msg) => msg.type === "locks" || msg.type === "error");
+    assert.equal(locks.type, "locks");
+    assert.deepEqual(
+      locks.lines.find((line) => line.index === lockIndexAt(file.text, caret)),
+      { index: lockIndexAt(file.text, caret), username: "A" },
+    );
+    b.ws.close();
+    again.ws.close();
+  });
+});
+
+test("an insert by someone else while the socket is down shifts the caret the file message returns", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "one\n\nalpha\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const token = "down-caret";
+    const caret = text.indexOf("alpha") + 2;
+    const inserted = "zero\n\n";
+    const a = await hello(port, "A", "docs", token);
+    const b = await hello(port, "B");
+    const rev = (await openDoc(a, "A", "a.md")).rev;
+    await openDoc(b, "B", "a.md");
+    await syncLock(a, [b], "A", "a.md", caret, rev);
+    await waitClosed(a.ws);
+    b.send({
+      type: "edit",
+      username: "B",
+      path: "a.md",
+      rev,
+      anchor: 0,
+      cursor: 0,
+      op: "insert",
+      text: inserted,
+    });
+    const doc = await takeDoc(b);
+    assert.equal(doc.text, inserted + text);
+    const again = await hello(port, "A", "docs", token);
+    again.send({ type: "open", username: "A", path: "a.md" });
+    const file = await again.next((msg) => msg.type === "file" && msg.path === "a.md");
+    assert.equal(file.text, doc.text);
+    assert.equal(file.cursor, caret + inserted.length);
+    assert.equal(file.anchor, caret + inserted.length);
+    const index = lockIndexAt(file.text, file.cursor);
+    assert.deepEqual(
+      file.locks.find((line) => line.username === "A" && line.index === index),
+      { index, username: "A" },
+    );
+    again.send({
+      type: "lock",
+      username: "A",
+      path: "a.md",
+      anchor: file.anchor,
+      cursor: file.cursor,
+      rev: file.rev,
+    });
+    const locks = await again.next((msg) => msg.type === "locks" || msg.type === "error");
+    assert.equal(locks.type, "locks");
+    b.ws.close();
+    again.ws.close();
+  });
+});
+
+test("the hub ignores a session token outside the accepted pattern", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "alpha\nbeta\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    for (const session of ["has space", "a".repeat(81), ""]) {
+      const a = await hello(port, "A", "docs", session);
+      const rev = (await openDoc(a, "A", "a.md")).rev;
+      await syncLock(a, [], "A", "a.md", 4, rev);
+      await waitClosed(a.ws);
+      const again = await hello(port, "A", "docs", session);
+      again.send({ type: "open", username: "A", path: "a.md" });
+      const file = await again.next((msg) => msg.type === "file" && msg.path === "a.md");
+      assert.equal(Object.hasOwn(file, "cursor"), false);
+      assert.equal(Object.hasOwn(file, "anchor"), false);
+      again.ws.close();
+    }
+    const token = "a".repeat(80);
+    const a = await hello(port, "A", "docs", token);
+    const rev = (await openDoc(a, "A", "a.md")).rev;
+    await syncLock(a, [], "A", "a.md", 4, rev);
+    await waitClosed(a.ws);
+    const again = await hello(port, "A", "docs", token);
+    again.send({ type: "open", username: "A", path: "a.md" });
+    const file = await again.next((msg) => msg.type === "file" && msg.path === "a.md");
+    assert.equal(file.cursor, 4);
+    assert.equal(file.anchor, 4);
+    again.ws.close();
   });
 });
