@@ -3043,7 +3043,12 @@ test("T-move", async () => {
     assert.equal(docsA.files.includes("notes/idea.md"), false);
     assert.equal(docsA.titles["archive/idea.md"], undefined);
     assert.equal(docsA.titles["notes/idea.md"], undefined);
-    assert.equal(a.all.length, 0);
+    assert.deepEqual(a.all, [{
+      type: "moved",
+      path: "notes/idea.md",
+      moves: [{ path: "notes/idea.md", dest: "archive/idea.md" }],
+    }]);
+    a.all.length = 0;
     assert.equal(b.all.length, 0);
     assert.equal(await readDoc(dir, "archive/idea.md"), "Qintro\n# Idea Title\n");
     await assert.rejects(() => fs.lstat(path.join(dir, "notes", "idea.md")));
@@ -3085,7 +3090,12 @@ test("T-move", async () => {
     assert.equal(topDocsB.titles["idea.md"], undefined);
     assert.equal(await readDoc(dir, "idea.md"), "QZintro\n# Idea Title\n");
     await assert.rejects(() => fs.lstat(path.join(dir, "archive", "idea.md")));
-    assert.equal(a.all.length, 0);
+    assert.deepEqual(a.all, [{
+      type: "moved",
+      path: "archive/idea.md",
+      moves: [{ path: "archive/idea.md", dest: "idea.md" }],
+    }]);
+    a.all.length = 0;
     assert.equal(b.all.length, 0);
 
     await openDoc(b, "B", "notes/sub/deep.md");
@@ -3104,7 +3114,12 @@ test("T-move", async () => {
     assert.equal(await readDoc(dir, "archive/notes/sub/deep.md"), "# Deep\n");
     assert.equal(await readDoc(dir, "archive/notes/extra.txt"), "pic\n");
     await assert.rejects(() => fs.lstat(path.join(dir, "notes")));
-    assert.equal(a.all.length, 0);
+    assert.deepEqual(a.all, [{
+      type: "moved",
+      path: "notes",
+      moves: [{ path: "notes/sub/deep.md", dest: "archive/notes/sub/deep.md" }],
+    }]);
+    a.all.length = 0;
     assert.equal(b.all.length, 0);
 
     a.send({ type: "move", username: "A", path: "archive/notes", dir: "" });
@@ -3121,14 +3136,23 @@ test("T-move", async () => {
     assert.equal(await readDoc(dir, "notes/sub/deep.md"), "# Deep\n");
     assert.equal(await readDoc(dir, "notes/extra.txt"), "pic\n");
     await assert.rejects(() => fs.lstat(path.join(dir, "archive", "notes")));
-    assert.equal(a.all.length, 0);
+    assert.deepEqual(a.all, [{
+      type: "moved",
+      path: "archive/notes",
+      moves: [{ path: "archive/notes/sub/deep.md", dest: "notes/sub/deep.md" }],
+    }]);
+    a.all.length = 0;
     assert.equal(b.all.length, 0);
 
     a.send({ type: "move", username: "A", path: "archive/keep.md", dir: "archive" });
-    // A pending next() would stay first in line and swallow the next frame.
-    await delay(200);
+    assert.deepEqual(await a.next((msg) => msg.type === "moved" || msg.type === "error"), {
+      type: "moved",
+      path: "archive/keep.md",
+      moves: [{ path: "archive/keep.md", dest: "archive/keep.md" }],
+    });
     assert.equal(a.all.length, 0);
     assert.equal(b.all.length, 0);
+    assert.equal(b.all.some((msg) => msg.type === "moved"), false);
     assert.equal(await readDoc(dir, "archive/keep.md"), "# Keep  \n");
 
     await openDoc(a, "A", "archive/keep.md");

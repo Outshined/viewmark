@@ -16,6 +16,7 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME create <path> [--file PATH]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME edit <path> [--start LINE:OFFSET --end LINE:OFFSET]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME delete <path>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME move <path> [--dir DIR]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment list <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment show <path> <thread>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment reply <path> <thread>
@@ -41,7 +42,7 @@ Usage:
 --port or VIEWMARK_PORT, default 8765. --user or VIEWMARK_USER; the flag wins.
 Missing, empty, NUL, CR, LF, <, or > is rejected. There is no default name.
 --json is global. --help, help, or no args exits 0.
---repo is required on list, show, create, edit, delete, comment, commit, and ticket.
+--repo is required on list, show, create, edit, delete, move, comment, commit, and ticket.
 serve keeps running. The default directory is \`state\` beside the program, and --user is not required.
 
 stdout and stderr:
@@ -144,6 +145,7 @@ const VALUE_FLAGS = new Set([
   "path",
   "message",
   "file",
+  "dir",
   "start",
   "end",
   "expect",
@@ -249,6 +251,8 @@ function parseArgs(argv) {
     message: "",
     fileSet: false,
     file: "",
+    dirSet: false,
+    dir: "",
     startSet: false,
     start: "",
     endSet: false,
@@ -341,6 +345,9 @@ function parseArgs(argv) {
       } else if (name === "file") {
         args.fileSet = true;
         args.file = value;
+      } else if (name === "dir") {
+        args.dirSet = true;
+        args.dir = value;
       } else if (name === "start") {
         args.startSet = true;
         args.start = value;
@@ -581,6 +588,28 @@ async function runDelete(hub, username, docPath, json) {
   const msg = await hub.next((item) => item.type === "deleted" || item.type === "error");
   if (msg.type === "error") return serverError(msg);
   return printDeleted(msg, json);
+}
+
+function printMoved(msg, json) {
+  if (!msg || !Array.isArray(msg.moves)) return 1;
+  if (msg.moves.some((move) => typeof move.path !== "string" || typeof move.dest !== "string")) return 1;
+  if (json) {
+    if (msg.moves.length === 1 && msg.moves[0].path === msg.path) {
+      writeJson({ path: msg.moves[0].path, dest: msg.moves[0].dest });
+      return 0;
+    }
+    writeJson({ moves: msg.moves.map((move) => ({ path: move.path, dest: move.dest })) });
+    return 0;
+  }
+  if (msg.moves.length > 0) process.stdout.write(msg.moves.map((move) => `${move.dest}\n`).join(""));
+  return 0;
+}
+
+async function runMove(hub, username, docPath, dir, json) {
+  hub.send({ type: "move", username, path: docPath, dir });
+  const msg = await hub.next((item) => item.type === "moved" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  return printMoved(msg, json);
 }
 
 async function runCreate(hub, username, path, json, text) {
@@ -1407,7 +1436,7 @@ function serveFlagRejected(args) {
   return args.revSet || args.findSet || args.replaceSet || args.titleSet
     || args.stateSet || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet
     || args.repoSet || args.nameSet || args.descriptionSet || args.pathSet
-    || args.messageSet || args.fileSet || args.startSet || args.endSet || args.expectSet;
+    || args.messageSet || args.fileSet || args.dirSet || args.startSet || args.endSet || args.expectSet;
 }
 
 function defaultStateDir() {
@@ -1487,6 +1516,10 @@ async function main() {
     usage("unexpected flag");
     return;
   }
+  if (args.dirSet && cmd !== "move") {
+    usage("unexpected flag");
+    return;
+  }
   if (args.expectSet && cmd !== "comment") {
     usage("unexpected flag");
     return;
@@ -1554,7 +1587,7 @@ async function main() {
     return;
   }
 
-  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "delete" && cmd !== "comment" && cmd !== "ticket" && cmd !== "commit") {
+  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "delete" && cmd !== "move" && cmd !== "comment" && cmd !== "ticket" && cmd !== "commit") {
     usage("unknown command");
     return;
   }
@@ -1649,6 +1682,10 @@ async function main() {
   }
   if (cmd === "delete") {
     await withHub(port, user, (hub) => runDelete(hub, user, rest[0], args.json), args.repo);
+    return;
+  }
+  if (cmd === "move") {
+    await withHub(port, user, (hub) => runMove(hub, user, rest[0], args.dir, args.json), args.repo);
     return;
   }
 

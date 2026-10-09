@@ -1233,7 +1233,13 @@ export async function createHub(stateDir, sourceRoot) {
       for (const item of nested) pairs.push({ src: item, dest: destRoot + item.slice(rel.length) });
     }
     // Leaving every path where it is does not dirty the repo or the listeners.
-    if (pairs.every((pair) => pair.src === pair.dest)) return;
+    const replyMoved = () => {
+      send(socket, { type: "moved", path: rel, moves: pairs.map((pair) => ({ path: pair.src, dest: pair.dest })) });
+    };
+    if (pairs.every((pair) => pair.src === pair.dest)) {
+      replyMoved();
+      return;
+    }
 
     const destCount = new Map();
     for (const pair of pairs) destCount.set(pair.dest, (destCount.get(pair.dest) || 0) + 1);
@@ -1275,6 +1281,7 @@ export async function createHub(stateDir, sourceRoot) {
     }
     for (const item of opened) retargetOpen(item.src, item.file);
     broadcastDocs(repo, await docsPayload(repo));
+    replyMoved();
   }
 
   async function onOpen(socket, msg) {

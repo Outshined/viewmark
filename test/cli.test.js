@@ -62,6 +62,7 @@ const HELP_NEEDLES = [
   "ticket set",
   "ticket purge",
   "delete <path>",
+  "move <path> [--dir DIR]",
   "comment list <path>",
   "comment show <path> <thread>",
   "comment reply <path> <thread>",
@@ -72,7 +73,7 @@ const HELP_NEEDLES = [
   "comment delete <path> <thread>",
   "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin.",
   "Lines count from 1. Offset counts from 0. The end offset is exclusive.",
-  "--repo is required on list, show, create, edit, delete, comment, commit, and ticket.",
+  "--repo is required on list, show, create, edit, delete, move, comment, commit, and ticket.",
   "ticket delete",
   "--title",
   "--state",
@@ -764,6 +765,120 @@ test("T-cli-delete", async () => {
     assert.equal(json.stdout, `${JSON.stringify({ path: "notes/draft.md" })}\n`);
     await assert.rejects(() => fs.lstat(path.join(dir, "notes", "draft.md")));
     witness.ws.close();
+  });
+});
+
+test("T-cli-move", async () => {
+  const gate = await trap();
+  try {
+    const noRepo = await run(["--port", String(gate.port), "--user", "user", "move", "hello.md"]);
+    assert.equal(noRepo.code, 2);
+    assert.equal(noRepo.stdout, "");
+    assert.equal(noRepo.stderr, "viewmark: --repo is required\n");
+
+    const flagged = await run([
+      "--port", String(gate.port),
+      "--user", "user",
+      "--repo", "docs",
+      "delete",
+      "hello.md",
+      "--dir",
+      "notes",
+    ]);
+    assert.equal(flagged.code, 2);
+    assert.equal(flagged.stdout, "");
+    assert.equal(flagged.stderr, "viewmark: unexpected flag\n");
+
+    const missingPath = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "move"]);
+    assert.equal(missingPath.code, 2);
+    assert.equal(missingPath.stdout, "");
+    assert.equal(missingPath.stderr, "viewmark: path required\n");
+    assert.equal(gate.hits.length, 0);
+  } finally {
+    await gate.close();
+  }
+
+  await withDocs(async ({ dir, port }) => {
+    const args = (...more) => ["--port", String(port), "--user", "user", "--repo", "docs", ...more];
+
+    await fs.writeFile(path.join(dir, "notes", "hello.md"), "taken\n");
+    const clash = await run(args("move", "hello.md", "--dir", "notes"));
+    assert.equal(clash.code, shellStatus(409));
+    assert.equal(clash.stdout, "");
+    assert.equal(clash.stderr, "error 409\n");
+    assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
+    assert.equal(await fs.readFile(path.join(dir, "notes", "hello.md"), "utf8"), "taken\n");
+    await fs.rm(path.join(dir, "notes", "hello.md"));
+
+    const moved = await run(args("move", "hello.md", "--dir", "notes"));
+    assert.equal(moved.code, 0);
+    assert.equal(moved.stdout, "notes/hello.md\n");
+    assert.equal(moved.stderr, "");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "hello.md"), "utf8"), HELLO);
+    await assert.rejects(() => fs.lstat(path.join(dir, "hello.md")));
+
+    const back = await run(args("move", "notes/hello.md"));
+    assert.equal(back.code, 0);
+    assert.equal(back.stdout, "hello.md\n");
+    assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
+
+    const json = await run(["--json", ...args("move", "hello.md", "--dir", "notes")]);
+    assert.equal(json.code, 0);
+    assert.equal(json.stderr, "");
+    assert.equal(json.stdout, `${JSON.stringify({ path: "hello.md", dest: "notes/hello.md" })}\n`);
+    assert.equal(await fs.readFile(path.join(dir, "notes", "hello.md"), "utf8"), HELLO);
+
+    const out = await run(args("move", "notes/hello.md"));
+    assert.equal(out.code, 0);
+    assert.equal(out.stdout, "hello.md\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes", "hello.md")));
+
+    const same = await run(args("move", "notes/draft.md", "--dir", "notes"));
+    assert.equal(same.code, 0);
+    assert.equal(same.stdout, "notes/draft.md\n");
+    assert.equal(same.stderr, "");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), DRAFT);
+
+    await fs.mkdir(path.join(dir, "archive"));
+    await fs.writeFile(path.join(dir, "archive", "keep.md"), "keep\n");
+    const dirMove = await run(args("move", "notes", "--dir", "archive"));
+    assert.equal(dirMove.code, 0);
+    assert.equal(dirMove.stderr, "");
+    assert.equal(dirMove.stdout, "archive/notes/draft.md\n");
+    assert.equal(await fs.readFile(path.join(dir, "archive", "notes", "draft.md"), "utf8"), DRAFT);
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes", "draft.md")));
+
+    const dirBack = await run(args("move", "archive/notes"));
+    assert.equal(dirBack.code, 0);
+    assert.equal(dirBack.stdout, "notes/draft.md\n");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), DRAFT);
+
+    const dirJson = await run(["--json", ...args("move", "notes", "--dir", "archive")]);
+    assert.equal(dirJson.code, 0);
+    assert.equal(dirJson.stderr, "");
+    assert.equal(dirJson.stdout, `${JSON.stringify({ moves: [{ path: "notes/draft.md", dest: "archive/notes/draft.md" }] })}\n`);
+    assert.equal(await fs.readFile(path.join(dir, "archive", "notes", "draft.md"), "utf8"), DRAFT);
+
+    const dirBackAgain = await run(args("move", "archive/notes"));
+    assert.equal(dirBackAgain.code, 0);
+    assert.equal(dirBackAgain.stdout, "notes/draft.md\n");
+
+    const omitted = await run(args("move", "notes/draft.md"));
+    assert.equal(omitted.code, 0);
+    assert.equal(omitted.stdout, "draft.md\n");
+    assert.equal(omitted.stderr, "");
+    assert.equal(await fs.readFile(path.join(dir, "draft.md"), "utf8"), DRAFT);
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes", "draft.md")));
+
+    const missing = await run(args("move", "missing.md"));
+    assert.equal(missing.code, shellStatus(404));
+    assert.equal(missing.stdout, "");
+    assert.equal(missing.stderr, "error 404\n");
+
+    const ticketPath = await run(args("move", "tickets/aaaaaaaa.md"));
+    assert.equal(ticketPath.code, shellStatus(400));
+    assert.equal(ticketPath.stdout, "");
+    assert.equal(ticketPath.stderr, "error 400\n");
   });
 });
 
@@ -3137,7 +3252,7 @@ test("T-comment-usage", async () => {
   ]) {
     assert.ok(help.stdout.includes(line), line);
   }
-  assert.match(help.stdout, /--repo is required on list, show, create, edit, delete, comment, commit, and ticket\./);
+  assert.match(help.stdout, /--repo is required on list, show, create, edit, delete, move, comment, commit, and ticket\./);
 
   const gate = await trap();
   try {
