@@ -1515,7 +1515,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // True from the click's state write through placeCaret. selectionchange in
   // that window still describes the DOM replaceChildren just tore down.
   let gestureHold = false;
-  const DOUBLE_CLICK_MS = 500;
   let pasteSeen = false;
   let composing = false;
   let composed = "";
@@ -3842,68 +3841,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     gestureTimer = null;
   }
 
-  function scheduleGestureRender() {
-    if (gestureTimer != null) {
-      clearTimeout(gestureTimer);
-      gestureTimer = null;
-    }
-    gestureTimer = setTimeout(() => {
-      gestureTimer = null;
-      gestureOffset = null;
-      gestureArmed = false;
-      if (closed) return;
-      render();
-    }, DOUBLE_CLICK_MS);
-  }
-
-  // A host that stubs createTreeWalker still draws the line. pointFor cannot see it.
-  function shownPoint(offset) {
-    if (typeof document.createTreeWalker === "function" && typeof NodeFilter !== "undefined") {
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      if (walker.nextNode()) return null;
-    }
-    let atEnd = null;
-    const consider = (node) => {
-      if (!node) return null;
-      if (node.parentElement?.closest(".md-atom") || node.parentElement?.closest(".md-lock")) return null;
-      const tagged = nearestTagged(node);
-      if (!tagged) return null;
-      const start = Number(tagged.dataset.start);
-      const end = Number(tagged.dataset.end);
-      if (node.length !== end - start || offset < start || offset > end) return null;
-      if (offset < end) return { node, offset: offset - start };
-      atEnd = { node, offset: offset - start };
-      return null;
-    };
-    const walk = (node) => {
-      if (!node || node.nodeType === 3) return null;
-      for (const child of node.childNodes || []) {
-        if (child.nodeType === 3) {
-          const hit = consider(child);
-          if (hit) return hit;
-        } else {
-          const nested = walk(child);
-          if (nested) return nested;
-        }
-      }
-      return null;
-    };
-    return walk(root) || atEnd;
-  }
-
-  function settleClick() {
-    const placed = typeof NodeFilter === "undefined" ? null : pointFor(state.cursor);
-    if (placed || shownPoint(state.cursor)) {
-      gestureHold = true;
-      placeCaret();
-      scheduleGestureRender();
-      setTimeout(() => { gestureHold = false; }, 0);
-      return;
-    }
-    gestureHold = true;
-    render();
-  }
-
   function pointOffset(event) {
     if (!event || typeof document.caretPositionFromPoint !== "function") return null;
     if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return null;
@@ -4029,7 +3966,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (event.detail === 1) gestureHold = false;
         return;
       }
-      if (detail === 1) settleClick(); else render();
+      render();
       return;
     }
     if (detail === 2 || detail === 3) {
@@ -4056,7 +3993,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (detail === 1) gestureHold = false;
         return;
       }
-      if (detail === 1) settleClick(); else render();
+      render();
       return;
     }
     if (!keepCurrent) clearCurrentComment();
@@ -4068,7 +4005,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (detail === 1) gestureHold = false;
       return;
     }
-    if (detail === 1) settleClick(); else render();
+    render();
   });
 
   listen("auxclick", (event) => {
