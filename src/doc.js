@@ -2609,6 +2609,21 @@ function crossedAtom(doc, cursor, landed, forward, granularity) {
   return nearest;
 }
 
+function paragraphGap(block) {
+  return Boolean(block && block.classes && block.classes.includes("md-paragraph-gap"));
+}
+
+// The blank has no height. Up and down leave it. A character step still stops there.
+function leaveParagraphGap(doc, cursor, landed, forward) {
+  const blocks = plan(doc, cursor).blocks;
+  const index = blocks.findIndex((block) => paragraphGap(block) && landed >= block.start && landed <= block.end);
+  if (index < 0) return null;
+  const neighbor = blocks[forward ? index + 1 : index - 1];
+  if (!neighbor) return null;
+  const at = forward ? neighbor.start : neighbor.end;
+  return Number.isFinite(at) ? at : null;
+}
+
 export function placeMove(doc, cursor, landed, direction, granularity) {
   const forward = direction === "forward" || direction === "right";
   const snapped = movementAtom(doc, cursor, landed, forward);
@@ -2618,6 +2633,10 @@ export function placeMove(doc, cursor, landed, direction, granularity) {
   if (crossed) next = inwardOffset(crossed, forward);
   const fence = skippedFence(doc, cursor, landed, forward);
   if (fence) next = forward ? fence.start : fence.end;
+  if (granularity === "line") {
+    const gap = leaveParagraphGap(doc, cursor, landed, forward);
+    if (gap != null) next = gap;
+  }
   return next;
 }
 

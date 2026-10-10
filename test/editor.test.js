@@ -578,8 +578,13 @@ test("paragraph gap is one blank between plain paragraphs", () => {
   assert.ok(joined[0].classes.includes("md-paragraph"));
   assert.equal(joined[0].classes.includes("md-paragraph-gap"), false);
 
+  assert.equal(placeMove("one\n\ntwo\n", 1, 4, "forward", "line"), 5);
+  assert.equal(placeMove("one\n\ntwo\n", 5, 4, "backward", "line"), 3);
+  assert.equal(placeMove("one\n\ntwo\n", 4, 4, "forward", "line"), 5);
+  assert.equal(placeMove("one\n\ntwo\n", 4, 4, "backward", "line"), 3);
   assert.equal(placeMove("one\n\ntwo\n", 0, 6, "forward", "line"), 6);
   assert.equal(placeMove("one\n\ntwo\n", 6, 0, "backward", "line"), 0);
+  assert.equal(placeMove("one\n\ntwo\n", 1, 4, "forward", "character"), 4);
 });
 
 function imageBlock(block) {
