@@ -177,6 +177,7 @@ export function enterInsert(doc, cursor) {
       return { text: "\n", anchor: line.start, cursor: line.end };
     }
   }
+  if (at === line.start && (mode.kind === "li" || mode.kind === "ol")) return { text: "\n" };
   const marker = continuedMarker(text, at);
   if (marker) return { text: `\n${marker}` };
   if (paragraphBlank(text, line, at)) return { text: "\n\n" };

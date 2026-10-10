@@ -3358,6 +3358,48 @@ test("enter on a list item continues that item", () => {
   }
 });
 
+test("unxhe3dc enter before a list marker", () => {
+  const mounted = mountEditor();
+  const press = (inputType, data) => {
+    mounted.listeners.beforeinput({
+      inputType,
+      data,
+      preventDefault() {},
+    });
+  };
+  const enter = (doc, cursor) => {
+    const view = createEditor(mounted.root, doc, cursor);
+    press("insertParagraph");
+    const state = view.getState();
+    view.destroy();
+    return state;
+  };
+  try {
+    const beforeBullet = enter("- alpha\n", 0);
+    assert.equal(beforeBullet.doc, "\n- alpha\n");
+    assert.equal(beforeBullet.cursor, 1);
+    assert.equal(beforeBullet.anchor, 1);
+
+    const afterProse = enter("beta\n- alpha\n", 5);
+    assert.equal(afterProse.doc, "beta\n\n- alpha\n");
+    assert.equal(afterProse.cursor, 6);
+
+    const beforeOrdered = enter("1. alpha\n", 0);
+    assert.equal(beforeOrdered.doc, "\n1. alpha\n");
+    assert.equal(beforeOrdered.cursor, 1);
+
+    const afterMarker = enter("- alpha\n", 2);
+    assert.equal(afterMarker.doc, "- \n- alpha\n");
+    assert.equal(afterMarker.doc.slice(0, afterMarker.cursor), "- \n- ");
+
+    const continued = enter("- alpha", 7);
+    assert.equal(continued.doc, "- alpha\n- ");
+    assert.equal(continued.cursor, 10);
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("enter at the end of a line inserts a blank line below the caret", () => {
   const mounted = mountEditor();
   const press = (inputType) => {
