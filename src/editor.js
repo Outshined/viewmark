@@ -1675,8 +1675,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function emitEdit(partial) {
-    if (!live) return;
     if (boundaryNoop(partial)) return;
+    goalX = null;
+    if (!live) return;
     if (editHeld()) {
       pendingEdits.push({ edit: partial });
       return;
@@ -3587,7 +3588,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     else if (goalX == null) {
       const rect = caretRect();
       const left = rect && rect.left;
-      if (Number.isFinite(left)) goalX = left;
+      // A caret on a break reports a 0×0 box at the origin. That is not a column.
+      if (rect && rect.height > 0 && Number.isFinite(left)) goalX = left;
     }
     const caretPoint = pointFor(state.cursor);
     placingCaret = true;
