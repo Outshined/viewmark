@@ -83,7 +83,7 @@ test("raw mode draws every byte and edits as plain text", async (t) => {
   assert.equal(caret.focus, placed.focus);
   assert.equal(caret.anchor, placed.anchor);
   assert.equal(await page.eval("document.activeElement === document.getElementById('editor')"), true);
-  assert.equal(await page.eval("sessionStorage.getItem('viewmark.raw')"), "1");
+  assert.equal(await page.eval("sessionStorage.getItem('viewmark.raw')"), null);
 
   const rawSlash = await page.eval(`(() => {
     const button = document.querySelector("#editor button.md-view-toggle");
@@ -268,15 +268,17 @@ test("raw mode draws every byte and edits as plain text", async (t) => {
   assert.equal((await hub.show("undo.md")).text, "Z");
 
   await page.open("b.md");
-  assert.equal(await pressed(page), "true");
-  assert.equal(await page.eval("document.getElementById('editor').classList.contains('md-source')"), true);
+  assert.equal(await pressed(page), "false");
+  assert.equal(await page.eval("document.getElementById('editor').classList.contains('md-source')"), false);
   assert.equal(await page.eval("window.__qaDrawn().text.includes('beta')"), true);
   const reloaded = page.frames.length;
   await page.session.send("Page.reload");
   await page.until(() => page.frames.slice(reloaded).some((frame) => frame.dir === "in" && frame.data && frame.data.type === "file"), "reload");
   await page.quiet();
-  assert.equal(await pressed(page), "true");
-  assert.equal(await page.eval("sessionStorage.getItem('viewmark.raw')"), "1");
+  assert.equal(await pressed(page), "false");
+  assert.equal(await page.eval("document.getElementById('editor').classList.contains('md-source')"), false);
+  assert.equal(await page.eval("window.__qaDrawn().text.includes('beta')"), true);
+  assert.equal(await page.eval("sessionStorage.getItem('viewmark.raw')"), null);
 
   await openTicket(page, ticketId);
   assert.equal(await page.eval("document.querySelector('.ticket-form:not([hidden])') != null"), true);
@@ -288,6 +290,8 @@ test("raw mode draws every byte and edits as plain text", async (t) => {
   assert.equal(ticketGap.count, 1);
   assert.ok(ticketGap.top >= -1 && ticketGap.top <= 16, `ticket top ${ticketGap.top}`);
   assert.ok(ticketGap.right >= -1 && ticketGap.right <= 16, `ticket right ${ticketGap.right}`);
+  // Raw does not follow another document, and this rendered body fits the pane.
+  await setRaw(page, true);
   await page.eval("document.getElementById('editor').scrollTop = 240");
   await page.frame();
   const ticketStayed = await page.eval(`(() => {
