@@ -1,5 +1,4 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { backspace, createState } from "../src/doc.js";
 import { FILL, literalIn } from "./cells.js";
 
 // Runs one cell by one route and checks the invariants of qa/editor-matrix-test-plan.md.
@@ -116,7 +115,9 @@ async function boundaryPoint(page, bytes, offset) {
   let found = await page.eval(`window.__qaClickPoint(${offset})`);
   if (found) return found;
   await openBlock(page, offset);
-  found = await page.eval(`window.__qaClickPoint(${offset})`);
+  // The clicked block can open a moment after the click, so wait for the boundary to be drawn.
+  const started = Date.now();
+  while (!(found = await page.eval(`window.__qaClickPoint(${offset})`)) && Date.now() - started < 1500) await sleep(50);
   if (!found) throw new Error(`no drawn boundary for offset ${offset}`);
   return found;
 }
@@ -506,12 +507,18 @@ function withProbe(marked, letter) {
   return bytes.slice(0, from) + letter + bytes.slice(to);
 }
 
-// Backspace removes the probe's Q. Emptying a comment interior drops that span
-// and its thread in the same edit, so the bytes are the model's, not the slice.
+// Backspace removes the probe's Q. When that empties a comment's interior, the same edit
+// removes the comment's markers and its thread (R36). The harness states that rule itself
+// rather than asking src/doc.js, so the check does not take its answer from the code under test.
 function probeAfterBackspace(marked) {
-  const replaced = withProbe(marked, "Q");
-  const at = Math.min(marked.focus, marked.anchor) + 1;
-  return backspace(createState(replaced, at)).doc;
+  const plain = withProbe(marked, "");
+  const at = Math.min(marked.focus, marked.anchor);
+  const open = /\{([A-Za-z][\w-]*)\}$/.exec(plain.slice(0, at));
+  if (!open || !plain.startsWith(`{/${open[1]}}`, at)) return plain;
+  const id = open[1];
+  const unmarked = plain.slice(0, at - open[0].length) + plain.slice(at + id.length + 3);
+  const fence = new RegExp(`^\`\`\`comment ${id}( resolved)?\\n[\\s\\S]*?^\`\`\`\\n?`, "m");
+  return unmarked.replace(fence, "");
 }
 
 // The hub's bytes and rev for the open file, as it last sent them to the page. Reading them
