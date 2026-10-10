@@ -1257,34 +1257,33 @@ function sourceLines(doc) {
   return lines;
 }
 
-// One tab at the start of each selected item. The edit replaces that span, and
-// the returned caret still covers the characters the selection covered.
-function listIndent(doc, anchor, cursor) {
+function selectedSourceLines(doc, anchor, cursor) {
   const from = Math.min(anchor, cursor);
   const to = Math.max(anchor, cursor);
-  let lines;
   if (from === to) {
     const [start, end] = lineSpan(doc, from);
-    lines = [{ start, end, text: doc.slice(start, end) }];
-  } else {
-    lines = sourceLines(doc).filter((line) => line.start < to && line.end > from);
+    return [{ start, end, text: doc.slice(start, end) }];
   }
-  if (lines.length === 0) return null;
-  if (lines.some((line) => !plainListItem(line.text) || offsetInFence(doc, line.start))) return null;
+  return sourceLines(doc).filter((line) => line.start < to && line.end > from);
+}
+
+function leadingTabCount(text) {
+  let count = 0;
+  while (text[count] === "\t") count += 1;
+  return count;
+}
+
+// A tab, or else as many as four leading spaces. A top-level item has none.
+function outdentWidth(text) {
+  if (text.startsWith("\t")) return 1;
+  let count = 0;
+  while (count < 4 && text[count] === " ") count += 1;
+  return count;
+}
+
+function listEdit(doc, lines, insert, shift, anchor, cursor) {
   const spliceFrom = lines[0].start;
   const spliceTo = lines[lines.length - 1].end;
-  let insert = "";
-  let prev = spliceFrom;
-  for (const line of lines) {
-    insert += doc.slice(prev, line.start) + "\t";
-    prev = line.start;
-  }
-  insert += doc.slice(prev, spliceTo);
-  const shift = (offset) => {
-    let next = offset;
-    for (const line of lines) if (line.start <= offset) next += 1;
-    return next;
-  };
   return {
     insert,
     spliceFrom,
@@ -1293,6 +1292,82 @@ function listIndent(doc, anchor, cursor) {
     anchor: shift(anchor),
     cursor: shift(cursor),
   };
+}
+
+// Shift+Tab. One leading tab, else up to four spaces. No indent means no edit.
+function listOutdent(doc, anchor, cursor) {
+  const lines = selectedSourceLines(doc, anchor, cursor);
+  if (lines.length === 0) return null;
+  if (lines.some((line) => !plainListItem(line.text) || offsetInFence(doc, line.start))) return null;
+  if (lines.every((line) => outdentWidth(line.text) === 0)) return null;
+  let insert = "";
+  let prev = lines[0].start;
+  for (const line of lines) {
+    insert += doc.slice(prev, line.start) + line.text.slice(outdentWidth(line.text));
+    prev = line.end;
+  }
+  insert += doc.slice(prev, lines[lines.length - 1].end);
+  const shift = (offset) => {
+    let next = offset;
+    for (const line of lines) {
+      const width = outdentWidth(line.text);
+      if (width === 0 || offset <= line.start) continue;
+      next -= Math.min(width, offset - line.start);
+    }
+    return next;
+  };
+  return listEdit(doc, lines, insert, shift, anchor, cursor);
+}
+
+function quotedListSelection(doc, anchor, cursor) {
+  const lines = selectedSourceLines(doc, anchor, cursor);
+  if (lines.length === 0) return false;
+  return lines.every((line) => {
+    if (offsetInFence(doc, line.start)) return false;
+    if (!line.text.startsWith("> ")) return false;
+    return listMarkerLength(line.text.slice(2)) > 0;
+  });
+}
+
+// One tab at the start of each selected item. An ordered item that opens a
+// deeper level starts at 1. The caret stays on the same item character.
+function listIndent(doc, anchor, cursor) {
+  const lines = selectedSourceLines(doc, anchor, cursor);
+  if (lines.length === 0) return null;
+  if (lines.some((line) => !plainListItem(line.text) || offsetInFence(doc, line.start))) return null;
+  const all = sourceLines(doc);
+  let insert = "";
+  let prev = lines[0].start;
+  const shrinks = [];
+  for (const line of lines) {
+    insert += doc.slice(prev, line.start);
+    let body = "\t" + line.text;
+    const previous = all.filter((item) => item.end < line.start).pop();
+    let prevTabs = 0;
+    if (previous) {
+      prevTabs = leadingTabCount(previous.text);
+      if (lines.some((item) => item.start === previous.start)) prevTabs += 1;
+    }
+    if (leadingTabCount(body) > prevTabs) {
+      let index = 0;
+      while (index < line.text.length && (line.text[index] === " " || line.text[index] === "\t")) index += 1;
+      const ordered = /^(\d{1,9})([.)])/.exec(line.text.slice(index));
+      if (ordered && ordered[1] !== "1") {
+        shrinks.push({ at: line.start + index + ordered[1].length, delta: 1 - ordered[1].length });
+        body = "\t" + line.text.slice(0, index) + "1" + ordered[2] + line.text.slice(index + ordered[0].length);
+      }
+    }
+    insert += body;
+    prev = line.end;
+  }
+  insert += doc.slice(prev, lines[lines.length - 1].end);
+  const shift = (offset) => {
+    let next = offset;
+    for (const line of lines) if (line.start <= offset) next += 1;
+    for (const shrink of shrinks) if (offset >= shrink.at) next += shrink.delta;
+    return next;
+  };
+  return listEdit(doc, lines, insert, shift, anchor, cursor);
 }
 
 function setStyle(el, name, value) {
@@ -3884,13 +3959,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   listen("keydown", (event) => {
     gestureHold = false;
     commentFocus = null;
+    if (event.key === "Tab" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      if (!adoptDomSelection()) return;
+      const outdent = listOutdent(state.doc, state.anchor, state.cursor);
+      if (outdent && live) keptCaret = { text: outdent.text, anchor: outdent.anchor, cursor: outdent.cursor };
+      if (outdent) emitEdit({ op: "insert", text: outdent.insert, anchor: outdent.spliceFrom, cursor: outdent.spliceTo });
+      return;
+    }
     if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       if (!adoptDomSelection()) return;
       const indent = listIndent(state.doc, state.anchor, state.cursor);
       if (indent && live) keptCaret = { text: indent.text, anchor: indent.anchor, cursor: indent.cursor };
       if (indent) emitEdit({ op: "insert", text: indent.insert, anchor: indent.spliceFrom, cursor: indent.spliceTo });
-      else emitEdit({ op: "insert", text: "\t" });
+      else if (!quotedListSelection(state.doc, state.anchor, state.cursor)) emitEdit({ op: "insert", text: "\t" });
       return;
     }
     const mod = event.ctrlKey || event.metaKey;
