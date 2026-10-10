@@ -1163,6 +1163,38 @@ a.md-link {
   color: #e7e2d8;
 }
 
+.md-comment.md-comment-current {
+  border: 2px solid #e7e2d8;
+}
+
+.md-comment-marker {
+  display: inline-block;
+  width: 8px;
+  height: 1em;
+  vertical-align: text-bottom;
+  overflow: hidden;
+}
+
+.md-comment-handle {
+  position: fixed;
+  z-index: 6;
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid #e7e2d8;
+  background: #6b5e45;
+  transform: translate(-50%, -50%);
+  cursor: grab;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.md-comment-handle.md-comment-handle-dragging {
+  pointer-events: none;
+  cursor: grabbing;
+}
+
 .md-add-comment {
   z-index: 4;
   font: inherit;

@@ -986,6 +986,131 @@ export function addComment(doc, anchor, cursor) {
   return { doc: marked + fence, id, cursor: from + open.length, changes };
 }
 
+// A click inside a marker belongs on the nearer edge. The view draws that marker
+// with no width, so a pointer never rests in its interior.
+function snapTokenEdge(doc, offset) {
+  const at = Math.max(0, Math.min(doc.length, Number.isFinite(offset) ? Math.trunc(offset) : 0));
+  for (const token of commentTokens(doc)) {
+    if (at > token.start && at < token.end) {
+      return at - token.start <= token.end - at ? token.start : token.end;
+    }
+  }
+  return at;
+}
+
+// Containment is one comment inside another. A partial overlap is a cross.
+function spansCross(spans) {
+  for (let i = 0; i < spans.length; i += 1) {
+    for (let j = i + 1; j < spans.length; j += 1) {
+      const a0 = spans[i].openStart;
+      const a1 = spans[i].closeEnd;
+      const b0 = spans[j].openStart;
+      const b1 = spans[j].closeEnd;
+      if (!(a0 < b1 && b0 < a1)) continue;
+      const aHoldsB = a0 <= b0 && a1 >= b1;
+      const bHoldsA = b0 <= a0 && b1 >= a1;
+      if (!aHoldsB && !bHoldsA) return true;
+    }
+  }
+  return false;
+}
+
+function tokenCounts(doc, id) {
+  let open = 0;
+  let close = 0;
+  for (const token of commentTokens(doc)) {
+    if (token.id !== id) continue;
+    if (token.closing) close += 1;
+    else open += 1;
+  }
+  return { open, close };
+}
+
+// A leading comment mark stops classify from seeing a list, quote, or heading.
+// Marks inside a fence are source text, not that prefix.
+function hidesBlockKind(doc) {
+  const hidden = hiddenFenceRanges(doc);
+  const lead = /^(?:\{[A-Za-z][A-Za-z0-9_-]*\}|\{\/[A-Za-z][A-Za-z0-9_-]*\})+/;
+  for (const line of lineSpans(doc)) {
+    if (offsetHidden(line.start, hidden)) continue;
+    const match = lead.exec(line.text);
+    if (!match) continue;
+    const stripped = classify(line.text.slice(match[0].length));
+    if (stripped.kind !== "li" && stripped.kind !== "ol" && stripped.kind !== "quote" && stripped.kind !== "h") continue;
+    if (classify(line.text).kind !== stripped.kind) return true;
+  }
+  return false;
+}
+
+function interiorHitsFence(doc, span) {
+  for (const fence of fenceContentRanges(doc)) {
+    if (rangesOverlap(span.interiorStart, span.interiorEnd, fence.start, fence.contentEnd)) return true;
+  }
+  return false;
+}
+
+function interiorHitsTable(doc, span) {
+  const from = span.interiorStart;
+  const to = span.interiorEnd;
+  for (const atom of structures(doc).atoms) {
+    if (atom.type !== "table" || !rangesOverlap(from, to, atom.start, atom.end)) continue;
+    const cells = [...atom.header, ...atom.rows.flat()];
+    const inside = cells.some((cell) => from >= cell.start && to <= cell.end && cell.start < cell.end);
+    if (!inside) return true;
+  }
+  return false;
+}
+
+function commentMoveOk(before, next, id) {
+  const spans = findSpans(next);
+  const own = spans.filter((span) => span.id === id);
+  if (own.length !== 1) return false;
+  const span = own[0];
+  if (!(span.interiorStart < span.interiorEnd)) return false;
+  if (spansCross(spans)) return false;
+  const counts = tokenCounts(next, id);
+  if (counts.open !== 1 || counts.close !== 1) return false;
+  const oldThreads = commentThreads(before).filter((thread) => thread.id === id);
+  const newThreads = commentThreads(next).filter((thread) => thread.id === id);
+  if (oldThreads.length !== 1 || newThreads.length !== 1) return false;
+  if (oldThreads[0].body !== newThreads[0].body || oldThreads[0].resolved !== newThreads[0].resolved) return false;
+  if (interiorHitsFence(next, span) || interiorHitsTable(next, span)) return false;
+  if (hidesBlockKind(next)) return false;
+  return true;
+}
+
+// offset is where this marker should start. The other marker, the interior, and
+// the fence stay. Empty, crossed, fenced, or table-overlapping results are not edits.
+export function moveCommentMarker(doc, id, edge, offset) {
+  const text = typeof doc === "string" ? doc : "";
+  if (edge !== "start" && edge !== "end") return null;
+  const spans = findSpans(text).filter((span) => span.id === id);
+  if (spans.length !== 1) return null;
+  const span = spans[0];
+  const markerStart = edge === "start" ? span.openStart : span.closeStart;
+  const markerEnd = edge === "start" ? span.openEnd : span.closeEnd;
+  const marker = text.slice(markerStart, markerEnd);
+  const dest = snapTokenEdge(text, offset);
+  if (dest === markerStart || dest === markerEnd) return null;
+  if (dest > markerStart && dest < markerEnd) return null;
+  let from;
+  let to;
+  let inserted;
+  if (dest > markerEnd) {
+    from = markerStart;
+    to = dest;
+    inserted = text.slice(markerEnd, dest) + marker;
+  } else {
+    from = dest;
+    to = markerEnd;
+    inserted = marker + text.slice(dest, markerStart);
+  }
+  if (text.slice(from, to) === inserted) return null;
+  const next = text.slice(0, from) + inserted + text.slice(to);
+  if (!commentMoveOk(text, next, id)) return null;
+  return { from, to, text: inserted };
+}
+
 function isDelimiterRow(text) {
   let body = text.trim();
   if (!body.includes("-")) return false;
@@ -1508,6 +1633,8 @@ function cloneRun(run) {
     classes: run.classes.slice(),
   };
   if (run.href !== undefined) copy.href = run.href;
+  if (run.commentMarker !== undefined) copy.commentMarker = run.commentMarker;
+  if (run.markerEdge !== undefined) copy.markerEdge = run.markerEdge;
   return copy;
 }
 
@@ -1521,6 +1648,7 @@ function styleOf(run) {
 
 function sameRunStyle(a, b) {
   if (a.href !== b.href) return false;
+  if (a.commentMarker !== b.commentMarker || a.markerEdge !== b.markerEdge) return false;
   if (a.classes.length !== b.classes.length) return false;
   for (let i = 0; i < a.classes.length; i += 1) {
     if (a.classes[i] !== b.classes[i]) return false;
@@ -1737,7 +1865,16 @@ function paintSlice(run, spans, start, end, keepMarkers) {
     (start >= span.openStart && start < span.openEnd) || (start >= span.closeStart && start < span.closeEnd));
   if (marker) {
     if (!keepMarkers) return null;
-    return { type: "run", text, start, end, classes: ["md-syntax"] };
+    const edge = start >= marker.openStart && start < marker.openEnd ? "start" : "end";
+    return {
+      type: "run",
+      text,
+      start,
+      end,
+      classes: ["md-syntax"],
+      commentMarker: marker.id,
+      markerEdge: edge,
+    };
   }
   const containers = spans.filter((span) => start >= span.interiorStart && start < span.interiorEnd);
   if (containers.length === 0) {
@@ -2661,14 +2798,27 @@ function joinedLineBreak(doc, cursor, value, nl) {
 }
 
 // A paste repeats the marks it copied. An id that is already a comment token
-// or a comment fence would open twice, so that mark does not land.
-function omitCopiedMarkers(doc, text) {
+// or a comment fence would open twice, so that mark does not land. A mark this
+// splice removes is the same mark moving, and it stays.
+function omitCopiedMarkers(doc, text, from, to) {
   if (!text || text.indexOf("{") < 0) return text;
+  const allowance = new Map();
+  for (const token of commentTokens(doc)) {
+    if (token.start < from || token.end > to) continue;
+    const key = `${token.closing ? "/" : ""}${token.id}`;
+    allowance.set(key, (allowance.get(key) || 0) + 1);
+  }
   const fenced = new Set();
   for (const thread of commentThreads(doc)) fenced.add(thread.id);
   const present = new Set();
   for (const token of commentTokens(doc)) present.add(token.id);
-  return text.replace(/\{(?:\/)?([A-Za-z][A-Za-z0-9_-]*)\}/g, (mark, id) => {
+  return text.replace(/\{(\/?)([A-Za-z][A-Za-z0-9_-]*)\}/g, (mark, slash, id) => {
+    const key = `${slash}${id}`;
+    const left = allowance.get(key) || 0;
+    if (left > 0) {
+      allowance.set(key, left - 1);
+      return mark;
+    }
     if (present.has(id) || fenced.has(id)) return "";
     return mark;
   });
@@ -2677,9 +2827,9 @@ function omitCopiedMarkers(doc, text) {
 export function insert(state, text) {
   const nl = fileNewline(state.doc);
   let value = (typeof text === "string" ? text : "").replace(/\r\n|\n|\r/g, nl);
-  value = omitCopiedMarkers(state.doc, value);
   const from = Math.min(state.anchor, state.cursor);
   const to = Math.max(state.anchor, state.cursor);
+  value = omitCopiedMarkers(state.doc, value, from, to);
   if (from === to && joinedLineBreak(state.doc, from, value, nl)) value = nl + value;
   if (value === "" && from === to) return state;
   return applySplice(state, from, to, value, from + value.length);

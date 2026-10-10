@@ -1,7 +1,8 @@
 // Source string is the document. The view is a projection: the cursor line keeps
 // the parsed runs and fills marker gaps so those characters stay editable text.
 // The markdown this editor supports is GitHub, GitLab, and Obsidian markdown.
-// A mermaid fence is a diagram.
+// A mermaid fence is a diagram. A comment marker is not one of those characters:
+// it has no text node, so the caret cannot sit inside it.
 
 import {
   sampleDocument,
@@ -20,6 +21,7 @@ import {
   selectedSlice,
   cut,
   findSpans,
+  moveCommentMarker,
   commentThreads,
   parseCommentNotes,
   splitCommentNote,
@@ -1003,6 +1005,116 @@ export function mapOffset(startOrNode, offset) {
   return index;
 }
 
+// A marker has no glyphs, so the caret on its edge is also the next letter.
+// One character press stops at the marker's far edge.
+function markerEdgeStop(doc, before, landed, forward) {
+  if (!Number.isFinite(before) || !Number.isFinite(landed) || before === landed) return landed;
+  for (const span of findSpans(doc)) {
+    const edges = forward
+      ? [[span.openStart, span.openEnd], [span.closeStart, span.closeEnd]]
+      : [[span.openEnd, span.openStart], [span.closeEnd, span.closeStart]];
+    for (const [at, far] of edges) {
+      if (before === at && (forward ? landed > far : landed < far)) return far;
+    }
+  }
+  return landed;
+}
+
+// The drawn selection uses the visible text. Endpoints that only cover a
+// glyph-less marker still belong to the source selection.
+function visibleSelectionOffset(doc, offset, other) {
+  for (const span of findSpans(doc)) {
+    const through = (edge, far) => offset === edge && (other - edge) * (far - edge) > 0;
+    if (through(span.openStart, span.openEnd)) return span.openEnd;
+    if (through(span.closeEnd, span.closeStart)) return span.closeStart;
+    if (through(span.closeStart, span.closeEnd)) return span.closeEnd;
+    if (through(span.openEnd, span.openStart)) return span.openStart;
+  }
+  return offset;
+}
+
+function hidesOnlyMarkers(doc, outerLo, outerHi, innerLo, innerHi) {
+  if (innerLo < outerLo || innerHi > outerHi) return false;
+  let lo = outerLo;
+  let hi = outerHi;
+  const spans = findSpans(doc);
+  for (let guard = 0; guard < 8 && (lo !== innerLo || hi !== innerHi); guard += 1) {
+    let step = false;
+    for (const span of spans) {
+      if (lo < innerLo && lo === span.openStart && span.openEnd <= innerLo && span.openEnd <= hi) {
+        lo = span.openEnd;
+        step = true;
+      }
+      if (hi > innerHi && hi === span.closeEnd && span.closeStart >= innerHi && span.closeStart >= lo) {
+        hi = span.closeStart;
+        step = true;
+      }
+    }
+    if (!step) return false;
+  }
+  return lo === innerLo && hi === innerHi;
+}
+
+function withMarkerEdges(doc, prev, mapped) {
+  if (!mapped || mapped.anchor === mapped.cursor || !prev || prev.anchor === prev.cursor) return mapped;
+  const prevLo = Math.min(prev.anchor, prev.cursor);
+  const prevHi = Math.max(prev.anchor, prev.cursor);
+  const lo = Math.min(mapped.anchor, mapped.cursor);
+  const hi = Math.max(mapped.anchor, mapped.cursor);
+  if (!hidesOnlyMarkers(doc, prevLo, prevHi, lo, hi)) return mapped;
+  return prev.anchor <= prev.cursor
+    ? { anchor: prevLo, cursor: prevHi }
+    : { anchor: prevHi, cursor: prevLo };
+}
+
+// The range is nothing but comment markers. Their boxes are the selection the
+// browser can drag; the source offsets stay the markers.
+function coveredOnlyByMarkers(doc, lo, hi) {
+  if (!(hi > lo)) return false;
+  const pieces = [];
+  for (const span of findSpans(doc)) {
+    if (span.openEnd > lo && span.openStart < hi) {
+      if (span.openStart < lo || span.openEnd > hi) return false;
+      pieces.push([span.openStart, span.openEnd]);
+    }
+    if (span.closeEnd > lo && span.closeStart < hi) {
+      if (span.closeStart < lo || span.closeEnd > hi) return false;
+      pieces.push([span.closeStart, span.closeEnd]);
+    }
+  }
+  if (pieces.length === 0) return false;
+  pieces.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let at = lo;
+  for (const [start, end] of pieces) {
+    if (start !== at) return false;
+    at = end;
+  }
+  return at === hi;
+}
+
+function selectMarkerElements(sel, elements) {
+  const first = elements[0];
+  const last = elements[elements.length - 1];
+  const parent = first && first.parentNode;
+  if (!parent || !last || last.parentNode !== parent || typeof document.createRange !== "function") return false;
+  const children = parent.childNodes || [];
+  let start = -1;
+  let end = -1;
+  for (let i = 0; i < children.length; i += 1) {
+    if (children[i] === first) start = i;
+    if (children[i] === last) end = i + 1;
+  }
+  if (start < 0 || end <= start) return false;
+  const range = document.createRange();
+  if (typeof range.setStart !== "function" || typeof range.setEnd !== "function") return false;
+  range.setStart(parent, start);
+  range.setEnd(parent, end);
+  if (typeof sel.removeAllRanges === "function") sel.removeAllRanges();
+  if (typeof sel.addRange !== "function") return false;
+  sel.addRange(range);
+  return true;
+}
+
 function mapRange(range) {
   if (range.startContainer === range.endContainer && range.startContainer.nodeType === 1) {
     const child = range.startContainer.childNodes[range.startOffset];
@@ -1016,7 +1128,26 @@ function mapRange(range) {
   };
 }
 
+function renderCommentMarker(part) {
+  if (!part || part.commentMarker == null || (part.markerEdge !== "start" && part.markerEdge !== "end")) return null;
+  if (typeof part.text !== "string") return null;
+  const match = /^\{(\/?)([A-Za-z][A-Za-z0-9_-]*)\}$/.exec(part.text);
+  if (!match || match[2] !== part.commentMarker) return null;
+  if ((match[1] === "/") !== (part.markerEdge === "end")) return null;
+  const el = document.createElement("span");
+  el.className = "md-comment-marker";
+  el.contentEditable = "false";
+  el.setAttribute("aria-hidden", "true");
+  el.dataset.start = String(part.start);
+  el.dataset.end = String(part.end);
+  el.dataset.comment = part.commentMarker;
+  el.dataset.edge = part.markerEdge;
+  return el;
+}
+
 function renderRun(part) {
+  const marker = renderCommentMarker(part);
+  if (marker) return marker;
   const el = part.href ? document.createElement("a") : document.createElement("span");
   el.className = part.classes.join(" ");
   el.dataset.start = String(part.start);
@@ -2044,6 +2175,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let currentCommentId = null;
   // Delete takes the card button. The caret is put back in the editor after the thread is gone.
   let restoreEditorFocus = false;
+  let hoverCommentId = null;
+  let handleDrag = null;
   let showResolved = false;
   const unsavedThreads = new Set();
   const replyDrafts = new Map();
@@ -2515,8 +2648,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           return null;
         }
       }
-      const from = pointFor(anchor);
-      const to = pointFor(caret);
+      if (coveredOnlyByMarkers(state.doc, lo, hi)) {
+        const markers = [];
+        for (const el of root.querySelectorAll(".md-comment-marker")) {
+          const start = Number(el.dataset && el.dataset.start);
+          const end = Number(el.dataset && el.dataset.end);
+          if (start >= lo && end <= hi) markers.push(el);
+        }
+        markers.sort((a, b) => Number(a.dataset.start) - Number(b.dataset.start));
+        if (markers.length > 0 && selectMarkerElements(sel, markers)) return markers[markers.length - 1];
+      }
+      const from = pointFor(visibleSelectionOffset(state.doc, anchor, caret));
+      const to = pointFor(visibleSelectionOffset(state.doc, caret, anchor));
       if (from && to) {
         sel.setBaseAndExtent(from.node, from.offset, to.node, to.offset);
         return to.node;
@@ -2606,8 +2749,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!holder || !root.contains(holder)) return true;
     const mapped = selectionFromDom(sel);
     if (!mapped) return true;
-    state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
-    return claimLines(mapped.anchor, mapped.cursor);
+    // The drawn range omits glyph-less markers. A cut or paste keeps the
+    // source selection, which still owns those markers.
+    const next = sourceMode ? mapped : withMarkerEdges(state.doc, state, mapped);
+    state = { ...state, anchor: next.anchor, cursor: next.cursor };
+    return claimLines(next.anchor, next.cursor);
   }
 
   // Home lands on the source start of the line, before a drawn marker. The first
@@ -2637,10 +2783,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!holder || !root.contains(holder)) return;
     const mapped = selectionFromDom(sel);
     if (!mapped) return;
-    const next = sourceMode || pointer ? mapped : homeSnap(mapped);
+    const snapped = sourceMode || pointer ? mapped : homeSnap(mapped);
+    const next = sourceMode ? snapped : withMarkerEdges(state.doc, state, snapped);
     if (next.anchor === state.anchor && next.cursor === state.cursor) goalX = keptX;
     state = { ...state, anchor: next.anchor, cursor: next.cursor };
-    if (next.anchor !== mapped.anchor || next.cursor !== mapped.cursor) placeCaret();
+    if (snapped.anchor !== mapped.anchor || snapped.cursor !== mapped.cursor) placeCaret();
   }
 
   function findCommentBox(id, note) {
@@ -3317,6 +3464,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function showCurrentCard(card) {
     if (!card || !card.dataset) return;
     currentCommentId = card.dataset.comment;
+    markCurrentHighlights();
     if (!commentsAside) return;
     const walk = (node) => {
       if (!node) return;
@@ -3337,15 +3485,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function clearCurrentComment() {
     currentCommentId = null;
-    if (!commentsAside) return;
-    const walk = (node) => {
-      if (!node) return;
-      if (node.classList && node.classList.contains("md-comment-card")) setCommentActions(node, false);
-      if (node.classList && node.classList.contains("md-comment-current")) node.classList.remove("md-comment-current");
-      for (const child of node.childNodes || []) walk(child);
-    };
-    walk(commentsAside);
-    layoutComments();
+    if (commentsAside) {
+      const walk = (node) => {
+        if (!node) return;
+        if (node.classList && node.classList.contains("md-comment-card")) setCommentActions(node, false);
+        if (node.classList && node.classList.contains("md-comment-current")) node.classList.remove("md-comment-current");
+        for (const child of node.childNodes || []) walk(child);
+      };
+      walk(commentsAside);
+      layoutComments();
+    }
+    markCurrentHighlights();
   }
 
   function lockNames(block) {
@@ -3380,6 +3530,246 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       for (const child of node.childNodes || []) walk(child);
     };
     walk(root);
+  }
+
+  function markCurrentHighlights() {
+    const walk = (node) => {
+      if (!node) return;
+      if (node.nodeType === 1 && node.classList && node.classList.contains("md-comment")) {
+        const id = node.dataset && node.dataset.comment;
+        if (currentCommentId && id === currentCommentId) node.classList.add("md-comment-current");
+        else node.classList.remove("md-comment-current");
+      }
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(root);
+  }
+
+  function clearCommentHandles() {
+    for (const child of childArray(root)) {
+      if (child && child.classList && child.classList.contains("md-comment-handle")) detachNode(child);
+    }
+  }
+
+  function commentHandleRects(id) {
+    const rects = [];
+    const walk = (node) => {
+      if (!node) return;
+      if (
+        node.nodeType === 1
+        && node.classList
+        && node.classList.contains("md-comment")
+        && node.dataset
+        && node.dataset.comment === id
+        && typeof node.getClientRects === "function"
+      ) {
+        let list = [];
+        try {
+          list = node.getClientRects() || [];
+        } catch {
+          list = [];
+        }
+        for (let i = 0; i < list.length; i += 1) {
+          const rect = list[i];
+          if (!rect || !(rect.width > 0) || !(rect.height > 0)) continue;
+          if (!Number.isFinite(rect.left) || !Number.isFinite(rect.right) || !Number.isFinite(rect.top) || !Number.isFinite(rect.bottom)) continue;
+          rects.push(rect);
+        }
+      }
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(root);
+    return rects;
+  }
+
+  function edgePoints(rects) {
+    let start = null;
+    let end = null;
+    for (const rect of rects) {
+      const y = (rect.top + rect.bottom) / 2;
+      if (!start || rect.top < start.top - 0.5 || (Math.abs(rect.top - start.top) <= 0.5 && rect.left < start.left)) {
+        start = { x: rect.left, y, top: rect.top, left: rect.left };
+      }
+      if (!end || rect.bottom > end.bottom + 0.5 || (Math.abs(rect.bottom - end.bottom) <= 0.5 && rect.right > end.right)) {
+        end = { x: rect.right, y, bottom: rect.bottom, right: rect.right };
+      }
+    }
+    return { start, end };
+  }
+
+  function placeHandle(id, edge, boundary, x, y) {
+    const el = document.createElement("span");
+    el.className = "md-comment-handle";
+    el.contentEditable = "false";
+    el.draggable = false;
+    el.setAttribute("aria-hidden", "true");
+    el.dataset.comment = id;
+    el.dataset.edge = edge;
+    el.dataset.start = String(boundary);
+    el.dataset.end = String(boundary);
+    setStyle(el, "left", `${x}px`);
+    setStyle(el, "top", `${y}px`);
+    root.appendChild(el);
+    return el;
+  }
+
+  function showCommentHandles(id) {
+    if (handleDrag) return;
+    clearCommentHandles();
+    if (!id) return;
+    const spans = findSpans(state.doc).filter((span) => span.id === id);
+    if (spans.length !== 1) return;
+    const rects = commentHandleRects(id);
+    if (rects.length === 0) return;
+    const points = edgePoints(rects);
+    if (!points.start || !points.end) return;
+    placeHandle(id, "start", spans[0].interiorStart, points.start.x, points.start.y);
+    placeHandle(id, "end", spans[0].interiorEnd, points.end.x, points.end.y);
+  }
+
+  function commentUnderPointer(event) {
+    const node = event && event.target;
+    const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    if (!el || typeof el.closest !== "function") return null;
+    const handle = el.closest(".md-comment-handle");
+    if (handle && root.contains(handle)) return (handle.dataset && handle.dataset.comment) || null;
+    const highlighted = el.closest(".md-comment");
+    if (!highlighted || !root.contains(highlighted) || !highlighted.dataset) return null;
+    return highlighted.dataset.comment || null;
+  }
+
+  function moveDraggedHandle(event) {
+    if (!handleDrag || !handleDrag.handle) return;
+    if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
+    handleDrag.handle.classList.add("md-comment-handle-dragging");
+    setStyle(handleDrag.handle, "left", `${event.clientX}px`);
+    setStyle(handleDrag.handle, "top", `${event.clientY}px`);
+  }
+
+  function handleDragMoved(drag, event) {
+    if (!drag || !event || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return true;
+    if (!Number.isFinite(drag.x) || !Number.isFinite(drag.y)) return true;
+    return Math.abs(event.clientX - drag.x) > 3 || Math.abs(event.clientY - drag.y) > 3;
+  }
+
+  function finishHandleDrag(event) {
+    const drag = handleDrag;
+    handleDrag = null;
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    // The dragged handle sits under the pointer. Hide it before the hit test so
+    // the boundary comes from the text, or from the handle that stayed put.
+    if (drag && drag.handle) setStyle(drag.handle, "display", "none");
+    const dest = pointOffset(event);
+    // preventDefault on the press stops the click, so a press that stays put
+    // places the caret here. The handle covers the boundary the click aimed at.
+    if (!handleDragMoved(drag, event)) {
+      if (typeof root.focus === "function") root.focus();
+      didDrag = true;
+      gestureArmed = false;
+      gestureOffset = null;
+      if (dest != null) {
+        gestureHold = true;
+        state = { ...state, anchor: dest, cursor: dest };
+        if (claimLines(dest, dest)) {
+          render();
+          return;
+        }
+        gestureHold = false;
+      }
+      if (hoverCommentId) showCommentHandles(hoverCommentId);
+      return;
+    }
+    didDrag = true;
+    const move = drag && dest != null ? moveCommentMarker(state.doc, drag.id, drag.edge, dest) : null;
+    if (!move) {
+      if (hoverCommentId) showCommentHandles(hoverCommentId);
+      return;
+    }
+    emitEdit({ op: "insert", text: move.text, anchor: move.from, cursor: move.to });
+  }
+
+  function pressedCommentMarker(event) {
+    const node = event && event.target;
+    const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    if (!el || typeof el.closest !== "function") return null;
+    const marker = el.closest(".md-comment-marker");
+    if (!marker || !root.contains(marker)) return null;
+    const start = Number(marker.dataset && marker.dataset.start);
+    const end = Number(marker.dataset && marker.dataset.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    return { start, end };
+  }
+
+  function beginHandleDrag(event) {
+    if (!event || (typeof event.button === "number" && event.button !== 0)) return false;
+    const node = event.target;
+    const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    if (!el || typeof el.closest !== "function") return false;
+    const handle = el.closest(".md-comment-handle");
+    if (!handle || !root.contains(handle)) return false;
+    const id = handle.dataset && handle.dataset.comment;
+    const edge = handle.dataset && handle.dataset.edge;
+    if (!id || (edge !== "start" && edge !== "end")) return false;
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    if (typeof root.focus === "function") root.focus();
+    commentFocus = null;
+    goalX = null;
+    pointer = null;
+    didDrag = false;
+    dragRange = null;
+    dragSource = null;
+    cancelGestureRender();
+    gestureArmed = false;
+    gestureOffset = null;
+    handleDrag = { id, edge, handle, x: event.clientX, y: event.clientY };
+    handle.classList.add("md-comment-handle-dragging");
+    setStyle(handle, "pointer-events", "none");
+    return true;
+  }
+
+  function onRootMouseMove(event) {
+    if (handleDrag) {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      moveDraggedHandle(event);
+      return;
+    }
+    if (pointer) return;
+    // A marker-only selection is dragged from the marker box. The handle sits
+    // on that same edge, so it would take the press and the browser would not drag.
+    const markerLo = Math.min(state.anchor, state.cursor);
+    const markerHi = Math.max(state.anchor, state.cursor);
+    if (coveredOnlyByMarkers(state.doc, markerLo, markerHi)) {
+      if (hoverCommentId) {
+        hoverCommentId = null;
+        clearCommentHandles();
+      }
+      return;
+    }
+    const id = commentUnderPointer(event);
+    if (id === hoverCommentId) return;
+    hoverCommentId = id;
+    if (id) showCommentHandles(id);
+    else clearCommentHandles();
+  }
+
+  function onDocumentMouseMove(event) {
+    if (handleDrag) {
+      moveDraggedHandle(event);
+      return;
+    }
+    if (pointer) return;
+    const node = event && event.target;
+    if (node && root.contains(node)) return;
+    if (!hoverCommentId) return;
+    hoverCommentId = null;
+    clearCommentHandles();
+  }
+
+  function onDocumentMouseUp(event) {
+    if (!handleDrag) return;
+    const node = event && event.target;
+    if (node && root.contains(node)) return;
+    finishHandleDrag(event);
   }
 
   function appendLockMarks(el, block) {
@@ -3833,6 +4223,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       settleRawMarkers();
       markEditingHighlights();
       hideResolvedHighlights();
+      markCurrentHighlights();
       renderCommentAside(planned.comments);
       layoutComments();
       if (commentFocus) {
@@ -3846,6 +4237,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (card && typeof card.scrollIntoView === "function") card.scrollIntoView();
       }
       mountViewToggle();
+      if (hoverCommentId && !handleDrag) showCommentHandles(hoverCommentId);
     } finally {
       if (gestureHeld) gestureHold = false;
     }
@@ -4737,6 +5129,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (skipped === next) break;
       next = skipped;
     }
+    if (granularity === "character") next = markerEdgeStop(state.doc, beforeCursor, next, forward);
     if (next === beforeCursor) {
       const neighbor = beforeCursor + (forward ? 1 : -1);
       if (neighbor >= 0 && neighbor <= state.doc.length) {
@@ -5251,11 +5644,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   listen("mousedown", (event) => {
+    if (beginHandleDrag(event)) return;
+    didDrag = false;
     goalX = null;
     commentFocus = null;
     cancelGestureRender();
     pointer = { x: event.clientX, y: event.clientY };
-    didDrag = false;
     if (event && typeof event.button === "number" && event.button !== 0) return;
     const detail = event && event.detail ? event.detail : 1;
     if (detail >= 2) {
@@ -5271,7 +5665,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     gestureArmed = true;
     const from = Math.min(state.anchor, state.cursor);
     const to = Math.max(state.anchor, state.cursor);
-    dragRange = from !== to && raw != null && raw > from && raw < to
+    const marker = pressedCommentMarker(event);
+    const onMarker = marker != null && marker.start >= from && marker.end <= to && marker.end > marker.start;
+    dragRange = from !== to && ((raw != null && raw > from && raw < to) || onMarker)
       ? { anchor: state.anchor, cursor: state.cursor }
       : null;
   });
@@ -5289,6 +5685,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   });
 
   listen("mouseup", (event) => {
+    if (handleDrag) {
+      finishHandleDrag(event);
+      return;
+    }
     if (!pointer) return;
     const moved = Math.abs(event.clientX - pointer.x) > 3 || Math.abs(event.clientY - pointer.y) > 3;
     pointer = null;
@@ -5357,6 +5757,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       live.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset);
     }, 0);
   }
+
+  listen("mousemove", onRootMouseMove);
 
   listen("click", (event) => {
     try {
@@ -5484,6 +5886,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
     document.addEventListener("selectionchange", onSelectionChange, { signal: ac.signal });
+  }
+  // The sheet tests store root and document listeners in one map. Window keeps
+  // a release outside the editor from replacing the root mouseup handler.
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("mousemove", onDocumentMouseMove, { signal: ac.signal });
+    window.addEventListener("mouseup", onDocumentMouseUp, { signal: ac.signal });
   }
 
   if (commentsAside && typeof commentsAside.addEventListener === "function") {
