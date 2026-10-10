@@ -696,28 +696,8 @@ const docLinkBindings = new WeakMap();
 const docAttachBindings = new WeakMap();
 const REPO_KEY = "viewmark.repo";
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-// Per browser tab. A reload keeps it; another tab does not share it.
-const RAW_MODE_KEY = "viewmark.raw";
 const EYE_OUTLINE = "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z";
 const EYE_PUPIL = "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z";
-
-function storedRaw(storage) {
-  if (!storage || typeof storage.getItem !== "function") return false;
-  try {
-    return storage.getItem(RAW_MODE_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function storeRaw(storage, on) {
-  if (!storage || typeof storage.setItem !== "function") return;
-  try {
-    storage.setItem(RAW_MODE_KEY, on ? "1" : "0");
-  } catch {
-    // Session storage is optional. The tab still keeps the mode in memory.
-  }
-}
 
 // A lone LF wins. A file whose breaks are all CRLF pairs stays CRLF.
 function fileBreak(doc) {
@@ -2212,8 +2192,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let writingHash = false;
   let closed = false;
   const repoStorage = storage || null;
-  // This tab's view. Opening another file does not reset it.
-  let sourceMode = storedRaw(repoStorage);
+  // Raw is not stored. It applies only to the document that was open when it was turned on.
+  let sourceMode = false;
+  let rawPath = "";
   let viewToggle = null;
   // Create is answered by its own error or by the file from onOpen.
   // A 409 for that create is not a rejected caret grant.
@@ -4121,16 +4102,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return el;
   }
 
-  // Cards are a rendered projection. Removing them must not drop unsaved drafts.
-  function hideCommentCards() {
-    if (!commentsAside) return;
-    const stale = [];
-    for (const child of commentsAside.childNodes || []) {
-      if (child && child.classList && child.classList.contains("md-comment-card")) stale.push(child);
-    }
-    for (const child of stale) detachNode(child);
-  }
-
   function renderSourceView(priorTop) {
     const lines = sourceLines(state.doc);
     const flashLine = refusal && !refusal.name ? tightestBlock(lines, refusal.offset) : null;
@@ -4142,7 +4113,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
     root.replaceChildren(...nodes);
     if (typeof root.scrollLeft === "number") root.scrollLeft = 0;
-    hideCommentCards();
     layoutComments();
     hideCommentButton();
     placeCaret(priorTop);
@@ -4236,11 +4206,26 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     setStyle(button, "left", "auto");
   }
 
+  function dropRaw() {
+    sourceMode = false;
+    rawColumn = null;
+    goalX = null;
+    rawPath = "";
+  }
+
+  // A different path is a different document. Raw does not follow it.
+  function releaseRaw(path) {
+    if (!sourceMode || typeof path !== "string" || path === "" || path === rawPath) return;
+    sourceMode = false;
+    rawColumn = null;
+    goalX = null;
+  }
+
   function toggleSourceMode() {
     sourceMode = !sourceMode;
     rawColumn = null;
     goalX = null;
-    storeRaw(repoStorage, sourceMode);
+    if (sourceMode) rawPath = openPath;
     const anchor = state.anchor;
     const cursor = state.cursor;
     render();
@@ -4879,6 +4864,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       redo: Array.isArray(message.redo) ? message.redo : [],
     };
     if (message.type === "file") {
+      releaseRaw(message.path);
       const nextRev = Number(message.rev);
       rev = Number.isFinite(nextRev) ? nextRev : 0;
       waitingForFile = false;
@@ -4962,6 +4948,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       live = false;
       waitingForFile = true;
       openPath = "";
+      dropRaw();
       state = createState("");
       sentLines = lineSet(state.anchor, state.cursor);
       outstandingLock = null;
@@ -5223,21 +5210,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     let next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
     // Up and down on a line drawn empty rest on its start.
     if (granularity === "line") next = lineCaret(state.doc, next);
-    // The browser stops inside a drawn marker, and on the br of a hard break.
-    // One press crosses the whole marker. A press that did not move still crosses
-    // a marker that has no text node of its own. The start of a spaces-only or
-    // tab-only line is where up and down stop, so that press does not cross it.
-    for (let hop = 0; hop < 4; hop += 1) {
-      if (granularity === "line" && bareBreakNewline(state.doc, next)) break;
-      const skipped = skipHidden(state.doc, next, forward ? "forward" : "backward");
-      if (skipped === next) break;
-      next = skipped;
+    // Rendered markers have no glyphs, so one press crosses the whole marker.
+    // Source mode draws those bytes, and a caret inside one stays there.
+    if (!sourceMode) {
+      // The browser stops inside a drawn marker, and on the br of a hard break.
+      // A press that did not move still crosses a marker that has no text node
+      // of its own. The start of a spaces-only or tab-only line is where up and
+      // down stop, so that press does not cross it.
+      for (let hop = 0; hop < 4; hop += 1) {
+        if (granularity === "line" && bareBreakNewline(state.doc, next)) break;
+        const skipped = skipHidden(state.doc, next, forward ? "forward" : "backward");
+        if (skipped === next) break;
+        next = skipped;
+      }
+      if (granularity === "character") next = markerEdgeStop(state.doc, beforeCursor, next, forward);
     }
-    if (granularity === "character") next = markerEdgeStop(state.doc, beforeCursor, next, forward);
     if (next === beforeCursor) {
       const neighbor = beforeCursor + (forward ? 1 : -1);
       if (neighbor >= 0 && neighbor <= state.doc.length) {
-        if (granularity === "character") {
+        if (granularity === "character" && !sourceMode) {
           const skipped = skipHidden(state.doc, neighbor, forward ? "forward" : "backward");
           if (skipped !== neighbor && skipped !== beforeCursor) next = skipped;
         }
@@ -7171,6 +7162,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     live = false;
     waitingForFile = true;
     openPath = "";
+    dropRaw();
     clearHashForActiveRepo();
     state = createState("");
     sentLines = lineSet(state.anchor, state.cursor);
@@ -7587,6 +7579,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     live = false;
     waitingForFile = false;
     openPath = "";
+    dropRaw();
     rev = 0;
     lockTable = [];
     openDirs.clear();
@@ -8141,6 +8134,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       commentFocus = null;
       root.focus();
       placeCaret();
+    },
+    moveCaret(direction, granularity, extend) {
+      moveCaret(direction, granularity, extend);
     },
     destroy() {
       closed = true;

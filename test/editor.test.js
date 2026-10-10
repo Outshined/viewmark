@@ -14101,7 +14101,7 @@ test("raw mode is a view and Enter stores one newline", () => {
   }
 });
 
-test("raw mode draws every byte and keeps the tab's mode", () => {
+test("raw mode draws every byte and starts rendered for each document", () => {
   const mounted = mountSheet();
   const count = (name) => mounted.findAll((node) => node.classList && node.classList.contains(name)).length;
   try {
@@ -14114,7 +14114,7 @@ test("raw mode draws every byte and keeps the tab's mode", () => {
     assert.equal(view.getState().doc, doc);
     assert.equal(view.getState().cursor, at);
     assert.equal(joinedSource(mounted.root), doc);
-    assert.equal(count("md-comment-card"), 0);
+    assert.ok(count("md-comment-card") > 0);
     assert.equal(joinedSource(mounted.root).includes("{c1}"), true);
     assert.equal(joinedSource(mounted.root).includes("```comment c1"), true);
     transport.sent.length = 0;
@@ -14189,15 +14189,47 @@ test("raw mode draws every byte and keeps the tab's mode", () => {
     assert.equal(label.classList.contains("md-flash"), true);
     held.destroy();
 
-    const storage = memoryStorage();
+    const storage = memoryStorage({ "viewmark.raw": "1" });
+    const writes = [];
+    const setItem = storage.setItem;
+    storage.setItem = (key, value) => {
+      writes.push(key);
+      setItem.call(storage, key, value);
+    };
     const first = createEditor(mounted.root, "hello\n", 1, holdingTransport(), storage);
+    assert.equal(mounted.root.classList.contains("md-source"), false);
+    assert.equal(viewToggleOf(mounted.root).getAttribute("aria-pressed"), "false");
     pressViewToggle(mounted.root);
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    assert.equal(writes.includes("viewmark.raw"), false);
     assert.equal(storage.getItem("viewmark.raw"), "1");
     first.destroy();
     const next = holdingTransport();
     const second = createEditor(mounted.root, "hello\n", 1, next, storage);
+    assert.equal(mounted.root.classList.contains("md-source"), false);
+    assert.equal(viewToggleOf(mounted.root).getAttribute("aria-pressed"), "false");
+    pressViewToggle(mounted.root);
     assert.equal(mounted.root.classList.contains("md-source"), true);
-    assert.equal(viewToggleOf(mounted.root).getAttribute("aria-pressed"), "true");
+    next.deliver({
+      type: "file",
+      rev: 1,
+      path: "a.md",
+      text: "hello\n",
+      cursor: 1,
+      anchor: 1,
+    });
+    assert.equal(mounted.root.classList.contains("md-source"), false);
+    pressViewToggle(mounted.root);
+    next.deliver({
+      type: "file",
+      rev: 2,
+      path: "a.md",
+      text: "hello!\n",
+      cursor: 1,
+      anchor: 1,
+    });
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    assert.equal(joinedSource(mounted.root), "hello!\n");
     next.deliver({
       type: "file",
       rev: 4,
@@ -14206,16 +14238,86 @@ test("raw mode draws every byte and keeps the tab's mode", () => {
       cursor: 2,
       anchor: 2,
     });
-    assert.equal(mounted.root.classList.contains("md-source"), true);
-    assert.equal(joinedSource(mounted.root), "beta\n");
+    assert.equal(mounted.root.classList.contains("md-source"), false);
+    assert.equal(viewToggleOf(mounted.root).getAttribute("aria-pressed"), "false");
+    assert.equal(sourceLinesOf(mounted.root).length, 0);
     assert.equal(second.getState().cursor, 2);
     assert.equal(second.getState().doc, "beta\n");
+    assert.equal(writes.includes("viewmark.raw"), false);
     second.destroy();
     const fresh = memoryStorage();
     const third = createEditor(mounted.root, "beta\n", 0, holdingTransport(), fresh);
     assert.equal(mounted.root.classList.contains("md-source"), false);
     assert.equal(viewToggleOf(mounted.root).getAttribute("aria-pressed"), "false");
+    assert.equal(fresh.getItem("viewmark.raw"), null);
+    pressViewToggle(mounted.root);
+    assert.equal(fresh.getItem("viewmark.raw"), null);
     third.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("raw mode keeps a caret inside a comment marker", () => {
+  const doc = "See {c1}this{/c1} now.";
+  const at = "See {c".length;
+  assert.equal(at, 6);
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const stuck = (container, offset) => {
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      collapse() {},
+      setBaseAndExtent() {},
+      removeAllRanges() {},
+      addRange() {},
+      modify() {},
+      getRangeAt() {
+        return { startContainer: container, startOffset: offset };
+      },
+    });
+  };
+  try {
+    const transport = holdingTransport();
+    const typing = createEditor(mounted.root, doc, at, transport);
+    assert.equal(mounted.root.classList.contains("md-source"), false);
+    pressViewToggle(mounted.root);
+    assert.equal(typing.getState().cursor, at);
+    assert.equal(typing.getState().anchor, at);
+    const text = mounted.findAll((node) => node.nodeType === 3 && node.textContent === doc)[0];
+    stuck(text, at);
+    typing.moveCaret("forward", "character", false);
+    assert.equal(typing.getState().cursor, at);
+    assert.equal(typing.getState().anchor, at);
+    transport.sent.length = 0;
+    input(mounted, "insertText", "x");
+    const edit = transport.sent.find((message) => message.type === "edit");
+    assert.equal(edit.op, "insert");
+    assert.equal(edit.text, "x");
+    assert.equal(edit.anchor, at);
+    assert.equal(edit.cursor, at);
+    typing.destroy();
+
+    const accepted = createEditor(mounted.root, doc, at);
+    pressViewToggle(mounted.root);
+    input(mounted, "insertText", "x");
+    assert.equal(accepted.getState().doc, "See {cx1}this{/c1} now.");
+    assert.equal(accepted.getState().cursor, at + 1);
+    accepted.destroy();
+
+    const rendered = createEditor(mounted.root, doc, at);
+    assert.equal(rendered.getState().cursor, at);
+    const parent = {
+      nodeType: 1,
+      dataset: { start: "0", end: String(doc.length) },
+      classList: { contains() { return false; } },
+      parentElement: null,
+    };
+    stuck({ nodeType: 3, parentElement: parent, length: doc.length }, at);
+    keyDown(mounted, "ArrowRight");
+    assert.equal(rendered.getState().cursor, 8);
+    assert.equal(rendered.getState().anchor, 8);
+    rendered.destroy();
   } finally {
     mounted.restore();
   }
