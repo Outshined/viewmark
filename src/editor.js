@@ -1121,16 +1121,28 @@ function expandAtoms(doc, from, to, cursor) {
   return [start, end];
 }
 
+function wordChar(ch) {
+  return /[A-Za-z0-9_]/.test(ch);
+}
+
+// Spaces, then one run. A run is word characters or other non-space characters.
 function wordEdges(doc, cursor, direction) {
+  const space = (ch) => /\s/.test(ch);
   if (direction < 0) {
     let index = cursor;
-    while (index > 0 && /\s/.test(doc[index - 1])) index -= 1;
-    while (index > 0 && !/\s/.test(doc[index - 1])) index -= 1;
+    while (index > 0 && space(doc[index - 1])) index -= 1;
+    if (index > 0) {
+      const word = wordChar(doc[index - 1]);
+      while (index > 0 && !space(doc[index - 1]) && wordChar(doc[index - 1]) === word) index -= 1;
+    }
     return [index, cursor];
   }
   let index = cursor;
-  while (index < doc.length && /\s/.test(doc[index])) index += 1;
-  while (index < doc.length && !/\s/.test(doc[index])) index += 1;
+  while (index < doc.length && space(doc[index])) index += 1;
+  if (index < doc.length) {
+    const word = wordChar(doc[index]);
+    while (index < doc.length && !space(doc[index]) && wordChar(doc[index]) === word) index += 1;
+  }
   return [cursor, index];
 }
 
