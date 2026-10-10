@@ -257,22 +257,32 @@ test("dragging or cutting one marker never leaves it twice", async (t) => {
   whole(await bytes(hub, "x.md"), "cut and pasted closing marker");
 });
 
-test("a comment added over a triple-clicked list item keeps the item", async (t) => {
-  const src = "Intro.\n\n- one item here\n- two item here\n- three item here\n";
-  const { hub, page } = await setup(t, { "a.md": src });
-  await open(page, "a.md");
-  const p = await page.eval(`window.__qaClickPoint(${src.indexOf("two") + 2})`);
-  await page.click(p.x, p.y, { clickCount: 1 });
-  await page.click(p.x, p.y, { clickCount: 2 });
-  await page.click(p.x, p.y, { clickCount: 3 });
-  await page.quiet();
-  const add = await page.eval(`(() => { const b = document.querySelector(".md-add-comment"); if (!b || b.hidden) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
-  assert.ok(add, "no add-comment button");
-  await page.click(add.x, add.y);
-  await page.quiet();
-  const after = await bytes(hub, "a.md");
-  assert.match(split(after).prose, /\n- \{c1\}two item here\{\/c1\}\n/, `the item lost its marker: ${JSON.stringify(after)}`);
-});
+// Ticket jh65rvmr: the opening marker goes after the line's markdown marker, so the line keeps its kind.
+for (const [kind, line, keep] of [
+  ["a bullet item", "- two item here", /\n- \{c1\}two item here\{\/c1\}\n/],
+  ["a star item", "* two item here", /\n\* \{c1\}two item here\{\/c1\}\n/],
+  ["an ordered item", "2. two item here", /\n2\. \{c1\}two item here\{\/c1\}\n/],
+  ["a quote line", "> two item here", /\n> \{c1\}two item here\{\/c1\}\n/],
+  ["a heading", "## two item here", /\n## \{c1\}two item here\{\/c1\}\n/],
+]) {
+  test(`a comment added over a triple-clicked ${kind} keeps its kind`, async (t) => {
+    const src = `Intro.\n\n${line}\n\nAfter.\n`;
+    const { hub, page } = await setup(t, { "a.md": src });
+    await open(page, "a.md");
+    const p = await page.eval(`window.__qaClickPoint(${src.indexOf("two") + 2})`);
+    await page.click(p.x, p.y, { clickCount: 1 });
+    await page.click(p.x, p.y, { clickCount: 2 });
+    await page.click(p.x, p.y, { clickCount: 3 });
+    await page.quiet();
+    const add = await page.eval(`(() => { const b = document.querySelector(".md-add-comment"); if (!b || b.hidden) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    assert.ok(add, "no add-comment button");
+    await page.click(add.x, add.y);
+    await page.quiet();
+    const after = await bytes(hub, "a.md");
+    assert.match(split(after).prose, keep, `the line lost its kind: ${JSON.stringify(after)}`);
+    whole(after, kind);
+  });
+}
 
 test("the CLI cannot delete a thread in the block the person's caret holds", async (t) => {
   const { hub, page } = await setup(t, { "a.md": P + CM("c1") });
