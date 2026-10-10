@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { launchBrowser, Page, startHub } from "./harness.js";
+import { REPO, USER, cli, launchBrowser, Page, startHub } from "./harness.js";
 
 // Ticket cxmnzjzj: clicking anywhere else on the page closes any open menu, the ticket filter
 // menu included. Every press here is a real mouse event at a point on the page.
@@ -73,13 +73,23 @@ test("a press inside the filter menu keeps it open, and its button toggles it", 
   await page.until(async () => !(await page.eval(OPEN(FILTER_MENU))), "the filter button closes its menu", 1000);
 });
 
+// The global document menu is gone (ticket xj3zqv5t). On a ticket, the pane menu and the
+// filter menu are the two menus, and opening one closes the other.
+const PANE_BUTTON = ".ticket-form button.md-ticket-pane-menu";
+const PANE_MENU = ".ticket-form .md-ticket-pane-panel";
+
 test("opening one menu closes the other", async (t) => {
   const page = await setup(t);
-  await press(page, await centerOf(page, ".md-doc-menu"));
-  await page.until(() => page.eval(OPEN(DOC_MENU)), "document menu open");
+  const made = await cli(page.port, ["--user", USER, "--repo", REPO, "ticket", "create", "--title", "Menus"], "Body.\n");
+  assert.equal(made.code, 0, made.stderr);
+  const id = made.stdout.trim().split("\n")[0];
+  await page.session.send("Page.navigate", { url: `http://127.0.0.1:${page.port}/?load=2#${REPO}/ticket/${encodeURIComponent(id)}` });
+  await page.until(() => page.eval(OPEN(PANE_BUTTON)), "the ticket pane menu button");
+  await press(page, await centerOf(page, PANE_BUTTON));
+  await page.until(() => page.eval(OPEN(PANE_MENU)), "the ticket pane menu open");
   await openFilter(page);
-  assert.equal(await page.eval(OPEN(DOC_MENU)), false, "the document menu stayed open when the filter menu opened");
-  await press(page, await centerOf(page, ".md-doc-menu"));
-  await page.until(() => page.eval(OPEN(DOC_MENU)), "document menu open again");
-  assert.equal(await page.eval(OPEN(FILTER_MENU)), false, "the filter menu stayed open when the document menu opened");
+  assert.equal(await page.eval(OPEN(PANE_MENU)), false, "the ticket pane menu stayed open when the filter menu opened");
+  await press(page, await centerOf(page, PANE_BUTTON));
+  await page.until(() => page.eval(OPEN(PANE_MENU)), "the ticket pane menu open again");
+  assert.equal(await page.eval(OPEN(FILTER_MENU)), false, "the filter menu stayed open when the ticket pane menu opened");
 });
