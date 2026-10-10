@@ -190,6 +190,21 @@ export function enterInsert(doc, cursor) {
   if (at === line.start && (mode.kind === "li" || mode.kind === "ol")) return { text: "\n" };
   const marker = continuedMarker(text, at);
   if (marker) return { text: `\n${marker}` };
+  if (mode.kind === "p" && line.text !== "" && !imageLine(line.text)) {
+    const onBreak = line.newline && at === line.end && text[at] === "\n";
+    const nextBlank = onBreak && (
+      at + 1 >= text.length
+      || text[at + 1] === "\n"
+      || (text[at + 1] === "\r" && text[at + 2] === "\n")
+    );
+    if (onBreak && !nextBlank) {
+      const from = text[at - 1] === "\r" ? at - 1 : at;
+      return { text: "\n\n", anchor: from, cursor: at + 1 };
+    }
+    // Column 0 pushes the block down with one newline. A double newline there
+    // regresses EN.p.4 and EN.sp.2.
+    if (!onBreak && at !== line.start) return { text: "\n\n" };
+  }
   if (paragraphBlank(text, line, at)) return { text: "\n\n" };
   return { text: "\n" };
 }

@@ -3456,8 +3456,8 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
     press("insertParagraph");
     const edit = transport.sent.find((message) => message.type === "edit");
     assert.equal(edit.op, "insert");
-    assert.equal(edit.text, "\n");
-    assert.equal(edit.cursor, 5);
+    assert.equal(edit.text, "\n\n");
+    assert.equal(edit.cursor, 6);
     assert.equal(edit.anchor, 5);
     assert.equal(transport.sent.some((message) => message.type === "lock"), false);
     held.destroy();
@@ -3467,8 +3467,8 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
     press("insertLineBreak");
     const breakEdit = broken.sent.find((message) => message.type === "edit");
     assert.equal(breakEdit.op, "insert");
-    assert.equal(breakEdit.text, "\n");
-    assert.equal(breakEdit.cursor, 5);
+    assert.equal(breakEdit.text, "\n\n");
+    assert.equal(breakEdit.cursor, 6);
     assert.equal(breakEdit.anchor, 5);
     assert.equal(broken.sent.some((message) => message.type === "lock"), false);
     shiftEnter.destroy();
@@ -3476,8 +3476,8 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
     const view = createEditor(mounted.root, "hello\nworld\n", 5);
     press("insertParagraph");
     assert.equal(view.getState().doc, "hello\n\nworld\n");
-    assert.equal(view.getState().cursor, 6);
-    assert.equal(view.getState().anchor, 6);
+    assert.equal(view.getState().cursor, 7);
+    assert.equal(view.getState().anchor, 7);
     view.destroy();
 
     const middleTransport = holdingTransport();
@@ -3485,7 +3485,7 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
     press("insertParagraph");
     const middleEdit = middleTransport.sent.find((message) => message.type === "edit");
     assert.equal(middleEdit.op, "insert");
-    assert.equal(middleEdit.text, "\n");
+    assert.equal(middleEdit.text, "\n\n");
     assert.equal(middleEdit.cursor, 2);
     assert.equal(middleEdit.anchor, 2);
     assert.equal(lockReaches(middleTransport.sent, 6), false);
@@ -3493,9 +3493,9 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
 
     const middle = createEditor(mounted.root, "hello\nworld\n", 2);
     press("insertParagraph");
-    assert.equal(middle.getState().doc, "he\nllo\nworld\n");
-    assert.equal(middle.getState().cursor, 3);
-    assert.equal(middle.getState().anchor, 3);
+    assert.equal(middle.getState().doc, "he\n\nllo\nworld\n");
+    assert.equal(middle.getState().cursor, 4);
+    assert.equal(middle.getState().anchor, 4);
     middle.destroy();
 
     const rejecting = {
