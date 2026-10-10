@@ -69,6 +69,16 @@ test("a paste on the line under a quote stays on that line", () => {
   assert.notEqual(quote, pasted);
 });
 
+test("a paste on a gap line stays off the paragraph above", () => {
+  const next = insert(createState("one\n\ntwo\n", 4), "a\nb");
+  assert.equal(next.doc, "one\n\na\nb\ntwo\n");
+  const drawn = plan(next.doc, next.cursor);
+  const one = drawn.blocks.find((block) => block.text.includes("one"));
+  const pasted = drawn.blocks.find((block) => block.start === next.doc.indexOf("a"));
+  assert.notEqual(one, pasted);
+  assert.equal(one.text.includes("a"), false);
+});
+
 test("a paste on the line under a list item stays on that line", () => {
   const next = insert(createState("- item\nmore\n", 7), "a\nb");
   assert.equal(next.doc, "- item\n\na\nbmore\n");

@@ -2608,14 +2608,7 @@ function joinedLineBreak(doc, cursor, value, nl) {
   // The row lineSpans adds at length is not a block.
   if (cursor !== line.start || line.start === 0 || line.start === doc.length) return false;
   if (enclosedByFence(doc, cursor)) return false;
-  if (!joinsDown(sourceLine(doc, line.start - 1).text)) return false;
-  // An empty line before a later line is already the gap. A paste that brings
-  // its own breaks fills that gap instead of opening another.
-  if (line.text === "" && line.newline && value.includes(nl)) {
-    const next = line.end + 1;
-    if (next < doc.length && sourceLine(doc, next).text !== "") return false;
-  }
-  return true;
+  return joinsDown(sourceLine(doc, line.start - 1).text);
 }
 
 export function insert(state, text) {

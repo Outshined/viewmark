@@ -12585,8 +12585,8 @@ test("uwtqazmt crlf newlines", () => {
   assert.equal(mid.cursor, 8);
 
   const lf = insert(createState("one\n\ntwo\n", 4), "a\r\nb");
-  assert.equal(lf.doc, "one\na\nb\ntwo\n");
-  assert.equal(lf.cursor, 7);
+  assert.equal(lf.doc, "one\n\na\nb\ntwo\n");
+  assert.equal(lf.cursor, 8);
 
   const joined = deleteForward(createState("ab\r\ncd", 3));
   assert.equal(joined.doc, "abcd");
