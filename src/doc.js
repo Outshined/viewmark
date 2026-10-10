@@ -1920,7 +1920,7 @@ function wrappedBlock(group, doc, cursor, spans) {
       pieces = dropPrefix(pieces, slot.line.start + slot.mode.quote);
     }
     // A hard break stays a break, so the next line keeps the spaces it wrote.
-    if (i > 0 && group[0].mode.kind === "ol") {
+    if (i > 0 && (group[0].mode.kind === "ol" || group[0].mode.kind === "li")) {
       const prev = group[i - 1];
       const prevNewline = prev.line.end < doc.length && doc[prev.line.end] === "\n";
       const prevMarker = openerMarker(prev, i - 1);

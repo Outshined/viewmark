@@ -765,7 +765,7 @@ test("list item is one block", () => {
   assert.equal(splitBlocks[1].classes.includes("md-li"), false);
 
   const spaced = "- a\n \nb\n";
-  assert.equal(shownText(proseBlocks(spaced, spaced.length)[0]), "a   b");
+  assert.equal(shownText(proseBlocks(spaced, spaced.length)[0]), "a  b");
   assert.equal(spaced[4], " ");
 
   const siblings = "- Alpha\nBeta\n- Gamma\n";
@@ -824,21 +824,21 @@ test("list item is one block", () => {
   assert.equal(continued.length, 45);
   const continuedBlocks = proseBlocks(continued, continued.length);
   assert.equal(continuedBlocks.length, 3);
-  assert.equal(shownText(continuedBlocks[0]), "Alpha   continues");
+  assert.equal(shownText(continuedBlocks[0]), "Alpha continues");
   assert.equal(continuedBlocks[0].runs.find((run) => run.start === 7).text, " ");
   assert.equal(continued.slice(8, 10), "  ");
-  assert.equal(shownText(continuedBlocks[1]), "Beta   after");
+  assert.equal(shownText(continuedBlocks[1]), "Beta after");
   assert.equal(continuedBlocks[1].indent, 2);
   assert.equal(continuedBlocks[1].runs.find((run) => run.start === 28).text, " ");
   assert.equal(shownText(continuedBlocks[2]), "Gamma");
   assert.equal(shownText(continuedBlocks[0]).includes("Beta"), false);
   assert.equal(shownText(continuedBlocks[0]).includes("after"), false);
   const continuedRaw = proseBlocks(continued, 0);
-  assert.equal(shownText(continuedRaw[0]), "- Alpha   continues");
-  assert.equal(shownText(continuedRaw[1]), "Beta   after");
+  assert.equal(shownText(continuedRaw[0]), "- Alpha continues");
+  assert.equal(shownText(continuedRaw[1]), "Beta after");
   const onBeta = proseBlocks(continued, continued.indexOf("Beta"));
-  assert.equal(shownText(onBeta[0]), "Alpha   continues");
-  assert.equal(shownText(onBeta[1]), "  - Beta   after");
+  assert.equal(shownText(onBeta[0]), "Alpha continues");
+  assert.equal(shownText(onBeta[1]), "  - Beta after");
   assert.equal(onBeta[1].raw, true);
   assert.equal(Object.hasOwn(onBeta[1], "marker"), false);
 
@@ -1196,6 +1196,42 @@ test("bwx2b8ru numbered continuation reflow", () => {
     mounted.restore();
   }
   assert.equal(doc, "1. alpha\n   continues\n");
+});
+
+test("w3hccq8y bullet continuation reflow", () => {
+  const doc = "x\n\n- alpha\n  beta\n";
+  assert.equal(doc[10], "\n");
+  assert.equal(doc.slice(11, 13), "  ");
+  const outside = proseBlocks(doc, 0);
+  const rendered = outside.find((block) => block.classes.includes("md-li"));
+  assert.equal(shownText(rendered), "alpha beta");
+  const inside = proseBlocks(doc, doc.indexOf("-"));
+  const raw = inside.find((block) => block.classes.includes("md-li"));
+  assert.equal(shownText(raw), "- alpha beta");
+  for (const block of [rendered, raw]) {
+    assert.ok(block.parts.some((part) => part.start <= 10 && 10 < part.end));
+    assert.ok(block.parts.some((part) => part.start <= 11 && part.end > 12));
+  }
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  try {
+    const view = createEditor(mounted.root, doc, 0);
+    const lines = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-li"));
+    assert.equal(lines.length, 1);
+    assert.ok(lines[0].textContent.split("\u200b").join("").includes("alpha beta"));
+    const space = mounted.findAll((node) => node.nodeType === 3 && node.textContent === " ")[0];
+    assert.ok(space);
+    assert.equal(mapOffset(space, 0), 10);
+    const indent = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "\u200b\u200b")[0];
+    assert.ok(indent);
+    assert.equal(mapOffset(indent, 0), 11);
+    assert.equal(mapOffset(indent, 1), 12);
+    assert.equal(view.getState().doc, doc);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+  assert.equal(doc, "x\n\n- alpha\n  beta\n");
 });
 
 test("quoted item is one block", () => {
