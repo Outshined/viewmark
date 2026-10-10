@@ -128,12 +128,20 @@ button.md-doc-commit {
   z-index: 5;
   box-sizing: border-box;
   display: block;
+  width: auto;
   margin: 0;
   padding: 0.35rem 0.7rem;
+  border: 0;
   border-radius: 0.25rem;
+  background: none;
   font: inherit;
   color: inherit;
+  text-align: left;
   cursor: pointer;
+}
+
+button.md-doc-commit:hover {
+  background: #2c3440;
 }
 
 button.md-doc-commit[hidden] {
@@ -817,7 +825,6 @@ div.md-ticket-pane-panel label {
   padding: 0;
 }
 
-button.md-doc-commit,
 button.md-ticket-pane-item,
 button.md-ticket-filter-all,
 .ticket-form button.md-ticket-link,
@@ -828,7 +835,6 @@ button.md-ticket-filter-all,
   text-align: left;
 }
 
-button.md-doc-commit:hover,
 button.md-ticket-pane-item:hover,
 button.md-ticket-filter-all:hover,
 .ticket-form button.md-ticket-link:hover,

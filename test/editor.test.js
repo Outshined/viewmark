@@ -8143,11 +8143,11 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
   assert.match(css, /\.ticket-tree button\.md-ticket-expand\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
   assert.match(css, /\.ticket-tree button\.md-ticket\s*\{[^}]*border:\s*0;/);
   assert.match(css, /\.file-tree button\s*\{[^}]*border:\s*0;/);
-  assert.match(css, /button\.md-doc-commit,\s*button\.md-ticket-pane-item,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*border:\s*0;/);
-  assert.match(css, /button\.md-doc-commit,\s*button\.md-ticket-pane-item,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*background:\s*none;/);
-  assert.match(css, /button\.md-doc-commit,\s*button\.md-ticket-pane-item,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*width:\s*100%;/);
-  assert.match(css, /button\.md-doc-commit,\s*button\.md-ticket-pane-item,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*text-align:\s*left;/);
-  assert.match(css, /button\.md-doc-commit:hover,\s*button\.md-ticket-pane-item:hover,\s*button\.md-ticket-filter-all:hover,\s*\.ticket-form button\.md-ticket-link:hover,\s*\.ticket-form button\.md-ticket-option:hover\s*\{[^}]*background:\s*#2c3440;/);
+  assert.match(css, /button\.md-ticket-pane-item,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*border:\s*0;/);
+  assert.match(css, /button\.md-ticket-pane-item,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*background:\s*none;/);
+  assert.match(css, /button\.md-ticket-pane-item,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*width:\s*100%;/);
+  assert.match(css, /button\.md-ticket-pane-item,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*text-align:\s*left;/);
+  assert.match(css, /button\.md-ticket-pane-item:hover,\s*button\.md-ticket-filter-all:hover,\s*\.ticket-form button\.md-ticket-link:hover,\s*\.ticket-form button\.md-ticket-option:hover\s*\{[^}]*background:\s*#2c3440;/);
   assert.match(css, /\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*border-radius:\s*0\.35rem;/);
   assert.match(css, /:root\s*\{[^}]*--danger:\s*#ff7b72;/);
   assert.match(css, /\.icon-btn svg\s*\{[^}]*width:\s*1\.1em;/);
@@ -8310,7 +8310,8 @@ test("commit button checkpoints the active repo", () => {
   assert.match(css, /button\.md-doc-commit[^{]*\{[^}]*border:\s*0/);
   assert.match(rule[0], /box-sizing:\s*border-box/);
   assert.match(rule[0], /display:\s*block/);
-  assert.match(css, /button\.md-doc-commit[^{]*\{[^}]*width:\s*100%/);
+  assert.match(rule[0], /width:\s*auto/);
+  assert.equal(/button\.md-doc-commit[^{]*\{[^}]*width:\s*100%/.test(css), false);
   assert.match(rule[0], /margin:\s*0/);
   assert.match(rule[0], /padding:\s*0\.35rem 0\.7rem/);
   assert.match(rule[0], /border-radius:\s*0\.25rem/);
