@@ -3808,6 +3808,53 @@ test("a second live socket with that token gets 409 naming the holder", async ()
   });
 });
 
+test("a reload hello keeps the newest socket for that token", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "alpha\nbeta\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const token = "reload-token";
+    const caret = 7;
+    const inserted = "zero\n\n";
+    const first = await hello(port, "A", "docs", token);
+    const second = await hello(port, "A", "docs", token);
+    await waitClosed(first.ws);
+    const rev = (await openDoc(second, "A", "a.md")).rev;
+    await syncLock(second, [], "A", "a.md", caret, rev);
+    await waitClosed(second.ws);
+    const agent = await hello(port, "B", "docs");
+    const opened = await openDoc(agent, "B", "a.md");
+    agent.send({
+      type: "edit",
+      username: "B",
+      path: "a.md",
+      rev: opened.rev,
+      anchor: 0,
+      cursor: 0,
+      op: "insert",
+      text: inserted,
+    });
+    const doc = await takeDoc(agent);
+    assert.equal(doc.text, inserted + text);
+    const third = await hello(port, "A", "docs", token);
+    third.send({ type: "open", username: "A", path: "a.md" });
+    const file = await third.next((msg) => msg.type === "file" && msg.path === "a.md");
+    assert.equal(file.cursor, caret + inserted.length);
+    assert.equal(file.anchor, caret + inserted.length);
+    third.send({
+      type: "lock",
+      username: "A",
+      path: "a.md",
+      anchor: file.anchor,
+      cursor: file.cursor,
+      rev: file.rev,
+    });
+    const locks = await third.next((msg) => msg.type === "locks" || msg.type === "error");
+    assert.equal(locks.type, "locks");
+    agent.ws.close();
+    third.ws.close();
+  });
+});
+
 test("an insert by someone else while the socket is down shifts the caret the file message returns", async () => {
   await withDocs(async ({ port, dir }) => {
     const text = "one\n\nalpha\n";

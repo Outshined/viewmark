@@ -1859,14 +1859,32 @@ export async function createHub(stateDir, sourceRoot) {
     old.adopted = true;
   }
 
-  function claimSession(socket, token) {
-    const previous = sessionTokens.get(token);
-    if (previous && previous !== socket) {
-      const live = !previous.destroyed && !previous.session?.gone;
-      if (live) return;
-      adoptSession(previous, socket);
+  // A live socket keeps its own caret. The chain still records the newer
+  // socket, so a later reconnect adopts that one after the older socket is gone.
+  function adoptionSource(chain) {
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      const sock = chain[i];
+      const session = sock && sock.session;
+      if (!session || session.adopted) continue;
+      if (!sock.destroyed && !session.gone) continue;
+      if (session.docPath || session.lines.size > 0 || session.undo.length > 0) return sock;
     }
-    sessionTokens.set(token, socket);
+    return null;
+  }
+
+  function claimSession(socket, token) {
+    const chain = sessionTokens.get(token) || [];
+    const source = adoptionSource(chain);
+    if (source) adoptSession(source, socket);
+    chain.push(socket);
+    const kept = chain.filter((sock) => {
+      if (sock === socket) return true;
+      const session = sock && sock.session;
+      if (!session) return false;
+      const dead = sock.destroyed || session.gone;
+      return !(dead && session.adopted);
+    });
+    sessionTokens.set(token, kept);
     socket.session.token = token;
   }
 
