@@ -3,3 +3,4 @@
 - [Literal text in viewmark docs](literal-text-in-viewmark-docs.md) — quote markdown/fixtures/comment markers in ```text fences; code spans and backslashes don't protect them
 - [Anchor review comments](anchor-review-comments.md) — review points go in separate threads anchored on the text they address; the asker's thread gets a short verdict
 - [QA rules are proposals](qa-rules-are-proposals.md) — rules QA adds are marked not approved; tickets cite the owner rule, not the proposal
+- [Do not cut down instructions](do-not-cut-down-instructions.md) — apply what the owner says in full; moved text goes word for word, checked against the source
