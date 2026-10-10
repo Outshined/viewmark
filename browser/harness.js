@@ -322,8 +322,24 @@ window.__qaBoundary = (offset) => {
   const after = window.__qaGlyph(offset);
   if (main && before && after && Math.abs(after.top - before.top) >= 2) {
     main.alt = { x: window.__qaRtl(offset - 1) ? before.left : before.right, top: before.top, bottom: before.bottom };
+  } else if (main && before) {
+    // A raw list marker hangs in the gutter, so the text starts a gap to the right of it.
+    // The caret at the marker's end belongs at the start of the text, where a typed letter goes.
+    const start = window.__qaTextStart(offset - 1);
+    if (start != null && before.right < start - 1 && (!after || after.left >= start - 1)) {
+      main.alt = { x: before.right, top: before.top, bottom: before.bottom };
+      main.x = start;
+    }
   }
   return main;
+};
+// The left of a raw list line's text, inside its padding, or null for any other line.
+window.__qaTextStart = (offset) => {
+  const hit = window.__qaTextAt(offset);
+  const line = hit && hit.node.parentElement.closest(".md-line.md-raw");
+  if (!line || !line.matches(".md-li, .md-ol")) return null;
+  const style = getComputedStyle(line);
+  return line.getBoundingClientRect().left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
 };
 window.__qaBoundaryMain = (offset) => {
   const before = offset > 0 ? window.__qaGlyph(offset - 1) : null;
@@ -529,6 +545,16 @@ window.__qaCaret = async () => {
     // At a soft wrap a collapsed range has a rect on each line; only one has the caret painted.
     rects: range.collapsed ? [...range.getClientRects()].map((r) => ({ x: r.left, top: r.top, bottom: r.bottom })) : [],
     scroll: { x: window.scrollX, y: window.scrollY },
+    // A raw list item hangs its marker in the gutter, where the range's rect and the painted
+    // caret can disagree. The line's box is scanned for the caret's paint.
+    hanging: (() => {
+      if (!range.collapsed || !inside) return null;
+      const holder = sel.focusNode.nodeType === 1 ? sel.focusNode : sel.focusNode.parentElement;
+      const line = holder && holder.closest(".md-line.md-raw");
+      if (!line || !line.matches(".md-li, .md-ol")) return null;
+      const r = line.getBoundingClientRect();
+      return { left: r.left - 40, right: r.right, top: r.top, bottom: r.bottom };
+    })(),
     fallback,
     emptyLine,
     focused: document.hasFocus() && (document.activeElement === root || root.contains(document.activeElement)),
@@ -539,6 +565,11 @@ window.__qaCaret = async () => {
 
 // Counts pure red pixels in an 8-bit RGB or RGBA PNG without interlace, as Chromium writes them.
 function redPixels(png) {
+  return redColumns(png).length;
+}
+
+// The x of every pixel column that holds pure red.
+function redColumns(png) {
   let at = 8;
   let width = 0;
   let height = 0;
@@ -559,7 +590,7 @@ function redPixels(png) {
   const raw = zlib.inflateSync(Buffer.concat(idat));
   const stride = width * bpp;
   let prev = Buffer.alloc(stride);
-  let count = 0;
+  const columns = new Set();
   for (let y = 0; y < height; y += 1) {
     const filter = raw[y * (stride + 1)];
     const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
@@ -583,11 +614,11 @@ function redPixels(png) {
     }
     for (let x = 0; x < width; x += 1) {
       const i = x * bpp;
-      if (cur[i] > 200 && cur[i + 1] < 60 && cur[i + 2] < 60) count += 1;
+      if (cur[i] > 200 && cur[i + 1] < 60 && cur[i + 2] < 60) columns.add(x);
     }
     prev = cur;
   }
-  return count;
+  return [...columns].sort((a, b) => a - b);
 }
 
 const KEYS = {
@@ -767,20 +798,41 @@ export class Page {
       const which = await this.paintedRect(caret.rects, caret.scroll);
       if (which != null) caret.rect = caret.rects[which];
       caret.painted = which != null;
+    } else if (caret && caret.hanging && caret.rect) {
+      const x = await this.paintedX(caret.hanging, caret.scroll);
+      if (x != null) caret.rect = { ...caret.rect, x };
+      caret.painted = x != null;
     }
     return caret;
   }
 
-  // The caret is painted in red, and the rect whose strip holds red pixels is the painted one.
-  // The caret blinks, so several rounds of screenshots are taken.
-  async paintedRect(rects, scroll) {
-    await this.eval(`(() => {
+  // Where the red caret is painted along one line's box, in CSS pixels, or null if unseen.
+  async paintedX(box, scroll) {
+    await this.ensureRedCaret();
+    const clip = { x: Math.max(0, box.left + scroll.x), y: box.top + scroll.y, width: Math.max(1, box.right - box.left), height: Math.max(1, box.bottom - box.top), scale: 1 };
+    for (let round = 0; round < 10; round += 1) {
+      const shot = await this.session.send("Page.captureScreenshot", { format: "png", clip });
+      const columns = redColumns(Buffer.from(shot.data, "base64"));
+      if (columns.length && columns[columns.length - 1] - columns[0] <= 3) return clip.x - scroll.x + columns[0];
+      await sleep(60);
+    }
+    return null;
+  }
+
+  ensureRedCaret() {
+    return this.eval(`(() => {
       if (document.getElementById("qa-caret-color")) return;
       const style = document.createElement("style");
       style.id = "qa-caret-color";
       style.textContent = "#editor, #editor * { caret-color: rgb(255, 0, 0) !important; }";
       document.head.appendChild(style);
     })()`);
+  }
+
+  // The caret is painted in red, and the rect whose strip holds red pixels is the painted one.
+  // The caret blinks, so several rounds of screenshots are taken.
+  async paintedRect(rects, scroll) {
+    await this.ensureRedCaret();
     for (let round = 0; round < 10; round += 1) {
       const red = [];
       for (const r of rects) {
