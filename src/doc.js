@@ -794,15 +794,18 @@ function cleanupComments(doc, cursor) {
       dropped.add(span.id);
     }
   }
+  // Both marks gone means the span was removed whole, so the thread goes with
+  // it. A mark that is still in the prose is half a comment, and that edit is refused.
   let broken = false;
+  const tokens = commentTokens(doc);
   for (const fence of fences) {
     if (live.has(fence.id)) continue;
     dropped.add(fence.id);
-    if (!empty.has(fence.id)) broken = true;
+    if (!empty.has(fence.id) && tokens.some((token) => token.id === fence.id)) broken = true;
   }
   if (dropped.size > 0) {
     const hidden = hiddenFenceRanges(doc);
-    for (const token of commentTokens(doc)) {
+    for (const token of tokens) {
       if (!dropped.has(token.id) || offsetHidden(token.start, hidden)) continue;
       ranges.push([token.start, token.end]);
     }
@@ -2480,20 +2483,42 @@ function markerAt(doc, index) {
 
 // A selection that covers one marker of a span and not the other keeps that marker.
 // The caret stays outside the comment: before an opener, after a closer.
+// A selection that covers both markers keeps both, so the comment stays whole
+// and only its text leaves. Empty cleanup must not then drop that span.
 function markerSplice(doc, from, to) {
+  const wholes = [];
+  let partial = false;
   for (const span of findSpans(doc)) {
+    const openCovered = span.openStart >= from && span.openEnd <= to;
+    const closeCovered = span.closeStart >= from && span.closeEnd <= to;
     const openHit = from < span.openEnd && to > span.openStart;
     const closeHit = from < span.closeEnd && to > span.closeStart;
-    if (openHit === closeHit) continue;
-    if (openHit && span.openStart >= from && span.openEnd <= to) {
+    if (openCovered && closeCovered) {
+      wholes.push(span);
+      continue;
+    }
+    if (openHit === closeHit) {
+      if (openHit) partial = true;
+      continue;
+    }
+    if (openHit && openCovered) {
       return { from, to, text: doc.slice(span.openStart, span.openEnd), caret: from };
     }
-    if (closeHit && span.closeStart >= from && span.closeEnd <= to) {
+    if (closeHit && closeCovered) {
       const text = doc.slice(span.closeStart, span.closeEnd);
       return { from, to, text, caret: from + text.length };
     }
+    partial = true;
   }
-  return null;
+  if (partial || wholes.length === 0) return null;
+  const marks = [];
+  for (const span of wholes) {
+    marks.push([span.openStart, span.openEnd], [span.closeStart, span.closeEnd]);
+  }
+  marks.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let text = "";
+  for (const [start, end] of marks) text += doc.slice(start, end);
+  return { from, to, text, caret: from + (marks[0][1] - marks[0][0]), whole: true };
 }
 
 function snapBreak(next) {
@@ -2635,9 +2660,24 @@ function joinedLineBreak(doc, cursor, value, nl) {
   return joinsDown(sourceLine(doc, line.start - 1).text);
 }
 
+// A paste repeats the marks it copied. A mark already in the document, or one
+// with no fence, would open twice or not at all, so the text is what lands.
+function omitCopiedMarkers(doc, text) {
+  if (!text || text.indexOf("{") < 0) return text;
+  const fenced = new Set();
+  for (const thread of commentThreads(doc)) fenced.add(thread.id);
+  const present = new Set();
+  for (const token of commentTokens(doc)) present.add(token.id);
+  return text.replace(/\{(?:\/)?([A-Za-z][A-Za-z0-9_-]*)\}/g, (mark, id) => {
+    if (present.has(id) || !fenced.has(id)) return "";
+    return mark;
+  });
+}
+
 export function insert(state, text) {
   const nl = fileNewline(state.doc);
   let value = (typeof text === "string" ? text : "").replace(/\r\n|\n|\r/g, nl);
+  value = omitCopiedMarkers(state.doc, value);
   const from = Math.min(state.anchor, state.cursor);
   const to = Math.max(state.anchor, state.cursor);
   if (from === to && joinedLineBreak(state.doc, from, value, nl)) value = nl + value;
@@ -2691,6 +2731,15 @@ function deleteSelection(state) {
   const from = Math.min(state.anchor, state.cursor);
   const to = Math.max(state.anchor, state.cursor);
   const kept = markerSplice(state.doc, from, to);
+  // The kept marks are an empty span on purpose. applySplice would drop that thread.
+  if (kept && kept.whole) {
+    const next = splice(state, kept.from, kept.to, kept.text, kept.caret);
+    if (next === state) return state;
+    return snapBreak({
+      ...next,
+      changes: [{ from: kept.from, to: kept.to, inserted: kept.text, removed: state.doc.slice(kept.from, kept.to) }],
+    });
+  }
   if (kept) return snapBreak(applySplice(state, kept.from, kept.to, kept.text, kept.caret));
   return snapBreak(applySplice(state, from, to, "", from));
 }

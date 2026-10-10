@@ -4483,13 +4483,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     gestureTimer = null;
   }
 
-  function pointOffset(event) {
+  function pointMapped(event) {
     if (!event || typeof document.caretPositionFromPoint !== "function") return null;
     if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return null;
     const pos = document.caretPositionFromPoint(event.clientX, event.clientY);
     if (!pos) return null;
     const mapped = mapOffset(pos.offsetNode, pos.offset);
     if (!Number.isFinite(mapped)) return null;
+    return mapped;
+  }
+
+  function pointOffset(event) {
+    const mapped = pointMapped(event);
+    if (mapped == null) return null;
     return skipHidden(state.doc, mapped, "nearer");
   }
 
@@ -4505,12 +4511,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       gestureArmed = true;
       return;
     }
-    gestureOffset = pointOffset(event);
+    // skipHidden snaps a press inside a comment mark to the mark's edge. That
+    // edge is the selection boundary when the selection covers the mark, so the
+    // unsnapped offset is what says this press is a drag of the selection.
+    const raw = pointMapped(event);
+    gestureOffset = raw == null ? null : skipHidden(state.doc, raw, "nearer");
     gestureArmed = true;
     const from = Math.min(state.anchor, state.cursor);
     const to = Math.max(state.anchor, state.cursor);
-    const at = gestureOffset;
-    dragRange = from !== to && at != null && at > from && at < to
+    dragRange = from !== to && raw != null && raw > from && raw < to
       ? { anchor: state.anchor, cursor: state.cursor }
       : null;
   });
