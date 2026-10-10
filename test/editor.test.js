@@ -5235,6 +5235,32 @@ test("comment cards follow highlight order", () => {
   }
 });
 
+test("comment cards stay near their anchors", () => {
+  const mounted = mountSheet();
+  const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+  try {
+    let doc = "one two three\n";
+    const first = addComment(doc, 0, 3);
+    doc = first.doc;
+    const twoAt = doc.indexOf("two");
+    const second = addComment(doc, twoAt, twoAt + 3);
+    doc = second.doc;
+    const threeAt = doc.indexOf("three");
+    const third = addComment(doc, threeAt, threeAt + 5);
+    doc = third.doc;
+    assert.equal(doc.indexOf("one"), 4);
+    assert.equal(doc.indexOf("two"), 17);
+    assert.equal(doc.indexOf("three"), 30);
+    globalThis.window.matchMedia = () => ({ matches: false });
+    const view = createEditor(mounted.root, doc, 0);
+    assert.deepEqual(cards().map((card) => card.dataset.comment), ["c1", "c2", "c3"]);
+    assert.deepEqual(cards().map((card) => card.styleProps.top), ["42px", "84px", "42px"]);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("comment cards mark the thread being acted on", () => {
   const mounted = mountSheet();
   const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));

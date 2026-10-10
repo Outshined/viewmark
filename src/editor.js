@@ -2608,6 +2608,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const rowHeight = typeof resolvedRow.offsetHeight === "number" ? resolvedRow.offsetHeight : 0;
       floor = Math.max(menuHeight, rowHeight) + COMMENT_CARD_GAP;
     }
+    // A card sits on its anchor. It may drop far enough to clear the menu or one
+    // overlapping card, and no further than two short cards. A short card is ten
+    // gaps tall, so a tall thread cannot carry later cards down the page.
+    const menuFloor = floor;
     for (const card of cards) {
       const id = card.dataset.comment;
       let rects = highlightRects(id);
@@ -2629,19 +2633,23 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           walk(root);
         }
       }
-      let top = floor;
-      if (rects.length > 0) {
-        let markTop = rects[0].top;
-        for (const rect of rects) if (rect.top < markTop) markTop = rect.top;
-        top = Math.max(floor, markTop - asideRect.top);
-      }
       setStyle(card, "position", "absolute");
-      setStyle(card, "top", `${top}px`);
       setStyle(card, "left", "0px");
       setStyle(card, "width", "100%");
       setStyle(card, "margin", "0px");
       const height = typeof card.offsetHeight === "number" ? card.offsetHeight : (elementRect(card)?.height || 0);
-      floor = top + height + COMMENT_CARD_GAP;
+      let top = floor;
+      if (rects.length > 0) {
+        let markTop = rects[0].top;
+        for (const rect of rects) if (rect.top < markTop) markTop = rect.top;
+        const anchor = markTop - asideRect.top;
+        const reference = Math.min(height, 10 * COMMENT_CARD_GAP);
+        const limit = 2 * (reference + COMMENT_CARD_GAP);
+        const parked = Math.max(anchor, menuFloor);
+        top = floor > parked && floor - anchor <= limit ? floor : parked;
+      }
+      setStyle(card, "top", `${top}px`);
+      floor = Math.max(floor, top + height + COMMENT_CARD_GAP);
     }
     setStyle(commentsAside, "height", `${floor}px`);
   }
