@@ -945,11 +945,27 @@ export function commentRangeReason(doc, anchor, cursor) {
   return null;
 }
 
+// A comment mark inside a block prefix stops that line classifying as the block.
+function prefixBounds(text, from, to) {
+  let start = from;
+  let end = to;
+  for (const line of lineSpans(text)) {
+    const marker = classify(line.text).marker || 0;
+    if (marker <= 0) continue;
+    const prefix = line.start + marker;
+    if (line.start <= start && start < prefix) start = prefix;
+    if (line.start < end && end <= prefix) end = line.start;
+  }
+  return { from: start, to: end };
+}
+
 export function addComment(doc, anchor, cursor) {
   const text = typeof doc === "string" ? doc : "";
-  const { from, to } = clampRange(text, anchor, cursor);
-  if (!(from < to)) return null;
+  const clamped = clampRange(text, anchor, cursor);
+  if (!(clamped.from < clamped.to)) return null;
   if (commentRangeReason(text, anchor, cursor)) return null;
+  const { from, to } = prefixBounds(text, clamped.from, clamped.to);
+  if (!(from < to)) return null;
   const id = nextCommentId(text);
   const open = `{${id}}`;
   const close = `{/${id}}`;

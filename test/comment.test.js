@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  addComment,
   appendCommentReply,
   backspace,
   commentNotes,
@@ -301,4 +302,125 @@ test("a splice that cuts a comment marker returns null and an empty interior sti
   assert.equal(kept.doc.includes("{c1}"), true);
   assert.equal(kept.doc.includes("{/c1}"), true);
   assert.equal(kept.doc.includes("```comment c1"), true);
+});
+
+function withThread(body) {
+  const marked = body.endsWith("\n") ? body : `${body}\n`;
+  return `${marked}\n\`\`\`comment c1\n\n\`\`\`\n`;
+}
+
+test("a comment on a whole list item leaves the marker outside the span", () => {
+  const doc = "Intro.\n\n- one item here\n- two item here\n- three item here\n";
+  const line = "- two item here";
+  const at = doc.indexOf(`\n${line}\n`) + 1;
+  const words = doc.indexOf("two item here");
+  const expect = withThread(
+    "Intro.\n\n- one item here\n- {c1}two item here{/c1}\n- three item here\n",
+  );
+  const whole = addComment(doc, at, at + line.length);
+  const text = addComment(doc, words, words + "two item here".length);
+  assert.equal(whole.doc, expect);
+  assert.equal(text.doc, expect);
+  assert.deepEqual(whole, text);
+  assert.deepEqual(addComment(doc, at + line.length, at), whole);
+  assert.deepEqual(addComment(doc, at + 1, at + line.length), whole);
+  assert.equal(whole.cursor, whole.doc.indexOf("two"));
+  assert.deepEqual(whole.changes[0], {
+    from: words,
+    to: words + "two item here".length,
+    inserted: "{c1}two item here{/c1}",
+    removed: "two item here",
+  });
+  assert.equal(whole.doc.includes("- one item here\n"), true);
+  assert.equal(whole.doc.includes("- three item here\n"), true);
+});
+
+test("a comment that meets a block prefix stays outside that prefix", () => {
+  const doc = [
+    "Intro.",
+    "",
+    "# Title",
+    "> alpha",
+    "10. ten",
+    "  - nested",
+    "> - quoted",
+    "+ plus",
+    "* star",
+  ].join("\n") + "\n";
+  const wrapped = {
+    "# Title": "# {c1}Title{/c1}",
+    "> alpha": "> {c1}alpha{/c1}",
+    "10. ten": "10. {c1}ten{/c1}",
+    "  - nested": "  - {c1}nested{/c1}",
+    "> - quoted": "> - {c1}quoted{/c1}",
+    "+ plus": "+ {c1}plus{/c1}",
+    "* star": "* {c1}star{/c1}",
+  };
+  for (const [line, body] of Object.entries(wrapped)) {
+    const from = doc.indexOf(`\n${line}\n`) + 1;
+    const added = addComment(doc, from, from + line.length);
+    const prose = doc.slice(0, from) + body + doc.slice(from + line.length);
+    assert.equal(added.doc, withThread(prose), line);
+    assert.equal(added.changes[0].to, from + line.length, line);
+    assert.equal(added.changes[0].inserted, `{c1}${added.changes[0].removed}{/c1}`, line);
+    assert.equal(
+      line.slice(0, line.length - added.changes[0].removed.length) + added.changes[0].inserted,
+      body,
+      line,
+    );
+    assert.equal(doc.slice(added.changes[0].from, added.changes[0].to), added.changes[0].removed, line);
+    assert.ok(added.changes[0].from > from, line);
+  }
+
+  const follow = "alpha\n- beta\n";
+  const dash = follow.indexOf("- beta");
+  assert.equal(follow.slice(dash, dash + 2), "- ");
+  const ended = addComment(follow, 0, dash + 2);
+  assert.equal(ended.doc, withThread("{c1}alpha\n{/c1}- beta\n"));
+  assert.deepEqual(ended.changes[0], {
+    from: 0,
+    to: dash,
+    inserted: "{c1}alpha\n{/c1}",
+    removed: "alpha\n",
+  });
+
+  const items = "- one\n- two\n";
+  const next = items.indexOf("\n- ") + 1;
+  const across = addComment(items, 0, next + 2);
+  assert.equal(across.doc, withThread("- {c1}one\n{/c1}- two\n"));
+  assert.equal(across.changes[0].from, 2);
+  assert.equal(across.changes[0].to, next);
+
+  const heading = "# Title\n- next\n";
+  const mark = heading.indexOf("- next");
+  const both = addComment(heading, 0, mark + 2);
+  assert.equal(both.doc, withThread("# {c1}Title\n{/c1}- next\n"));
+
+  const past = addComment(follow, 0, dash + 3);
+  assert.equal(past.changes[0].from, 0);
+  assert.equal(past.changes[0].to, dash + 3);
+  assert.equal(past.doc, withThread("{c1}alpha\n- b{/c1}eta\n"));
+
+  const fox = addComment("hello fox\n", 6, 9);
+  assert.equal(fox.changes[0].from, 6);
+  assert.equal(fox.changes[0].to, 9);
+  assert.equal(fox.changes[0].removed, "fox");
+  assert.equal(fox.doc, withThread("hello {c1}fox{/c1}\n"));
+});
+
+test("a comment range that is only a list marker returns null", () => {
+  assert.equal(addComment("- ", 0, 2), null);
+  assert.equal(addComment("- ", 2, 0), null);
+  assert.equal(addComment("- \n", 0, 2), null);
+  assert.equal(addComment("- two item here\n", 0, 2), null);
+  const mid = "Intro.\n- \nkeep\n";
+  const at = mid.indexOf("- ");
+  assert.equal(addComment(mid, at, at + 2), null);
+  assert.equal(addComment("# ", 0, 2), null);
+  assert.equal(addComment("> ", 0, 2), null);
+  assert.equal(addComment("10. ", 0, 4), null);
+  assert.equal(addComment("  - ", 0, 4), null);
+  assert.equal(addComment("> - ", 0, 4), null);
+  assert.equal(addComment("+ ", 0, 2), null);
+  assert.equal(addComment("* ", 0, 2), null);
 });
