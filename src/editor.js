@@ -3355,11 +3355,26 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!asideRect || typeof cards[0].getBoundingClientRect !== "function") return;
     const spans = findSpans(state.doc);
     // A hidden row still reports offsetHeight, so it must not raise the floor.
+    // The box is what matters once in-flow controls sit above that row.
     let floor = COMMENT_CARD_GAP;
+    const shownBottom = (el) => {
+      if (!el || el.hidden || el.parentElement !== commentsAside) return 0;
+      const rect = elementRect(el);
+      if (!rect || !(rect.height > 0) || !Number.isFinite(rect.bottom) || !Number.isFinite(asideRect.top)) return 0;
+      const bottom = rect.bottom - asideRect.top;
+      return Number.isFinite(bottom) ? bottom : 0;
+    };
     const resolvedRow = findClassChild(commentsAside, "md-show-resolved");
     if (resolvedRow && !resolvedRow.hidden) {
       const rowHeight = typeof resolvedRow.offsetHeight === "number" ? resolvedRow.offsetHeight : 0;
       floor = rowHeight + COMMENT_CARD_GAP;
+      const rowBottom = shownBottom(resolvedRow);
+      if (rowBottom > 0) floor = Math.max(floor, rowBottom + COMMENT_CARD_GAP);
+    }
+    // Absolute cards paint over these. A hidden control still reports a box, so only a shown one counts.
+    for (const control of [repoCommitButton, docAttachButton, docAttachInput]) {
+      const bottom = shownBottom(control);
+      if (bottom > floor) floor = bottom;
     }
     // A card may move down to clear the cards above it, never up over them.
     // A tall closed card shortens so the next anchor keeps a place. The open card stays full height.

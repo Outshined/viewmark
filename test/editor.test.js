@@ -5617,6 +5617,59 @@ test("comment cards stay near their anchors", () => {
   }
 });
 
+test("comment cards start below the shown comment controls", () => {
+  const mounted = mountSheet();
+  let onResize = null;
+  globalThis.window.addEventListener = (type, fn) => {
+    if (type === "resize") onResize = fn;
+  };
+  const box = (top, height, left = 0, width = 120) => ({
+    top, left, right: left + width, bottom: top + height, width, height,
+  });
+  try {
+    globalThis.window.matchMedia = () => ({ matches: false });
+    const view = createEditor(mounted.root, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n```\n", 0);
+    const card = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"))[0];
+    const commit = docMenuOf(mounted.aside).commit;
+    const attach = mounted.aside.childNodes[1];
+    const input = mounted.aside.childNodes[2];
+    const row = docMenuOf(mounted.aside).row;
+    assert.equal(card().styleProps.top, "12px");
+    const asideTop = 100;
+    mounted.aside.getBoundingClientRect = () => box(asideTop, 500, 0, 320);
+    commit.getBoundingClientRect = () => box(asideTop, 80);
+    attach.getBoundingClientRect = () => box(asideTop + 40, 40);
+    input.getBoundingClientRect = () => box(asideTop + 200, 30);
+    onResize();
+    assert.equal(card().styleProps.top, "12px");
+    const show = (el) => {
+      el.hidden = false;
+      el.removeAttribute("hidden");
+    };
+    show(commit);
+    show(attach);
+    onResize();
+    assert.equal(card().styleProps.top, "80px");
+    show(input);
+    onResize();
+    assert.equal(card().styleProps.top, "230px");
+    input.hidden = true;
+    input.setAttribute("hidden", "");
+    onResize();
+    assert.equal(card().styleProps.top, "80px");
+    show(row);
+    row.getBoundingClientRect = () => box(asideTop + 80, 36);
+    onResize();
+    assert.equal(card().styleProps.top, "128px");
+    globalThis.window.matchMedia = () => ({ matches: true });
+    onResize();
+    assert.equal(card().styleProps.position, "static");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("crowded comment cards stay short and in anchor order", () => {
   const mounted = mountSheet();
   const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));

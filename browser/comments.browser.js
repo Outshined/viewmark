@@ -136,6 +136,21 @@ test("Delete on a card with the caret elsewhere, and on a resolved thread", asyn
     const rect = card.getBoundingClientRect();
     return document.elementFromPoint(rect.right - 6, rect.top + 6) === card;
   })()`), true);
+  const uncovered = await page.eval(`(() => {
+    const card = document.querySelector(".md-comment-card").getBoundingClientRect();
+    const check = (selector) => {
+      const el = document.querySelector(selector);
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      const overlaps = card.left < r.right && card.right > r.left && card.top < r.bottom && card.bottom > r.top;
+      return { hit: hit === el, overlaps };
+    };
+    return { attach: check("button.md-attach"), commit: check("button.md-doc-commit") };
+  })()`);
+  assert.equal(uncovered.attach.hit, true, "the centre of Attach image missed the button");
+  assert.equal(uncovered.commit.hit, true, "the centre of Commit repo missed the button");
+  assert.equal(uncovered.attach.overlaps, false, "the first card intersects Attach image");
+  assert.equal(uncovered.commit.overlaps, false, "the first card intersects Commit repo");
   await cardClick(page, "c1");
   await cardDelete(page, "c1");
   assert.equal(await bytes(hub, "a.md"), "See this now.\n");
