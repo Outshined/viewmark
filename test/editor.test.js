@@ -8160,6 +8160,16 @@ test("T-file-drawer", () => {
     fileBlock.listeners.pointerleave();
     assert.equal(pending.length, 1);
     pending.pop().fn();
+    assert.equal(fileBlock.classList.contains("md-file-wide"), true);
+    assert.equal(fileBlock.styleProps.width, "160px");
+    assert.equal(pending[0].ms, 500);
+    fileBlock.listeners.pointerenter();
+    assert.equal(pending.length, 0);
+    assert.equal(fileBlock.classList.contains("md-file-wide"), true);
+    assert.equal(fileBlock.styleProps.width, "320px");
+    fileBlock.listeners.pointerleave();
+    pending.pop().fn();
+    pending.pop().fn();
     assert.equal(fileBlock.classList.contains("md-file-wide"), false);
     assert.equal(fileBlock.styleProps.top, undefined);
     assert.equal(fileBlock.styleProps.height, undefined);
@@ -8176,11 +8186,13 @@ test("T-file-drawer", () => {
     assert.equal(fileBlock.styleProps.left, undefined);
     fileBlock.listeners.pointerleave();
     pending.pop().fn();
+    pending.pop().fn();
     buttons[1].scrollWidth = 300;
     globalThis.window.innerWidth = 0;
     fileBlock.listeners.pointerenter();
     assert.equal(fileBlock.styleProps.width, "340px");
     fileBlock.listeners.pointerleave();
+    pending.pop().fn();
     pending.pop().fn();
     globalThis.window.getComputedStyle = (el) => (
       el === fileBlock
@@ -8190,6 +8202,7 @@ test("T-file-drawer", () => {
     fileBlock.listeners.pointerenter();
     assert.equal(fileBlock.styleProps.width, "342px");
     fileBlock.listeners.pointerleave();
+    pending.pop().fn();
     pending.pop().fn();
     globalThis.window.getComputedStyle = (el) => (
       el === fileBlock
@@ -8202,11 +8215,13 @@ test("T-file-drawer", () => {
     globalThis.window.innerWidth = 1000;
     fileBlock.listeners.pointerleave();
     pending.pop().fn();
+    pending.pop().fn();
     buttons[1].scrollWidth = 100;
     fileBlock.listeners.pointerenter();
     assert.equal(fileBlock.styleProps.width, "140px");
     fileBlock.listeners.pointerleave();
     assert.equal(pending.length, 1);
+    assert.equal(pending[0].ms, 200);
     view.destroy();
     assert.equal(pending.length, 0);
     assert.equal(fileBlock.listeners.pointerenter, undefined);

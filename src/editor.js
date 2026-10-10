@@ -1443,6 +1443,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let fileDrawerEnter = null;
   let fileDrawerLeave = null;
   let fileDrawerTimer = null;
+  let fileDrawerCompact = "";
+  let fileDrawerWide = "";
   let ticketSort = null;
   const wiredSortButtons = new WeakSet();
   let activeRepo = "";
@@ -5130,9 +5132,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     fileDrawerTimer = setTimeout(() => {
       fileDrawerTimer = null;
       const block = fileBlockEl;
-      if (block && block.classList) block.classList.remove("md-file-wide");
-      setStyle(block, "width", "");
-      setStyle(block, "transition", "");
+      if (!block) return;
+      // The class has to stay until the width eases back, or the stylesheet transition never runs.
+      if (!fileDrawerCompact) {
+        if (block.classList) block.classList.remove("md-file-wide");
+        setStyle(block, "width", "");
+        setStyle(block, "transition", "");
+        return;
+      }
+      setStyle(block, "width", fileDrawerCompact);
+      fileDrawerTimer = setTimeout(() => {
+        fileDrawerTimer = null;
+        if (block.classList) block.classList.remove("md-file-wide");
+        setStyle(block, "width", "");
+        setStyle(block, "transition", "");
+      }, 500);
     }, 200);
   }
 
@@ -5160,11 +5174,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         fileDrawerTimer = null;
       }
       const alreadyWide = Boolean(block.classList && block.classList.contains("md-file-wide"));
-      if (alreadyWide) return;
+      if (alreadyWide) {
+        setStyle(block, "width", fileDrawerWide);
+        return;
+      }
       // Transition would start from the flex width. Commit the compact width with
       // the transition off, then widen. Top, height, and left stay with the column.
       const rect = typeof block.getBoundingClientRect === "function" ? block.getBoundingClientRect() : null;
       const width = `${filePaneWidth(block, rect)}px`;
+      fileDrawerCompact = rect && typeof rect.width === "number" && Number.isFinite(rect.width) ? `${rect.width}px` : "";
+      fileDrawerWide = width;
       setStyle(block, "transition", "none");
       if (rect && typeof rect.width === "number" && Number.isFinite(rect.width)) setStyle(block, "width", `${rect.width}px`);
       if (block.classList) block.classList.add("md-file-wide");
