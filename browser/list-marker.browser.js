@@ -63,6 +63,43 @@ async function assertTypedAtCaret(page, offset) {
   }, `restored ${offset}`);
 }
 
+// The item offset of an empty marker has no glyph. The caret there is where
+// the next letter is drawn, in both axes, not the marker's right edge.
+async function assertEmptyItemCaret(page, marker) {
+  const offset = marker.length;
+  await focusCaret(page, 0);
+  assert.match(await textIndent(page, 0), /^-[\d.]+px$/, `hang indent for ${JSON.stringify(marker)}`);
+  assert.equal(await hangMargin(page, 0), "", `hang margin for ${JSON.stringify(marker)}`);
+  for (let at = 0; at < offset; at += 1) await assertCaretOn(page, at);
+  await page.key("→");
+  await page.until(async () => {
+    const caret = await page.caret();
+    return caret && caret.focus === offset;
+  }, `item caret ${offset}`);
+  await page.frame();
+  const before = await page.caret();
+  assert.ok(before && before.rect && before.fallback !== true, `caret rect ${offset}`);
+  assert.equal(await page.eval(`window.__qaGlyph(${offset})`), null, `glyph at empty item ${offset}`);
+  await page.type("Q");
+  await page.quiet();
+  const glyph = await page.eval(`window.__qaGlyph(${offset})`);
+  assert.ok(glyph, `typed Q at ${offset}`);
+  near(before.rect.x, glyph.left, `empty caret x at ${offset}`);
+  near(before.rect.top, glyph.top, `empty caret y at ${offset}`);
+  await page.key("Backspace");
+  await page.quiet();
+  await page.until(async () => {
+    const caret = await page.caret();
+    return caret && caret.focus === offset;
+  }, `restored empty ${offset}`);
+  await page.key("←");
+  await page.until(async () => {
+    const caret = await page.caret();
+    return caret && caret.focus === offset - 1;
+  }, `left from empty item ${offset}`);
+  await assertCaretOn(page, offset - 1);
+}
+
 async function focusCaret(page, offset) {
   assert.equal(await page.clickOffset(offset), true, `click ${offset}`);
   await page.until(async () => {
@@ -213,4 +250,25 @@ test("a raw list marker hangs in the bullet gutter", async (t) => {
   const before = await page.caret();
   const beforeBoundary = await page.boundary(1);
   near(before.rect.x, beforeBoundary.x, "caret before the marker after ←");
+});
+
+test("an empty item caret sits where the next letter is drawn", async (t) => {
+  const hub = await startHub();
+  let browser;
+  t.after(async () => {
+    if (browser) await browser.close();
+    await hub.close();
+  });
+  await hub.create("empty-bullet.md", "- \n");
+  await hub.create("empty-nested.md", "\t\t1. \n");
+  browser = await launchBrowser();
+  const page = new Page(browser.session, hub.port);
+  await page.init();
+  await page.login();
+
+  await page.open("empty-bullet.md");
+  await assertEmptyItemCaret(page, "- ");
+
+  await page.open("empty-nested.md");
+  await assertEmptyItemCaret(page, "\t\t1. ");
 });

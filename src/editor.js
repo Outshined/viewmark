@@ -934,6 +934,12 @@ function insideRawMarker(node) {
   return !!(el.closest(".md-raw-hang") || el.closest(".md-raw-gap"));
 }
 
+function inRawGap(node) {
+  const el = nodeElement(node);
+  if (!el || typeof el.closest !== "function") return false;
+  return !!el.closest(".md-raw-gap");
+}
+
 // sel.modify from the item text stops in the hanging marker at the same source offset.
 function crossedIntoRawMarker(origin, landed) {
   if (!origin || !landed || origin === landed) return false;
@@ -2506,8 +2512,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   // Empty lines have no text node; the caret stays on the br.
+  // The slack after a short marker is a space whose source span is empty, so
+  // the length check skips it. That space's end is the item column; the hang's
+  // end is only the marker's right edge.
   function pointFor(offset) {
     let atEnd = null;
+    let rawGap = null;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       if (node.parentElement?.closest(".md-atom") || node.parentElement?.closest(".md-lock")) continue;
@@ -2515,10 +2525,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (!tagged) continue;
       const start = Number(tagged.dataset.start);
       const end = Number(tagged.dataset.end);
+      if (start === end && offset === start && inRawGap(node)) {
+        const length = typeof node.length === "number" ? node.length : 0;
+        rawGap = { node, offset: length };
+        continue;
+      }
       if (node.length !== end - start || offset < start || offset > end) continue;
       if (offset < end) return { node, offset: offset - start };
       atEnd = { node, offset: offset - start };
     }
+    if (rawGap) return rawGap;
     for (const br of root.querySelectorAll("br")) {
       const tagged = nearestTagged(br);
       if (!tagged) continue;
@@ -5108,7 +5124,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (sel.rangeCount !== 0) {
         const range = sel.getRangeAt(0);
         landed = mapOffset(range.startContainer, range.startOffset);
-        if (granularity === "character" && !forward && landed === beforeCursor && caretPoint && crossedIntoRawMarker(caretPoint.node, range.startContainer)) {
+        // A left press from the slack gap stays on the item offset. The glyph
+        // before that offset is the last marker character.
+        if (granularity === "character" && !forward && landed === beforeCursor && caretPoint && (crossedIntoRawMarker(caretPoint.node, range.startContainer) || inRawGap(caretPoint.node))) {
           hangAffinity = true;
         }
       }
@@ -5168,8 +5186,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     state = { ...state, cursor: next, anchor };
     if (!claimLines(anchor, next)) return;
     const after = lineIndexAt(state.doc, state.cursor);
+    const drawn = pointFor(next);
+    // modify stops on the marker edge, which is this same offset. The gap's end
+    // is where the next letter is drawn, so the caret has to be placed there.
     if (before !== after) render();
-    else if (anchor !== next || next !== landed) placeCaret();
+    else if (anchor !== next || next !== landed || inRawGap(drawn && drawn.node)) placeCaret();
   }
 
   function lineElementOf(node) {
