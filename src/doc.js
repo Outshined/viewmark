@@ -274,6 +274,91 @@ export function enterInsert(doc, cursor) {
   return { text: "\n" };
 }
 
+
+// Enter deletes a selection first, then breaks at the caret that is left.
+// A new ordered item increments each later sibling at the same indent by one.
+export function enterBreak(doc, anchor, cursor) {
+  const text = typeof doc === "string" ? doc : "";
+  const clamp = (n) => {
+    const value = Number.isFinite(n) ? Math.trunc(n) : 0;
+    return Math.max(0, Math.min(text.length, value));
+  };
+  const from = Math.min(clamp(anchor), clamp(cursor));
+  const to = Math.max(clamp(anchor), clamp(cursor));
+  const deleted = text.slice(0, from) + text.slice(to);
+  const brk = enterInsert(deleted, from);
+  const inserted = typeof brk.text === "string" ? brk.text : "";
+  let spliceFrom = from;
+  let spliceTo = from;
+  if (typeof brk.anchor === "number") {
+    spliceFrom = Math.min(brk.anchor, brk.cursor);
+    spliceTo = Math.max(brk.anchor, brk.cursor);
+  }
+  const span = to - from;
+  const mapStart = (off) => (off <= from ? off : off + span);
+  const mapEnd = (off) => (off < from ? off : off === from ? to : off + span);
+  const origFrom = mapStart(spliceFrom);
+  const origTo = mapEnd(spliceTo);
+  return renumberFollowing(text, origFrom, origTo, inserted);
+}
+
+function insertedOrderedMarker(text) {
+  return /^(?:[\s\S]*\n)?[ \t>]*\d+[.)][ \t]+$/.test(text);
+}
+
+function renumberFollowing(doc, spliceFrom, spliceTo, inserted) {
+  const caret = spliceFrom + inserted.length;
+  const plain = spliceFrom === spliceTo
+    ? { text: inserted }
+    : { text: inserted, anchor: spliceFrom, cursor: spliceTo };
+  if (!insertedOrderedMarker(inserted)) return plain;
+  const next = doc.slice(0, spliceFrom) + inserted + doc.slice(spliceTo);
+  const line = sourceLine(next, Math.max(0, Math.min(caret, next.length)));
+  const mode = classify(line.text);
+  if (mode.kind !== "ol") return plain;
+  const edits = [];
+  let pos = line.newline ? line.end + 1 : next.length;
+  while (pos < next.length) {
+    const row = sourceLine(next, pos);
+    if (row.text === "" || imageLine(row.text) || fenceOpen(row.text) || row.text.startsWith("|")) break;
+    const kind = classify(row.text);
+    if (kind.kind === "p") {
+      pos = row.newline ? row.end + 1 : next.length;
+      continue;
+    }
+    if ((kind.kind === "li" || kind.kind === "ol") && kind.indent > mode.indent) {
+      pos = row.newline ? row.end + 1 : next.length;
+      continue;
+    }
+    if (kind.kind !== "ol" || kind.indent !== mode.indent || !!kind.quoted !== !!mode.quoted) break;
+    const quoteLen = kind.quoted ? (kind.quote || 0) : 0;
+    const head = row.text.slice(quoteLen, kind.marker || 0);
+    const match = /^([ \t]*)(\d+)([.)])([ \t]+)$/.exec(head);
+    if (!match) break;
+    const numStart = row.start + quoteLen + match[1].length;
+    edits.push({ start: numStart, end: numStart + match[2].length, text: String(Number(match[2]) + 1) });
+    pos = row.newline ? row.end + 1 : next.length;
+  }
+  if (edits.length === 0) return plain;
+  let final = next;
+  let shift = 0;
+  for (const edit of edits) {
+    const start = edit.start + shift;
+    const end = edit.end + shift;
+    final = final.slice(0, start) + edit.text + final.slice(end);
+    shift += edit.text.length - (edit.end - edit.start);
+  }
+  const last = edits[edits.length - 1];
+  const origEnd = last.end - (spliceFrom + inserted.length) + spliceTo;
+  const finalEnd = last.end + shift;
+  return {
+    text: final.slice(spliceFrom, finalEnd),
+    anchor: spliceFrom,
+    cursor: origEnd,
+    caret,
+  };
+}
+
 // The marker of the next item of the same kind, or null when the caret's line is not an item.
 export function continuedMarker(doc, cursor) {
   const text = typeof doc === "string" ? doc : "";

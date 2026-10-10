@@ -123,6 +123,11 @@ export function createMemoryTransport(doc, cursor = 0) {
       if (message.op === "insert") {
         inserted = typeof message.text === "string" ? message.text : "";
         next = insert(base, inserted);
+        if (next && next !== base && Array.isArray(next.changes) && next.changes.length === 1
+          && typeof message.caret === "number" && Number.isFinite(message.caret)) {
+          const caret = Math.max(0, Math.min(next.doc.length, Math.trunc(message.caret)));
+          next = { ...next, cursor: caret, anchor: caret };
+        }
       } else if (message.op === "backspace") {
         next = backspace(base);
       } else if (message.op === "delete") {

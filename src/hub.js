@@ -505,7 +505,14 @@ function runOp(text, cursor, anchor, msg) {
   if (msg.op === "insert" || msg.op === "backspace" || msg.op === "delete") {
     const state = createState(text, cursor, anchor);
     let next = state;
-    if (msg.op === "insert") next = insert(state, typeof msg.text === "string" ? msg.text : "");
+    if (msg.op === "insert") {
+      next = insert(state, typeof msg.text === "string" ? msg.text : "");
+      if (next && next !== state && Array.isArray(next.changes) && next.changes.length === 1
+        && typeof msg.caret === "number" && Number.isFinite(msg.caret)) {
+        const caret = Math.max(0, Math.min(next.doc.length, Math.trunc(msg.caret)));
+        next = { ...next, cursor: caret, anchor: caret };
+      }
+    }
     else if (msg.op === "backspace") next = backspace(state);
     else next = deleteForward(state);
     if (next === null) return null;

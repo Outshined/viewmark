@@ -29,6 +29,7 @@ import {
   lockSpans,
   skipHidden,
   enterInsert,
+  enterBreak,
   lineCaret,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
@@ -3852,9 +3853,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // Enter on an item inserts the same kind of marker. A paragraph whose next
   // line would join it inserts the blank line that keeps them apart.
   function emitBreak() {
-    const brk = state.anchor === state.cursor ? enterInsert(state.doc, state.cursor) : { text: "\n" };
-    if (typeof brk.anchor === "number") emitEdit({ op: "insert", text: brk.text, anchor: brk.anchor, cursor: brk.cursor });
-    else emitEdit({ op: "insert", text: brk.text });
+    const brk = enterBreak(state.doc, state.anchor, state.cursor);
+    const partial = { op: "insert", text: brk.text };
+    if (typeof brk.anchor === "number") {
+      partial.anchor = brk.anchor;
+      partial.cursor = brk.cursor;
+    }
+    if (typeof brk.caret === "number") partial.caret = brk.caret;
+    emitEdit(partial);
   }
 
   listen("beforeinput", (event) => {

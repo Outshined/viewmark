@@ -25,7 +25,7 @@ import {
   parseHash,
   wordSpan,
 } from "../src/editor.js";
-import { splitCommentNote, lockSpans, lockIndexAt, commentRangeReason, skipHidden, lineCaret, enterInsert } from "../src/doc.js";
+import { splitCommentNote, lockSpans, lockIndexAt, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
@@ -3516,6 +3516,59 @@ test("unxhe3dc enter before a list marker", () => {
   } finally {
     mounted.restore();
   }
+});
+
+
+test("enter renumbers the following ordered items and deletes a selection first", () => {
+  const apply = (doc, anchor, cursor) => {
+    const brk = enterBreak(doc, anchor, cursor);
+    const base = createState(doc, cursor, anchor);
+    const next = typeof brk.anchor === "number"
+      ? insert({ ...base, anchor: brk.anchor, cursor: brk.cursor }, brk.text)
+      : insert(base, brk.text);
+    const caret = typeof brk.caret === "number" ? brk.caret : next.cursor;
+    return { doc: next.doc, cursor: caret };
+  };
+
+  const followed = apply("1. alpha\n2. beta\n", 8, 8);
+  assert.equal(followed.doc, "1. alpha\n2. \n3. beta\n");
+  assert.equal(followed.cursor, 12);
+
+  const two = apply("1. alpha\n2. beta\n3. gamma\n", 8, 8);
+  assert.equal(two.doc, "1. alpha\n2. \n3. beta\n4. gamma\n");
+  assert.equal(two.cursor, 12);
+
+  const nested = apply("1. alpha\n  1. child\n2. beta\n", 8, 8);
+  assert.equal(nested.doc, "1. alpha\n2. \n  1. child\n3. beta\n");
+  assert.equal(nested.cursor, 12);
+
+  const stopped = apply("1. alpha\n\n2. beta\n", 8, 8);
+  assert.equal(stopped.doc, "1. alpha\n2. \n\n2. beta\n");
+  assert.equal(stopped.cursor, 12);
+
+  const wider = apply("9. alpha\n10. beta\n", 8, 8);
+  assert.equal(wider.doc, "9. alpha\n10. \n11. beta\n");
+  assert.equal(wider.cursor, 13);
+
+  const alone = apply("1. alpha\n", 8, 8);
+  assert.equal(alone.doc, "1. alpha\n2. \n");
+  assert.equal(alone.cursor, 12);
+
+  const empty = apply("1. alpha\n2. \n", 12, 12);
+  assert.equal(empty.doc, "1. alpha\n\n\n");
+  assert.equal(empty.cursor, 10);
+
+  const pushed = apply("1. alpha\n2. beta\n", 0, 0);
+  assert.equal(pushed.doc, "\n1. alpha\n2. beta\n");
+  assert.equal(pushed.cursor, 1);
+
+  const prose = apply("alpha beta\n", 2, 8);
+  assert.equal(prose.doc, "al\n\nta\n");
+  assert.equal(prose.cursor, 4);
+
+  const item = apply("- alpha\n", 4, 6);
+  assert.equal(item.doc, "- al\n- a\n");
+  assert.equal(item.cursor, 7);
 });
 
 test("enter continues a quote, and an empty quote line leaves it", () => {
