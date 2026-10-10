@@ -2600,16 +2600,22 @@ function enclosedByFence(doc, offset) {
   return false;
 }
 
-// That joined line is drawn on the block above. An insert with no break of its
-// own writes one first, so the typed text stays on the line. A break already in
-// the text is that line.
+// That joined line is drawn on the block above. An insert that does not start
+// with a break writes one first, so its first line stays on this line.
 function joinedLineBreak(doc, cursor, value, nl) {
-  if (value === "" || value.includes(nl)) return false;
+  if (value === "" || value.startsWith(nl)) return false;
   const line = sourceLine(doc, cursor);
   // The row lineSpans adds at length is not a block.
   if (cursor !== line.start || line.start === 0 || line.start === doc.length) return false;
   if (enclosedByFence(doc, cursor)) return false;
-  return joinsDown(sourceLine(doc, line.start - 1).text);
+  if (!joinsDown(sourceLine(doc, line.start - 1).text)) return false;
+  // An empty line before a later line is already the gap. A paste that brings
+  // its own breaks fills that gap instead of opening another.
+  if (line.text === "" && line.newline && value.includes(nl)) {
+    const next = line.end + 1;
+    if (next < doc.length && sourceLine(doc, next).text !== "") return false;
+  }
+  return true;
 }
 
 export function insert(state, text) {
