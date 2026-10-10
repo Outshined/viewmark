@@ -131,6 +131,11 @@ test("Delete on a card with the caret elsewhere, and on a resolved thread", asyn
   const { hub, page } = await setup(t, { "a.md": P + CM("c1"), "r.md": P + CM("c1", true) });
   await open(page, "a.md");
   await place(page, P.indexOf("now") + 1);
+  assert.equal(await page.eval(`(() => {
+    const card = document.querySelector('.md-comment-card[data-comment="c1"]');
+    const rect = card.getBoundingClientRect();
+    return document.elementFromPoint(rect.right - 6, rect.top + 6) === card;
+  })()`), true);
   await cardClick(page, "c1");
   await cardDelete(page, "c1");
   assert.equal(await bytes(hub, "a.md"), "See this now.\n");

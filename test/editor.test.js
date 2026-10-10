@@ -8306,8 +8306,8 @@ test("commit button checkpoints the active repo", () => {
   assert.ok(rule);
   assert.match(rule[0], /font:\s*inherit/);
   assert.match(rule[0], /color:\s*inherit/);
-  assert.match(css, /button\.md-doc-commit[^{]*\{[^}]*background:\s*none/);
-  assert.match(css, /button\.md-doc-commit[^{]*\{[^}]*border:\s*0/);
+  assert.match(css, /button\.md-doc-commit[^{]*\{[^}]*background:\s*#1c1b19/);
+  assert.match(css, /button\.md-doc-commit[^{]*\{[^}]*border:\s*1px solid #c4b8a4/);
   assert.match(rule[0], /box-sizing:\s*border-box/);
   assert.match(rule[0], /display:\s*block/);
   assert.match(rule[0], /width:\s*auto/);

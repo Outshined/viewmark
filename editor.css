@@ -122,18 +122,14 @@ select.md-repo {
 }
 
 button.md-doc-commit {
-  position: absolute;
-  top: 0.45rem;
-  right: 0.45rem;
-  z-index: 5;
   box-sizing: border-box;
   display: block;
   width: auto;
   margin: 0;
   padding: 0.35rem 0.7rem;
-  border: 0;
+  border: 1px solid #c4b8a4;
   border-radius: 0.25rem;
-  background: none;
+  background: #1c1b19;
   font: inherit;
   color: inherit;
   text-align: left;
