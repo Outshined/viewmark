@@ -3875,6 +3875,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       emitHistory("redo");
       return;
     }
+    if (mod && !event.shiftKey && !event.altKey && (event.key === "a" || event.key === "A")) {
+      event.preventDefault();
+      state = { ...state, anchor: 0, cursor: state.doc.length };
+      if (!claimLines(0, state.doc.length)) return;
+      render();
+      return;
+    }
     if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
       event.preventDefault();
       const extend = event.shiftKey === true && !event.ctrlKey && !event.altKey && !event.metaKey;

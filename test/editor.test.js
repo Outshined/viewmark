@@ -11989,6 +11989,28 @@ test("the first Home stops after a marker and the second keeps the line start", 
   }
 });
 
+test("wnu2mutk Ctrl+A selects through the final newline", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  try {
+    const doc = "alpha\n\nbeta\n";
+    const view = createEditor(mounted.root, doc, 2);
+    mounted.listeners.keydown({
+      key: "a",
+      shiftKey: false,
+      ctrlKey: true,
+      altKey: false,
+      metaKey: false,
+      preventDefault() {},
+    });
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, doc.length);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("keyup claims the caret selectionchange stored", () => {
   const mounted = mountEditor();
   const transport = holdingTransport();
