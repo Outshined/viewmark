@@ -935,6 +935,48 @@ export function imagePlacement(doc, offset, imageLine) {
   };
 }
 
+function touchedSpans(doc, lo, hi) {
+  const spans = lockSpans(doc);
+  const hit = [];
+  for (let index = 0; index < spans.length; index += 1) {
+    const span = spans[index];
+    const covers = lo === hi ? lo >= span.start && lo <= span.end : lo <= span.end && hi > span.start;
+    if (covers) hit.push(index);
+  }
+  return { spans, hit };
+}
+
+function blankSpan(doc, span) {
+  return !!span && span.start === span.end && doc[span.start] === "\n";
+}
+
+// A caret on the blank line between two paragraphs replaces that line. Any other
+// range in one block follows that block. A range in two blocks is refused.
+export function imageRangePlacement(doc, lo, hi, imageLine) {
+  const text = typeof doc === "string" ? doc : "";
+  const from = Math.min(lo, hi);
+  const to = Math.max(lo, hi);
+  if (from < 0 || to > text.length) return { error: 400 };
+  const { spans, hit } = touchedSpans(text, from, to);
+  if (hit.length !== 1) return { error: 400 };
+  const index = hit[0];
+  const span = spans[index];
+  const line = typeof imageLine === "string" ? imageLine : "";
+  const between = from === to && blankSpan(text, span) && index > 0 && index < spans.length - 1
+    && !blankSpan(text, spans[index - 1]) && !blankSpan(text, spans[index + 1]);
+  if (!between) return imagePlacement(text, from, line);
+  const inserted = line;
+  const caret = span.start + inserted.length + 1;
+  return {
+    from: span.start,
+    to: span.start,
+    inserted,
+    removed: "",
+    caret,
+    doc: text.slice(0, span.start) + inserted + text.slice(span.start),
+  };
+}
+
 export function imageLineFor(dir, file) {
   return `![${file}](${dir}/${file})`;
 }
@@ -2696,22 +2738,33 @@ export async function createHub(stateDir, sourceRoot) {
     const ext = imageKind(bytes);
     if (!ext) return fail(socket, 400, { reason: "not an image" });
 
+    const ranged = msg.start !== undefined || msg.end !== undefined || Object.prototype.hasOwnProperty.call(msg, "expect");
     let point = null;
-    if (msg.start !== undefined) {
+    let range = null;
+    if (ranged) {
       const start = linePosition(msg.start);
-      if (!start) return fail(socket, 400);
-      const at = offsetAt(file.text, start.line, start.offset);
-      if (at.error) return fail(socket, 400);
-      point = at.offset;
+      const end = linePosition(msg.end);
+      if (!start || !end || typeof msg.expect !== "string") return fail(socket, 400);
+      const from = offsetAt(file.text, start.line, start.offset);
+      const to = offsetAt(file.text, end.line, end.offset);
+      if (from.error || to.error) return fail(socket, 400);
+      const lo = Math.min(from.offset, to.offset);
+      const hi = Math.max(from.offset, to.offset);
+      if (file.text.slice(lo, hi) !== msg.expect) return fail(socket, 409, { reason: "context" });
+      range = { lo, hi };
+      point = lo;
     } else if (Object.prototype.hasOwnProperty.call(msg, "cursor")) {
       if (!Number.isInteger(msg.cursor) || msg.cursor < 0 || msg.cursor > file.text.length) return fail(socket, 400);
       point = msg.cursor;
+    } else {
+      return fail(socket, 400);
     }
 
     const named = await claimImageFile(repo, dir, ext, file.text);
     if (!named) return fail(socket, 500);
     const line = imageLineFor(dir, named.file);
-    const place = imagePlacement(file.text, point, line);
+    const place = range ? imageRangePlacement(file.text, range.lo, range.hi, line) : imagePlacement(file.text, point, line);
+    if (place.error) return fail(socket, place.error);
     const change = {
       from: place.from,
       to: place.to,

@@ -16,7 +16,7 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME show <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME create <path> [--file PATH]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME edit <path> [--start LINE:OFFSET --end LINE:OFFSET]
-  viewmark [--port PORT] [--user NAME] [--json] --repo NAME attach <path> [--start LINE:OFFSET]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME attach <path> --start LINE:OFFSET --end LINE:OFFSET --expect TEXT
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME delete <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME move <path> [--dir DIR]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME rev <path>
@@ -85,8 +85,12 @@ edit:
 
 attach:
   The image is stdin. Empty stdin, or more than 2 MiB, exits 400 and does not open a socket.
-  --start LINE:OFFSET names a point. Lines count from 1. Offset counts from 0. The picture follows the block that holds that point. No --start follows the last block.
-  --end, --rev, --find, and --replace are rejected.
+  --start LINE:OFFSET --end LINE:OFFSET --expect TEXT are required. A missing flag does not open a socket.
+  Lines count from 1. Offset counts from 0. The end is exclusive. A reversed pair is ordered.
+  --expect is the bytes at that range. A mismatch exits 409 and writes nothing.
+  A range outside the document exits 400 and writes nothing. A range that spans two blocks exits 400 and writes nothing.
+  The picture follows the block that holds the range, as its own paragraph. An empty range on the empty line between two paragraphs puts the line on that empty line. The paragraph that holds the range stays one paragraph.
+  --rev, --find, and --replace are rejected.
   stdout and stderr match show. A refusal writes nothing on stdout.
 
 create:
@@ -671,10 +675,8 @@ async function runCreate(hub, username, path, json, text) {
   return 0;
 }
 
-async function runAttach(hub, username, docPath, bytes, start, json) {
-  const payload = { type: "attach", username, path: docPath };
-  if (start) payload.start = start;
-  hub.send(payload);
+async function runAttach(hub, username, docPath, bytes, start, end, expect, json) {
+  hub.send({ type: "attach", username, path: docPath, start, end, expect });
   hub.sendBinary(bytes);
   const msg = await hub.next((item) => item.type === "file" || item.type === "error");
   if (msg.type === "error") return serverError(msg);
@@ -1603,11 +1605,11 @@ async function main() {
     usage("unexpected flag");
     return;
   }
-  if (args.expectSet && cmd !== "comment") {
+  if (args.expectSet && cmd !== "comment" && cmd !== "attach") {
     usage("unexpected flag");
     return;
   }
-  if (args.endSet && cmd !== "comment" && cmd !== "edit") {
+  if (args.endSet && cmd !== "comment" && cmd !== "edit" && cmd !== "attach") {
     usage("unexpected flag");
     return;
   }
@@ -1784,13 +1786,19 @@ async function main() {
       usage("unexpected flag");
       return;
     }
-    let start = null;
-    if (args.startSet) {
-      start = parseLineOffset(args.start);
-      if (!start || start.line < 1 || start.offset < 0) {
-        usage("invalid position");
-        return;
-      }
+    if (!args.startSet || !args.endSet) {
+      usage("attach requires --start and --end");
+      return;
+    }
+    if (!args.expectSet) {
+      usage("attach requires --expect");
+      return;
+    }
+    const start = parseLineOffset(args.start);
+    const end = parseLineOffset(args.end);
+    if (!start || !end) {
+      usage("invalid position");
+      return;
     }
     const bytes = await readStdinBytes();
     if (bytes.length === 0) {
@@ -1803,7 +1811,7 @@ async function main() {
       process.exitCode = 400;
       return;
     }
-    await withHub(port, user, (hub) => runAttach(hub, user, rest[0], bytes, start, args.json), args.repo);
+    await withHub(port, user, (hub) => runAttach(hub, user, rest[0], bytes, start, end, args.expect, args.json), args.repo);
     return;
   }
 

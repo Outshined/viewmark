@@ -10,7 +10,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { start } from "../server.js";
-import { allocateImageId, assetDirOf, imageFileName, imageKind, imagePlacement, readBuild, rewriteImageDirs } from "../src/hub.js";
+import { allocateImageId, assetDirOf, imageFileName, imageKind, imagePlacement, imageRangePlacement, readBuild, rewriteImageDirs } from "../src/hub.js";
 import { commentThreads, lockIndexAt, lockSpans, parseCommentNotes, plan, splitCommentNote } from "../src/doc.js";
 import { TICKET_ALPHABET, composeTicket, parseTicket } from "../src/ticket.js";
 import { MAX_PAYLOAD, createParser, encodeFrame } from "../src/ws.js";
@@ -4090,6 +4090,16 @@ test("picture: names, kinds, and placement", () => {
 
   const both = imagePlacement("alpha beta\n\ngamma\n", 8, line);
   assert.equal(both.doc, `alpha beta\n\n${line}\n\ngamma\n`);
+  const inside = imageRangePlacement("alpha beta\n", 6, 8, line);
+  assert.equal(inside.doc, `alpha beta\n\n${line}\n`);
+  assert.equal(inside.doc.startsWith("alpha beta\n"), true);
+  const gap = "alpha\n\nbeta\n";
+  const onBlank = imageRangePlacement(gap, 6, 6, line);
+  assert.equal(onBlank.doc, `alpha\n${line}\nbeta\n`);
+  assert.equal(onBlank.caret, onBlank.doc.indexOf("beta"));
+  const across = imageRangePlacement(gap, 0, 8, line);
+  assert.equal(across.error, 400);
+  assert.equal(Object.hasOwn(across, "doc"), false);
   assert.equal(both.caret, both.doc.indexOf(line) + line.length + 1);
   assert.ok(plan(both.doc, both.caret).atoms.some((atom) => atom.type === "image"));
 
@@ -4175,11 +4185,13 @@ test("picture: a PNG attach is its own paragraph and GET /raw returns the bytes"
       const missing = await ada.next((msg) => (msg.type === "error" && msg.status === 404) || (msg.type === "file" && msg.path === "pic"));
       assert.equal(missing.type, "error");
 
-      const again = await attachBytes(ada, "Ada", "pic.md", PNG);
+      const again = await attachBytes(ada, "Ada", "pic.md", PNG, { cursor: 8 });
       const names = imageFiles(again.file.text, "pic", "png");
-      assert.deepEqual(names.slice(0, 1), [name]);
-      const second = names[names.length - 1];
-      assert.notEqual(second, name);
+      assert.equal(names.length, 2);
+      assert.ok(names.includes(name));
+      const second = names.find((file) => file !== name);
+      assert.ok(second);
+      assert.equal(again.file.text.startsWith("alpha beta\n"), true);
       assert.ok((await fs.readFile(path.join(dir, "pic", second))).equals(PNG));
 
       const samples = [
@@ -4223,6 +4235,8 @@ test("picture: a non-image and one byte over 2 MiB write nothing", async () => {
       const text = await attachBytes(ada, "Ada", "pic.md", Buffer.from("not an image"), { cursor: 8 });
       assert.equal(text.status, 400);
       assert.equal(text.reason, "not an image");
+      const nowhere = await attachBytes(ada, "Ada", "pic.md", PNG);
+      assert.equal(nowhere.status, 400);
       assert.equal(await readDoc(dir, "pic.md"), "alpha beta\n");
       await assert.rejects(fs.lstat(path.join(dir, "pic")), (err) => err.code === "ENOENT");
     } finally {
@@ -4306,7 +4320,7 @@ test("picture: undo restores the line and the last close drops an unreferenced f
       assert.equal(redone.text, attached.file.text);
       assert.ok((await fs.readFile(full)).equals(PNG));
 
-      const extra = await attachBytes(ada, "Ada", "pic.md", PNG);
+      const extra = await attachBytes(ada, "Ada", "pic.md", PNG, { cursor: 8 });
       const kept = imageFiles(extra.file.text, "pic", "png").find((file) => file !== name);
       assert.ok(kept);
       const keptFull = path.join(dir, "pic", kept);
@@ -4427,7 +4441,7 @@ test("picture: a title change does not move the file, and a move rewrites that d
 
       await fs.mkdir(path.join(dir, "notes", "nested"), { recursive: true });
       await fs.writeFile(path.join(dir, "notes", "nested", "leaf.md"), "leaf\n");
-      const leaf = await attachBytes(ada, "Ada", "notes/nested/leaf.md", PNG);
+      const leaf = await attachBytes(ada, "Ada", "notes/nested/leaf.md", PNG, { cursor: 0 });
       const leafName = imageFile(leaf.file.text, "notes/nested/leaf", "png");
       ada.send({ type: "move", username: "Ada", path: "notes/nested", dir: "archive" });
       const tree = await ada.next((msg) => msg.type === "moved" || msg.type === "error");

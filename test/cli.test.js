@@ -76,7 +76,7 @@ const HELP_NEEDLES = [
   "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin.",
   "Lines count from 1. Offset counts from 0. The end offset is exclusive.",
   "--repo is required on list, show, create, edit, attach, delete, move, rev, comment, commit, and ticket.",
-  "viewmark [--port PORT] [--user NAME] [--json] --repo NAME attach <path> [--start LINE:OFFSET]",
+  "viewmark [--port PORT] [--user NAME] [--json] --repo NAME attach <path> --start LINE:OFFSET --end LINE:OFFSET --expect TEXT",
   "ticket delete",
   "--title",
   "--state",
@@ -4710,13 +4710,14 @@ function rawGet(port, requestPath) {
 }
 
 test("picture: empty and oversized stdin do not open a socket", async () => {
-  const empty = await run(["--port", "1", "--user", "Ada", "--repo", "docs", "attach", "pic.md"], {}, Buffer.alloc(0));
+  const place = ["--start", "1:0", "--end", "1:5", "--expect", "alpha"];
+  const empty = await run(["--port", "1", "--user", "Ada", "--repo", "docs", "attach", "pic.md", ...place], {}, Buffer.alloc(0));
   assert.equal(empty.code, shellStatus(400));
   assert.equal(empty.stdout, "");
   assert.equal(empty.stderr, "error 400\nempty image\n");
 
   const over = await run(
-    ["--port", "1", "--user", "Ada", "--repo", "docs", "attach", "pic.md"],
+    ["--port", "1", "--user", "Ada", "--repo", "docs", "attach", "pic.md", ...place],
     {},
     Buffer.alloc(MAX_PAYLOAD + 1),
   );
@@ -4724,20 +4725,39 @@ test("picture: empty and oversized stdin do not open a socket", async () => {
   assert.equal(over.stdout, "");
   assert.equal(over.stderr, "error 400\nimage is too large\n");
 
-  const flagged = await run(
-    ["--port", "1", "--user", "Ada", "--repo", "docs", "attach", "pic.md", "--end", "1:1"],
+  const bare = await run(["--port", "1", "--user", "Ada", "--repo", "docs", "attach", "pic.md"], {}, PNG_BYTES);
+  assert.equal(bare.code, 2);
+  assert.equal(bare.stdout, "");
+  assert.equal(bare.stderr, "viewmark: attach requires --start and --end\n");
+
+  const onlyStart = await run(
+    ["--port", "1", "--user", "Ada", "--repo", "docs", "attach", "pic.md", "--start", "1:0"],
     {},
     PNG_BYTES,
   );
-  assert.equal(flagged.code, 2);
-  assert.match(flagged.stderr, /unexpected flag/);
+  assert.equal(onlyStart.code, 2);
+  assert.equal(onlyStart.stdout, "");
+  assert.equal(onlyStart.stderr, "viewmark: attach requires --start and --end\n");
+
+  const noExpect = await run(
+    ["--port", "1", "--user", "Ada", "--repo", "docs", "attach", "pic.md", "--start", "1:0", "--end", "1:5"],
+    {},
+    PNG_BYTES,
+  );
+  assert.equal(noExpect.code, 2);
+  assert.equal(noExpect.stdout, "");
+  assert.equal(noExpect.stderr, "viewmark: attach requires --expect\n");
 });
 
 test("picture: attach stores the paragraph and a refusal writes nothing", async () => {
   await withDocs(async ({ dir, port }) => {
     await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n");
     const args = ["--port", String(port), "--user", "Ada", "--repo", "docs"];
-    const attached = await run([...args, "attach", "pic.md", "--start", "1:8"], {}, PNG_BYTES);
+    const attached = await run(
+      [...args, "attach", "pic.md", "--start", "1:6", "--end", "1:8", "--expect", "be"],
+      {},
+      PNG_BYTES,
+    );
     assert.equal(attached.code, 0);
     assert.match(attached.stderr, /^rev \d+\n$/);
     const match = /^alpha beta\n\n!\[([23456789abcdefghjkmnpqrstuvwxyz]{8}\.png)\]\(pic\/\1\)\n$/.exec(attached.stdout);
@@ -4749,13 +4769,21 @@ test("picture: attach stores the paragraph and a refusal writes nothing", async 
     assert.equal(raw.type, "image/png");
     assert.ok(raw.body.equals(PNG_BYTES));
 
-    const json = await run(["--json", ...args, "attach", "pic.md"], {}, PNG_BYTES);
+    const json = await run(
+      ["--json", ...args, "attach", "pic.md", "--start", "1:6", "--end", "1:8", "--expect", "be"],
+      {},
+      PNG_BYTES,
+    );
     assert.equal(json.code, 0);
     const body = JSON.parse(json.stdout);
-    const again = /^[\s\S]*!\[([23456789abcdefghjkmnpqrstuvwxyz]{8}\.png)\]\(pic\/\1\)\n$/.exec(body.text);
-    assert.ok(again, body.text);
-    assert.notEqual(again[1], name);
+    const names = [...body.text.matchAll(/!\[([23456789abcdefghjkmnpqrstuvwxyz]{8}\.png)\]\(pic\/\1\)/g)].map((item) => item[1]);
+    assert.equal(names.length, 2);
+    assert.ok(names.includes(name));
+    assert.notEqual(names[0], names[1]);
+    assert.equal(body.text.startsWith("alpha beta\n"), true);
     assert.equal(body.path, "pic.md");
+    const second = names.find((file) => file !== name);
+    assert.ok((await fs.readFile(path.join(dir, "pic", second))).equals(PNG_BYTES));
 
     const listed = await run([...args, "list"]);
     assert.equal(listed.code, 0);
@@ -4763,21 +4791,33 @@ test("picture: attach stores the paragraph and a refusal writes nothing", async 
     assert.equal(listed.stdout.includes("pic/"), false);
 
     await fs.writeFile(path.join(dir, "plain.md"), "alpha beta\n");
-    const text = await run([...args, "attach", "plain.md", "--start", "1:8"], {}, Buffer.from("not an image"));
+    const text = await run(
+      [...args, "attach", "plain.md", "--start", "1:6", "--end", "1:8", "--expect", "be"],
+      {},
+      Buffer.from("not an image"),
+    );
     assert.equal(text.code, shellStatus(400));
     assert.equal(text.stdout, "");
     assert.equal(text.stderr, "error 400\nnot an image\n");
     assert.equal(await fs.readFile(path.join(dir, "plain.md"), "utf8"), "alpha beta\n");
     await assert.rejects(fs.lstat(path.join(dir, "plain")), (err) => err.code === "ENOENT");
 
-    const missing = await run([...args, "attach", "missing.md"], {}, PNG_BYTES);
+    const missing = await run(
+      [...args, "attach", "missing.md", "--start", "1:0", "--end", "1:0", "--expect", ""],
+      {},
+      PNG_BYTES,
+    );
     assert.equal(missing.code, shellStatus(404));
     assert.equal(missing.stdout, "");
     assert.equal(missing.stderr, "error 404\n");
 
     const holder = await lockWhole(port, "Bea", "plain.md");
     try {
-      const blocked = await run([...args, "attach", "plain.md", "--start", "1:0"], {}, PNG_BYTES);
+      const blocked = await run(
+        [...args, "attach", "plain.md", "--start", "1:0", "--end", "1:5", "--expect", "alpha"],
+        {},
+        PNG_BYTES,
+      );
       assert.equal(blocked.code, shellStatus(409));
       assert.equal(blocked.stdout, "");
       assert.equal(blocked.stderr, "error 409\nheld by Bea\n");
@@ -4786,5 +4826,75 @@ test("picture: attach stores the paragraph and a refusal writes nothing", async 
     } finally {
       holder.ws.close();
     }
+  });
+});
+
+test("picture: a range follows its block and a bad range writes nothing", async () => {
+  await withDocs(async ({ dir, port }) => {
+    await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n");
+    await fs.writeFile(path.join(dir, "gap.md"), "alpha\n\nbeta\n");
+    await fs.writeFile(path.join(dir, "wide.md"), "alpha\n\nbeta\n");
+    const args = ["--port", String(port), "--user", "Ada", "--repo", "docs"];
+    const attached = await run(
+      [...args, "attach", "pic.md", "--start", "1:6", "--end", "1:8", "--expect", "be"],
+      {},
+      PNG_BYTES,
+    );
+    assert.equal(attached.code, 0);
+    assert.match(attached.stdout, /^alpha beta\n\n!\[[23456789abcdefghjkmnpqrstuvwxyz]{8}\.png\]\(pic\/[23456789abcdefghjkmnpqrstuvwxyz]{8}\.png\)\n$/);
+
+    const wrong = await run(
+      [...args, "attach", "pic.md", "--start", "1:6", "--end", "1:8", "--expect", "no"],
+      {},
+      PNG_BYTES,
+    );
+    assert.equal(wrong.code, shellStatus(409));
+    assert.equal(wrong.stdout, "");
+    assert.equal(wrong.stderr, "error 409\ncontext\n");
+    assert.equal(await fs.readFile(path.join(dir, "pic.md"), "utf8"), attached.stdout);
+    assert.equal((await fs.readdir(path.join(dir, "pic"))).length, 1);
+
+    const reversed = await run(
+      [...args, "attach", "pic.md", "--start", "1:8", "--end", "1:6", "--expect", "be"],
+      {},
+      PNG_BYTES,
+    );
+    assert.equal(reversed.code, 0);
+    assert.match(reversed.stdout, /^alpha beta\n/);
+    assert.equal((reversed.stdout.match(/!\[[23456789abcdefghjkmnpqrstuvwxyz]{8}\.png\]/g) || []).length, 2);
+
+    const onBlank = await run(
+      [...args, "attach", "gap.md", "--start", "2:0", "--end", "2:0", "--expect", ""],
+      {},
+      PNG_BYTES,
+    );
+    assert.equal(onBlank.code, 0);
+    const blank = /^alpha\n!\[([23456789abcdefghjkmnpqrstuvwxyz]{8}\.png)\]\(gap\/\1\)\nbeta\n$/.exec(onBlank.stdout);
+    assert.ok(blank, onBlank.stdout);
+    assert.equal(onBlank.stdout.startsWith("alpha\n"), true);
+    assert.equal(onBlank.stdout.includes("alpha\n\n"), false);
+    assert.ok((await fs.readFile(path.join(dir, "gap", blank[1]))).equals(PNG_BYTES));
+
+    const across = await run(
+      [...args, "attach", "wide.md", "--start", "1:0", "--end", "3:4", "--expect", "alpha\n\nbeta"],
+      {},
+      PNG_BYTES,
+    );
+    assert.equal(across.code, shellStatus(400));
+    assert.equal(across.stdout, "");
+    assert.equal(across.stderr, "error 400\n");
+    assert.equal(await fs.readFile(path.join(dir, "wide.md"), "utf8"), "alpha\n\nbeta\n");
+    await assert.rejects(fs.lstat(path.join(dir, "wide")), (err) => err.code === "ENOENT");
+
+    const outside = await run(
+      [...args, "attach", "wide.md", "--start", "9:0", "--end", "9:0", "--expect", ""],
+      {},
+      PNG_BYTES,
+    );
+    assert.equal(outside.code, shellStatus(400));
+    assert.equal(outside.stdout, "");
+    assert.equal(outside.stderr, "error 400\n");
+    assert.equal(await fs.readFile(path.join(dir, "wide.md"), "utf8"), "alpha\n\nbeta\n");
+    await assert.rejects(fs.lstat(path.join(dir, "wide")), (err) => err.code === "ENOENT");
   });
 });
