@@ -4402,6 +4402,52 @@ test("fence clicks open source", () => {
   }
 });
 
+test("an image line has a caret mark at its start and through its newline", () => {
+  const mounted = mountEditor();
+  const doc = "x\n\n![box](box.svg)\n";
+  const view = createEditor(mounted.root, doc, doc.length);
+  try {
+    const image = mounted.findAll((node) => node.classList && node.classList.contains("md-image"))[0];
+    const line = image.parentElement;
+    const marks = line.childNodes.filter((node) => node.classList && node.classList.contains("md-image-caret"));
+    assert.equal(marks.length, 2);
+    assert.equal(marks[0].dataset.edge, "start");
+    assert.equal(marks[0].dataset.start, "3");
+    assert.equal(marks[0].dataset.end, "4");
+    assert.equal(marks[0].textContent.length, 1);
+    assert.equal(Number(marks[0].dataset.end) - Number(marks[0].dataset.start), marks[0].textContent.length);
+    assert.equal(marks[1].dataset.edge, "end");
+    assert.equal(marks[1].classList.contains("md-break"), true);
+    assert.equal(marks[1].dataset.start, "18");
+    assert.equal(marks[1].dataset.end, "19");
+    assert.equal(marks[1].textContent.length > 1, true);
+    assert.notEqual(Number(marks[1].dataset.end) - Number(marks[1].dataset.start), marks[1].textContent.length);
+    const startText = marks[0].childNodes[0];
+    const endText = marks[1].childNodes[0];
+    assert.equal(mapOffset(startText, 0), 3);
+    assert.equal(mapOffset(startText, 1), 3);
+    assert.equal(mapOffset(endText, 0), 18);
+    assert.equal(mapOffset(endText, 1), 19);
+    assert.equal(mapOffset(endText, endText.textContent.length), 19);
+    assert.equal(mapOffset(line, 0), 3);
+    assert.equal(mapOffset(line, line.childNodes.length), 19);
+    mounted.listeners.click({ target: image, clientX: 1, clientY: 1, preventDefault() {} });
+    assert.equal(view.getState().anchor, 3);
+    assert.equal(view.getState().cursor, doc.length);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-image")).length, 1);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-image-caret")).length, 2);
+
+    const inlineDoc = "x![a](b)y\n";
+    const inline = createEditor(mounted.root, inlineDoc, inlineDoc.length);
+    const inlineImage = mounted.findAll((node) => node.classList && node.classList.contains("md-image")).pop();
+    assert.equal(inlineImage.parentElement.childNodes.some((node) => node.classList && node.classList.contains("md-image-caret")), false);
+    inline.destroy();
+  } finally {
+    view.destroy();
+    mounted.restore();
+  }
+});
+
 test("a paste inside a paragraph sends the picture at that caret", async () => {
   const mounted = mountEditor();
   const parent = {

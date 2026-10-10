@@ -974,6 +974,12 @@ export function mapOffset(startOrNode, offset) {
     const start = Number(tagged.dataset.start);
     const end = Number(tagged.dataset.end);
     if (start === end) return start;
+    // The start mark stands in for the line start. Its far edge is still that
+    // offset, not the first character of the picture. The end mark's text is
+    // longer than the newline it covers, so a glyph there would not exist; any
+    // index past its start is the offset after that newline.
+    if (hasClass(tagged, "md-image-caret") && tagged.dataset.edge === "start") return start;
+    if (hasClass(tagged, "md-image-caret") && tagged.dataset.edge === "end") return index > 0 ? end : start;
     return start + index;
   }
   if (node.nodeType === 1) {
@@ -1192,6 +1198,60 @@ function renderImage(image, repo) {
   img.draggable = false;
   el.appendChild(img);
   return el;
+}
+
+// A picture atom has no text, so the line start and the newline after it have
+// no glyph a caret or a hit test can use. The start mark is that one offset.
+// The newline is a break: a glyph of the same length would be the boundary of
+// the blank line after the picture. The extra character keeps the lengths apart.
+function imageCaret(offset, edge) {
+  const el = document.createElement("span");
+  el.className = edge === "end" ? "md-image-caret md-break" : "md-image-caret";
+  el.dataset.start = String(offset);
+  el.dataset.end = String(offset + 1);
+  el.dataset.edge = edge;
+  if (typeof el.setAttribute === "function") el.setAttribute("aria-hidden", "true");
+  setStyle(el, "color", "transparent");
+  el.appendChild(document.createTextNode(edge === "end" ? "\u00b7\u200b" : "\u00b7"));
+  return el;
+}
+
+function adornImageLine(el, block, doc) {
+  if (!el || !block || block.type !== "line" || block.raw || block.empty || block.hr) return;
+  if (typeof doc !== "string") return;
+  const image = findClassChild(el, "md-image");
+  if (!image) return;
+  const kids = childArray(el);
+  if (kids.length !== 1 || kids[0] !== image) return;
+  const start = Number(image.dataset.start);
+  const end = Number(image.dataset.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start !== block.start || end !== block.end) return;
+  if (!IMAGE_ONLY_LINE.test(doc.slice(start, end).trim())) return;
+  placeNodeBefore(el, imageCaret(start, "start"), image);
+  if (end < doc.length && doc[end] === "\n") insertAfter(el, image, imageCaret(end, "end"));
+}
+
+function caretText(el) {
+  for (const child of childArray(el)) if (child && child.nodeType === 3) return child;
+  return null;
+}
+
+// Select through the newline mark so the mapped end is past the picture, not
+// the atom's own dataset.end. A test range that cannot name both marks stays
+// on the picture.
+function placeImageSelection(range, image) {
+  if (!range || typeof range.setStart !== "function" || typeof range.setEnd !== "function") return false;
+  const kids = childArray(image && image.parentElement);
+  const at = kids.indexOf(image);
+  if (at < 0) return false;
+  const lead = at > 0 && hasClass(kids[at - 1], "md-image-caret") ? caretText(kids[at - 1]) : null;
+  const tail = at + 1 < kids.length && hasClass(kids[at + 1], "md-image-caret") ? caretText(kids[at + 1]) : null;
+  if (!lead || !tail) return false;
+  const len = typeof tail.length === "number" ? tail.length : String(tail.textContent || "").length;
+  if (!(len > 0)) return false;
+  range.setStart(lead, 0);
+  range.setEnd(tail, len);
+  return true;
 }
 
 function renderCell(tag, cell) {
@@ -2647,7 +2707,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           if (start >= lo && start < hi) {
             el.classList.add("md-atom-selected");
             const range = document.createRange();
-            range.selectNode(el);
+            if (!placeImageSelection(range, el)) range.selectNode(el);
             sel.removeAllRanges();
             sel.addRange(range);
             return null;
@@ -2747,6 +2807,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (box && box === range.endContainer && box.nodeType === 1 && box.childNodes) {
       const child = box.childNodes[range.startOffset];
       if (hasClass(child, "md-atom") && range.endOffset === range.startOffset + 1) {
+        const imageLine = hasClass(child, "md-image") ? wholeImageLine(state.doc, Number(child.dataset.start)) : null;
+        if (imageLine) return imageLine;
         return { anchor: Number(child.dataset.start), cursor: Number(child.dataset.end) };
       }
     }
@@ -4234,6 +4296,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const flashBlock = refusal && !refusal.name ? tightestBlock(blocks, refusal.offset) : null;
       const nodes = blocks.map((block) => {
         const el = renderBlock(block, activeRepo);
+        adornImageLine(el, block, state.doc);
         hangRawMarker(el, rawListMarker(block), block && block.indent);
         appendLockMarks(el, block);
         if (block === flashBlock) el.classList.add("md-flash");
