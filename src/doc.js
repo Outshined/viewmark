@@ -2592,6 +2592,13 @@ function joinsDown(text) {
   return kind === "p" || kind === "li" || kind === "ol" || kind === "quote";
 }
 
+// A paragraph, list item, or quote joins. An empty line does not, and neither does a rule.
+function caretLineJoins(text) {
+  if (text === "") return false;
+  const kind = classify(text).kind;
+  return kind === "p" || kind === "li" || kind === "ol" || kind === "quote";
+}
+
 // Fence lines are source. The opener's first byte is the line a paragraph can join.
 function enclosedByFence(doc, offset) {
   for (const fence of fenceContentRanges(doc)) {
@@ -2600,14 +2607,15 @@ function enclosedByFence(doc, offset) {
   return false;
 }
 
-// That joined line is drawn on the block above. An insert that does not start
-// with a break writes one first, so its first line stays on this line.
+// A line that does not join is drawn under the block above until the insert
+// makes it join. An insert that does not start with a break writes one first.
+// A continuation is already in that block, so it stays there.
 function joinedLineBreak(doc, cursor, value, nl) {
   if (value === "" || value.startsWith(nl)) return false;
   const line = sourceLine(doc, cursor);
   // The row lineSpans adds at length is not a block.
   if (cursor !== line.start || line.start === 0 || line.start === doc.length) return false;
-  if (enclosedByFence(doc, cursor)) return false;
+  if (enclosedByFence(doc, cursor) || caretLineJoins(line.text)) return false;
   return joinsDown(sourceLine(doc, line.start - 1).text);
 }
 
