@@ -2870,7 +2870,7 @@ test("T-tab-key", () => {
     assert.equal(editor.getState().cursor, 2);
 
     event = key({ shiftKey: true });
-    assert.equal(event.defaultPrevented, false);
+    assert.equal(event.defaultPrevented, true);
     assert.equal(editor.getState().doc, "\t\tab");
     for (const flag of ["ctrlKey", "altKey", "metaKey"]) {
       event = key({ [flag]: true });
