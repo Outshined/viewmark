@@ -2029,12 +2029,13 @@ function bareBreakLine(line, doc) {
   return hide > 0 && hide === line.text.length;
 }
 
-// A line move on a spaces-only hard break rests on the newline that break draws.
-// The line start stays the character stop.
+// A line of only spaces or tabs is drawn empty. Up, down, and a click on it
+// rest on its start. A hard break that still shows text keeps that break's newline.
 export function lineCaret(doc, offset) {
   const text = typeof doc === "string" ? doc : "";
   const at = Math.max(0, Math.min(text.length, Number.isFinite(offset) ? offset : 0));
   const line = sourceLine(text, at);
+  if (/^[ \t]+$/.test(line.text)) return line.start;
   if (bareBreakLine(line, text)) return line.end;
   return at;
 }

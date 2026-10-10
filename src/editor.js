@@ -815,11 +815,12 @@ function isBreak(node) {
   return !!node && String(node.nodeName || "").toUpperCase() === "BR";
 }
 
-// The newline of a spaces-only hard break is a line-move stop. The offset before
-// it is on that same line, so it aims at the same newline. A visible line's
-// break does not: up and down there rest on the marker's first offset.
+// A line of only spaces or tabs rests on its start, and the next offset snaps
+// there too. A hard break that still shows text rests on its newline. A visible
+// line's break does not: up and down there rest on the marker's first offset.
 function bareBreakNewline(doc, offset) {
-  return offset > 0 && lineCaret(doc, offset) === offset && lineCaret(doc, offset - 1) === offset;
+  if (offset > 0 && lineCaret(doc, offset) === offset && lineCaret(doc, offset - 1) === offset) return true;
+  return lineCaret(doc, offset) === offset && offset < doc.length && lineCaret(doc, offset + 1) === offset;
 }
 
 // selectNode reports the atom as a child index on its parent, not a text offset.
@@ -3727,13 +3728,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (landed == null) return;
     const forward = direction === "forward" || direction === "right";
     let next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
-    // Up and down on a line that is only a hard break mean its newline.
-    // The slot at the line start stays the character stop.
+    // Up and down on a line drawn empty rest on its start.
     if (granularity === "line") next = lineCaret(state.doc, next);
     // The browser stops inside a drawn marker, and on the br of a hard break.
     // One press crosses the whole marker. A press that did not move still crosses
-    // a marker that has no text node of its own. The newline of a spaces-only
-    // break is where up and down stop, so that press does not cross it.
+    // a marker that has no text node of its own. The start of a spaces-only or
+    // tab-only line is where up and down stop, so that press does not cross it.
     for (let hop = 0; hop < 4; hop += 1) {
       if (granularity === "line" && bareBreakNewline(state.doc, next)) break;
       const skipped = skipHidden(state.doc, next, forward ? "forward" : "backward");

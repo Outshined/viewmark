@@ -1862,9 +1862,9 @@ test("BG.ws.3", () => {
   const probed = backspace(createState("a  \n  x\nb\n", 7));
   assert.equal(probed.doc, doc);
   assert.equal(probed.cursor, 6);
-  assert.equal(lineCaret(doc, 4), 6);
-  assert.equal(lineCaret(doc, 5), 6);
-  assert.equal(lineCaret(doc, 6), 6);
+  assert.equal(lineCaret(doc, 4), 4);
+  assert.equal(lineCaret(doc, 5), 4);
+  assert.equal(lineCaret(doc, 6), 4);
   assert.equal(lineCaret(doc, 3), 3);
   assert.equal(lineCaret("red  \n", 5), 5);
   const mounted = mountEditor();
@@ -1897,6 +1897,8 @@ test("BG.ws.space", () => {
   const slot = plan(doc, 6).blocks.find((block) => block.slot === 5);
   assert.ok(slot);
   assert.ok(slot.parts.some((part) => part.type === "break" && part.start === 6));
+  assert.equal(lineCaret(doc, 5), 5);
+  assert.equal(lineCaret(doc, 6), 5);
 });
 
 test("BG.ws.tab", () => {
@@ -1911,6 +1913,8 @@ test("BG.ws.tab", () => {
       assert.equal(next.anchor, 4);
     }
   }
+  assert.equal(lineCaret(doc, 5), 5);
+  assert.equal(lineCaret(doc, 6), 5);
 });
 
 test("BG.hbe-p", () => {
