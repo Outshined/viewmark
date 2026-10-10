@@ -1060,8 +1060,8 @@ function renderCollapsed(block) {
 }
 
 // A br, not a text node: an empty text node does not survive in the editing host.
-// It is its own line, so up and down can stop on the line start. The break br
-// below it is the newline.
+// Up and down stop on this line start. The break after it is pulled onto this
+// line; in flow its br would be the next one.
 function renderCaretSlot(offset) {
   const el = document.createElement("span");
   el.dataset.start = String(offset);
@@ -1070,9 +1070,27 @@ function renderCaretSlot(offset) {
   return el;
 }
 
+function markerOnly(block) {
+  if (block.slot == null) return false;
+  const parts = block.parts || [];
+  return parts.length > 0 && parts.every((part) => part.type === "break" || (part.type === "run" && part.text === ""));
+}
+
+// The slot br already is the line. Pull the break's br up by one line box so
+// both carets share it. 1lh is that box, whatever the paragraph line-height is.
+function pullBreakOntoSlot(node) {
+  setStyle(node, "display", "block");
+  setStyle(node, "margin-top", "-1lh");
+}
+
 function appendParts(el, block) {
+  const share = markerOnly(block);
   if (block.slot != null) el.appendChild(renderCaretSlot(block.slot));
-  for (const part of block.parts) el.appendChild(part.type === "image" ? renderImage(part) : renderRun(part));
+  for (const part of block.parts) {
+    const node = part.type === "image" ? renderImage(part) : renderRun(part);
+    if (share && part.type === "break") pullBreakOntoSlot(node);
+    el.appendChild(node);
+  }
 }
 
 function rawListMarker(block) {

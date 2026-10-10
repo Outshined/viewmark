@@ -1917,6 +1917,57 @@ test("BG.ws.tab", () => {
   assert.equal(lineCaret(doc, 6), 5);
 });
 
+test("a tab on a blank line shares that line with its break", () => {
+  const doc = "one\n\n\t\n\ntwo\n";
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, doc, 6);
+    const line = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.dataset && node.dataset.start === "5" && node.dataset.end === "5")[0];
+    assert.ok(line);
+    const onLine = (node) => {
+      let current = node;
+      while (current) {
+        if (current === line) return true;
+        current = current.parentElement;
+      }
+      return false;
+    };
+    const brs = mounted.findAll((node) => node.tagName === "BR" && onLine(node));
+    assert.equal(brs.length, 2);
+    const slotBr = brs.find((node) => node.parentElement.dataset.start === "5" && node.parentElement.dataset.end === "5");
+    const breakBr = brs.find((node) => node.parentElement.classList && node.parentElement.classList.contains("md-break"));
+    assert.ok(slotBr);
+    assert.ok(breakBr);
+    assert.equal(mapOffset(slotBr, 0), 5);
+    assert.equal(mapOffset(breakBr, 0), 6);
+    assert.equal(breakBr.parentElement.styleProps.display, "block");
+    assert.equal(breakBr.parentElement.styleProps["margin-top"], "-1lh");
+    const blank = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.dataset && node.dataset.start === "4" && node.dataset.end === "4")[0];
+    assert.equal(blank.childNodes.length, 1);
+    assert.equal(blank.childNodes[0].tagName, "BR");
+    assert.equal(blank.childNodes[0].parentElement.classList.contains("md-break"), false);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+
+  const hard = mountEditor();
+  try {
+    const view = createEditor(hard.root, "hello  \nworld\n", 0);
+    const breakBr = hard.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.classList && node.parentElement.classList.contains("md-break"))[0];
+    assert.ok(breakBr);
+    assert.equal(mapOffset(breakBr, 0), 7);
+    assert.equal(breakBr.parentElement.styleProps["margin-top"], undefined);
+    assert.equal(breakBr.parentElement.styleProps.display, undefined);
+    const hello = hard.findAll((node) => node.nodeType === 3 && node.textContent === "hello")[0];
+    assert.ok(hello);
+    assert.equal(hard.findAll((node) => node.nodeType === 3 && node.textContent === "  ").length, 0);
+    view.destroy();
+  } finally {
+    hard.restore();
+  }
+});
+
 test("BG.hbe-p", () => {
   const next = backspace(createState("red  \n\ntwo\n", 6));
   assert.equal(next.doc, "red  \ntwo\n");
