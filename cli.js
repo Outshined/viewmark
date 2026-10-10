@@ -29,8 +29,8 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME commit [--message TEXT]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket list [--closed]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket show <id>
-  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY]
-  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket set <id> [--title TEXT] [--state STATE] [--type TYPE] [--priority PRIORITY] [--parent ID] [--depends IDS]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY] [--assignee NAME]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket set <id> [--title TEXT] [--state STATE] [--type TYPE] [--priority PRIORITY] [--parent ID] [--depends IDS] [--assignee NAME]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket delete <id>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket purge
   viewmark [--port PORT] [--user NAME] [--json] repo list
@@ -89,16 +89,16 @@ commit:
   The message is trimmed and must be 1–200 characters. CR, LF, tab, and NUL are rejected.
 
 ticket:
-  list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY], set <id>, delete <id>, purge.
-  --title, --state, --type, --priority, --parent, --depends, --closed.
+  list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY] [--assignee NAME], set <id>, delete <id>, purge.
+  --title, --state, --type, --priority, --parent, --depends, --assignee, --closed.
   --parent none clears. --depends none clears. --state is new, triaged, in progress, or closed.
   --type is bug, enhancement, or task. An omitted type is task.
   --priority is low, medium, or high. An omitted create stores medium.
   reporter is --user. A field write uses the current body. Later field writes win. --rev is rejected.
   list prints id, created, state, type, priority, and title. show prints the body.
   create reads the body from stdin when stdin is not a terminal.
-  --json: list {tickets:[{id,title,state,type,priority,parent,depends,reporter,created}]};
-    show and set {id,path,rev,title,state,type,priority,parent,depends,reporter,created,text};
+  --json: list {tickets:[{id,title,state,type,priority,assignee,parent,depends,reporter,created}]};
+    show and set {id,path,rev,title,state,type,priority,assignee,parent,depends,reporter,created,text};
     create {id,path,rev:0,reporter,created}; purge {purged:[...]};
     conflict adds "error":"conflict".
 
@@ -140,6 +140,7 @@ const VALUE_FLAGS = new Set([
   "priority",
   "parent",
   "depends",
+  "assignee",
   "repo",
   "name",
   "description",
@@ -240,6 +241,8 @@ function parseArgs(argv) {
     parent: "",
     dependsSet: false,
     depends: "",
+    assigneeSet: false,
+    assignee: "",
     repoSet: false,
     repo: "",
     nameSet: false,
@@ -328,6 +331,9 @@ function parseArgs(argv) {
       } else if (name === "depends") {
         args.dependsSet = true;
         args.depends = value;
+      } else if (name === "assignee") {
+        args.assigneeSet = true;
+        args.assignee = value;
       } else if (name === "repo") {
         args.repoSet = true;
         args.repo = value;
@@ -697,6 +703,11 @@ function normalizeParent(raw) {
   return raw;
 }
 
+function assigneeForSet(raw) {
+  if (typeof raw !== "string" || /[\r\n\t]/.test(raw)) return raw;
+  return raw.trim();
+}
+
 function normalizeDepends(raw) {
   if (raw === "none") return [];
   const ids = [];
@@ -715,6 +726,7 @@ function normalizeDepends(raw) {
 function prepareTicket(args, rest) {
   if (args.revSet || args.findSet || args.replaceSet || args.expectSet) return { error: "unexpected flag" };
   const [sub, ...more] = rest;
+  if (args.assigneeSet && sub !== "create" && sub !== "set") return { error: "unexpected flag" };
   if (sub === "list") {
     if (more.length !== 0) return { error: "unexpected argument" };
     return { sub };
@@ -743,6 +755,7 @@ function prepareTicket(args, rest) {
       if (!TICKET_PRIORITIES.includes(args.priority)) return { error: "invalid priority" };
       command.priority = args.priority;
     }
+    if (args.assigneeSet) command.assignee = assigneeForSet(args.assignee);
     return command;
   }
   if (sub === "set") {
@@ -777,7 +790,8 @@ function prepareTicket(args, rest) {
       if (depends === null) return { error: "invalid id" };
       fields.depends = depends;
     }
-    if (Object.keys(fields).length === 0) return { error: "set requires --title, --state, --type, --priority, --parent, or --depends" };
+    if (args.assigneeSet) fields.assignee = assigneeForSet(args.assignee);
+    if (Object.keys(fields).length === 0) return { error: "set requires --title, --state, --type, --priority, --parent, --depends, or --assignee" };
     return { sub, id: more[0], fields };
   }
   if (sub === "delete") {
@@ -799,6 +813,8 @@ function asTicket(raw) {
   if (typeof raw.title !== "string" || typeof raw.state !== "string") return null;
   if (!TICKET_TYPES.includes(raw.type)) return null;
   if (!TICKET_PRIORITIES.includes(raw.priority)) return null;
+  const assignee = raw.assignee == null ? "" : raw.assignee;
+  if (typeof assignee !== "string") return null;
   if (typeof raw.parent !== "string" || (raw.parent !== "" && !validTicketId(raw.parent))) return null;
   if (!Array.isArray(raw.depends) || raw.depends.some((id) => !validTicketId(id))) return null;
   if (typeof raw.reporter !== "string" || typeof raw.created !== "string") return null;
@@ -808,6 +824,7 @@ function asTicket(raw) {
     state: raw.state,
     type: raw.type,
     priority: raw.priority,
+    assignee,
     parent: raw.parent,
     depends: raw.depends.slice(),
     reporter: raw.reporter,
@@ -831,6 +848,8 @@ function asTicketNotice(msg, id) {
   if (typeof msg.title !== "string" || typeof msg.state !== "string") return null;
   if (!TICKET_TYPES.includes(msg.ticketType)) return null;
   if (!TICKET_PRIORITIES.includes(msg.priority)) return null;
+  const assignee = msg.assignee == null ? "" : msg.assignee;
+  if (typeof assignee !== "string") return null;
   if (typeof msg.parent !== "string" || (msg.parent !== "" && !validTicketId(msg.parent))) return null;
   if (!Array.isArray(msg.depends) || msg.depends.some((dep) => !validTicketId(dep))) return null;
   if (typeof msg.reporter !== "string" || typeof msg.created !== "string") return null;
@@ -841,6 +860,7 @@ function asTicketNotice(msg, id) {
     state: msg.state,
     type: msg.ticketType,
     priority: msg.priority,
+    assignee,
     parent: msg.parent,
     depends: msg.depends.slice(),
     reporter: msg.reporter,
@@ -868,11 +888,14 @@ function ticketMeta(view) {
     metaLine("state", view.state),
     metaLine("type", view.type),
     metaLine("priority", view.priority),
+  ];
+  if (view.assignee) lines.push(`assignee ${view.assignee}`);
+  lines.push(
     metaLine("parent", view.parent),
     metaLine("depends", view.depends.join(",")),
     metaLine("reporter", view.reporter),
     metaLine("created", view.created),
-  ];
+  );
   return `${lines.join("\n")}\n`;
 }
 
@@ -886,6 +909,7 @@ function printTicket(view, json, conflict) {
       state: view.state,
       type: view.type,
       priority: view.priority,
+      assignee: view.assignee || "",
       parent: view.parent,
       depends: view.depends,
       reporter: view.reporter,
@@ -915,6 +939,7 @@ function requestedMatches(opened, fields) {
   if (Object.prototype.hasOwnProperty.call(fields, "state") && fields.state !== opened.state) return false;
   if (Object.prototype.hasOwnProperty.call(fields, "type") && fields.type !== opened.type) return false;
   if (Object.prototype.hasOwnProperty.call(fields, "priority") && fields.priority !== opened.priority) return false;
+  if (Object.prototype.hasOwnProperty.call(fields, "assignee") && fields.assignee !== (opened.assignee || "")) return false;
   if (Object.prototype.hasOwnProperty.call(fields, "parent") && fields.parent !== opened.parent) return false;
   if (Object.prototype.hasOwnProperty.call(fields, "depends") && !sameDepends(opened.depends, fields.depends)) return false;
   return true;
@@ -929,6 +954,7 @@ function printTicketList(tickets, json) {
         state: ticket.state,
         type: ticket.type,
         priority: ticket.priority,
+        assignee: ticket.assignee || "",
         parent: ticket.parent,
         depends: ticket.depends,
         reporter: ticket.reporter,
@@ -969,6 +995,7 @@ async function runTicketCreate(hub, username, command, json) {
   if (command.state !== undefined) payload.state = command.state;
   if (command.type !== undefined) payload.ticketType = command.type;
   if (command.priority !== undefined) payload.priority = command.priority;
+  if (command.assignee !== undefined) payload.assignee = command.assignee;
   hub.send(payload);
   const msg = await hub.next((item) => item.type === "file" || item.type === "error");
   if (msg.type === "error") return serverError(msg);
@@ -1011,6 +1038,7 @@ async function runTicketSet(hub, username, command, json) {
   if (Object.prototype.hasOwnProperty.call(fields, "depends")) payload.depends = fields.depends;
   if (Object.prototype.hasOwnProperty.call(fields, "type")) payload.ticketType = fields.type;
   if (Object.prototype.hasOwnProperty.call(fields, "priority")) payload.priority = fields.priority;
+  if (Object.prototype.hasOwnProperty.call(fields, "assignee")) payload.assignee = fields.assignee;
   hub.send(payload);
   const msg = await hub.next((item) => item.type === "error" || (item.type === "ticket" && item.path === opened.path));
   if (msg.type === "error") {
@@ -1373,7 +1401,7 @@ async function runComment(hub, username, command, text, json) {
 
 function commentFlagRejected(args, sub) {
   if (args.closed || args.findSet || args.replaceSet || args.titleSet || args.stateSet
-    || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet
+    || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet || args.assigneeSet
     || args.nameSet || args.descriptionSet || args.pathSet || args.revSet) {
     return true;
   }
@@ -1448,7 +1476,7 @@ function prepareComment(args, rest) {
 function serveFlagRejected(args) {
   if (args.json || args.closed) return true;
   return args.revSet || args.findSet || args.replaceSet || args.titleSet
-    || args.stateSet || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet
+    || args.stateSet || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet || args.assigneeSet
     || args.repoSet || args.nameSet || args.descriptionSet || args.pathSet
     || args.messageSet || args.fileSet || args.dirSet || args.startSet || args.endSet || args.expectSet;
 }
@@ -1522,6 +1550,10 @@ async function main() {
     return;
   }
 
+  if (args.assigneeSet && cmd !== "ticket") {
+    usage("unexpected flag");
+    return;
+  }
   if (args.messageSet && cmd !== "commit") {
     usage("unexpected flag");
     return;

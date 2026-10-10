@@ -105,45 +105,6 @@ select.md-repo {
   color: inherit;
 }
 
-button.md-doc-menu {
-  position: absolute;
-  top: 0.45rem;
-  right: 0.45rem;
-  z-index: 5;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 0.22rem;
-  width: 1.75rem;
-  height: 1.75rem;
-  margin: 0;
-  padding: 0.35rem;
-  border: 1px solid #c4b8a4;
-  border-radius: 0.35rem;
-  background: none;
-  color: inherit;
-  cursor: pointer;
-}
-
-div.md-doc-menu-panel {
-  position: absolute;
-  /* 0.45rem inset plus the 1.75rem button, so the panel stays under it. */
-  top: 2.2rem;
-  right: 0.45rem;
-  z-index: 6;
-  box-sizing: border-box;
-  min-width: 10rem;
-  padding: 0.25rem;
-  background: #242320;
-  border: 1px solid #c4b8a4;
-  border-radius: 0.35rem;
-}
-
-div.md-doc-menu-panel[hidden] {
-  display: none;
-}
-
 .md-show-resolved {
   display: flex;
   align-items: center;
@@ -161,6 +122,10 @@ div.md-doc-menu-panel[hidden] {
 }
 
 button.md-doc-commit {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.45rem;
+  z-index: 5;
   box-sizing: border-box;
   display: block;
   margin: 0;
@@ -172,21 +137,6 @@ button.md-doc-commit {
 }
 
 button.md-doc-commit[hidden] {
-  display: none;
-}
-
-button.md-doc-link {
-  box-sizing: border-box;
-  display: block;
-  margin: 0;
-  padding: 0.35rem 0.7rem;
-  border-radius: 0.25rem;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-}
-
-button.md-doc-link[hidden] {
   display: none;
 }
 
@@ -331,7 +281,7 @@ nav.files .md-ticket-filter-menu input {
 
 .ticket-tree .md-ticket-row {
   display: grid;
-  grid-template-columns: 1.1em 8rem minmax(0, 1fr) 5.5rem 7.5rem 8.5rem;
+  grid-template-columns: 1.1em 8rem minmax(0, 1fr) 5.5rem 7rem 7.5rem 8.5rem;
   column-gap: 0.75rem;
   align-items: center;
   min-width: 0;
@@ -376,7 +326,7 @@ nav.files .md-ticket-filter-menu input {
   display: grid;
   grid-column: 2 / -1;
   grid-row: 1;
-  grid-template-columns: 8rem minmax(0, 1fr) 5.5rem 7.5rem 8.5rem;
+  grid-template-columns: 8rem minmax(0, 1fr) 5.5rem 7rem 7.5rem 8.5rem;
   column-gap: 0.75rem;
   align-items: center;
   min-width: 0;
@@ -403,6 +353,7 @@ nav.files .md-ticket-filter-menu input {
 
 .ticket-tree .md-ticket-id,
 .ticket-tree .md-ticket-priority,
+.ticket-tree .md-ticket-assignee,
 .ticket-tree .md-ticket-state,
 .ticket-tree .md-ticket-type {
   min-width: 0;
@@ -422,7 +373,7 @@ nav.files .md-ticket-filter-menu input {
   top: 0;
   z-index: 1;
   display: grid;
-  grid-template-columns: 1.1em 8rem minmax(0, 1fr) 5.5rem 7.5rem 8.5rem;
+  grid-template-columns: 1.1em 8rem minmax(0, 1fr) 5.5rem 7rem 7.5rem 8.5rem;
   column-gap: 0.75rem;
   background: #1c1b19;
   white-space: nowrap;
@@ -500,6 +451,7 @@ nav.files .md-ticket-filter-menu input {
 
 .md-ticket-drawer:not(.md-ticket-wide) .md-ticket-id,
 .md-ticket-drawer:not(.md-ticket-wide) .md-ticket-priority,
+.md-ticket-drawer:not(.md-ticket-wide) .md-ticket-assignee,
 .md-ticket-drawer:not(.md-ticket-wide) .md-ticket-state,
 .md-ticket-drawer:not(.md-ticket-wide) .md-ticket-type {
   display: none;
@@ -684,6 +636,7 @@ button.icon-btn.md-view-toggle:not(.md-file):not(.md-dir-toggle) {
 }
 
 .ticket-form {
+  position: relative;
   box-sizing: border-box;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -697,6 +650,55 @@ button.icon-btn.md-view-toggle:not(.md-file):not(.md-dir-toggle) {
 
 .ticket-form[hidden] {
   display: none;
+}
+
+button.md-ticket-pane-menu {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+}
+
+div.md-ticket-pane-panel {
+  position: absolute;
+  top: calc(8px + 1.75rem + 4px);
+  right: 8px;
+  z-index: 6;
+  box-sizing: border-box;
+  min-width: 10rem;
+  padding: 0.25rem;
+  background: #242320;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
+}
+
+div.md-ticket-pane-panel[hidden] {
+  display: none;
+}
+
+button.md-ticket-pane-item {
+  display: block;
+  margin: 0;
+  padding: 0.35rem 0.7rem;
+  border-radius: 0.25rem;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.md-ticket-pane-sep {
+  height: 0;
+  margin: 0.25rem 0;
+  border-top: 1px solid #4a463f;
+}
+
+div.md-ticket-pane-panel label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.2rem 0.7rem;
+  font-weight: 400;
 }
 
 .sheet:has(.ticket-form:not([hidden])) {
@@ -750,7 +752,7 @@ button.icon-btn.md-view-toggle:not(.md-file):not(.md-dir-toggle) {
 .ticket-form .md-ticket-parent,
 .md-ticket-depends,
 .md-ticket-children,
-.md-ticket-relied {
+.md-ticket-blocks {
   display: grid;
   grid-template-columns: 8rem minmax(0, 1fr);
   column-gap: 0.55rem;
@@ -816,11 +818,10 @@ button.icon-btn.md-view-toggle:not(.md-file):not(.md-dir-toggle) {
 }
 
 button.md-doc-commit,
-button.md-doc-link,
+button.md-ticket-pane-item,
 button.md-ticket-filter-all,
 .ticket-form button.md-ticket-link,
-.ticket-form button.md-ticket-option,
-.ticket-form button.md-ticket-rely {
+.ticket-form button.md-ticket-option {
   border: 0;
   background: none;
   width: 100%;
@@ -828,17 +829,15 @@ button.md-ticket-filter-all,
 }
 
 button.md-doc-commit:hover,
-button.md-doc-link:hover,
+button.md-ticket-pane-item:hover,
 button.md-ticket-filter-all:hover,
 .ticket-form button.md-ticket-link:hover,
-.ticket-form button.md-ticket-option:hover,
-.ticket-form button.md-ticket-rely:hover {
+.ticket-form button.md-ticket-option:hover {
   background: #2c3440;
 }
 
 .ticket-form button.md-ticket-link,
-.ticket-form button.md-ticket-option,
-.ticket-form button.md-ticket-rely {
+.ticket-form button.md-ticket-option {
   display: block;
   margin: 0;
   padding: 0.15rem 0.2rem;
@@ -872,7 +871,7 @@ button.md-ticket-filter-all:hover,
 .ticket-form .md-ticket-parent,
 .md-ticket-depends,
 .md-ticket-children,
-.md-ticket-relied {
+.md-ticket-blocks {
   margin: 0 0 0.7rem;
 }
 

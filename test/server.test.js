@@ -1418,7 +1418,7 @@ test("T-create", async () => {
   }
 });
 
-const TICKET_KEYS = ["created", "depends", "id", "parent", "priority", "reporter", "rev", "state", "title", "type"];
+const TICKET_KEYS = ["assignee", "created", "depends", "id", "parent", "priority", "reporter", "rev", "state", "title", "type"];
 
 function assertTicketEntry(ticket) {
   assert.deepEqual(Object.keys(ticket).sort(), TICKET_KEYS);
@@ -1574,6 +1574,7 @@ test("T-ticket-hide", async () => {
       state: "new",
       type: "task",
       priority: "medium",
+      assignee: "",
       parent: "",
       depends: [],
       reporter: "indexer",
@@ -1750,7 +1751,7 @@ test("T-priority", async () => {
     const plain = await createTicket(a, "A", "Plain");
     assert.equal(plain.file.ticket.priority, "medium");
     assert.deepEqual(Object.keys(plain.file.ticket), [
-      "id", "title", "state", "type", "priority", "parent", "depends", "reporter", "created", "rev",
+      "id", "title", "state", "type", "priority", "assignee", "parent", "depends", "reporter", "created", "rev",
     ]);
     assert.equal(plain.file.ticket.rev, 0);
     const plainPath = plain.file.path;
@@ -1777,7 +1778,7 @@ test("T-priority", async () => {
     const listed = await a.next((msg) => msg.type === "tickets");
     const meta = await a.next((msg) => msg.type === "ticket");
     assert.deepEqual(Object.keys(meta), [
-      "type", "path", "rev", "title", "state", "ticketType", "priority", "parent", "depends", "reporter", "created",
+      "type", "path", "rev", "title", "state", "ticketType", "priority", "assignee", "parent", "depends", "reporter", "created",
     ]);
     assert.equal(meta.priority, "low");
     assert.equal(meta.rev, 1);
@@ -1849,6 +1850,7 @@ test("T-ticket-set", async () => {
       state: "new",
       ticketType: "task",
       priority: "medium",
+      assignee: "",
       parent: "",
       depends: [],
       reporter: "A",
@@ -2229,6 +2231,7 @@ test("T-ticket-purge", async () => {
       state: "new",
       ticketType: "task",
       priority: "medium",
+      assignee: "",
       parent: "",
       depends: ["bbbbbbbb"],
       reporter: "indexer",

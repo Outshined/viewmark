@@ -303,6 +303,7 @@ const TICKET_COLUMNS = [
   { key: "id", label: "ID", className: "md-ticket-id" },
   { key: "title", label: "Title", className: "md-ticket-title" },
   { key: "priority", label: "Priority", className: "md-ticket-priority" },
+  { key: "assignee", label: "Assignee", className: "md-ticket-assignee" },
   { key: "state", label: "State", className: "md-ticket-state" },
   { key: "type", label: "Type", className: "md-ticket-type" },
 ];
@@ -438,6 +439,7 @@ function normalizeTicket(ticket) {
     state: typeof ticket.state === "string" ? ticket.state : "",
     type: TICKET_TYPES.includes(ticket.type) ? ticket.type : "task",
     priority: TICKET_PRIORITIES.includes(ticket.priority) ? ticket.priority : "medium",
+    assignee: typeof ticket.assignee === "string" ? ticket.assignee : "",
     parent: typeof ticket.parent === "string" ? ticket.parent : "",
     depends,
     reporter: typeof ticket.reporter === "string" ? ticket.reporter : "",
@@ -641,6 +643,32 @@ function iconMatches(button, action) {
 
 function linkIcon() {
   return iconSvg("link");
+}
+
+function copyGlyph() {
+  if (typeof document === "undefined" || typeof document.createElementNS !== "function") return null;
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  for (const box of [
+    { x: "4", y: "4" },
+    { x: "8", y: "8" },
+  ]) {
+    const rect = document.createElementNS(SVG_NS, "rect");
+    rect.setAttribute("x", box.x);
+    rect.setAttribute("y", box.y);
+    rect.setAttribute("width", "12");
+    rect.setAttribute("height", "12");
+    rect.setAttribute("rx", "2");
+    rect.setAttribute("ry", "2");
+    rect.setAttribute("fill", "none");
+    rect.setAttribute("stroke", "currentColor");
+    rect.setAttribute("stroke-width", "2");
+    rect.setAttribute("stroke-linecap", "round");
+    rect.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(rect);
+  }
+  return svg;
 }
 
 function iconButton(action, className) {
@@ -1866,6 +1894,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const openDirs = new Set();
   let ticketList = [];
   let openTicket = null;
+  let relationTicketId = "";
+  let relationShown = { parent: false, depends: false, children: false, blocks: false };
+  let relationHad = { parent: false, depends: false, children: false, blocks: false };
+  let ticketMenuOpen = false;
   const expandedTickets = new Set();
   let ticketForm = null;
   const ticketPickers = [];
@@ -2930,7 +2962,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const stale = [];
     for (const child of commentsAside.childNodes || []) stale.push(child);
     for (const child of stale) {
-      if (child === docMenuButton || child === docMenuPanel) continue;
+      if (child === repoCommitButton) continue;
       detachNode(child);
     }
     commentsAside.appendChild(row);
@@ -2987,13 +3019,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const asideRect = elementRect(commentsAside);
     if (!asideRect || typeof cards[0].getBoundingClientRect !== "function") return;
     const spans = findSpans(state.doc);
-    // The menu button is out of flow. A hidden row still reports offsetHeight, so it must not raise the floor.
-    const menuHeight = docMenuButton && typeof docMenuButton.offsetHeight === "number" ? docMenuButton.offsetHeight : 0;
-    let floor = menuHeight + COMMENT_CARD_GAP;
+    // A hidden row still reports offsetHeight, so it must not raise the floor.
+    let floor = COMMENT_CARD_GAP;
     const resolvedRow = findClassChild(commentsAside, "md-show-resolved");
     if (resolvedRow && !resolvedRow.hidden) {
       const rowHeight = typeof resolvedRow.offsetHeight === "number" ? resolvedRow.offsetHeight : 0;
-      floor = Math.max(menuHeight, rowHeight) + COMMENT_CARD_GAP;
+      floor = rowHeight + COMMENT_CARD_GAP;
     }
     // A card may move down to clear the cards above it, never up over them.
     // A tall closed card shortens so the next anchor keeps a place. The open card stays full height.
@@ -4906,6 +4937,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       emitEdit({ op: "insert", text: "\t" });
       return;
     }
+    if (event.key === "Escape" && ticketMenuOpen) {
+      closeTicketMenu();
+      return;
+    }
     if (event.key === "Tab" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       if (!adoptDomSelection()) return;
@@ -5350,6 +5385,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       ["md-ticket-id", ticket.id],
       ["md-ticket-title", ticket.title],
       ["md-ticket-priority", ticket.priority],
+      ["md-ticket-assignee", ticket.assignee || ""],
       ["md-ticket-state", ticket.state],
       ["md-ticket-type", ticket.type],
     ];
@@ -5543,6 +5579,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (fields.type === target.type) return;
     } else if (Object.prototype.hasOwnProperty.call(fields, "priority")) {
       if (fields.priority === target.priority) return;
+    } else if (Object.prototype.hasOwnProperty.call(fields, "assignee")) {
+      if ((fields.assignee || "") === (target.assignee || "")) return;
     } else {
       return;
     }
@@ -5557,6 +5595,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     else if (Object.prototype.hasOwnProperty.call(fields, "parent")) payload.parent = fields.parent || "";
     else if (Object.prototype.hasOwnProperty.call(fields, "depends")) payload.depends = fields.depends;
     else if (Object.prototype.hasOwnProperty.call(fields, "priority")) payload.priority = fields.priority;
+    else if (Object.prototype.hasOwnProperty.call(fields, "assignee")) payload.assignee = fields.assignee || "";
     else return;
     emit(payload);
   }
@@ -5652,12 +5691,51 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     hideElement(panel);
   }
 
+  function closeTicketMenu() {
+    ticketMenuOpen = false;
+    const panel = ticketForm && findClassChild(ticketForm, "md-ticket-pane-panel");
+    const button = ticketForm && findClassChild(ticketForm, "md-ticket-pane-menu");
+    hideElement(panel);
+    if (button && typeof button.setAttribute === "function") button.setAttribute("aria-expanded", "false");
+  }
+
+  function relationPresence(ticket) {
+    const id = ticket.id;
+    return {
+      parent: ticket.parent !== "",
+      depends: Array.isArray(ticket.depends) && ticket.depends.length > 0,
+      children: ticketList.some((item) => item && item.id !== id && item.parent === id),
+      blocks: ticketList.some((item) => item && item.id !== id && Array.isArray(item.depends) && item.depends.includes(id)),
+    };
+  }
+
+  function syncRelationShown(ticket) {
+    const presence = relationPresence(ticket);
+    if (ticket.id !== relationTicketId) {
+      relationTicketId = ticket.id;
+      relationShown = { ...presence };
+      relationHad = { ...presence };
+      ticketMenuOpen = false;
+      return;
+    }
+    const shown = { ...relationShown };
+    for (const key of ["parent", "depends", "children", "blocks"]) {
+      if (presence[key] && !relationHad[key]) shown[key] = true;
+    }
+    relationShown = shown;
+    relationHad = { ...presence };
+  }
+
   function onTicketPointerDown(event) {
     const target = event && event.target;
     for (const picker of ticketPickers) picker.dismissOutside(target);
     const chrome = ticketChrome;
     closePopupOutside(chrome && chrome.filterMenu, chrome && chrome.filterButton, target);
-    closePopupOutside(docMenuPanel, docMenuButton, target);
+    const panel = ticketForm && findClassChild(ticketForm, "md-ticket-pane-panel");
+    const button = ticketForm && findClassChild(ticketForm, "md-ticket-pane-menu");
+    if (!panel || panel.hidden) return;
+    if (nodeWithin(panel, target) || nodeWithin(button, target)) return;
+    closeTicketMenu();
   }
 
   function bindTicketPointer() {
@@ -5817,6 +5895,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!form || !openTicket || typeof document === "undefined" || typeof document.createElement !== "function") return;
     ticketPickers.length = 0;
     const ticket = openTicket;
+    syncRelationShown(ticket);
     showElement(form);
     const heading = document.createElement("div");
     heading.className = "md-ticket-heading";
@@ -5919,6 +5998,46 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const priorityField = selectField("Priority", "md-ticket-priority", TICKET_PRIORITIES, ticket.priority, (value) => {
       sendTicketSet({ priority: value });
     });
+    const assigneeLabel = document.createElement("label");
+    assigneeLabel.className = "md-ticket-field";
+    const assigneeInput = document.createElement("input");
+    assigneeInput.type = "text";
+    assigneeInput.className = "md-ticket-assignee";
+    assigneeInput.value = ticket.assignee || "";
+    if (typeof assigneeInput.setAttribute === "function") assigneeInput.setAttribute("type", "text");
+    let skipAssigneeBlur = false;
+    function commitAssignee() {
+      if (!openTicket) return;
+      const raw = String(assigneeInput.value || "");
+      if (/[\r\n\t]/.test(raw)) {
+        assigneeInput.value = openTicket.assignee || "";
+        return;
+      }
+      const next = raw.trim();
+      assigneeInput.value = next;
+      if (next === (openTicket.assignee || "")) return;
+      sendTicketSet({ assignee: next });
+    }
+    assigneeInput.addEventListener("keydown", (event) => {
+      if (!event) return;
+      if (event.key === "Escape") {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        skipAssigneeBlur = true;
+        assigneeInput.value = openTicket ? (openTicket.assignee || "") : "";
+        return;
+      }
+      if (event.key !== "Enter") return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      commitAssignee();
+    });
+    assigneeInput.addEventListener("blur", () => {
+      if (skipAssigneeBlur) {
+        skipAssigneeBlur = false;
+        return;
+      }
+      commitAssignee();
+    });
+    assigneeLabel.append(fieldName("Assignee"), assigneeInput);
     const sized = [stateField.select, typeField.select, priorityField.select];
     const selectWidth = sharedSelectWidth(sized);
     if (selectWidth > 0) paintSelectWidth(sized, selectWidth);
@@ -6008,50 +6127,124 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const valueNode = document.createElement("div");
       valueNode.className = "md-ticket-fact-id";
       valueNode.appendChild(document.createTextNode(id));
-      valueNode.appendChild(makeIconButton(
-        "Delete ticket",
-        ICON_PATHS.delete[0],
-        "icon-btn danger md-ticket-delete",
-        () => showConfirm(id, () => emit({ type: "ticket.delete", id })),
-      ));
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "icon-btn md-ticket-copy-id";
+      if (typeof copy.setAttribute === "function") {
+        copy.setAttribute("type", "button");
+        copy.setAttribute("aria-label", "Copy ticket id");
+      }
+      const glyph = copyGlyph();
+      if (glyph) copy.appendChild(glyph);
+      copy.addEventListener("click", (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        writeClipboard(id);
+      });
+      valueNode.appendChild(copy);
       row.append(fieldName("Id"), valueNode);
       return row;
     }
 
-    const relied = document.createElement("div");
-    relied.className = "md-ticket-relied";
-    const reliedBox = document.createElement("div");
-    reliedBox.className = "md-ticket-links";
-    const reliedTickets = ticketList
+    const blockers = ticketList
       .filter((item) => item.id !== ticket.id && Array.isArray(item.depends) && item.depends.includes(ticket.id))
       .sort(compareTickets);
-    if (reliedTickets.length === 0) {
-      reliedBox.textContent = "(none)";
-    } else {
-      for (const other of reliedTickets) {
-        const button = plainButton("md-ticket-rely", other.title || other.id);
-        button.dataset.id = other.id;
-        button.addEventListener("click", (event) => {
-          if (event && typeof event.preventDefault === "function") event.preventDefault();
-          openDocument(`tickets/${other.id}.md`, null, true);
+    const blocks = document.createElement("div");
+    blocks.className = "md-ticket-blocks";
+    const blockList = buildLinkList(blockers, (selected) => {
+      sendTicketSet({
+        path: `tickets/${selected.id}.md`,
+        rev: selected.rev,
+        depends: (selected.depends || []).filter((dep) => dep !== ticket.id),
+      });
+    });
+    const blockPicker = buildTicketPicker({
+      onAdd: (chosen) => {
+        const ids = (chosen.depends || []).slice();
+        if (!ids.includes(ticket.id)) ids.push(ticket.id);
+        sendTicketSet({
+          path: `tickets/${chosen.id}.md`,
+          rev: chosen.rev,
+          depends: ids,
         });
-        reliedBox.appendChild(button);
-      }
-    }
-    relied.append(fieldName("Blocks"), reliedBox);
+      },
+      onRemove: () => blockList.removeSelected(),
+    });
+    const blockStack = document.createElement("div");
+    blockStack.className = "md-ticket-stack";
+    blockStack.append(blockPicker, blockList.links);
+    blocks.append(fieldName("Blocks"), blockStack);
 
     const fields = document.createElement("div");
     fields.className = "md-ticket-column";
-    fields.append(heading, titleInput, stateField.label, typeField.label, priorityField.label, parentField, depends, children);
+    const left = [heading, titleInput, stateField.label, typeField.label, priorityField.label, assigneeLabel];
+    if (relationShown.parent) left.push(parentField);
+    if (relationShown.depends) left.push(depends);
+    if (relationShown.children) left.push(children);
+    if (relationShown.blocks) left.push(blocks);
+    fields.append(...left);
     const facts = document.createElement("div");
     facts.className = "md-ticket-column";
     facts.append(
       idFactRow(ticket.id),
       factRow("Reporter", "md-ticket-reporter", ticket.reporter),
       factRow("Created", "md-ticket-created", ticket.created),
-      relied,
     );
-    form.replaceChildren(fields, facts);
+    const menuButton = iconButton("menu", "md-ticket-pane-menu");
+    if (typeof menuButton.setAttribute === "function") {
+      menuButton.setAttribute("aria-label", "Menu");
+      menuButton.setAttribute("aria-haspopup", "menu");
+      menuButton.setAttribute("aria-expanded", ticketMenuOpen ? "true" : "false");
+    }
+    const menuPanel = document.createElement("div");
+    menuPanel.className = "md-ticket-pane-panel";
+    if (typeof menuPanel.setAttribute === "function") menuPanel.setAttribute("role", "menu");
+    if (!ticketMenuOpen) hideElement(menuPanel);
+    const copyLink = plainButton("md-ticket-pane-item", "Copy link");
+    copyLink.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      closeTicketMenu();
+      const hash = formatHash({ repo: activeRepo, kind: "ticket", id: ticket.id });
+      if (!hash) return;
+      writeClipboard(absoluteHash(hash));
+    });
+    const deleteTicket = plainButton("md-ticket-pane-item", "Delete ticket");
+    deleteTicket.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      closeTicketMenu();
+      showConfirm(ticket.id, () => emit({ type: "ticket.delete", id: ticket.id }));
+    });
+    const separator = document.createElement("div");
+    separator.className = "md-ticket-pane-sep";
+    if (typeof separator.setAttribute === "function") separator.setAttribute("role", "separator");
+    menuPanel.append(copyLink, deleteTicket, separator);
+    for (const [key, labelText] of [["parent", "Parent"], ["depends", "Depends"], ["children", "Children"], ["blocks", "Blocks"]]) {
+      const choice = document.createElement("label");
+      choice.className = "md-ticket-pane-choice";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = relationShown[key] === true;
+      if (typeof box.setAttribute === "function") {
+        box.setAttribute("type", "checkbox");
+        box.setAttribute("data-relation", key);
+      }
+      box.addEventListener("change", () => {
+        relationShown = { ...relationShown, [key]: box.checked === true };
+        ticketMenuOpen = true;
+        renderTicketForm();
+      });
+      choice.append(box, document.createTextNode(labelText));
+      menuPanel.appendChild(choice);
+    }
+    menuButton.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      ticketMenuOpen = !ticketMenuOpen;
+      if (ticketMenuOpen) showElement(menuPanel);
+      else hideElement(menuPanel);
+      if (typeof menuButton.setAttribute === "function") {
+        menuButton.setAttribute("aria-expanded", ticketMenuOpen ? "true" : "false");
+      }
+    });
+    form.replaceChildren(fields, facts, menuButton, menuPanel);
     if (selectWidth > 0) {
       const extra = selectChromeGap(sized);
       if (extra > 0) paintSelectWidth(sized, selectWidth + extra);
@@ -6076,6 +6269,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function dismissTicketForm() {
     openTicket = null;
+    relationTicketId = "";
+    ticketMenuOpen = false;
     ticketPickers.length = 0;
     if (!ticketForm) return;
     hideElement(ticketForm);
@@ -6132,6 +6327,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       state: message.state,
       type: Object.prototype.hasOwnProperty.call(message, "ticketType") ? message.ticketType : openTicket.type,
       priority: message.priority,
+      assignee: message.assignee,
       parent: message.parent,
       depends: message.depends,
       reporter: message.reporter,
@@ -6900,27 +7096,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function ensureDocMenu() {
     if (!commentsAside || typeof document === "undefined" || typeof document.createElement !== "function") return;
-    if (!docMenuButton || docMenuButton.parentElement !== commentsAside) {
-      docMenuButton = findClassChild(commentsAside, "md-doc-menu");
-    }
-    if (!docMenuButton) {
-      const button = iconButton("menu", "md-doc-menu");
-      if (typeof button.setAttribute === "function") button.setAttribute("aria-label", "Menu");
-      commentsAside.appendChild(button);
-      docMenuButton = button;
-    }
-    if (!docMenuPanel || docMenuPanel.parentElement !== commentsAside) {
-      docMenuPanel = findClassChild(commentsAside, "md-doc-menu-panel");
-    }
-    if (!docMenuPanel) {
-      const panel = document.createElement("div");
-      panel.className = "md-doc-menu-panel";
-      hideElement(panel);
-      commentsAside.appendChild(panel);
-      docMenuPanel = panel;
-    }
-    if (!repoCommitButton || repoCommitButton.parentElement !== docMenuPanel) {
-      repoCommitButton = findClassChild(docMenuPanel, "md-doc-commit");
+    if (!repoCommitButton || repoCommitButton.parentElement !== commentsAside) {
+      repoCommitButton = findClassChild(commentsAside, "md-doc-commit");
     }
     if (!repoCommitButton) {
       const commit = document.createElement("button");
@@ -6929,63 +7106,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       commit.textContent = "Commit repo";
       if (typeof commit.setAttribute === "function") commit.setAttribute("type", "button");
       hideElement(commit);
-      docMenuPanel.appendChild(commit);
+      commentsAside.appendChild(commit);
       repoCommitButton = commit;
     }
-    if (!docLinkButton || docLinkButton.parentElement !== docMenuPanel) {
-      docLinkButton = findClassChild(docMenuPanel, "md-doc-link");
-    }
-    if (!docLinkButton) {
-      const entry = document.createElement("button");
-      entry.type = "button";
-      entry.className = "md-doc-link";
-      entry.textContent = "link to this entry";
-      if (typeof entry.setAttribute === "function") entry.setAttribute("type", "button");
-      hideElement(entry);
-      if (repoCommitButton && repoCommitButton.parentElement === docMenuPanel) placeNodeBefore(docMenuPanel, entry, repoCommitButton);
-      else docMenuPanel.appendChild(entry);
-      docLinkButton = entry;
-    }
     if (!docMenuBound) {
-      const previousMenu = docMenuBindings.get(docMenuButton);
-      if (previousMenu && typeof docMenuButton.removeEventListener === "function") {
-        docMenuButton.removeEventListener("click", previousMenu);
-      }
-      docMenuOnClick = (event) => {
-        if (event && typeof event.preventDefault === "function") event.preventDefault();
-        if (!docMenuPanel) return;
-        if (docMenuPanel.hidden) showElement(docMenuPanel);
-        else hideElement(docMenuPanel);
-      };
-      if (typeof docMenuButton.addEventListener === "function") docMenuButton.addEventListener("click", docMenuOnClick);
-      docMenuBindings.set(docMenuButton, docMenuOnClick);
       const previousCommit = docCommitBindings.get(repoCommitButton);
       if (previousCommit && typeof repoCommitButton.removeEventListener === "function") {
         repoCommitButton.removeEventListener("click", previousCommit);
       }
       repoCommitOnClick = (event) => {
         if (event && typeof event.preventDefault === "function") event.preventDefault();
-        if (docMenuPanel) hideElement(docMenuPanel);
         if (!activeRepo) return;
         // A checkpoint is not a conflict waiter and carries no rev.
         emit({ type: "commit" });
       };
       if (typeof repoCommitButton.addEventListener === "function") repoCommitButton.addEventListener("click", repoCommitOnClick);
       docCommitBindings.set(repoCommitButton, repoCommitOnClick);
-      const previousLink = docLinkBindings.get(docLinkButton);
-      if (previousLink && docLinkButton && typeof docLinkButton.removeEventListener === "function") {
-        docLinkButton.removeEventListener("click", previousLink);
-      }
-      docLinkOnClick = (event) => {
-        if (event && typeof event.preventDefault === "function") event.preventDefault();
-        if (docMenuPanel) hideElement(docMenuPanel);
-        copyEntryLink();
-      };
-      if (docLinkButton && typeof docLinkButton.addEventListener === "function") docLinkButton.addEventListener("click", docLinkOnClick);
-      if (docLinkButton) docLinkBindings.set(docLinkButton, docLinkOnClick);
       docMenuBound = true;
     }
-    bindTicketPointer();
     syncRepoCommit();
   }
 

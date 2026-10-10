@@ -604,6 +604,11 @@ function validTitle(value) {
   return title;
 }
 
+function validAssignee(value) {
+  if (typeof value !== "string" || /[\r\n\t]/.test(value)) return null;
+  return value.trim();
+}
+
 function ticketView(ticket, rev) {
   // The list has to carry the file rev. A child ticket.set names that file, not the open one.
   const fileRev = typeof rev === "number" && Number.isFinite(rev) ? rev : 0;
@@ -613,6 +618,7 @@ function ticketView(ticket, rev) {
     state: ticket.state,
     type: ticket.type,
     priority: ticket.priority,
+    assignee: typeof ticket.assignee === "string" ? ticket.assignee : "",
     parent: ticket.parent,
     depends: [...ticket.depends],
     reporter: ticket.reporter,
@@ -632,6 +638,7 @@ function ticketNotice(file) {
     // Frame `type` is the command, so the ticket type travels as ticketType.
     ticketType: ticket.type,
     priority: ticket.priority,
+    assignee: typeof ticket.assignee === "string" ? ticket.assignee : "",
     parent: ticket.parent,
     depends: [...ticket.depends],
     reporter: ticket.reporter,
@@ -1431,6 +1438,12 @@ export async function createHub(stateDir, sourceRoot) {
       if (typeof msg.priority !== "string" || !TICKET_PRIORITIES.includes(msg.priority)) return fail(socket, 400);
       priority = msg.priority;
     }
+    let assignee = "";
+    if (Object.prototype.hasOwnProperty.call(msg, "assignee")) {
+      const parsedAssignee = validAssignee(msg.assignee);
+      if (parsedAssignee === null) return fail(socket, 400);
+      assignee = parsedAssignee;
+    }
     const reporter = socket.session.username;
     const created = new Date().toISOString();
     let allocated = null;
@@ -1451,6 +1464,7 @@ export async function createHub(stateDir, sourceRoot) {
       state,
       type,
       priority,
+      assignee,
       parent: "",
       depends: [],
       reporter,
@@ -1488,6 +1502,11 @@ export async function createHub(stateDir, sourceRoot) {
     if (Object.prototype.hasOwnProperty.call(msg, "state")) next.state = msg.state;
     if (Object.prototype.hasOwnProperty.call(msg, "ticketType")) next.type = msg.ticketType;
     if (Object.prototype.hasOwnProperty.call(msg, "priority")) next.priority = msg.priority;
+    if (Object.prototype.hasOwnProperty.call(msg, "assignee")) {
+      const parsedAssignee = validAssignee(msg.assignee);
+      if (parsedAssignee === null) return fail(socket, 400);
+      next.assignee = parsedAssignee;
+    }
     if (Object.prototype.hasOwnProperty.call(msg, "parent")) next.parent = msg.parent;
     if (Object.prototype.hasOwnProperty.call(msg, "depends")) next.depends = msg.depends;
     const composed = composeTicket({ ...next, id: file.ticket.id, body: file.text });

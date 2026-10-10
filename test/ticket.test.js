@@ -46,6 +46,7 @@ function ticket(overrides = {}) {
     state: "new",
     type: "task",
     priority: "medium",
+    assignee: "",
     parent: "",
     depends: [],
     reporter: "indexer",
@@ -64,6 +65,7 @@ test("T-ticket-roundtrip", () => {
     "state",
     "type",
     "priority",
+    "assignee",
     "parent",
     "depends",
     "reporter",
@@ -428,4 +430,32 @@ test("T-ticket-id", () => {
   const reporter = parseTicket(ID, SIMPLE.replace("reporter: indexer", "reporter:   Ada Lovelace  "));
   assert.equal(reporter.reporter, "Ada Lovelace");
   assert.equal(composeTicket(reporter).includes("reporter: Ada Lovelace\n"), true);
+});
+
+test("assignee is optional and stays off the file until it is set", () => {
+  const absent = parseTicket(ID, SIMPLE);
+  assert.equal(absent.assignee, "");
+  assert.equal(composeTicket(absent), SIMPLE);
+  assert.equal(SIMPLE.includes("assignee:"), false);
+  assert.equal(Object.keys(absent).indexOf("assignee"), Object.keys(absent).indexOf("priority") + 1);
+
+  const named = SIMPLE.replace("priority: medium\n", "priority: medium\nassignee: ada\n");
+  const parsed = parseTicket(ID, named);
+  assert.equal(parsed.assignee, "ada");
+  assert.equal(composeTicket(parsed), named);
+  assert.equal(composeTicket(ticket({ assignee: "  ada  " })), named);
+  assert.equal(composeTicket(ticket({ assignee: "   " })), SIMPLE);
+  assert.equal(composeTicket(ticket({ assignee: "" })), SIMPLE);
+  assert.equal(composeTicket({ ...ticket(), title: "Renamed", assignee: "" }).includes("assignee:"), false);
+
+  const padded = named.replace("assignee: ada", "assignee:   ada  ");
+  assert.equal(parseTicket(ID, padded).assignee, "ada");
+  assert.equal(composeTicket(parseTicket(ID, padded)), named);
+
+  assert.equal(parseTicket(ID, SIMPLE.replace("priority: medium\n", "priority: medium\nassignee: ada\nassignee: bea\n")), null);
+  assert.equal(parseTicket(ID, SIMPLE.replace("title: Fix the login redirect\n", "assignee: ada\ntitle: Fix the login redirect\n")), null);
+  assert.equal(composeTicket(ticket({ assignee: "ada\t" })), null);
+  assert.equal(composeTicket(ticket({ assignee: "ada\nbea" })), null);
+  assert.equal(composeTicket(ticket({ assignee: "\tada" })), null);
+  assert.equal(parseTicket(ID, named.replace("assignee: ada", "assignee: ada\tbea")), null);
 });

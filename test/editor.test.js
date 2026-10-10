@@ -4876,13 +4876,11 @@ function mountSheet() {
 }
 
 function docMenuOf(aside) {
-  const button = (aside.childNodes || []).find((node) => node.classList && node.classList.contains("md-doc-menu"));
-  const panel = (aside.childNodes || []).find((node) => node.classList && node.classList.contains("md-doc-menu-panel"));
   const row = (aside.childNodes || []).find((node) => node.classList && node.classList.contains("md-show-resolved"));
   const checkbox = row && (row.childNodes || []).find((node) => node.tagName === "INPUT" && node.type === "checkbox");
   const label = row && (row.childNodes || []).find((node) => node.tagName === "LABEL");
-  const commit = panel && (panel.childNodes || []).find((node) => node.classList && node.classList.contains("md-doc-commit"));
-  return { button, panel, row, checkbox, label, commit };
+  const commit = (aside.childNodes || []).find((node) => node.classList && node.classList.contains("md-doc-commit"));
+  return { row, checkbox, label, commit };
 }
 
 test("comment cards edit the thread and line up with the highlight", () => {
@@ -4922,26 +4920,9 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.equal(/@media \(max-width:\s*800px\)\s*\{[^]*button\.md-doc-menu/.test(css), false);
     assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.sheet\s*\{[^}]*display:\s*block;/);
     assert.match(css, /aside\.comments\s*\{[^}]*position:\s*relative;/);
-    const menuRule = css.match(/button\.md-doc-menu\s*\{[^}]*\}/);
-    assert.ok(menuRule);
-    assert.match(menuRule[0], /position:\s*absolute/);
-    assert.match(menuRule[0], /top:\s*0\.45rem/);
-    assert.match(menuRule[0], /right:\s*0\.45rem/);
-    assert.match(menuRule[0], /z-index:\s*5/);
-    assert.match(menuRule[0], /height:\s*1\.75rem/);
-    const panelRule = css.match(/div\.md-doc-menu-panel\s*\{[^}]*\}/);
-    assert.ok(panelRule);
-    assert.match(panelRule[0], /position:\s*absolute/);
-    assert.match(panelRule[0], /top:\s*2\.2rem/);
-    assert.match(panelRule[0], /right:\s*0\.45rem/);
-    assert.match(panelRule[0], /z-index:\s*6/);
-    assert.match(panelRule[0], /padding:\s*0\.25rem/);
-    assert.match(panelRule[0], /background:\s*#242320/);
-    assert.match(panelRule[0], /border:\s*1px solid #c4b8a4/);
-    assert.match(panelRule[0], /border-radius:\s*0\.35rem/);
-    assert.match(css, /div\.md-doc-menu-panel\[hidden\]\s*\{[^}]*display:\s*none/);
-    assert.equal(/div\.md-doc-menu-panel label\s*\{/.test(css), false);
-    assert.equal(/div\.md-doc-menu-panel input\s*\{/.test(css), false);
+    assert.equal(/button\.md-doc-menu\s*\{/.test(css), false);
+    assert.equal(/div\.md-doc-menu-panel/.test(css), false);
+    assert.equal(/button\.md-doc-link/.test(css), false);
     const resolvedRule = css.match(/\.md-show-resolved\s*\{[^}]*\}/);
     assert.ok(resolvedRule);
     assert.match(resolvedRule[0], /display:\s*flex/);
@@ -5091,25 +5072,21 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.deepEqual(cards.map((card) => card.dataset.comment), ["c1", "c2"]);
     const tops = cards.map((card) => Number.parseFloat(card.styleProps.top));
     assert.equal(cards[0].styleProps.position, "absolute");
-    assert.equal(cards[0].styleProps.top, "42px");
+    assert.equal(cards[0].styleProps.top, "12px");
     assert.ok(tops[1] >= tops[0] + 30);
     const menu = docMenuOf(mounted.aside);
-    assert.equal(mounted.aside.childNodes[0], menu.button);
-    assert.equal(mounted.aside.childNodes[1], menu.panel);
-    assert.equal(mounted.aside.childNodes[2], menu.row);
+    assert.equal(mounted.aside.childNodes[0], menu.commit);
+    assert.equal(mounted.aside.childNodes[1], menu.row);
     assert.equal(menu.row.hidden, true);
     assert.equal(menu.row.hasAttribute("hidden"), true);
-    assert.equal(cards[0], mounted.aside.childNodes[3]);
-    assert.equal(menu.button.tagName, "BUTTON");
-    assert.equal(menu.button.type, "button");
-    assert.equal(menu.button.getAttribute("aria-label"), "Menu");
-    assert.equal(menu.button.childNodes.filter((node) => node.classList && node.classList.contains("md-doc-menu-bar")).length, 0);
-    assert.equal(menu.button.childNodes.length, 1);
-    assert.equal(menu.button.childNodes[0].localName, "svg");
-    assert.deepEqual(iconPaths(menu.button), ["M4 6h16M4 12h16M4 18h16"]);
-    assert.equal(menu.button.textContent, "");
-    assert.equal(menu.button.childNodes.every((node) => node.nodeType === 1), true);
-    assert.equal(menu.panel.hidden, true);
+    assert.equal(cards[0], mounted.aside.childNodes[2]);
+    assert.equal(menu.commit.tagName, "BUTTON");
+    assert.equal(menu.commit.type, "button");
+    assert.equal(menu.commit.textContent, "Commit repo");
+    assert.equal(menu.commit.hidden, true);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-doc-menu")).length, 0);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-doc-menu-panel")).length, 0);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-doc-link")).length, 0);
     assert.equal(menu.checkbox.type, "checkbox");
     assert.equal(menu.checkbox.id, "show-resolved");
     assert.equal(menu.checkbox.checked, false);
@@ -5120,37 +5097,11 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.equal(menu.label.tagName, "LABEL");
     assert.equal(menu.label.textContent, "show resolved");
     assert.equal(menu.label.parentElement, menu.row);
-    assert.equal((menu.panel.childNodes || []).some((node) => node.textContent === "Delete"), false);
-    assert.ok(Number.parseFloat(cards[0].styleProps.top) >= menu.button.offsetHeight);
-    const keptButton = menu.button;
-    const keptPanel = menu.panel;
-    menu.button.listeners.click({ preventDefault() {} });
-    assert.equal(menu.panel.hidden, false);
-    menu.button.listeners.click({ preventDefault() {} });
-    assert.equal(menu.panel.hidden, true);
-    menu.button.listeners.click({ preventDefault() {} });
-    assert.equal(menu.panel.hidden, false);
-    mounted.listeners.pointerdown({ target: mounted.root });
-    assert.equal(menu.panel.hidden, true);
-    menu.button.listeners.click({ preventDefault() {} });
-    mounted.listeners.pointerdown({ target: menu.panel });
-    assert.equal(menu.panel.hidden, false);
-    mounted.listeners.pointerdown({ target: menu.button });
-    assert.equal(menu.panel.hidden, false);
-    mounted.listeners.pointerdown({ target: menu.commit });
-    assert.equal(menu.panel.hidden, false);
-    menu.commit.listeners.click({ preventDefault() {} });
-    assert.equal(menu.panel.hidden, true);
-    menu.button.listeners.click({ preventDefault() {} });
-    const entry = (menu.panel.childNodes || []).find((node) => node.classList && node.classList.contains("md-doc-link"));
-    entry.listeners.click({ preventDefault() {} });
-    assert.equal(menu.panel.hidden, true);
+    const keptCommit = menu.commit;
     menu.checkbox.checked = true;
     menu.checkbox.listeners.change();
     const rerendered = docMenuOf(mounted.aside);
-    assert.equal(rerendered.button, keptButton);
-    assert.equal(rerendered.panel, keptPanel);
-    assert.equal(rerendered.panel.hidden, true);
+    assert.equal(rerendered.commit, keptCommit);
     assert.equal(rerendered.checkbox.checked, true);
     assert.equal(rerendered.checkbox.parentElement, rerendered.row);
     assert.equal(rerendered.row.classList.contains("md-show-resolved"), true);
@@ -5167,16 +5118,13 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.deepEqual(stacked.map((card) => card.dataset.comment), ["c1", "c2"]);
     assert.ok(stacked.every((card) => card.styleProps.position === "static"));
     const narrowMenu = docMenuOf(mounted.aside);
-    assert.equal(mounted.aside.childNodes[0], narrowMenu.button);
-    assert.equal(narrowMenu.button.getAttribute("aria-label"), "Menu");
-    assert.equal(narrowMenu.button.styleProps.position, undefined);
-    assert.equal(narrowMenu.button.styleProps.top, undefined);
+    assert.equal(mounted.aside.childNodes[0], narrowMenu.commit);
+    assert.equal(narrowMenu.commit.textContent, "Commit repo");
     assert.equal(narrowMenu.checkbox.type, "checkbox");
     assert.equal(narrowMenu.checkbox.parentElement, narrowMenu.row);
     assert.equal(narrowMenu.row.hidden, true);
     assert.notEqual(mounted.aside.childNodes[0], narrowMenu.checkbox);
     assert.equal(narrowMenu.label.textContent, "show resolved");
-    assert.equal(narrowMenu.panel.hidden, true);
     narrow.destroy();
   } finally {
     mounted.restore();
@@ -5251,7 +5199,7 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(label.tagName, "LABEL");
     assert.equal(label.textContent, "show resolved");
     assert.equal(label.parentElement, openedMenu.row);
-    assert.equal(openedMenu.panel.hidden, true);
+    assert.equal(openedMenu.commit.textContent, "Commit repo");
     chooseFox();
     const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
     add.listeners.mousedown({ button: 0, preventDefault() {} });
@@ -5438,9 +5386,8 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(showMenu.row.classList.contains("md-show-resolved"), true);
     assert.equal(showMenu.row.hidden, false);
     assert.equal(showMenu.row.hasAttribute("hidden"), false);
-    assert.equal(mounted.aside.childNodes[0], showMenu.button);
-    assert.equal(mounted.aside.childNodes[1], showMenu.panel);
-    assert.equal(mounted.aside.childNodes[2], showMenu.row);
+    assert.equal(mounted.aside.childNodes[0], showMenu.commit);
+    assert.equal(mounted.aside.childNodes[1], showMenu.row);
     assert.notEqual(mounted.aside.childNodes[0], show);
     assert.equal(showMenu.label.textContent, "show resolved");
     assert.equal(showMenu.label.parentElement, showMenu.row);
@@ -5519,7 +5466,7 @@ test("comment cards stay near their anchors", () => {
     globalThis.window.matchMedia = () => ({ matches: false });
     const view = createEditor(mounted.root, doc, 0);
     assert.deepEqual(cards().map((card) => card.dataset.comment), ["c1", "c2", "c3"]);
-    assert.deepEqual(cards().map((card) => card.styleProps.top), ["42px", "84px", "126px"]);
+    assert.deepEqual(cards().map((card) => card.styleProps.top), ["12px", "54px", "96px"]);
     view.destroy();
   } finally {
     mounted.restore();
@@ -8094,17 +8041,18 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
   assert.match(css, /button\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
   assert.match(css, /button\s*\{[^}]*border-radius:\s*0\.35rem;/);
   assert.match(css, /\.md-new-ticket\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
-  assert.match(css, /button\.md-doc-menu\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
-  assert.match(css, /button\.md-doc-menu\s*\{[^}]*border-radius:\s*0\.35rem;/);
+  assert.match(css, /button\.md-ticket-pane-menu\s*\{[^}]*position:\s*absolute;/);
+  assert.match(css, /button\.md-ticket-pane-menu\s*\{[^}]*top:\s*8px;/);
+  assert.match(css, /button\.md-ticket-pane-menu\s*\{[^}]*right:\s*8px;/);
   assert.match(css, /\.ticket-tree button\.md-ticket-expand\s*\{[^}]*border:\s*1px solid #c4b8a4;/);
   assert.match(css, /\.ticket-tree button\.md-ticket\s*\{[^}]*border:\s*0;/);
   assert.match(css, /\.file-tree button\s*\{[^}]*border:\s*0;/);
-  assert.match(css, /button\.md-doc-commit,\s*button\.md-doc-link,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option,\s*\.ticket-form button\.md-ticket-rely\s*\{[^}]*border:\s*0;/);
-  assert.match(css, /button\.md-doc-commit,\s*button\.md-doc-link,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option,\s*\.ticket-form button\.md-ticket-rely\s*\{[^}]*background:\s*none;/);
-  assert.match(css, /button\.md-doc-commit,\s*button\.md-doc-link,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option,\s*\.ticket-form button\.md-ticket-rely\s*\{[^}]*width:\s*100%;/);
-  assert.match(css, /button\.md-doc-commit,\s*button\.md-doc-link,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option,\s*\.ticket-form button\.md-ticket-rely\s*\{[^}]*text-align:\s*left;/);
-  assert.match(css, /button\.md-doc-commit:hover,\s*button\.md-doc-link:hover,\s*button\.md-ticket-filter-all:hover,\s*\.ticket-form button\.md-ticket-link:hover,\s*\.ticket-form button\.md-ticket-option:hover,\s*\.ticket-form button\.md-ticket-rely:hover\s*\{[^}]*background:\s*#2c3440;/);
-  assert.match(css, /\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option,\s*\.ticket-form button\.md-ticket-rely\s*\{[^}]*border-radius:\s*0\.35rem;/);
+  assert.match(css, /button\.md-doc-commit,\s*button\.md-ticket-pane-item,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*border:\s*0;/);
+  assert.match(css, /button\.md-doc-commit,\s*button\.md-ticket-pane-item,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*background:\s*none;/);
+  assert.match(css, /button\.md-doc-commit,\s*button\.md-ticket-pane-item,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*width:\s*100%;/);
+  assert.match(css, /button\.md-doc-commit,\s*button\.md-ticket-pane-item,\s*button\.md-ticket-filter-all,\s*\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*text-align:\s*left;/);
+  assert.match(css, /button\.md-doc-commit:hover,\s*button\.md-ticket-pane-item:hover,\s*button\.md-ticket-filter-all:hover,\s*\.ticket-form button\.md-ticket-link:hover,\s*\.ticket-form button\.md-ticket-option:hover\s*\{[^}]*background:\s*#2c3440;/);
+  assert.match(css, /\.ticket-form button\.md-ticket-link,\s*\.ticket-form button\.md-ticket-option\s*\{[^}]*border-radius:\s*0\.35rem;/);
   assert.match(css, /:root\s*\{[^}]*--danger:\s*#ff7b72;/);
   assert.match(css, /\.icon-btn svg\s*\{[^}]*width:\s*1\.1em;/);
   assert.match(css, /\.icon-btn svg\s*\{[^}]*height:\s*1\.1em;/);
@@ -8273,22 +8221,8 @@ test("commit button checkpoints the active repo", () => {
   assert.match(css, /button\.md-doc-commit[^{]*\{[^}]*text-align:\s*left/);
   assert.match(rule[0], /cursor:\s*pointer/);
   assert.match(css, /button\.md-doc-commit:hover[^{]*\{[^}]*background:\s*#2c3440/);
-  const linkRule = css.match(/button\.md-doc-link\s*\{[^}]*\}/);
-  assert.ok(linkRule);
-  assert.match(linkRule[0], /display:\s*block/);
-  assert.match(css, /button\.md-doc-link[^{]*\{[^}]*width:\s*100%/);
-  assert.match(linkRule[0], /margin:\s*0/);
-  assert.match(linkRule[0], /padding:\s*0\.35rem 0\.7rem/);
-  assert.match(css, /button\.md-doc-link[^{]*\{[^}]*border:\s*0/);
-  assert.match(linkRule[0], /border-radius:\s*0\.25rem/);
-  assert.match(css, /button\.md-doc-link[^{]*\{[^}]*background:\s*none/);
-  assert.match(linkRule[0], /font:\s*inherit/);
-  assert.match(linkRule[0], /color:\s*inherit/);
-  assert.match(css, /button\.md-doc-link[^{]*\{[^}]*text-align:\s*left/);
-  assert.match(linkRule[0], /cursor:\s*pointer/);
-  assert.match(css, /button\.md-doc-link:hover[^{]*\{[^}]*background:\s*#2c3440/);
+  assert.equal(/button\.md-doc-link/.test(css), false);
   assert.match(css, /button\.md-doc-commit\[hidden\]\s*\{[^}]*display:\s*none/);
-  assert.match(css, /button\.md-doc-link\[hidden\]\s*\{[^}]*display:\s*none/);
   assert.equal(/button\.md-commit\s*\{/.test(css), false);
   const nav = document.createElement("nav");
   nav.className = "files";
@@ -8317,8 +8251,8 @@ test("commit button checkpoints the active repo", () => {
     assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-commit")).length, 0);
     assert.equal(commits().length, 1);
     const menu = docMenuOf(aside);
-    assert.equal(menu.button.getAttribute("aria-label"), "Menu");
-    assert.equal(menu.panel.hidden, true);
+    assert.equal(walkNodes(aside, (node) => node.classList && node.classList.contains("md-doc-menu")).length, 0);
+    assert.equal(walkNodes(aside, (node) => node.classList && node.classList.contains("md-doc-link")).length, 0);
     assert.equal(menu.commit, commits()[0]);
     const button = commits()[0];
     assert.equal(button.tagName, "BUTTON");
@@ -8579,8 +8513,8 @@ test("T-ticket-rows", () => {
   assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)\s+\.ticket-tree\s*\{[^}]*border:\s*0/);
   assert.match(css, /\.md-ticket-wide\s+\.ticket-tree\s*\{[^}]*border:\s*1px solid #4a463f/);
   assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)\s+\.md-ticket-columns\s*\{[^}]*display:\s*none/);
-  const gutterTracks = /grid-template-columns:\s*1\.1em 8rem minmax\(0,\s*1fr\) 5\.5rem 7\.5rem 8\.5rem/;
-  const fieldTracks = /grid-template-columns:\s*8rem minmax\(0,\s*1fr\) 5\.5rem 7\.5rem 8\.5rem/;
+  const gutterTracks = /grid-template-columns:\s*1\.1em 8rem minmax\(0,\s*1fr\) 5\.5rem 7rem 7\.5rem 8\.5rem/;
+  const fieldTracks = /grid-template-columns:\s*8rem minmax\(0,\s*1fr\) 5\.5rem 7rem 7\.5rem 8\.5rem/;
   assert.match(css.match(/\.ticket-tree \.md-ticket-row\s*\{[^}]*\}/)[0], gutterTracks);
   assert.match(css.match(/\.ticket-tree \.md-ticket-row\s*\{[^}]*\}/)[0], /column-gap:\s*0\.75rem/);
   assert.match(css.match(/\.ticket-tree \.md-ticket-columns\s*\{[^}]*\}/)[0], gutterTracks);
@@ -8590,6 +8524,7 @@ test("T-ticket-rows", () => {
   const idRule = css.match(/\.ticket-tree \.md-ticket-id,[\s\S]*?\{[^}]*\}/);
   assert.ok(idRule);
   assert.match(idRule[0], /\.md-ticket-priority/);
+  assert.match(idRule[0], /\.md-ticket-assignee/);
   assert.match(idRule[0], /\.md-ticket-state/);
   assert.match(idRule[0], /\.md-ticket-type/);
   assert.match(idRule[0], /min-width:\s*0/);
@@ -8675,11 +8610,12 @@ test("T-ticket-rows", () => {
         ["BUTTON", "ID"],
         ["BUTTON", "Title"],
         ["BUTTON", "Priority"],
+        ["BUTTON", "Assignee"],
         ["BUTTON", "State"],
         ["BUTTON", "Type"],
       ],
     );
-    for (const label of ["ID", "Title", "Priority", "State", "Type"]) {
+    for (const label of ["ID", "Title", "Priority", "Assignee", "State", "Type"]) {
       const button = columns.childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === label);
       assert.equal(button.getAttribute("aria-label"), `Sort by ${label}`);
       assert.equal(button.type, "button");
@@ -8723,6 +8659,7 @@ test("T-ticket-rows", () => {
         "md-ticket-id",
         "md-ticket-title",
         "md-ticket-priority",
+        "md-ticket-assignee",
         "md-ticket-state",
         "md-ticket-type",
       ]);
@@ -8730,6 +8667,7 @@ test("T-ticket-rows", () => {
         ticket.id,
         ticket.title,
         ticket.priority,
+        ticket.assignee || "",
         ticket.state,
         ticket.type,
       ]);
@@ -8743,6 +8681,7 @@ test("T-ticket-rows", () => {
       "aaaaaaaa",
       "Alpha",
       "medium",
+      "",
       "new",
       "enhancement",
     ]);
@@ -8751,6 +8690,7 @@ test("T-ticket-rows", () => {
       "bbbbbbbb",
       "Bravo",
       "medium",
+      "",
       "new",
       "task",
     ]);
@@ -9035,10 +8975,10 @@ test("T-ticket-drawer", () => {
   };
   try {
     const view = createEditor(mounted.root, "x", 0, transport);
-    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T1, "", [], "Ada", "task", "low");
-    const bravo = ticketFixture("bbbbbbbb", "Bravo", "new", T0, "", [], "Ada", "task", "high");
+    const alpha = { ...ticketFixture("aaaaaaaa", "Alpha", "new", T1, "", [], "Ada", "task", "low"), assignee: "bea" };
+    const bravo = { ...ticketFixture("bbbbbbbb", "Bravo", "new", T0, "", [], "Ada", "task", "high"), assignee: "ada" };
     const zed = ticketFixture("dddddddd", "Zed", "new", T0, "bbbbbbbb");
-    const ann = ticketFixture("eeeeeeee", "Ann", "new", T2, "bbbbbbbb");
+    const ann = { ...ticketFixture("eeeeeeee", "Ann", "new", T2, "bbbbbbbb"), assignee: "cara" };
     transport.deliver({ type: "tickets", tickets: [alpha, bravo, zed, ann] });
     const block = byClass(mounted.nav, "ticket-block")[0];
     const drawer = byClass(block, "md-ticket-drawer")[0];
@@ -9061,7 +9001,11 @@ test("T-ticket-drawer", () => {
     };
     const title = heading("Title");
     const idHead = heading("ID");
-    for (const label of ["ID", "Title", "Priority", "State", "Type"]) {
+    assert.deepEqual(
+      columns.childNodes.filter((node) => node.tagName === "BUTTON").map((node) => node.textContent),
+      ["ID", "Title", "Priority", "Assignee", "State", "Type"],
+    );
+    for (const label of ["ID", "Title", "Priority", "Assignee", "State", "Type"]) {
       assert.equal(heading(label).getAttribute("aria-label"), `Sort by ${label}`);
     }
     title.listeners.click({ preventDefault() {} });
@@ -9096,6 +9040,15 @@ test("T-ticket-drawer", () => {
     heading("Priority").listeners.click({ preventDefault() {} });
     heading("Priority").listeners.click({ preventDefault() {} });
     assert.equal(svgOf(heading("Priority")), undefined);
+    heading("Assignee").listeners.click({ preventDefault() {} });
+    assert.deepEqual(rootTicketIds(mounted.nav), ["dddddddd", "bbbbbbbb", "aaaaaaaa", "eeeeeeee"]);
+    assert.equal(pathOf(heading("Assignee")).getAttribute("d"), "M12 19V5M5 12l7-7 7 7");
+    assert.equal(svgOf(heading("Priority")), undefined);
+    heading("Assignee").listeners.click({ preventDefault() {} });
+    assert.deepEqual(rootTicketIds(mounted.nav), ["eeeeeeee", "aaaaaaaa", "bbbbbbbb", "dddddddd"]);
+    heading("Assignee").listeners.click({ preventDefault() {} });
+    assert.deepEqual(rootTicketIds(mounted.nav), ["bbbbbbbb", "dddddddd", "aaaaaaaa", "eeeeeeee"]);
+    assert.equal(svgOf(heading("Assignee")), undefined);
     const alphaRow = rowOf(mounted.nav, "aaaaaaaa");
     const bravoRow = rowOf(mounted.nav, "bbbbbbbb");
     const alphaOpen = byClass(alphaRow, "md-ticket").find((node) => node.tagName === "BUTTON");
@@ -10645,14 +10598,21 @@ test("the state select and the reporter sit in different columns", () => {
       "md-ticket-field",
       "md-ticket-field",
       "md-ticket-field",
+      "md-ticket-field",
       "md-ticket-field md-ticket-parent",
       "md-ticket-depends",
-      "md-ticket-children",
     ]);
     assert.deepEqual(
       left.childNodes.filter((node) => node.classList.contains("md-ticket-field")).map((node) => node.childNodes[0].textContent),
-      ["State", "Type", "Priority", "Parent"],
+      ["State", "Type", "Priority", "Assignee", "Parent"],
     );
+    const priorityLabel = left.childNodes.find((node) => node.childNodes[0] && node.childNodes[0].textContent === "Priority");
+    const assigneeLabel = left.childNodes[left.childNodes.indexOf(priorityLabel) + 1];
+    assert.equal(assigneeLabel.childNodes[0].textContent, "Assignee");
+    assert.equal(assigneeLabel.childNodes[1].classList.contains("md-ticket-assignee"), true);
+    assert.equal(assigneeLabel.childNodes[1].tagName, "INPUT");
+    assert.equal(byClass(left, "md-ticket-children").length, 0);
+    assert.equal(byClass(left, "md-ticket-blocks").length, 0);
     for (const name of ["State", "Type", "Priority"]) {
       const label = left.childNodes.find((node) => node.classList.contains("md-ticket-field") && node.childNodes[0].textContent === name);
       assert.equal(label.childNodes[1].tagName, "SELECT");
@@ -10667,10 +10627,9 @@ test("the state select and the reporter sit in different columns", () => {
       "md-ticket-fact",
       "md-ticket-fact",
       "md-ticket-fact",
-      "md-ticket-relied",
     ]);
     assert.deepEqual(
-      right.childNodes.slice(0, 3).map((node) => [node.childNodes[0].textContent, node.childNodes[1].className]),
+      right.childNodes.map((node) => [node.childNodes[0].textContent, node.childNodes[1].className]),
       [
         ["Id", "md-ticket-fact-id"],
         ["Reporter", "md-ticket-reporter"],
@@ -10679,8 +10638,8 @@ test("the state select and the reporter sit in different columns", () => {
     );
     assert.equal(right.childNodes[0].childNodes[1].textContent, "aaaaaaaa");
     assert.equal(reporter.parentElement.classList.contains("md-ticket-fact"), true);
-    assert.equal(byClass(right, "md-ticket-relied")[0].childNodes[0].textContent, "Blocks");
-    assert.equal(byClass(byClass(right, "md-ticket-relied")[0], "md-ticket-links")[0].textContent, "(none)");
+    assert.equal(byClass(form, "md-ticket-delete").length, 0);
+    assert.equal(byClass(right, "md-ticket-blocks").length, 0);
     const heading = byClass(form, "md-ticket-heading")[0];
     const input = byClass(form, "md-ticket-title-input")[0];
     assert.equal(input.hidden, true);
@@ -10836,10 +10795,10 @@ test("ticket parent, depends, and children share a completion control", () => {
     const depends = block("md-ticket-depends");
     const children = block("md-ticket-children");
     assert.deepEqual(
-      ["State", "Type", "Priority", "Parent", "Depends", "Children"].map((label) => (
+      ["State", "Type", "Priority", "Assignee", "Parent", "Depends", "Children", "Blocks"].map((label) => (
         byClass(form, "md-ticket-label").some((node) => node.textContent === label)
       )),
-      [true, true, true, true, true, true],
+      [true, true, true, true, true, true, true, true],
     );
     assert.equal(byClass(parent, "md-ticket-add").length, 0);
     assert.equal(byClass(parent, "md-ticket-remove").length, 0);
@@ -10880,7 +10839,7 @@ test("ticket parent, depends, and children share a completion control", () => {
       ["Cedar"],
     );
     assert.deepEqual(
-      byClass(block("md-ticket-relied"), "md-ticket-rely").map((node) => node.textContent),
+      byClass(block("md-ticket-blocks"), "md-ticket-link").map((node) => node.textContent),
       ["Echo"],
     );
 
@@ -11054,17 +11013,20 @@ test("ticket parent, depends, and children share a completion control", () => {
       type: "repos",
       repos: [{ name: "viewmark", description: "Viewmark" }],
     });
-    const rely = byClass(form, "md-ticket-rely")[0];
-    assert.equal(rely.tagName, "BUTTON");
-    assert.equal(rely.textContent, "Echo");
-    rely.listeners.click({ preventDefault() {} });
-    assert.deepEqual(transport.sent.at(-1), {
-      type: "open",
+    const blocks = byClass(form, "md-ticket-blocks")[0];
+    const echoRow = byClass(blocks, "md-ticket-link")[0];
+    assert.equal(echoRow.tagName, "BUTTON");
+    assert.equal(echoRow.textContent, "Echo");
+    echoRow.listeners.click({ preventDefault() {} });
+    byClass(blocks, "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
       path: "tickets/eeeeeeee.md",
-      rev: 6,
+      rev: 0,
+      depends: [],
       username: "",
     });
-    assert.equal(globalThis.location.hash, "#viewmark/ticket/eeeeeeee");
+    assert.equal(sets().some((message) => message.path === "tickets/aaaaaaaa.md" && message.depends && message.depends.includes("aaaaaaaa")), false);
     const bare = ticketFixture("pppppppp", "", "new", "2026-11-01T00:00:00.000Z");
     const quot = ticketFixture("qqqqqqqq", "Quot", "new", "2026-11-02T00:00:00.000Z", "pppppppp");
     transport.deliver({ type: "tickets", tickets: [bare, quot] });
@@ -11098,9 +11060,11 @@ test("ticket parent, depends, and children share a completion control", () => {
       locks: [],
       ticket: none,
     });
-    assert.equal(byClass(form, "md-ticket-match")[0].value, "");
-    assert.equal(byClass(form, "md-ticket-relied")[0].childNodes[0].textContent, "Blocks");
-    assert.equal(byClass(byClass(form, "md-ticket-relied")[0], "md-ticket-links")[0].textContent, "(none)");
+    assert.equal(byClass(form, "md-ticket-match").length, 0);
+    assert.equal(byClass(form, "md-ticket-parent").length, 0);
+    assert.equal(byClass(form, "md-ticket-depends").length, 0);
+    assert.equal(byClass(form, "md-ticket-children").length, 0);
+    assert.equal(byClass(form, "md-ticket-blocks").length, 0);
     view.destroy();
   } finally {
     if (previousHistory === undefined) delete globalThis.history;
@@ -11121,7 +11085,16 @@ test("moving a child from one parent to another is one set on the child", () => 
     const cedar = { ...ticketFixture("cccccccc", "Cedar", "new", T2, "aaaaaaaa"), rev: 3 };
     const sets = () => transport.sent.filter((message) => message.type === "ticket.set");
     const form = () => byClass(mounted.root.parentElement, "ticket-form")[0];
+    const showChildren = () => {
+      if (byClass(form(), "md-ticket-children").length > 0) return;
+      const panel = byClass(form(), "md-ticket-pane-panel")[0];
+      const choice = byClass(panel, "md-ticket-pane-choice").find((node) => node.textContent === "Children");
+      const box = choice.childNodes.find((node) => node.tagName === "INPUT");
+      box.checked = true;
+      box.listeners.change();
+    };
     const childLinkIds = () => {
+      showChildren();
       const block = byClass(form(), "md-ticket-children")[0];
       return byClass(block, "md-ticket-link").map((node) => node.dataset.id);
     };
@@ -11222,8 +11195,8 @@ test("T-deep-link", () => {
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
   assert.match(css, /\.md-comment-author-row\s*\{[^}]*display:\s*flex/);
   assert.match(css, /\.md-comment-author-row\s*\{[^}]*justify-content:\s*space-between/);
-  assert.match(css, /button\.md-doc-link[^{]*\{[^}]*text-align:\s*left/);
-  assert.match(css, /button\.md-doc-link\[hidden\]\s*\{[^}]*display:\s*none/);
+  assert.equal(/button\.md-doc-link/.test(css), false);
+  assert.equal(/\.md-doc-menu/.test(css), false);
   const mounted = mountTicketPage();
   const create = document.createElement;
   document.createElement = (tag) => {
@@ -11290,11 +11263,11 @@ test("T-deep-link", () => {
   };
   const transport = holdingTransport();
   const opens = () => transport.sent.filter((message) => message.type === "open");
-  const entryLink = () => walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-doc-link"))[0];
+  const docLinks = () => walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-doc-link"));
   try {
     const view = createEditor(mounted.root, "", 0, transport, storage);
-    assert.equal(entryLink().hidden, true);
-    assert.equal(entryLink().textContent, "link to this entry");
+    assert.equal(docLinks().length, 0);
+    assert.equal(docMenuOf(mounted.aside).commit.hidden, true);
     assert.equal(transport.sent.length, 0);
     transport.deliver({
       type: "repos",
@@ -11310,9 +11283,9 @@ test("T-deep-link", () => {
     assert.equal(transport.sent[0].name, "viewmark");
     assert.equal(opens()[0].path, "docs/a.md");
     assert.equal(urls.length, 0);
-    assert.equal(entryLink().hidden, false);
-    const menu = docMenuOf(mounted.aside);
-    assert.deepEqual(menu.panel.childNodes.map((node) => node.textContent), ["link to this entry", "Commit repo"]);
+    assert.equal(docLinks().length, 0);
+    assert.equal(docMenuOf(mounted.aside).commit.hidden, false);
+    assert.equal(docMenuOf(mounted.aside).commit.textContent, "Commit repo");
     fireHash();
     assert.equal(opens().length, 1);
     const commentDoc = "See {c1}fox{/c1}.\n\n```comment c1 resolved\nhi\n```\n";
@@ -11346,8 +11319,7 @@ test("T-deep-link", () => {
     assert.deepEqual(writes, [`https://viewmark.test/app${formatHash({ repo: "viewmark", kind: "comment", path: "docs/a.md", id: "c1" })}`]);
     assert.equal(view.getState().doc, commentDoc);
     assert.equal(mounted.findAll((node) => node.tagName === "TEXTAREA").length, 0);
-    entryLink().listeners.click({ preventDefault() {} });
-    assert.equal(writes.at(-1), `https://viewmark.test/app${formatHash({ repo: "viewmark", kind: "doc", path: "docs/a.md" })}`);
+    assert.equal(docLinks().length, 0);
     assert.equal(view.getState().doc, commentDoc);
     transport.deliver({ type: "docs", files: ["docs/a.md", "other.md"] });
     const other = walkNodes(mounted.nav, (node) => node.dataset && node.dataset.path === "other.md")[0];
@@ -11368,8 +11340,7 @@ test("T-deep-link", () => {
     assert.equal(urls.at(-1), "/app#viewmark/ticket/mp27ndxf");
     fireHash();
     assert.equal(opens().filter((message) => message.path === "tickets/mp27ndxf.md").length, 1);
-    entryLink().listeners.click({ preventDefault() {} });
-    assert.equal(writes.at(-1), "https://viewmark.test/app#viewmark/ticket/mp27ndxf");
+    assert.equal(docLinks().length, 0);
     const marked = transport.sent.length;
     globalThis.location.hash = "#other/doc/b.md";
     fireHash();
@@ -11382,7 +11353,8 @@ test("T-deep-link", () => {
     assert.equal(opens().length, afterSwitch);
     select.value = "viewmark";
     select.listeners.change();
-    assert.equal(entryLink().hidden, true);
+    assert.equal(docLinks().length, 0);
+    assert.equal(docMenuOf(mounted.aside).commit.textContent, "Commit repo");
     assert.equal(opens().length, afterSwitch);
     view.destroy();
 
@@ -11648,10 +11620,309 @@ test("T-file-delete", () => {
   }
 });
 
+test("a ticket pane menu shows relation fields and Blocks writes the other ticket", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  const writes = [];
+  const previousHistory = globalThis.history;
+  const previousLocation = globalThis.location;
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  globalThis.history = { replaceState() {} };
+  globalThis.location = { origin: "https://viewmark.test", pathname: "/app", search: "", hash: "" };
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    writable: true,
+    value: {
+      clipboard: {
+        writeText(text) {
+          writes.push(text);
+          return Promise.resolve();
+        },
+      },
+    },
+  });
+  const storage = {
+    data: { "viewmark.repo": "viewmark" },
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
+    },
+    setItem(key, value) {
+      this.data[key] = String(value);
+    },
+    removeItem(key) {
+      delete this.data[key];
+    },
+  };
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(css, /button\.md-ticket-pane-menu\s*\{[^}]*position:\s*absolute;/);
+  assert.match(css, /button\.md-ticket-pane-menu\s*\{[^}]*top:\s*8px;/);
+  assert.match(css, /button\.md-ticket-pane-menu\s*\{[^}]*right:\s*8px;/);
+  assert.match(css, /button\.icon-btn:not\(\.md-file\):not\(\.md-dir-toggle\)\s*\{[^}]*width:\s*1\.75rem/);
+  assert.match(css, /button\.icon-btn:not\(\.md-file\):not\(\.md-dir-toggle\)\s*\{[^}]*height:\s*1\.75rem/);
+  assert.equal(/\.md-doc-menu/.test(css), false);
+  assert.equal(/\.md-ticket-delete/.test(css), false);
+  try {
+    const view = createEditor(mounted.root, "hello\n", 0, transport, storage);
+    const form = () => byClass(mounted.root.parentElement, "ticket-form")[0];
+    const menuButton = () => byClass(form(), "md-ticket-pane-menu")[0];
+    const panel = () => byClass(form(), "md-ticket-pane-panel")[0];
+    const sets = () => transport.sent.filter((message) => message.type === "ticket.set");
+    const relationBox = (name) => {
+      const choice = byClass(panel(), "md-ticket-pane-choice").find((node) => node.textContent === name);
+      return choice.childNodes.find((node) => node.tagName === "INPUT");
+    };
+    const setRelation = (name, checked) => {
+      const box = relationBox(name);
+      box.checked = checked;
+      box.listeners.change();
+    };
+    const inEditor = (node) => {
+      let current = node;
+      while (current) {
+        if (current === mounted.root) return true;
+        current = current.parentElement;
+      }
+      return false;
+    };
+    assert.equal(byClass(mounted.root.parentElement, "md-ticket-pane-menu").length, 0);
+    assert.equal(byClass(mounted.root.parentElement, "md-doc-menu").length, 0);
+    transport.deliver({
+      type: "repos",
+      repos: [{ name: "viewmark", description: "Viewmark" }],
+    });
+    transport.deliver({ type: "file", path: "docs/a.md", rev: 1, text: "plain\n", cursor: 0, anchor: 0, locks: [] });
+    assert.equal(byClass(mounted.root.parentElement, "md-ticket-pane-menu").length, 0);
+    assert.equal(byClass(mounted.root.parentElement, "md-ticket-pane-panel").length, 0);
+    assert.equal(view.getState().doc, "plain\n");
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0);
+    const bravo = ticketFixture("bbbbbbbb", "Bravo", "new", T1);
+    const openAlpha = (ticket = alpha) => {
+      transport.deliver({ type: "tickets", tickets: [ticket, bravo] });
+      transport.deliver({
+        type: "file",
+        path: "tickets/aaaaaaaa.md",
+        rev: 1,
+        text: "hello\n",
+        cursor: 0,
+        anchor: 0,
+        locks: [],
+        ticket,
+      });
+    };
+    openAlpha();
+    assert.equal(byClass(form(), "md-ticket-parent").length, 0);
+    assert.equal(byClass(form(), "md-ticket-depends").length, 0);
+    assert.equal(byClass(form(), "md-ticket-children").length, 0);
+    assert.equal(byClass(form(), "md-ticket-blocks").length, 0);
+    const left = byClass(form(), "md-ticket-column")[0];
+    const labels = left.childNodes.map((node) => node.childNodes[0] && node.childNodes[0].textContent);
+    const priorityAt = labels.indexOf("Priority");
+    assert.equal(labels[priorityAt + 1], "Assignee");
+    assert.equal(labels.includes("Parent"), false);
+    assert.equal(byClass(form(), "md-ticket-assignee")[0].value, "");
+    const button = menuButton();
+    assert.equal(byClass(form(), "md-ticket-pane-menu").length, 1);
+    assert.equal(button.classList.contains("icon-btn"), true);
+    assert.equal(button.parentElement, form());
+    assert.equal(inEditor(button), false);
+    assert.equal(button.getAttribute("aria-label"), "Menu");
+    assert.equal(button.getAttribute("aria-haspopup"), "menu");
+    assert.equal(button.getAttribute("aria-expanded"), "false");
+    const glyph = button.childNodes[0];
+    assert.equal(glyph.localName, "svg");
+    assert.equal(glyph.getAttribute("viewBox"), "0 0 24 24");
+    assert.equal(glyph.getAttribute("aria-hidden"), "true");
+    const path = glyph.childNodes.find((node) => node.localName === "path");
+    assert.equal(path.getAttribute("d"), "M4 6h16M4 12h16M4 18h16");
+    assert.equal(path.getAttribute("fill"), "none");
+    assert.equal(path.getAttribute("stroke"), "currentColor");
+    assert.equal(path.getAttribute("stroke-width"), "2");
+    assert.equal(path.getAttribute("stroke-linecap"), "round");
+    assert.equal(path.getAttribute("stroke-linejoin"), "round");
+    assert.equal(panel().hidden, true);
+    assert.equal(panel().getAttribute("role"), "menu");
+    assert.deepEqual(panel().childNodes.map((node) => node.textContent), [
+      "Copy link",
+      "Delete ticket",
+      "",
+      "Parent",
+      "Depends",
+      "Children",
+      "Blocks",
+    ]);
+    assert.equal(panel().childNodes[2].classList.contains("md-ticket-pane-sep"), true);
+    assert.equal(panel().childNodes[2].getAttribute("role"), "separator");
+    assert.equal(panel().childNodes.filter((node) => node.tagName === "BUTTON" && node.textContent === "Delete ticket").length, 1);
+    for (const name of ["Parent", "Depends", "Children", "Blocks"]) {
+      const box = relationBox(name);
+      assert.equal(box.checked, false);
+      assert.equal(box.getAttribute("data-relation"), name.toLowerCase());
+    }
+    button.listeners.click({ preventDefault() {} });
+    assert.equal(panel().hidden, false);
+    assert.equal(menuButton().getAttribute("aria-expanded"), "true");
+    mounted.listeners.pointerdown({ target: panel() });
+    assert.equal(panel().hidden, false);
+    mounted.listeners.pointerdown({ target: menuButton() });
+    assert.equal(panel().hidden, false);
+    mounted.listeners.pointerdown({ target: mounted.root });
+    assert.equal(panel().hidden, true);
+    assert.equal(menuButton().getAttribute("aria-expanded"), "false");
+    menuButton().listeners.click({ preventDefault() {} });
+    let prevented = false;
+    mounted.listeners.keydown({
+      key: "Escape",
+      preventDefault() {
+        prevented = true;
+      },
+    });
+    assert.equal(prevented, false);
+    assert.equal(panel().hidden, true);
+    assert.equal(menuButton().getAttribute("aria-expanded"), "false");
+    menuButton().listeners.click({ preventDefault() {} });
+    panel().childNodes[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(writes, ["https://viewmark.test/app#viewmark/ticket/aaaaaaaa"]);
+    assert.equal(writes[0].includes("\n"), false);
+    assert.equal(panel().hidden, true);
+    setRelation("Parent", true);
+    assert.equal(byClass(form(), "md-ticket-parent").length, 1);
+    assert.equal(relationBox("Parent").checked, true);
+    assert.equal(panel().hidden, false);
+    transport.deliver({ type: "tickets", tickets: [alpha, bravo] });
+    assert.equal(byClass(form(), "md-ticket-parent").length, 1);
+    assert.equal(relationBox("Parent").checked, true);
+    setRelation("Parent", false);
+    assert.equal(byClass(form(), "md-ticket-parent").length, 0);
+    transport.deliver({ type: "file", path: "notes.md", rev: 1, text: "notes\n", cursor: 0, anchor: 0, locks: [] });
+    assert.equal(form().hidden, true);
+    assert.equal(byClass(form(), "md-ticket-pane-menu").length, 0);
+    openAlpha();
+    assert.equal(byClass(form(), "md-ticket-parent").length, 0);
+    assert.equal(relationBox("Parent").checked, false);
+    const beforeBlocks = sets().length;
+    setRelation("Blocks", true);
+    assert.equal(byClass(form(), "md-ticket-blocks").length, 1);
+    const blocks = () => byClass(form(), "md-ticket-blocks")[0];
+    const match = byClass(blocks(), "md-ticket-match")[0];
+    match.value = "aaaaaaaa";
+    match.listeners.input();
+    assert.equal(byClass(blocks(), "md-ticket-menu")[0].hidden, true);
+    byClass(blocks(), "md-ticket-add")[0].listeners.click({ preventDefault() {} });
+    assert.equal(sets().length, beforeBlocks);
+    match.value = "Br";
+    match.listeners.input();
+    assert.equal(match.value, "Bravo");
+    byClass(blocks(), "md-ticket-add")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/bbbbbbbb.md",
+      rev: 0,
+      depends: ["aaaaaaaa"],
+      username: "",
+    });
+    assert.equal(sets().slice(beforeBlocks).every((message) => message.path === "tickets/bbbbbbbb.md"), true);
+    const linked = { ...bravo, depends: ["aaaaaaaa"], rev: 1 };
+    transport.deliver({ type: "tickets", tickets: [alpha, linked] });
+    const row = byClass(blocks(), "md-ticket-link")[0];
+    assert.equal(row.textContent, "Bravo");
+    row.listeners.click({ preventDefault() {} });
+    byClass(blocks(), "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/bbbbbbbb.md",
+      rev: 1,
+      depends: [],
+      username: "",
+    });
+    const cedar = ticketFixture("cccccccc", "Cedar", "new", T2, "aaaaaaaa");
+    transport.deliver({ type: "tickets", tickets: [alpha, bravo, cedar] });
+    assert.equal(byClass(form(), "md-ticket-children").length, 1);
+    assert.equal(relationBox("Children").checked, true);
+    assert.equal(byClass(byClass(form(), "md-ticket-children")[0], "md-ticket-link")[0].textContent, "Cedar");
+    assert.equal(relationBox("Blocks").checked, true);
+    const assignee = () => byClass(form(), "md-ticket-assignee")[0];
+    const assigneeSets = () => sets().filter((message) => Object.hasOwn(message, "assignee"));
+    assignee().value = "ada\nbea";
+    assignee().listeners.blur();
+    assert.equal(assigneeSets().length, 0);
+    assert.equal(assignee().value, "");
+    assignee().value = "nope";
+    assignee().listeners.keydown({ key: "Escape", preventDefault() {} });
+    assignee().listeners.blur();
+    assert.equal(assignee().value, "");
+    assert.equal(assigneeSets().length, 0);
+    assignee().value = "  ada  ";
+    assignee().listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.deepEqual(assigneeSets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 1,
+      assignee: "ada",
+      username: "",
+    });
+    transport.deliver({
+      type: "ticket",
+      path: "tickets/aaaaaaaa.md",
+      rev: 2,
+      title: "Alpha",
+      state: "new",
+      ticketType: "task",
+      priority: "medium",
+      assignee: "ada",
+      parent: "",
+      depends: [],
+      reporter: "Ada",
+      created: T0,
+    });
+    assert.equal(assignee().value, "ada");
+    assert.equal(labels.indexOf("Assignee") > labels.indexOf("Priority"), true);
+    const refreshed = byClass(form(), "md-ticket-column")[0].childNodes.map((node) => node.childNodes[0] && node.childNodes[0].textContent);
+    assert.equal(refreshed[refreshed.indexOf("Priority") + 1], "Assignee");
+    assignee().value = "nope";
+    assignee().listeners.keydown({ key: "Escape", preventDefault() {} });
+    assignee().listeners.blur();
+    assert.equal(assignee().value, "ada");
+    assert.equal(assigneeSets().length, 1);
+    assignee().value = "bea\t";
+    assignee().listeners.blur();
+    assert.equal(assignee().value, "ada");
+    assert.equal(assigneeSets().length, 1);
+    assignee().value = "  ";
+    assignee().listeners.blur();
+    assert.deepEqual(assigneeSets().at(-1).assignee, "");
+    const filterLabels = byClass(mounted.nav, "md-ticket-filter-menu")[0].childNodes.filter((node) => node.tagName === "LABEL").map((node) => node.textContent);
+    assert.deepEqual(filterLabels, ["closed", "low", "medium", "high", "task", "enhancement", "defect"]);
+    assert.equal(filterLabels.includes("assignee"), false);
+    assert.equal(filterLabels.includes("Assignee"), false);
+    view.destroy();
+  } finally {
+    if (previousHistory === undefined) delete globalThis.history;
+    else globalThis.history = previousHistory;
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
+    if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
+    else delete globalThis.navigator;
+    mounted.restore();
+  }
+});
+
 test("T-ticket-delete", () => {
   const mounted = mountTicketPage();
   const transport = holdingTransport();
-  const glyph = "M18 6 6 18M6 6l12 12";
+  const writes = [];
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    writable: true,
+    value: {
+      clipboard: {
+        writeText(text) {
+          writes.push(text);
+          return Promise.resolve();
+        },
+      },
+    },
+  });
   try {
     const view = createEditor(mounted.root, "hello\n", 0, transport);
     const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0);
@@ -11667,18 +11938,46 @@ test("T-ticket-delete", () => {
       ticket: alpha,
     });
     const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    assert.equal(byClass(form, "md-ticket-delete").length, 0);
     const idNode = byClass(form, "md-ticket-fact-id")[0];
     assert.equal(idNode.childNodes[0].nodeType, 3);
     assert.equal(idNode.childNodes[0].textContent, "aaaaaaaa");
-    assert.equal(idNode.childNodes[1].classList.contains("md-ticket-delete"), true);
-    assert.equal(idNode.childNodes[1].classList.contains("icon-btn"), true);
-    assert.equal(idNode.childNodes[1].classList.contains("danger"), true);
-    assert.equal(idNode.childNodes[1].getAttribute("aria-label"), "Delete ticket");
-    assert.deepEqual(iconPaths(idNode.childNodes[1]), [glyph]);
+    const copy = idNode.childNodes[1];
+    assert.equal(copy.classList.contains("md-ticket-copy-id"), true);
+    assert.equal(copy.classList.contains("icon-btn"), true);
+    assert.equal(copy.classList.contains("danger"), false);
+    assert.equal(copy.getAttribute("aria-label"), "Copy ticket id");
+    assert.equal(copy.parentElement, idNode);
+    const svg = copy.childNodes[0];
+    assert.equal(svg.localName, "svg");
+    assert.equal(svg.getAttribute("viewBox"), "0 0 24 24");
+    assert.equal(svg.getAttribute("aria-hidden"), "true");
+    const rects = svg.childNodes.filter((node) => node.localName === "rect");
+    assert.equal(rects.length, 2);
+    for (const rect of rects) {
+      assert.equal(rect.getAttribute("fill"), "none");
+      assert.equal(rect.getAttribute("stroke"), "currentColor");
+      assert.equal(rect.getAttribute("stroke-width"), "2");
+      assert.equal(rect.getAttribute("stroke-linecap"), "round");
+      assert.equal(rect.getAttribute("stroke-linejoin"), "round");
+      assert.equal(rect.getAttribute("width"), "12");
+      assert.equal(rect.getAttribute("height"), "12");
+      assert.equal(rect.getAttribute("rx"), "2");
+      assert.equal(rect.getAttribute("ry"), "2");
+    }
+    assert.equal(rects[0].getAttribute("x"), "4");
+    assert.equal(rects[0].getAttribute("y"), "4");
+    assert.equal(rects[1].getAttribute("x"), "8");
+    assert.equal(rects[1].getAttribute("y"), "8");
+    copy.listeners.click({ preventDefault() {} });
+    assert.deepEqual(writes, ["aaaaaaaa"]);
     assert.equal(idNode.textContent, "aaaaaaaa");
-    assert.equal(idNode.childNodes[1].parentElement, idNode);
+    const menuButton = byClass(form, "md-ticket-pane-menu")[0];
+    const deleteItem = () => byClass(form, "md-ticket-pane-panel")[0].childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === "Delete ticket");
+    assert.equal(byClass(form, "md-ticket-pane-panel")[0].childNodes.filter((node) => node.tagName === "BUTTON" && node.textContent === "Delete ticket").length, 1);
     const before = transport.sent.length;
-    idNode.childNodes[1].listeners.click({ preventDefault() {} });
+    menuButton.listeners.click({ preventDefault() {} });
+    deleteItem().listeners.click({ preventDefault() {} });
     assert.equal(transport.sent.length, before);
     const dialog = walkNodes(mounted.body, (node) => node.tagName === "DIALOG" && node.classList && node.classList.contains("md-confirm"))[0];
     assert.equal(dialog.open, true);
@@ -11688,7 +11987,8 @@ test("T-ticket-delete", () => {
     assert.equal(transport.sent.length, before);
     assert.equal(dialog.open, false);
     assert.equal(idNode.textContent, "aaaaaaaa");
-    idNode.childNodes[1].listeners.click({ preventDefault() {} });
+    menuButton.listeners.click({ preventDefault() {} });
+    deleteItem().listeners.click({ preventDefault() {} });
     const yes = walkNodes(dialog, (node) => node.tagName === "BUTTON" && node.textContent === "Delete")[0];
     let openAtClose = null;
     dialog.close = () => {
@@ -11719,6 +12019,8 @@ test("T-ticket-delete", () => {
     assert.equal(byClass(mounted.nav, "md-ticket").length > 0, true);
     view.destroy();
   } finally {
+    if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
+    else delete globalThis.navigator;
     mounted.restore();
   }
 });

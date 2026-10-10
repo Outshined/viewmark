@@ -36,21 +36,34 @@ export function generateId(random = Math.random) {
   return id;
 }
 
+function readField(line, key) {
+  if (line === `${key}:`) return "";
+  const prefix = `${key}: `;
+  if (!line.startsWith(prefix)) return null;
+  return line.slice(prefix.length).trim();
+}
+
+// Assignee is optional and only legal between priority and parent. An absent
+// line is unassigned, so a file that never had one stays byte-identical.
 function parseHeader(header) {
   const lines = header.split("\n");
-  if (lines.length !== KEYS.length) return null;
-  const values = {};
-  for (let i = 0; i < KEYS.length; i += 1) {
-    const key = KEYS[i];
-    const line = lines[i];
-    if (line === `${key}:`) {
-      values[key] = "";
-      continue;
+  const values = { assignee: "" };
+  let index = 0;
+  for (const key of KEYS) {
+    if (key === "parent" && index < lines.length) {
+      const optional = readField(lines[index], "assignee");
+      if (optional !== null) {
+        values.assignee = optional;
+        index += 1;
+      }
     }
-    const prefix = `${key}: `;
-    if (!line.startsWith(prefix)) return null;
-    values[key] = line.slice(prefix.length).trim();
+    if (index >= lines.length) return null;
+    const value = readField(lines[index], key);
+    if (value === null) return null;
+    values[key] = value;
+    index += 1;
   }
+  if (index !== lines.length) return null;
   return values;
 }
 
@@ -76,6 +89,12 @@ function validateFields(fields) {
   const priority = typeof fields.priority === "string" ? fields.priority.trim() : "";
   if (!TICKET_PRIORITIES.includes(priority)) return null;
 
+  let assignee = "";
+  if (fields.assignee != null) {
+    if (typeof fields.assignee !== "string" || BREAK.test(fields.assignee)) return null;
+    assignee = fields.assignee.trim();
+  }
+
   const parent = typeof fields.parent === "string" ? fields.parent.trim() : null;
   if (parent === null || (parent !== "" && !isId(parent))) return null;
 
@@ -99,6 +118,7 @@ function validateFields(fields) {
     state,
     type,
     priority,
+    assignee,
     parent,
     depends: [...new Set(depends)].sort(),
     reporter,
@@ -111,8 +131,8 @@ function writeField(key, value) {
   return value === "" ? `${key}:` : `${key}: ${value}`;
 }
 
-// The header is eight single lines. The first blank line ends it; everything
-// after that is markdown and can contain blank lines and header-shaped text.
+// The first blank line ends the header. Everything after that is markdown
+// and can contain blank lines and header-shaped text.
 export function parseTicket(id, text) {
   if (!isId(id) || typeof text !== "string") return null;
   const splitAt = text.indexOf("\n\n");
@@ -126,6 +146,7 @@ export function parseTicket(id, text) {
     state: header.state,
     type: header.type,
     priority: header.priority,
+    assignee: header.assignee,
     parent: header.parent,
     depends,
     reporter: header.reporter,
@@ -145,11 +166,14 @@ export function composeTicket(ticket) {
     writeField("state", fields.state),
     writeField("type", fields.type),
     writeField("priority", fields.priority),
+  ];
+  if (fields.assignee !== "") lines.push(writeField("assignee", fields.assignee));
+  lines.push(
     writeField("parent", fields.parent),
     writeField("depends", fields.depends.join(" ")),
     writeField("reporter", fields.reporter),
     writeField("created", fields.created),
-  ];
+  );
   return `${lines.join("\n")}\n\n${fields.body}`;
 }
 

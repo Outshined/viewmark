@@ -85,6 +85,7 @@ const HELP_NEEDLES = [
   "low, medium, or high",
   "An omitted create stores medium",
   "--depends",
+  "--assignee",
   "--closed",
   "reporter",
   "create reads the body from stdin when stdin is not a terminal.",
@@ -1621,6 +1622,7 @@ const SEED_TICKET = {
   state: "new",
   type: "task",
   priority: "medium",
+  assignee: "",
   parent: "",
   depends: [],
   reporter: "Viewmark",
@@ -1640,6 +1642,7 @@ function ticketErr(fields, conflict = false) {
     `state ${fields.state}`,
     `type ${type}`,
     `priority ${priority}`,
+    ...(fields.assignee ? [`assignee ${fields.assignee}`] : []),
     parent,
     depends,
     `reporter ${fields.reporter}`,
@@ -1658,6 +1661,7 @@ function ticketJson(fields) {
     state: fields.state,
     type: fields.type ?? "task",
     priority: fields.priority ?? "medium",
+    assignee: fields.assignee ?? "",
     parent: fields.parent,
     depends: fields.depends,
     reporter: fields.reporter,
@@ -1853,13 +1857,14 @@ test("T-cli-ticket-list", async () => {
     const open = JSON.parse(json.stdout);
     assert.deepEqual(open, {
       tickets: [
-        { id: B, title: "Beta", state: "new", type: "task", priority: "medium", parent: "", depends: [], reporter: "indexer", created: T0 },
+        { id: B, title: "Beta", state: "new", type: "task", priority: "medium", assignee: "", parent: "", depends: [], reporter: "indexer", created: T0 },
         {
           id: C,
           title: "See",
           state: "triaged",
           type: "task",
           priority: "medium",
+          assignee: "",
           parent: B,
           depends: [A, Z],
           reporter: "indexer",
@@ -1871,6 +1876,7 @@ test("T-cli-ticket-list", async () => {
           state: "in progress",
           type: "task",
           priority: "medium",
+          assignee: "",
           parent: "",
           depends: [],
           reporter: "indexer",
@@ -1880,7 +1886,7 @@ test("T-cli-ticket-list", async () => {
       ],
     });
     for (const ticket of open.tickets) {
-      assert.deepEqual(Object.keys(ticket), ["id", "title", "state", "type", "priority", "parent", "depends", "reporter", "created"]);
+      assert.deepEqual(Object.keys(ticket), ["id", "title", "state", "type", "priority", "assignee", "parent", "depends", "reporter", "created"]);
     }
 
     const all = await runFast(ticketArgs(port, ["ticket", "--json", "list", "--closed"]));
@@ -1960,7 +1966,7 @@ test("T-cli-ticket-show", async () => {
     assert.equal(json.stderr, "");
     const parsed = JSON.parse(json.stdout);
     assert.deepEqual(Object.keys(parsed), [
-      "id", "path", "rev", "title", "state", "type", "priority", "parent", "depends", "reporter", "created", "text",
+      "id", "path", "rev", "title", "state", "type", "priority", "assignee", "parent", "depends", "reporter", "created", "text",
     ]);
     assert.deepEqual(parsed, ticketJson({
       id: C,
@@ -2443,6 +2449,60 @@ test("T-cli-ticket-set", async () => {
   });
 });
 
+test("ticket assignee is optional text", async () => {
+  await withHub(async ({ dir, port }) => {
+    const created = await runFast(ticketArgs(port, ["ticket", "create", "--title", "Plain"]), {}, "Body.\n");
+    assert.equal(created.code, 0);
+    const id = created.stdout.trim();
+    const full = path.join(dir, "tickets", `${id}.md`);
+    const before = await fs.readFile(full, "utf8");
+    assert.equal(before.includes("assignee:"), false);
+    const shown = await runFast(ticketArgs(port, ["ticket", "show", id]));
+    assert.equal(shown.stdout, "Body.\n");
+    assert.equal(shown.stderr.includes("assignee"), false);
+
+    const titled = await runFast(ticketArgs(port, ["ticket", "set", id, "--title", "Renamed"]));
+    assert.equal(titled.code, 0);
+    const renamed = await fs.readFile(full, "utf8");
+    assert.equal(renamed.includes("assignee:"), false);
+    assert.equal(parseTicket(id, renamed).title, "Renamed");
+    assert.equal(parseTicket(id, renamed).assignee, "");
+
+    const tabbed = await runFast(ticketArgs(port, ["ticket", "set", id, "--assignee", "ada\t"]));
+    assert.equal(tabbed.code, shellStatus(400));
+    assert.equal(await fs.readFile(full, "utf8"), renamed);
+    const broken = await runFast(ticketArgs(port, ["ticket", "set", id, "--assignee", "ada\nbea"]));
+    assert.equal(broken.code, shellStatus(400));
+    assert.equal(await fs.readFile(full, "utf8"), renamed);
+
+    const set = await runFast(ticketArgs(port, ["ticket", "set", id, "--assignee", "  ada  "]));
+    assert.equal(set.code, 0);
+    assert.match(set.stderr, /assignee ada\n/);
+    const stored = await fs.readFile(full, "utf8");
+    assert.match(stored, /priority: medium\nassignee: ada\nparent:\n/);
+    assert.equal(parseTicket(id, stored).assignee, "ada");
+    assert.equal(parseTicket(id, stored).title, "Renamed");
+
+    const listed = await runFast(["--json", ...ticketArgs(port, ["ticket", "list"])]);
+    const row = JSON.parse(listed.stdout).tickets.find((ticket) => ticket.id === id);
+    assert.equal(row.assignee, "ada");
+
+    const cleared = await runFast(ticketArgs(port, ["ticket", "set", id, "--assignee", ""]));
+    assert.equal(cleared.code, 0);
+    assert.equal(cleared.stderr.includes("assignee"), false);
+    const empty = await fs.readFile(full, "utf8");
+    assert.equal(empty.includes("assignee:"), false);
+    assert.equal(parseTicket(id, empty).assignee, "");
+
+    const made = await runFast(ticketArgs(port, ["ticket", "create", "--title", "Owned", "--assignee", "bea"]), {}, "");
+    assert.equal(made.code, 0);
+    const owned = made.stdout.trim();
+    assert.match(await fs.readFile(path.join(dir, "tickets", `${owned}.md`), "utf8"), /assignee: bea\n/);
+    const ownedShow = await runFast(ticketArgs(port, ["ticket", "show", owned]));
+    assert.match(ownedShow.stderr, /assignee bea\n/);
+  });
+});
+
 test("T-cli-ticket-purge", async () => {
   const gate = await trap();
   try {
@@ -2888,6 +2948,7 @@ test("T-cli-serve", async () => {
       ["serve", "--priority", "high"],
       ["serve", "--parent", "none"],
       ["serve", "--depends", "none"],
+      ["serve", "--assignee", "ada"],
       ["serve", "--name", "n"],
       ["serve", "--description", "d"],
       ["serve", "--path", "p"],
