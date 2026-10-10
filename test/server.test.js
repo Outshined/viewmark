@@ -242,6 +242,17 @@ test("T-index", async () => {
   });
 });
 
+test("viewmark-favicon.svg is the page icon", async () => {
+  const disk = await fs.readFile(path.join(repoRoot, "index.html"), "utf8");
+  assert.match(disk, /<link rel="icon" href="viewmark-favicon.svg" type="image\/svg\+xml">/);
+  await withServer(async (port) => {
+    const res = await get(port, "/viewmark-favicon.svg");
+    assert.equal(res.status, 200);
+    assert.equal(res.type, "image/svg+xml");
+    assert.ok(res.body.startsWith("<svg"));
+  });
+});
+
 test("T-module", async () => {
   await withServer(async (port) => {
     const res = await get(port, "/src/editor.js");
