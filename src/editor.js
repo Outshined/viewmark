@@ -6426,7 +6426,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const separator = document.createElement("div");
     separator.className = "md-ticket-pane-sep";
     if (typeof separator.setAttribute === "function") separator.setAttribute("role", "separator");
-    menuPanel.append(copyLink, deleteTicket, separator);
+    const showFields = document.createElement("label");
+    showFields.className = "md-ticket-pane-group";
+    showFields.textContent = "Show fields";
+    menuPanel.append(copyLink, deleteTicket, separator, showFields);
     for (const [key, labelText] of [["parent", "Parent"], ["depends", "Depends"], ["children", "Children"], ["blocks", "Blocks"]]) {
       const choice = document.createElement("label");
       choice.className = "md-ticket-pane-choice";

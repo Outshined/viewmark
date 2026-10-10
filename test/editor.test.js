@@ -11856,6 +11856,7 @@ test("a ticket pane menu shows relation fields and Blocks writes the other ticke
       "Copy link",
       "Delete ticket",
       "",
+      "Show fields",
       "Parent",
       "Depends",
       "Children",
@@ -11863,6 +11864,12 @@ test("a ticket pane menu shows relation fields and Blocks writes the other ticke
     ]);
     assert.equal(panel().childNodes[2].classList.contains("md-ticket-pane-sep"), true);
     assert.equal(panel().childNodes[2].getAttribute("role"), "separator");
+    assert.equal(panel().childNodes[3].textContent, "Show fields");
+    assert.equal(panel().childNodes[3].childNodes.some((node) => node.tagName === "INPUT"), false);
+    assert.deepEqual(
+      panel().childNodes.filter((node) => node.childNodes.some((child) => child.tagName === "INPUT")).map((node) => node.textContent),
+      ["Parent", "Depends", "Children", "Blocks"],
+    );
     assert.equal(panel().childNodes.filter((node) => node.tagName === "BUTTON" && node.textContent === "Delete ticket").length, 1);
     for (const name of ["Parent", "Depends", "Children", "Blocks"]) {
       const box = relationBox(name);
