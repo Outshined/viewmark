@@ -1096,15 +1096,7 @@ a.md-link {
 }
 
 .md-line.md-paragraph {
-  margin-bottom: calc(1.55em / 2);
-}
-
-.md-line.md-paragraph-gap,
-.md-line.md-paragraph-gap br {
-  height: 0;
-  min-height: 0;
-  overflow: hidden;
-  margin: 0;
+  padding-bottom: calc(1.55em / 2);
 }
 
 .md-line.md-fence-collapsed,

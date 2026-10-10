@@ -518,17 +518,18 @@ test("a blank between quotes keeps the quote bar", () => {
   assert.equal(lockSpans(items).length, 3);
 });
 
-test("paragraph gap is one blank between plain paragraphs", () => {
+test("a plain paragraph keeps its mark and a blank stays a line", () => {
   const paired = plan("one\n\ntwo\n", 0).blocks;
   assert.equal(paired.length, 3);
   assert.ok(paired[0].classes.includes("md-paragraph"));
   assert.equal(paired[1].empty, true);
-  assert.ok(paired[1].classes.includes("md-paragraph-gap"));
+  assert.equal(paired[1].classes.includes("md-paragraph-gap"), false);
+  assert.equal(paired[1].classes.includes("md-paragraph"), false);
   assert.ok(paired[2].classes.includes("md-paragraph"));
 
   const inTwo = plan("one\n\ntwo\n", 6).blocks;
   assert.equal(inTwo[1].empty, true);
-  assert.ok(inTwo[1].classes.includes("md-paragraph-gap"));
+  assert.equal(inTwo[1].classes.includes("md-paragraph-gap"), false);
   assert.equal(inTwo[2].raw, true);
   assert.ok(inTwo[0].classes.includes("md-paragraph"));
   assert.ok(inTwo[2].classes.includes("md-paragraph"));
@@ -536,12 +537,14 @@ test("paragraph gap is one blank between plain paragraphs", () => {
   const onBlank = plan("one\n\ntwo\n", 4).blocks;
   assert.equal(onBlank[1].empty, true);
   assert.equal(onBlank[1].raw, true);
-  assert.ok(onBlank[1].classes.includes("md-paragraph-gap"));
+  assert.equal(onBlank[1].classes.includes("md-paragraph-gap"), false);
+  assert.equal(onBlank[1].classes.includes("md-paragraph"), false);
 
   const wide = plan("one\n\n\ntwo\n", 0).blocks;
   const empties = wide.filter((block) => block.empty);
   assert.equal(empties.length, 2);
   assert.equal(empties.some((block) => block.classes.includes("md-paragraph-gap")), false);
+  assert.equal(empties.some((block) => block.classes.includes("md-paragraph")), false);
   assert.ok(wide[0].classes.includes("md-paragraph"));
   assert.ok(wide[3].classes.includes("md-paragraph"));
 
@@ -557,6 +560,7 @@ test("paragraph gap is one blank between plain paragraphs", () => {
   assert.ok(headed[0].classes.includes("md-paragraph"));
   assert.equal(headed[1].empty, true);
   assert.equal(headed[1].classes.includes("md-paragraph-gap"), false);
+  assert.equal(headed[1].classes.includes("md-paragraph"), false);
   assert.equal(headed[2].classes.includes("md-paragraph"), false);
 
   for (const doc of ["a\n\n![x](y)\n", "![x](y)\n\nb\n"]) {
@@ -568,6 +572,7 @@ test("paragraph gap is one blank between plain paragraphs", () => {
       const blank = blocks.find((block) => block.empty);
       assert.ok(blank, doc);
       assert.equal(blank.classes.includes("md-paragraph-gap"), false, doc);
+      assert.equal(blank.classes.includes("md-paragraph"), false, doc);
     }
   }
   assert.ok(plan("a\n\n![x](y)\n", 0).blocks[0].classes.includes("md-paragraph"));
@@ -578,10 +583,15 @@ test("paragraph gap is one blank between plain paragraphs", () => {
   assert.ok(joined[0].classes.includes("md-paragraph"));
   assert.equal(joined[0].classes.includes("md-paragraph-gap"), false);
 
-  assert.equal(placeMove("one\n\ntwo\n", 1, 4, "forward", "line"), 5);
-  assert.equal(placeMove("one\n\ntwo\n", 5, 4, "backward", "line"), 3);
-  assert.equal(placeMove("one\n\ntwo\n", 4, 4, "forward", "line"), 5);
-  assert.equal(placeMove("one\n\ntwo\n", 4, 4, "backward", "line"), 3);
+  const rule = plan("---\n", 0).blocks;
+  assert.equal(rule.some((block) => block.classes.includes("md-paragraph")), false);
+});
+
+test("line movement stops on the blank between paragraphs", () => {
+  assert.equal(placeMove("one\n\ntwo\n", 1, 4, "forward", "line"), 4);
+  assert.equal(placeMove("one\n\ntwo\n", 5, 4, "backward", "line"), 4);
+  assert.equal(placeMove("one\n\ntwo\n", 4, 4, "forward", "line"), 4);
+  assert.equal(placeMove("one\n\ntwo\n", 4, 4, "backward", "line"), 4);
   assert.equal(placeMove("one\n\ntwo\n", 0, 6, "forward", "line"), 6);
   assert.equal(placeMove("one\n\ntwo\n", 6, 0, "backward", "line"), 0);
   assert.equal(placeMove("one\n\ntwo\n", 1, 4, "forward", "character"), 4);
@@ -596,16 +606,13 @@ function imageText(text) {
   return core.startsWith("![") && core.endsWith(")");
 }
 
-test("half a line under a paragraph is margin outside the line", () => {
+test("the last line of a paragraph is half a line taller", () => {
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
-  assert.match(css, /\.md-line\.md-paragraph\s*\{[^}]*margin-bottom:\s*calc\(1\.55em \/ 2\);/);
-  assert.match(
-    css,
-    /\.md-line\.md-paragraph-gap\s*,\s*\.md-line\.md-paragraph-gap br\s*\{[^}]*height:\s*0;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;[^}]*margin:\s*0;/,
-  );
+  assert.match(css, /\.md-line\.md-paragraph\s*\{[^}]*padding-bottom:\s*calc\(1\.55em \/ 2\);/);
+  assert.equal(css.includes("md-paragraph-gap"), false);
 });
 
-test("a mounted paragraph gap keeps the blank offset", () => {
+test("a blank between paragraphs stays an ordinary line", () => {
   const doc = "one\n\ntwo\n";
   const blank = doc.indexOf("\n\n") + 1;
   const caret = doc.indexOf("two") + 1;
@@ -615,17 +622,17 @@ test("a mounted paragraph gap keeps the blank offset", () => {
   try {
     const view = createEditor(mounted.root, doc, caret);
     const lines = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && !node.classList.contains("md-source-line"));
-    const gap = lines.find((node) => node.classList.contains("md-paragraph-gap"));
-    assert.ok(gap);
-    assert.equal(lines.filter((node) => node.classList.contains("md-paragraph-gap")).length, 1);
-    const br = gap.childNodes.find((node) => String(node.nodeName).toUpperCase() === "BR");
+    assert.equal(lines.some((node) => node.classList.contains("md-paragraph-gap")), false);
+    const empty = lines.find((node) => node.textContent === "");
+    assert.ok(empty);
+    assert.equal(empty.classList.contains("md-paragraph"), false);
+    const br = empty.childNodes.find((node) => String(node.nodeName).toUpperCase() === "BR");
     assert.ok(br);
     assert.equal(mapOffset(br, 0), blank);
     const paragraphs = lines.filter((node) => node.classList.contains("md-paragraph"));
     assert.equal(paragraphs.length, 2);
     assert.equal(paragraphs.some((node) => node.textContent.includes("one")), true);
     assert.equal(paragraphs.some((node) => node.textContent.includes("two")), true);
-    assert.equal(gap.classList.contains("md-paragraph"), false);
     pressViewToggle(mounted.root);
     assert.equal(mounted.root.classList.contains("md-source"), true);
     assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-paragraph")).length, 0);

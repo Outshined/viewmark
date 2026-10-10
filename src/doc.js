@@ -2470,16 +2470,11 @@ function plainParagraph(block) {
   return true;
 }
 
-// The half line under a paragraph is margin, outside the line box.
-// One blank between two paragraphs is that space, so the blank does not also take a line.
+// Padding on the paragraph line is the break between paragraphs.
+// A blank line stays a line, so up and down can stop on it.
 function markParagraphSpace(blocks) {
   for (const block of blocks) {
     if (plainParagraph(block)) addClassName(block, "md-paragraph");
-  }
-  for (let i = 1; i < blocks.length - 1; i += 1) {
-    if (!blankBlock(blocks[i]) || blankBlock(blocks[i - 1]) || blankBlock(blocks[i + 1])) continue;
-    if (!plainParagraph(blocks[i - 1]) || !plainParagraph(blocks[i + 1])) continue;
-    addClassName(blocks[i], "md-paragraph-gap");
   }
 }
 
@@ -2609,21 +2604,6 @@ function crossedAtom(doc, cursor, landed, forward, granularity) {
   return nearest;
 }
 
-function paragraphGap(block) {
-  return Boolean(block && block.classes && block.classes.includes("md-paragraph-gap"));
-}
-
-// The blank has no height. Up and down leave it. A character step still stops there.
-function leaveParagraphGap(doc, cursor, landed, forward) {
-  const blocks = plan(doc, cursor).blocks;
-  const index = blocks.findIndex((block) => paragraphGap(block) && landed >= block.start && landed <= block.end);
-  if (index < 0) return null;
-  const neighbor = blocks[forward ? index + 1 : index - 1];
-  if (!neighbor) return null;
-  const at = forward ? neighbor.start : neighbor.end;
-  return Number.isFinite(at) ? at : null;
-}
-
 export function placeMove(doc, cursor, landed, direction, granularity) {
   const forward = direction === "forward" || direction === "right";
   const snapped = movementAtom(doc, cursor, landed, forward);
@@ -2633,10 +2613,6 @@ export function placeMove(doc, cursor, landed, direction, granularity) {
   if (crossed) next = inwardOffset(crossed, forward);
   const fence = skippedFence(doc, cursor, landed, forward);
   if (fence) next = forward ? fence.start : fence.end;
-  if (granularity === "line") {
-    const gap = leaveParagraphGap(doc, cursor, landed, forward);
-    if (gap != null) next = gap;
-  }
   return next;
 }
 
