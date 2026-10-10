@@ -2593,6 +2593,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         setStyle(card, "left", "auto");
         setStyle(card, "width", "100%");
         setStyle(card, "margin", "");
+        setStyle(card, "max-height", "");
+        setStyle(card, "overflow", "");
       }
       setStyle(commentsAside, "height", "");
       return;
@@ -2608,11 +2610,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const rowHeight = typeof resolvedRow.offsetHeight === "number" ? resolvedRow.offsetHeight : 0;
       floor = Math.max(menuHeight, rowHeight) + COMMENT_CARD_GAP;
     }
-    // A card sits on its anchor. It may drop far enough to clear the menu or one
-    // overlapping card, and no further than two short cards. A short card is ten
-    // gaps tall, so a tall thread cannot carry later cards down the page.
+    // A card may move down to clear the cards above it, never up over them.
+    // A tall closed card shortens so the next anchor keeps a place. The open card stays full height.
     const menuFloor = floor;
-    for (const card of cards) {
+    const SHORT = 10 * COMMENT_CARD_GAP;
+    const GAP = COMMENT_CARD_GAP;
+    const anchorOf = (card) => {
       const id = card.dataset.comment;
       let rects = highlightRects(id);
       if (rects.length === 0) {
@@ -2633,23 +2636,44 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           walk(root);
         }
       }
+      if (rects.length === 0) return null;
+      let markTop = rects[0].top;
+      for (const rect of rects) if (rect.top < markTop) markTop = rect.top;
+      return markTop - asideRect.top;
+    };
+    const anchors = cards.map((card) => anchorOf(card));
+    for (let i = 0; i < cards.length; i += 1) {
+      const card = cards[i];
+      const anchor = anchors[i];
+      const top = anchor == null ? floor : Math.max(floor, menuFloor, anchor);
       setStyle(card, "position", "absolute");
       setStyle(card, "left", "0px");
       setStyle(card, "width", "100%");
       setStyle(card, "margin", "0px");
-      const height = typeof card.offsetHeight === "number" ? card.offsetHeight : (elementRect(card)?.height || 0);
-      let top = floor;
-      if (rects.length > 0) {
-        let markTop = rects[0].top;
-        for (const rect of rects) if (rect.top < markTop) markTop = rect.top;
-        const anchor = markTop - asideRect.top;
-        const reference = Math.min(height, 10 * COMMENT_CARD_GAP);
-        const limit = 2 * (reference + COMMENT_CARD_GAP);
-        const parked = Math.max(anchor, menuFloor);
-        top = floor > parked && floor - anchor <= limit ? floor : parked;
+      // offsetHeight reports the clamped box. Clear the clamp before measuring the card's own height.
+      setStyle(card, "max-height", "");
+      setStyle(card, "overflow", "");
+      const natural = typeof card.offsetHeight === "number" ? card.offsetHeight : (elementRect(card)?.height || 0);
+      let nextAnchor = null;
+      for (let j = i + 1; j < anchors.length; j += 1) {
+        if (anchors[j] != null) {
+          nextAnchor = anchors[j];
+          break;
+        }
+      }
+      const current = card.classList && card.classList.contains("md-comment-current");
+      let used = natural;
+      if (!current && natural > SHORT && nextAnchor != null) {
+        const nextHome = Math.max(nextAnchor, menuFloor);
+        const room = nextHome - top - GAP;
+        if (natural + GAP > nextHome - top) used = Math.min(natural, SHORT, Math.max(GAP, room));
+      }
+      if (used < natural) {
+        setStyle(card, "max-height", `${used}px`);
+        setStyle(card, "overflow", "hidden");
       }
       setStyle(card, "top", `${top}px`);
-      floor = Math.max(floor, top + height + COMMENT_CARD_GAP);
+      floor = top + used + GAP;
     }
     setStyle(commentsAside, "height", `${floor}px`);
   }
@@ -2785,6 +2809,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       for (const child of node.childNodes || []) walk(child);
     };
     walk(commentsAside);
+    layoutComments();
   }
 
   function clearCurrentComment() {
@@ -2797,6 +2822,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       for (const child of node.childNodes || []) walk(child);
     };
     walk(commentsAside);
+    layoutComments();
   }
 
   function lockNames(block) {

@@ -4501,7 +4501,7 @@ function mountSheet() {
     el.blur = () => {
       el.focused = false;
     };
-    Object.defineProperty(el, "offsetHeight", { get() { return 30; } });
+    Object.defineProperty(el, "offsetHeight", { configurable: true, get() { return 30; } });
     el.getBoundingClientRect = () => {
       const top = el.dataset && el.dataset.start != null && el.dataset.start !== "" ? Number(el.dataset.start) : 0;
       return { top, left: 0, right: 20, bottom: top + 10, width: 20, height: 10 };
@@ -5254,7 +5254,90 @@ test("comment cards stay near their anchors", () => {
     globalThis.window.matchMedia = () => ({ matches: false });
     const view = createEditor(mounted.root, doc, 0);
     assert.deepEqual(cards().map((card) => card.dataset.comment), ["c1", "c2", "c3"]);
-    assert.deepEqual(cards().map((card) => card.styleProps.top), ["42px", "84px", "42px"]);
+    assert.deepEqual(cards().map((card) => card.styleProps.top), ["42px", "84px", "126px"]);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("crowded comment cards stay short and in anchor order", () => {
+  const mounted = mountSheet();
+  const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+  let onResize = null;
+  globalThis.window.addEventListener = (type, fn) => {
+    if (type === "resize") onResize = fn;
+  };
+  const usedHeight = (card) => {
+    const max = card.styleProps["max-height"];
+    if (typeof max === "string" && max.endsWith("px")) return Number.parseFloat(max);
+    return card.offsetHeight;
+  };
+  const assertStacked = () => {
+    const placed = cards();
+    for (let i = 1; i < placed.length; i += 1) {
+      const prev = Number.parseFloat(placed[i - 1].styleProps.top);
+      const next = Number.parseFloat(placed[i].styleProps.top);
+      assert.ok(next >= prev + usedHeight(placed[i - 1]));
+    }
+  };
+  const clickCard = (index) => {
+    const card = cards()[index];
+    mounted.aside.listeners.click({ target: card, preventDefault() {} });
+  };
+  try {
+    let doc = "one two three\n";
+    const first = addComment(doc, 0, 3);
+    doc = first.doc;
+    const twoAt = doc.indexOf("two");
+    const second = addComment(doc, twoAt, twoAt + 3);
+    doc = second.doc;
+    const threeAt = doc.indexOf("three");
+    const third = addComment(doc, threeAt, threeAt + 5);
+    doc = third.doc;
+    globalThis.window.matchMedia = () => ({ matches: false });
+    const view = createEditor(mounted.root, doc, 0);
+    assert.equal(typeof onResize, "function");
+    assert.deepEqual(cards().map((card) => card.dataset.comment), ["c1", "c2", "c3"]);
+    const starts = { c1: "100", c2: "140", c3: "180" };
+    for (const node of mounted.findAll((node) => node.classList && node.classList.contains("md-comment") && node.dataset)) {
+      if (starts[node.dataset.comment]) node.dataset.start = starts[node.dataset.comment];
+    }
+    for (const card of cards()) {
+      Object.defineProperty(card, "offsetHeight", { configurable: true, get() { return 290; } });
+    }
+    onResize();
+    assert.deepEqual(cards().map((card) => card.styleProps.top), ["100px", "140px", "180px"]);
+    assert.equal(cards()[0].styleProps["max-height"], "28px");
+    assert.equal(cards()[0].styleProps.overflow, "hidden");
+    assert.equal(cards()[1].styleProps["max-height"], "28px");
+    assert.equal(cards()[1].styleProps.overflow, "hidden");
+    assert.equal(cards()[2].styleProps["max-height"] || "", "");
+    assert.equal(cards()[2].styleProps.overflow || "", "");
+    assertStacked();
+
+    clickCard(1);
+    assert.equal(cards()[1].classList.contains("md-comment-current"), true);
+    assert.equal(cards()[1].styleProps["max-height"] || "", "");
+    assert.equal(cards()[1].styleProps.overflow || "", "");
+    assert.deepEqual(cards().map((card) => card.styleProps.top), ["100px", "140px", "442px"]);
+    assertStacked();
+
+    clickCard(0);
+    assert.equal(cards()[0].classList.contains("md-comment-current"), true);
+    assert.equal(cards()[1].classList.contains("md-comment-current"), false);
+    assert.deepEqual(cards().map((card) => card.styleProps.top), ["100px", "402px", "426px"]);
+    assert.equal(cards()[1].styleProps["max-height"], "12px");
+    assert.equal(cards()[1].styleProps.overflow, "hidden");
+    assert.ok(Number.parseFloat(cards()[1].styleProps.top) - 140 < 800);
+    assert.ok(Number.parseFloat(cards()[2].styleProps.top) - 180 < 800);
+    assertStacked();
+
+    globalThis.window.matchMedia = () => ({ matches: true });
+    onResize();
+    assert.ok(cards().every((card) => card.styleProps.position === "static"));
+    assert.ok(cards().every((card) => (card.styleProps["max-height"] || "") === ""));
+    assert.ok(cards().every((card) => (card.styleProps.overflow || "") === ""));
     view.destroy();
   } finally {
     mounted.restore();
