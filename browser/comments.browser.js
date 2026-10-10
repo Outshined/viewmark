@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
-import { REPO, cli, launchBrowser, Page, startHub } from "./harness.js";
+import { OTHER, REPO, cli, launchBrowser, Page, startHub } from "./harness.js";
 
 // Comments in the page: deleting a thread, and moving or cutting text that holds comment
 // markers. Every action is a real key or mouse event. After each one the bytes must keep every
@@ -50,7 +50,7 @@ async function setup(t, docs) {
   const page = new Page(browser.session, hub.port);
   await page.init();
   await page.login();
-  return { hub, page };
+  return { hub, page, browser };
 }
 
 async function open(page, file) {
@@ -307,4 +307,231 @@ test("a thread the CLI deletes in another block leaves the page's caret in place
   assert.equal(await bytes(hub, "a.md"), "Other line.\n\nSee this now.\n");
   const caret = await page.caret();
   assert.equal(caret.focus, 3, `the caret moved to ${caret.focus}`);
+});
+
+// ---- Handles at each end of a highlight (ticket y8qvyrzz, R105) ------------------------------
+
+const LEAD = "Other line.\n\n";
+const HDOC = LEAD + P + CM("c1");
+const at = (needle, plus = 0) => LEAD.length + P.indexOf(needle) + plus;
+const TOGGLE = "#editor button.md-view-toggle";
+
+async function hover(page, offset) {
+  const point = await page.eval(`window.__qaClickPoint(${offset})`);
+  assert.ok(point, `no point for offset ${offset}`);
+  await page.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
+  await page.frame();
+  await sleep(50);
+  return point;
+}
+
+const handles = (page) => page.eval(`[...document.querySelectorAll("#editor .md-comment-handle")]
+  .filter((el) => getComputedStyle(el).display !== "none")
+  .map((el) => {
+    const r = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return { edge: el.dataset.edge, comment: el.dataset.comment, x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height, radius: style.borderRadius };
+  })`);
+
+// The left and right edges of the comment's highlight, and its vertical middle.
+const highlight = (page, id) => page.eval(`(() => {
+  const rects = [...document.querySelectorAll('#editor .md-comment[data-comment="${id}"]')].flatMap((el) => [...el.getClientRects()]).filter((r) => r.width > 0);
+  if (!rects.length) return null;
+  return { left: Math.min(...rects.map((r) => r.left)), right: Math.max(...rects.map((r) => r.right)), y: (rects[0].top + rects[0].bottom) / 2 };
+})()`);
+
+const editsSince = (page, since) => page.frames.slice(since).filter((frame) => frame.dir === "out" && frame.data && frame.data.type === "edit");
+
+// Presses the handle with the real mouse, moves in steps, and lets go over the target point.
+async function dragHandle(page, edge, to) {
+  const from = await page.eval(`(() => {
+    const el = document.querySelector('#editor .md-comment-handle[data-edge="${edge}"]');
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`);
+  assert.ok(from, `no ${edge} handle to press`);
+  const since = page.frames.length;
+  await page.drag(from, to);
+  await page.quiet();
+  await sleep(150);
+  return editsSince(page, since);
+}
+
+const fenceOf = (text, id) => (new RegExp("^```comment " + id + "[\\s\\S]*?^```$", "m").exec(text) || [""])[0];
+
+test("handles: with the pointer over a rendered highlight, a rounded handle shows at each end, and none elsewhere", async (t) => {
+  const { page } = await setup(t, { "a.md": HDOC });
+  await open(page, "a.md");
+  await place(page, 3);
+  assert.equal(await page.eval(`[...document.querySelectorAll("#editor .md-line")].find((l) => l.textContent.includes("now")).classList.contains("md-raw")`), false, "the commented paragraph is not rendered");
+  await hover(page, at("this", 2));
+  const shown = await handles(page);
+  assert.deepEqual(shown.map((h) => h.edge).sort(), ["end", "start"], `handles over the highlight: ${JSON.stringify(shown)}`);
+  assert.ok(shown.every((h) => h.comment === "c1" && h.w >= 8 && Math.abs(h.w - h.h) < 0.5 && h.radius !== "0px"), `the handles are not round: ${JSON.stringify(shown)}`);
+  const box = await highlight(page, "c1");
+  const start = shown.find((h) => h.edge === "start");
+  const end = shown.find((h) => h.edge === "end");
+  assert.ok(Math.abs(start.x - box.left) <= 3 && Math.abs(start.y - box.y) <= 4, `start handle at ${start.x},${start.y}, highlight starts at ${box.left},${box.y}`);
+  assert.ok(Math.abs(end.x - box.right) <= 3 && Math.abs(end.y - box.y) <= 4, `end handle at ${end.x},${end.y}, highlight ends at ${box.right},${box.y}`);
+  await hover(page, at("now", 1));
+  assert.deepEqual(await handles(page), [], "handles stay with the pointer on now");
+  await hover(page, 3);
+  assert.deepEqual(await handles(page), [], "handles stay with the pointer on another paragraph");
+});
+
+test("handles: in the raw block the markers are drawn as the handles, and the caret cannot aim inside them", async (t) => {
+  const { page } = await setup(t, { "a.md": HDOC });
+  await open(page, "a.md");
+  await place(page, at("this", 2));
+  const drawn = await page.eval(`(() => {
+    const line = [...document.querySelectorAll("#editor .md-line")].find((l) => l.textContent.includes("now"));
+    const markers = [...line.querySelectorAll(".md-comment-marker")].map((el) => ({ text: el.textContent, edge: el.dataset.edge }));
+    return { raw: line.classList.contains("md-raw"), text: line.textContent, markers };
+  })()`);
+  assert.equal(drawn.raw, true, "the block is not raw");
+  assert.ok(!drawn.text.includes("{c1}") && !drawn.text.includes("{/c1}"), `the raw block draws marker characters: ${JSON.stringify(drawn.text)}`);
+  assert.deepEqual(drawn.markers.map((m) => m.edge), ["start", "end"]);
+  assert.ok(drawn.markers.every((m) => m.text === ""), "a marker box holds text");
+  await hover(page, at("this", 2));
+  assert.deepEqual((await handles(page)).map((h) => h.edge).sort(), ["end", "start"], "no handles over the raw highlight");
+  // → from before the opening marker to the end of the line never stops inside a marker.
+  await place(page, at("{c1}"));
+  const inside = (o) => (o > at("{c1}") && o < at("{c1}", 4)) || (o > at("{/c1}") && o < at("{/c1}", 5));
+  const stops = [];
+  for (let i = 0; i < 12; i += 1) {
+    await page.key("→");
+    await page.quiet();
+    stops.push((await page.caret()).focus);
+  }
+  assert.ok(!stops.some(inside), `→ stopped inside a marker: ${stops.join(",")}`);
+  assert.ok(stops.includes(at("this")) && stops.includes(at("{/c1}", 5)), `→ skipped a marker edge: ${stops.join(",")}`);
+  // A click on the middle of each drawn marker box lands on an edge of that marker. The walk
+  // above left the block, so the caret goes back into the comment first.
+  await place(page, at("this", 2));
+  for (const edge of ["start", "end"]) {
+    const pt = await page.eval(`(() => { const el = [...document.querySelectorAll("#editor .md-comment-marker")].find((m) => m.dataset.edge === "${edge}"); const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await page.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 });
+    await page.click(pt.x, pt.y);
+    await page.quiet();
+    const focus = (await page.caret()).focus;
+    assert.ok(!inside(focus), `a click on the ${edge} marker put the caret at ${focus}, inside it`);
+  }
+});
+
+test("handles: dragging the end handle past now moves only that marker, in one edit, and Ctrl+Z puts it back", async (t) => {
+  const { hub, page } = await setup(t, { "a.md": HDOC });
+  await open(page, "a.md");
+  await place(page, 3);
+  await hover(page, at("this", 2));
+  const target = await page.eval(`window.__qaClickPoint(${at(".")})`);
+  const edits = await dragHandle(page, "end", target);
+  assert.equal(edits.length, 1, `the drag sent ${edits.length} edits`);
+  const after = await bytes(hub, "a.md");
+  assert.equal(split(after).prose, LEAD + "See {c1}this now{/c1}.");
+  assert.equal(fenceOf(after, "c1"), fenceOf(HDOC, "c1"), "the thread changed");
+  whole(after, "end handle dragged");
+  await page.key("z", ["Ctrl"]);
+  await page.quiet();
+  assert.equal(await bytes(hub, "a.md"), HDOC, "Ctrl+Z did not put the end marker back");
+});
+
+test("handles: dragging the start handle before See moves only that marker, and Ctrl+Z puts it back", async (t) => {
+  const { hub, page } = await setup(t, { "a.md": HDOC });
+  await open(page, "a.md");
+  await place(page, 3);
+  await hover(page, at("this", 2));
+  const target = await page.eval(`window.__qaClickPoint(${LEAD.length})`);
+  const edits = await dragHandle(page, "start", target);
+  assert.equal(edits.length, 1, `the drag sent ${edits.length} edits`);
+  const after = await bytes(hub, "a.md");
+  assert.equal(split(after).prose, LEAD + "{c1}See this{/c1} now.");
+  assert.equal(fenceOf(after, "c1"), fenceOf(HDOC, "c1"), "the thread changed");
+  whole(after, "start handle dragged");
+  await page.key("z", ["Ctrl"]);
+  await page.quiet();
+  assert.equal(await bytes(hub, "a.md"), HDOC, "Ctrl+Z did not put the start marker back");
+});
+
+test("handles: a drag that would empty the comment, cross another, or reach into a fence or a table writes nothing, and the handle goes back", async (t) => {
+  const crossed = "See {c1}this{/c1} and {c2}that{/c2}.";
+  const fenced = `${P}\n\n\`\`\`python\nx = 1\n\`\`\`\n`;
+  const table = `${P}\n\n| a | b |\n| --- | --- |\n| c | d |\n`;
+  const docs = {
+    "empty.md": HDOC,
+    "cross.md": LEAD + crossed + CM("c1") + CM("c2").slice(1),
+    "fence.md": LEAD + fenced + CM("c1"),
+    "table.md": LEAD + table + CM("c1"),
+  };
+  const { hub, page } = await setup(t, docs);
+  const cases = [
+    ["empty.md", "an empty comment", async () => (await handles(page)).find((h) => h.edge === "start")],
+    ["cross.md", "crossing c2", () => page.eval(`window.__qaClickPoint(${LEAD.length + crossed.indexOf("that") + 2})`)],
+    ["fence.md", "into a fence", () => page.eval(`window.__qaClickPoint(${LEAD.length + fenced.indexOf("x = 1") + 2})`)],
+    ["table.md", "into a table", () => page.eval(`window.__qaClickPoint(${LEAD.length + table.indexOf("| c |") + 2})`)],
+  ];
+  for (const [file, label, target] of cases) {
+    await open(page, file);
+    await place(page, 3);
+    await hover(page, at("this", 2));
+    const before = (await handles(page)).find((h) => h.edge === "end");
+    assert.ok(before, `${label}: no end handle`);
+    const to = await target();
+    assert.ok(to, `${label}: no target point`);
+    const edits = await dragHandle(page, "end", { x: to.x, y: to.y });
+    assert.equal(edits.length, 0, `${label}: the drag sent ${edits.length} edits`);
+    const after = await bytes(hub, file);
+    assert.equal(after, docs[file], `${label}: the bytes changed`);
+    whole(after, label);
+    await hover(page, at("this", 2));
+    const back = (await handles(page)).find((h) => h.edge === "end");
+    assert.ok(back && Math.abs(back.x - before.x) < 2 && Math.abs(back.y - before.y) < 2, `${label}: the end handle did not go back (${JSON.stringify(back)} vs ${JSON.stringify(before)})`);
+  }
+});
+
+test("handles: a drag into a block another session holds is refused with 409, and that session's name flashes", async (t) => {
+  const doc = `${LEAD}${P}\n\nHeld line stays.\n`;
+  const { hub, browser, page: A } = await setup(t, { "a.md": doc + CM("c1") });
+  const { session } = await browser.newSession();
+  const B = new Page(session, hub.port);
+  await B.init();
+  await B.login(OTHER);
+  await open(A, "a.md");
+  await open(B, "a.md");
+  const held = doc.indexOf("Held") + 2;
+  await place(B, held);
+  await place(A, 3);
+  await sleep(300);
+  await hover(A, at("this", 2));
+  const into = await A.eval(`window.__qaClickPoint(${held})`);
+  const since = A.frames.length;
+  await dragHandle(A, "end", into);
+  const answer = A.frames.slice(since).find((frame) => frame.dir === "in" && frame.data && frame.data.type === "error");
+  assert.ok(answer, "the hub sent no refusal");
+  assert.equal(answer.data.status, 409);
+  assert.equal(await bytes(hub, "a.md"), doc + CM("c1"), "the bytes changed");
+  whole(await bytes(hub, "a.md"), "refused drag");
+  await A.until(() => A.eval(`window.__qa.flashes.some((flash) => flash.name.includes(${JSON.stringify(OTHER)}))`), `${OTHER}'s name flashes`, 3000);
+});
+
+// The raw view draws no comment highlight, only the markers as text. The ticket's acceptance
+// predates the raw view, so whether handles belong there is a question for the owner.
+test("handles: in the raw view the handles show over the comment and dragging one moves that marker", { todo: "open question: the raw view draws markers as text and no highlight; y8qvyrzz predates it" }, async (t) => {
+  const { hub, page } = await setup(t, { "a.md": HDOC });
+  await open(page, "a.md");
+  await page.until(() => page.eval(`!!document.querySelector(${JSON.stringify(TOGGLE)})`), "the raw view toggle");
+  const pt = await page.eval(`(() => { const r = document.querySelector(${JSON.stringify(TOGGLE)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  await page.click(pt.x, pt.y);
+  await page.until(() => page.eval(`document.getElementById("editor").classList.contains("md-source")`), "the raw view");
+  await page.quiet();
+  await place(page, 3);
+  await hover(page, at("this", 2));
+  const shown = await handles(page);
+  assert.deepEqual(shown.map((h) => h.edge).sort(), ["end", "start"], `handles in the raw view: ${JSON.stringify(shown)}`);
+  const target = await page.eval(`window.__qaClickPoint(${at(".")})`);
+  const edits = await dragHandle(page, "end", target);
+  assert.equal(edits.length, 1, `the drag sent ${edits.length} edits`);
+  const after = await bytes(hub, "a.md");
+  assert.equal(split(after).prose, LEAD + "See {c1}this now{/c1}.");
+  whole(after, "raw view end handle");
 });
