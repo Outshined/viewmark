@@ -7779,8 +7779,9 @@ test("Enter on notes/idea creates notes/idea.md and a file message shows the row
     assert.equal(labeled("notes").length, 1);
     assert.equal(labeled("idea.md").length, 0);
     const tree = walkNodes(nav, (node) => node.classList && node.classList.contains("file-tree"))[0];
-    assert.equal(tree.parentElement, fileBlock());
-    assert.ok(fileBlock().childNodes.indexOf(field) < fileBlock().childNodes.indexOf(tree));
+    assert.equal(tree.parentElement.classList.contains("md-file-drawer"), true);
+    assert.equal(tree.parentElement.parentElement, fileBlock());
+    assert.ok(fileBlock().childNodes.indexOf(field) < fileBlock().childNodes.indexOf(tree.parentElement));
     assert.equal(walkNodes(tree, (node) => node.classList && node.classList.contains("md-new-file")).length, 0);
     field.value = "notes/idea";
     field.listeners.keydown({ key: "Enter", preventDefault() {} });
@@ -7935,7 +7936,8 @@ test("commit button checkpoints the active repo", () => {
     assert.equal(nav.childNodes[0].childNodes[0].textContent, "Repo");
     assert.equal(nav.childNodes[1].classList.contains("file-block"), true);
     assert.equal(plus.parentElement.classList.contains("md-pane-head"), true);
-    assert.equal(tree.parentElement, nav.childNodes[1]);
+    assert.equal(tree.parentElement.classList.contains("md-file-drawer"), true);
+    assert.equal(tree.parentElement.parentElement, nav.childNodes[1]);
     const select = nav.childNodes[0].childNodes[1];
     transport.deliver({
       type: "repos",
@@ -8263,7 +8265,8 @@ test("T-ticket-rows", () => {
     assert.equal(tickets.parentElement, drawer);
     assert.equal(drawer.parentElement, block);
     assert.equal(block.childNodes.at(-1), drawer);
-    assert.equal(tree.parentElement, fileBlock);
+    assert.equal(tree.parentElement.classList.contains("md-file-drawer"), true);
+    assert.equal(tree.parentElement.parentElement, fileBlock);
     assert.equal(mounted.nav.childNodes.includes(head), false);
     assert.equal(mounted.nav.childNodes.includes(tickets), false);
     assert.equal(mounted.nav.childNodes[0].classList.contains("md-repo-row"), true);
@@ -8412,7 +8415,15 @@ test("T-file-drawer", () => {
   assert.match(blockRule, /flex-direction:\s*column/);
   assert.match(blockRule, /flex:\s*1 1 0/);
   assert.match(blockRule, /min-height:\s*0/);
+  assert.match(blockRule, /min-width:\s*0/);
   assert.equal(/overflow:\s*auto/.test(blockRule), false);
+  const drawerRule = css.match(/\.md-file-drawer\s*\{[^}]*\}/)[0];
+  assert.match(drawerRule, /position:\s*relative/);
+  assert.match(drawerRule, /flex:\s*1 1 0/);
+  assert.match(drawerRule, /min-width:\s*0/);
+  assert.match(drawerRule, /min-height:\s*0/);
+  assert.match(drawerRule, /width:\s*100%/);
+  assert.match(drawerRule, /transition:\s*width 0\.5s,\s*left 0\.5s/);
   const wideRule = css.match(/\.md-file-wide\s*\{[^}]*\}/)[0];
   assert.match(wideRule, /position:\s*relative/);
   assert.equal(/position:\s*fixed/.test(wideRule), false);
@@ -8440,12 +8451,23 @@ test("T-file-drawer", () => {
     const view = createEditor(mounted.root, "x", 0, transport);
     transport.deliver({ type: "docs", files: ["alpha.md", "bravo.md"] });
     const fileBlock = byClass(mounted.nav, "file-block")[0];
-    const tree = byClass(fileBlock, "file-tree")[0];
+    const panel = byClass(fileBlock, "md-file-drawer")[0];
+    const tree = byClass(panel, "file-tree")[0];
     const head = byClass(fileBlock, "md-pane-head")[0];
+    const columnStays = () => {
+      assert.equal(fileBlock.classList.contains("md-file-wide"), false);
+      assert.equal(fileBlock.styleProps.width, undefined);
+      assert.equal(fileBlock.styleProps.top, undefined);
+      assert.equal(fileBlock.styleProps.height, undefined);
+      assert.equal(fileBlock.styleProps.left, undefined);
+      assert.equal(head.parentElement, fileBlock);
+      assert.equal(panel.parentElement, fileBlock);
+    };
     assert.equal(head.parentElement, fileBlock);
-    assert.equal(tree.parentElement, fileBlock);
-    assert.equal(byClass(tree, "md-pane-head").length, 0);
-    assert.ok(fileBlock.childNodes.indexOf(head) < fileBlock.childNodes.indexOf(tree));
+    assert.equal(panel.parentElement, fileBlock);
+    assert.equal(tree.parentElement, panel);
+    assert.equal(byClass(panel, "md-pane-head").length, 0);
+    assert.ok(fileBlock.childNodes.indexOf(head) < fileBlock.childNodes.indexOf(panel));
     const buttons = byClass(tree, "md-file");
     assert.equal(buttons.length, 2);
     const buttonNodes = buttons.slice();
@@ -8453,16 +8475,16 @@ test("T-file-drawer", () => {
     buttons[1].scrollWidth = 300;
     const plus = byClass(head, "md-new-file")[0];
     plus.scrollWidth = 5000;
-    fileBlock.getBoundingClientRect = () => ({ top: 18, left: 8, right: 168, bottom: 218, width: 160, height: 200 });
+    panel.getBoundingClientRect = () => ({ top: 18, left: 8, right: 168, bottom: 218, width: 160, height: 200 });
     globalThis.window.getComputedStyle = (el) => (
-      el === fileBlock
+      el === panel
         ? { paddingLeft: "20px", paddingRight: "20px" }
         : { paddingLeft: "0px", paddingRight: "0px" }
     );
     globalThis.window.innerWidth = 400;
     fileBlock.listeners.pointerenter();
-    assert.equal(fileBlock.classList.contains("md-file-wide"), true);
-    assert.equal(fileBlock.classList.contains("md-ticket-wide"), false);
+    assert.equal(panel.classList.contains("md-file-wide"), true);
+    assert.equal(panel.classList.contains("md-ticket-wide"), false);
     assert.equal(fileBlock.parentElement, mounted.nav);
     assert.equal(byClass(fileBlock, "md-pane-head")[0], head);
     const wideButtons = byClass(tree, "md-file");
@@ -8470,85 +8492,122 @@ test("T-file-drawer", () => {
     for (let i = 0; i < buttonNodes.length; i += 1) assert.equal(wideButtons[i], buttonNodes[i]);
     assert.equal(byClass(fileBlock, "ticket-tree").length, 0);
     assert.equal(byClass(fileBlock, "md-ticket").length, 0);
-    assert.equal(fileBlock.styleProps.top, undefined);
-    assert.equal(fileBlock.styleProps.height, undefined);
-    assert.equal(fileBlock.styleProps.left, undefined);
-    assert.equal(fileBlock.styleProps.width, "320px");
-    assert.equal(fileBlock.styleProps.transition, "");
+    assert.equal(panel.styleProps.top, undefined);
+    assert.equal(panel.styleProps.height, undefined);
+    assert.equal(panel.styleProps.left, undefined);
+    assert.equal(panel.styleProps.width, "320px");
+    assert.equal(panel.styleProps.transition, "");
+    columnStays();
     fileBlock.listeners.pointerleave();
     assert.equal(pending.length, 1);
     assert.equal(pending[0].ms, 200);
-    assert.equal(fileBlock.classList.contains("md-file-wide"), true);
-    assert.equal(fileBlock.styleProps.width, "320px");
+    assert.equal(panel.classList.contains("md-file-wide"), true);
+    assert.equal(panel.styleProps.width, "320px");
     fileBlock.listeners.pointerenter();
     assert.equal(pending.length, 0);
-    assert.equal(fileBlock.classList.contains("md-file-wide"), true);
-    assert.equal(fileBlock.styleProps.top, undefined);
-    assert.equal(fileBlock.styleProps.height, undefined);
-    assert.equal(fileBlock.styleProps.left, undefined);
-    assert.equal(fileBlock.styleProps.width, "320px");
+    assert.equal(panel.classList.contains("md-file-wide"), true);
+    assert.equal(panel.styleProps.top, undefined);
+    assert.equal(panel.styleProps.height, undefined);
+    assert.equal(panel.styleProps.left, undefined);
+    assert.equal(panel.styleProps.width, "320px");
     fileBlock.listeners.pointerleave();
     assert.equal(pending.length, 1);
     pending.pop().fn();
-    assert.equal(fileBlock.classList.contains("md-file-wide"), true);
-    assert.equal(fileBlock.styleProps.width, "160px");
+    assert.equal(panel.classList.contains("md-file-wide"), true);
+    assert.equal(panel.styleProps.width, "160px");
     assert.equal(pending[0].ms, 500);
     fileBlock.listeners.pointerenter();
     assert.equal(pending.length, 0);
-    assert.equal(fileBlock.classList.contains("md-file-wide"), true);
-    assert.equal(fileBlock.styleProps.width, "320px");
+    assert.equal(panel.classList.contains("md-file-wide"), true);
+    assert.equal(panel.styleProps.width, "320px");
     fileBlock.listeners.pointerleave();
     pending.pop().fn();
     pending.pop().fn();
-    assert.equal(fileBlock.classList.contains("md-file-wide"), false);
-    assert.equal(fileBlock.styleProps.top, undefined);
-    assert.equal(fileBlock.styleProps.height, undefined);
-    assert.equal(fileBlock.styleProps.left, undefined);
-    assert.equal(fileBlock.styleProps.width, "");
-    assert.equal(fileBlock.styleProps.transition, "");
+    assert.equal(panel.classList.contains("md-file-wide"), false);
+    assert.equal(panel.styleProps.top, undefined);
+    assert.equal(panel.styleProps.height, undefined);
+    assert.equal(panel.styleProps.left, undefined);
+    assert.equal(panel.styleProps.width, "");
+    assert.equal(panel.styleProps.transition, "");
+    columnStays();
     buttons[0].scrollWidth = 0;
     delete buttons[1].scrollWidth;
     globalThis.window.innerWidth = 100;
     fileBlock.listeners.pointerenter();
-    assert.equal(fileBlock.styleProps.width, "160px");
-    assert.equal(fileBlock.styleProps.top, undefined);
-    assert.equal(fileBlock.styleProps.height, undefined);
-    assert.equal(fileBlock.styleProps.left, undefined);
+    assert.equal(panel.styleProps.width, "160px");
+    assert.equal(panel.styleProps.top, undefined);
+    assert.equal(panel.styleProps.height, undefined);
+    assert.equal(panel.styleProps.left, undefined);
     fileBlock.listeners.pointerleave();
     pending.pop().fn();
     pending.pop().fn();
     buttons[1].scrollWidth = 300;
     globalThis.window.innerWidth = 0;
     fileBlock.listeners.pointerenter();
-    assert.equal(fileBlock.styleProps.width, "340px");
+    assert.equal(panel.styleProps.width, "340px");
     fileBlock.listeners.pointerleave();
     pending.pop().fn();
     pending.pop().fn();
     globalThis.window.getComputedStyle = (el) => (
-      el === fileBlock
+      el === panel
         ? { paddingLeft: "20px", paddingRight: "20px", borderLeft: "1px", borderRight: "1px" }
         : { paddingLeft: "0px", paddingRight: "0px" }
     );
     fileBlock.listeners.pointerenter();
-    assert.equal(fileBlock.styleProps.width, "342px");
+    assert.equal(panel.styleProps.width, "342px");
     fileBlock.listeners.pointerleave();
     pending.pop().fn();
     pending.pop().fn();
     globalThis.window.getComputedStyle = (el) => (
-      el === fileBlock
+      el === panel
         ? { paddingLeft: "20px", paddingRight: "20px" }
         : { paddingLeft: "0px", paddingRight: "0px" }
     );
     delete globalThis.window.innerWidth;
     fileBlock.listeners.pointerenter();
-    assert.equal(fileBlock.styleProps.width, "340px");
+    assert.equal(panel.styleProps.width, "340px");
     globalThis.window.innerWidth = 1000;
     fileBlock.listeners.pointerleave();
     pending.pop().fn();
     pending.pop().fn();
     buttons[1].scrollWidth = 100;
     fileBlock.listeners.pointerenter();
-    assert.equal(fileBlock.styleProps.width, "140px");
+    assert.equal(panel.styleProps.width, "140px");
+    const enter = fileBlock.listeners.pointerenter;
+    let intrinsic = 220;
+    const origCreate = document.createElement;
+    document.createElement = (tag) => {
+      const el = origCreate(tag);
+      if (String(tag).toUpperCase() !== "BUTTON") return el;
+      Object.defineProperty(el, "scrollWidth", {
+        configurable: true,
+        get() {
+          const props = el.styleProps || {};
+          if (props.width === "max-content" && props.flex === "0 0 auto") return intrinsic;
+          return 900;
+        },
+      });
+      return el;
+    };
+    try {
+      transport.deliver({ type: "docs", files: ["alpha.md", "bravo.md"] });
+      assert.equal(fileBlock.listeners.pointerenter, enter);
+      assert.equal(panel.classList.contains("md-file-wide"), true);
+      assert.equal(panel.styleProps.width, "260px");
+      const sample = byClass(panel, "md-file")[0];
+      assert.equal(sample.styleProps.width, undefined);
+      assert.equal(sample.styleProps.flex, undefined);
+      assert.equal(sample.styleProps["min-width"], undefined);
+      columnStays();
+      intrinsic = 30;
+      transport.deliver({ type: "docs", files: ["a.md"] });
+      assert.equal(fileBlock.listeners.pointerenter, enter);
+      assert.equal(panel.classList.contains("md-file-wide"), true);
+      assert.equal(panel.styleProps.width, "70px");
+      columnStays();
+    } finally {
+      document.createElement = origCreate;
+    }
     fileBlock.listeners.pointerleave();
     assert.equal(pending.length, 1);
     assert.equal(pending[0].ms, 200);
@@ -8556,7 +8615,8 @@ test("T-file-drawer", () => {
     assert.equal(pending.length, 0);
     assert.equal(fileBlock.listeners.pointerenter, undefined);
     assert.equal(fileBlock.listeners.pointerleave, undefined);
-    assert.equal(fileBlock.classList.contains("md-file-wide"), true);
+    assert.equal(panel.classList.contains("md-file-wide"), true);
+    assert.equal(fileBlock.classList.contains("md-file-wide"), false);
   } finally {
     globalThis.setTimeout = realSetTimeout;
     globalThis.clearTimeout = realClearTimeout;
@@ -8849,7 +8909,8 @@ test("T-pane-head", () => {
     const ticketBlock = byClass(mounted.nav, "ticket-block")[0];
     const tree = byClass(mounted.nav, "file-tree")[0];
     assert.equal(mounted.nav.childNodes[1], fileBlock);
-    assert.equal(tree.parentElement, fileBlock);
+    assert.equal(tree.parentElement.classList.contains("md-file-drawer"), true);
+    assert.equal(tree.parentElement.parentElement, fileBlock);
     assert.equal(fileBlock.parentElement, mounted.nav);
     const heads = byClass(mounted.nav, "md-pane-head");
     assert.equal(heads.length, 2);
@@ -8875,7 +8936,7 @@ test("T-pane-head", () => {
     assert.deepEqual(iconPaths(ticketsHead.childNodes[2]), ["M22 3H2l8 9.46V19l4 2v-6.54L22 3z"]);
     const name = byClass(fileBlock, "md-new-name")[0];
     assert.ok(fileBlock.childNodes.indexOf(filesHead) < fileBlock.childNodes.indexOf(name));
-    assert.ok(fileBlock.childNodes.indexOf(name) < fileBlock.childNodes.indexOf(tree));
+    assert.ok(fileBlock.childNodes.indexOf(name) < fileBlock.childNodes.indexOf(tree.parentElement));
     view.destroy();
   } finally {
     mounted.restore();
@@ -9439,7 +9500,8 @@ test("file titles and move drops", () => {
     const fileBlock = byClass(nav, "file-block")[0];
     const tree = byClass(nav, "file-tree")[0];
     assert.equal(block.parentElement, nav);
-    assert.equal(tree.parentElement, fileBlock);
+    assert.equal(tree.parentElement.classList.contains("md-file-drawer"), true);
+    assert.equal(tree.parentElement.parentElement, fileBlock);
     assert.equal(fileBlock.parentElement, nav);
     assert.equal(byClass(nav, "ticket-tree").length, 1);
     assert.equal(byClass(nav, "ticket-tree")[0].parentElement.classList.contains("md-ticket-drawer"), true);

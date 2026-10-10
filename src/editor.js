@@ -209,6 +209,22 @@ function ensureFileBlock(nav) {
   return block;
 }
 
+// The head stays on the block. Only this panel widens, so the buttons do not move.
+function ensureFileDrawer(block) {
+  if (!block || typeof document === "undefined" || typeof document.createElement !== "function") return null;
+  let drawer = findClassChild(block, "md-file-drawer");
+  if (!drawer) {
+    drawer = document.createElement("div");
+    drawer.className = "md-file-drawer";
+  }
+  const field = findClassChild(block, "md-new-name");
+  const head = findClassChild(block, "md-pane-head");
+  if (field) placeAfter(block, field, drawer);
+  else if (head) placeAfter(block, head, drawer);
+  else if (drawer.parentElement !== block) block.appendChild(drawer);
+  return drawer;
+}
+
 function ensurePaneHead(block, title) {
   let head = findClassChild(block, "md-pane-head");
   if (!head) {
@@ -1395,8 +1411,15 @@ function cssPx(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function fileTreeOf(block) {
+  if (!block) return null;
+  const direct = findClassChild(block, "file-tree");
+  if (direct) return direct;
+  return findClassChild(findClassChild(block, "md-file-drawer"), "file-tree");
+}
+
 function fileTreeButtons(block) {
-  const tree = findClassChild(block, "file-tree");
+  const tree = fileTreeOf(block);
   const buttons = [];
   const walk = (node) => {
     for (const child of childArray(node)) {
@@ -1409,13 +1432,73 @@ function fileTreeButtons(block) {
   return buttons;
 }
 
+function inlineStyle(el, name) {
+  if (!el || !el.style) return { had: false, value: "" };
+  if (typeof el.style.getPropertyValue === "function") {
+    const value = el.style.getPropertyValue(name) || "";
+    return { had: value !== "", value };
+  }
+  if (el.styleProps && Object.prototype.hasOwnProperty.call(el.styleProps, name)) {
+    return { had: true, value: el.styleProps[name] };
+  }
+  return { had: false, value: "" };
+}
+
+function restoreInline(el, name, saved) {
+  if (!el || !el.style) return;
+  if (saved.had) {
+    setStyle(el, name, saved.value);
+    return;
+  }
+  if (typeof el.style.removeProperty === "function") el.style.removeProperty(name);
+  if (el.styleProps) delete el.styleProps[name];
+}
+
+// A stretched row reports its box. Max-content is the title, which is what sizes the pane.
+function contentScrollWidth(button) {
+  const read = () => {
+    const value = button && button.scrollWidth;
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+  };
+  if (!button || !button.style || typeof button.style.setProperty !== "function") return read();
+  const names = ["width", "flex", "min-width"];
+  const saved = names.map((name) => [name, inlineStyle(button, name)]);
+  try {
+    setStyle(button, "width", "max-content");
+    setStyle(button, "flex", "0 0 auto");
+    setStyle(button, "min-width", "max-content");
+    return read();
+  } finally {
+    for (const [name, previous] of saved) restoreInline(button, name, previous);
+  }
+}
+
+// A nested row's offset sits outside the button's scrollWidth.
+function buttonIndent(button, tree) {
+  if (!button || !tree || typeof button.getBoundingClientRect !== "function" || typeof tree.getBoundingClientRect !== "function") return 0;
+  let buttonRect = null;
+  let treeRect = null;
+  try {
+    buttonRect = button.getBoundingClientRect();
+    treeRect = tree.getBoundingClientRect();
+  } catch {
+    return 0;
+  }
+  if (!buttonRect || !treeRect) return 0;
+  const delta = buttonRect.left - treeRect.left;
+  return typeof delta === "number" && Number.isFinite(delta) && delta > 0 ? delta : 0;
+}
+
 // The title's scrollWidth is the button. A zero or missing one cannot size the pane.
 function widestFileButton(block) {
+  const tree = fileTreeOf(block);
   let best = 0;
   for (const button of fileTreeButtons(block)) {
-    const scroll = button.scrollWidth;
-    if (typeof scroll !== "number" || !Number.isFinite(scroll) || scroll <= 0) continue;
-    if (scroll > best) best = scroll;
+    const extra = buttonIndent(button, tree);
+    const scroll = contentScrollWidth(button);
+    if (!(scroll > 0)) continue;
+    const width = scroll + extra;
+    if (width > best) best = width;
   }
   return best;
 }
@@ -1440,7 +1523,7 @@ function horizontalPadding(el) {
   return cssPx(style.paddingLeft) + cssPx(style.paddingRight);
 }
 
-// The same border-box also eats the file-block border. The button's scrollWidth does not.
+// The sized pane's border sits outside the button's scrollWidth.
 function horizontalBorder(el) {
   const style = readComputedStyle(el);
   if (!style) return 0;
@@ -3057,7 +3140,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function fileTreeNode() {
     const nav = filesNav();
-    return findClassChild(findClassChild(nav, "file-block"), "file-tree") || findClassChild(nav, "file-tree");
+    const block = findClassChild(nav, "file-block");
+    return fileTreeOf(block) || findClassChild(nav, "file-tree");
   }
 
   function clearDropMark() {
@@ -3403,25 +3487,37 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     treeDrop = null;
   }
 
+  function syncWideFileDrawer(panel) {
+    if (!panel || !panel.classList || !panel.classList.contains("md-file-wide")) return;
+    const compact = Number.parseFloat(fileDrawerCompact);
+    const rect = Number.isFinite(compact) ? { width: compact } : null;
+    const width = `${filePaneWidth(panel, rect)}px`;
+    fileDrawerWide = width;
+    setStyle(panel, "width", width);
+  }
+
   function renderFileTree(files, seed) {
     fileList = Array.isArray(files) ? files : [];
     const nav = filesNav();
     if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
     const block = ensureFileBlock(nav);
-    let tree = findClassChild(block, "file-tree") || findClassChild(nav, "file-tree");
+    const drawer = ensureFileDrawer(block);
+    if (!drawer) return;
+    let tree = findClassChild(drawer, "file-tree") || findClassChild(block, "file-tree") || findClassChild(nav, "file-tree");
     if (!tree) {
       tree = document.createElement("div");
       tree.className = "file-tree";
     }
-    const field = findClassChild(block, "md-new-name") || findDeep(block, "md-new-name");
-    const head = findClassChild(block, "md-pane-head");
-    if (field) placeAfter(block, field, tree);
-    else if (head) placeAfter(block, head, tree);
-    else block.appendChild(tree);
+    if (tree.parentElement !== drawer) {
+      detachNode(tree);
+      drawer.appendChild(tree);
+    }
     bindTreeDrop(tree);
-    if (!tree || typeof tree.replaceChildren !== "function") return;
+    if (typeof tree.replaceChildren !== "function") return;
     if (seed) seedOpen(openPath);
     tree.replaceChildren(...renderEntries(buildFileTree(fileList)));
+    // The open panel tracks the new rows. Another hover is not required.
+    syncWideFileDrawer(drawer);
   }
 
   function clampCaret(pos, length) {
@@ -5357,26 +5453,30 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof field.setAttribute === "function") field.setAttribute("hidden", "");
   }
 
+  function fileDrawerEl() {
+    return findClassChild(fileBlockEl, "md-file-drawer");
+  }
+
   // A pointer that slips off and comes back inside 200ms keeps the wide list.
   function scheduleHideFileDrawer() {
     if (fileDrawerTimer != null) clearTimeout(fileDrawerTimer);
     fileDrawerTimer = setTimeout(() => {
       fileDrawerTimer = null;
-      const block = fileBlockEl;
-      if (!block) return;
+      const panel = fileDrawerEl();
+      if (!panel) return;
       // The class has to stay until the width eases back, or the stylesheet transition never runs.
       if (!fileDrawerCompact) {
-        if (block.classList) block.classList.remove("md-file-wide");
-        setStyle(block, "width", "");
-        setStyle(block, "transition", "");
+        if (panel.classList) panel.classList.remove("md-file-wide");
+        setStyle(panel, "width", "");
+        setStyle(panel, "transition", "");
         return;
       }
-      setStyle(block, "width", fileDrawerCompact);
+      setStyle(panel, "width", fileDrawerCompact);
       fileDrawerTimer = setTimeout(() => {
         fileDrawerTimer = null;
-        if (block.classList) block.classList.remove("md-file-wide");
-        setStyle(block, "width", "");
-        setStyle(block, "transition", "");
+        if (panel.classList) panel.classList.remove("md-file-wide");
+        setStyle(panel, "width", "");
+        setStyle(panel, "transition", "");
       }, 500);
     }, 200);
   }
@@ -5404,23 +5504,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         clearTimeout(fileDrawerTimer);
         fileDrawerTimer = null;
       }
-      const alreadyWide = Boolean(block.classList && block.classList.contains("md-file-wide"));
+      const panel = fileDrawerEl();
+      if (!panel) return;
+      const alreadyWide = Boolean(panel.classList && panel.classList.contains("md-file-wide"));
       if (alreadyWide) {
-        setStyle(block, "width", fileDrawerWide);
+        setStyle(panel, "width", fileDrawerWide);
         return;
       }
-      // Transition would start from the flex width. Commit the compact width with
-      // the transition off, then widen. Top, height, and left stay with the column.
-      const rect = typeof block.getBoundingClientRect === "function" ? block.getBoundingClientRect() : null;
-      const width = `${filePaneWidth(block, rect)}px`;
+      // The head stays in the column. Commit the panel's compact width with the
+      // transition off, then ease. Top, height, and left stay put.
+      const rect = typeof panel.getBoundingClientRect === "function" ? panel.getBoundingClientRect() : null;
+      const width = `${filePaneWidth(panel, rect)}px`;
       fileDrawerCompact = rect && typeof rect.width === "number" && Number.isFinite(rect.width) ? `${rect.width}px` : "";
       fileDrawerWide = width;
-      setStyle(block, "transition", "none");
-      if (rect && typeof rect.width === "number" && Number.isFinite(rect.width)) setStyle(block, "width", `${rect.width}px`);
-      if (block.classList) block.classList.add("md-file-wide");
-      void block.offsetWidth;
-      setStyle(block, "transition", "");
-      setStyle(block, "width", width);
+      setStyle(panel, "transition", "none");
+      if (rect && typeof rect.width === "number" && Number.isFinite(rect.width)) setStyle(panel, "width", `${rect.width}px`);
+      if (panel.classList) panel.classList.add("md-file-wide");
+      void panel.offsetWidth;
+      setStyle(panel, "transition", "");
+      setStyle(panel, "width", width);
     };
     fileDrawerLeave = () => {
       scheduleHideFileDrawer();
