@@ -2873,6 +2873,22 @@ export function insert(state, text) {
   return applySplice(state, from, to, value, from + value.length);
 }
 
+// insert refuses a splice that leaves half a comment mark. Raw mode does not
+// interpret the marker, so the key's bytes are stored as they were typed.
+export function insertLiteral(state, text) {
+  const nl = fileNewline(state.doc);
+  const value = (typeof text === "string" ? text : "").replace(/\r\n|\n|\r/g, nl);
+  const from = Math.min(state.anchor, state.cursor);
+  const to = Math.max(state.anchor, state.cursor);
+  if (value === "" && from === to) return state;
+  const next = splice(state, from, to, value, from + value.length);
+  if (next === state) return state;
+  return {
+    ...next,
+    changes: [{ from, to, inserted: value, removed: state.doc.slice(from, to) }],
+  };
+}
+
 // Move a selection to dest. A drop inside it, or on either edge, changes nothing.
 // One undo step. The change list is the delete and the insert, in application order.
 export function moveText(state, dest) {

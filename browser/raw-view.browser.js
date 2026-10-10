@@ -204,7 +204,7 @@ test("toggle: one undo history covers both modes", async (t) => {
   assert.equal((await page.caret()).focus, 5, "the second undo did not restore the caret");
 });
 
-test("toggle (default, a question for the owner): the mode belongs to the tab, across another file and a reload, and a new tab starts rendered", async (t) => {
+test("toggle: the mode does not stick across another file, a reload, or a new tab", async (t) => {
   const { hub, page, browser } = await setup(t, { "a.md": "alpha\n", "b.md": "beta\n" });
   await open(page, "a.md");
   await toggle(page);
@@ -214,9 +214,9 @@ test("toggle (default, a question for the owner): the mode belongs to the tab, a
   await page.click(fileButton.x, fileButton.y);
   await page.until(() => page.frames.slice(since).some((f) => f.dir === "in" && f.data && f.data.type === "file" && f.data.path === "b.md"), "b.md opened from the files list");
   await page.quiet();
-  assert.equal(await isRaw(page), true, "opening another file in the tab left raw mode");
+  assert.equal(await isRaw(page), false, "opening another file stayed in raw mode");
   await open(page, "a.md");
-  assert.equal(await isRaw(page), true, "a reload left raw mode");
+  assert.equal(await isRaw(page), false, "a reload stayed in raw mode");
   const C = await secondTab(browser, hub);
   await open(C, "a.md");
   assert.equal(await isRaw(C), false, "a new tab did not start rendered");
@@ -258,15 +258,15 @@ test("nothing rendered (default, a question for the owner): a code fence has no 
   assert.equal(all.size, 1, `raw lines use ${all.size} colors: ${[...all].join(", ")}`);
 });
 
-test("nothing rendered (default, a question for the owner): the comment cards are not drawn", async (t) => {
+test("nothing rendered: comment cards stay up", async (t) => {
   const { page } = await setup(t, { "a.md": "See {c1}this{/c1} now." + CM("c1") });
   await open(page, "a.md");
   const cards = () => page.eval(`document.querySelectorAll(".md-comment-card").length`);
   assert.equal(await cards(), 1);
   await toggle(page);
-  assert.equal(await cards(), 0, "a comment card is drawn in raw mode");
+  assert.equal(await cards(), 1, "a comment card is missing in raw mode");
   await toggle(page);
-  assert.equal(await cards(), 1, "the card did not come back in rendered mode");
+  assert.equal(await cards(), 1, "the card did not stay after the toggle back");
 });
 
 // ---- Sharing the file from raw mode --------------------------------------------------------

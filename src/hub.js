@@ -11,6 +11,7 @@ import {
   createState,
   deleteForward,
   insert,
+  insertLiteral,
   moveText,
   lockIndexAt,
   lockSpans,
@@ -507,7 +508,9 @@ function runOp(text, cursor, anchor, msg) {
     const state = createState(text, cursor, anchor);
     let next = state;
     if (msg.op === "insert") {
-      next = insert(state, typeof msg.text === "string" ? msg.text : "");
+      const typed = typeof msg.text === "string" ? msg.text : "";
+      next = insert(state, typed);
+      if (next === null && msg.raw === true) next = insertLiteral(state, typed);
       if (next && next !== state && Array.isArray(next.changes) && next.changes.length === 1
         && typeof msg.caret === "number" && Number.isFinite(msg.caret)) {
         const caret = Math.max(0, Math.min(next.doc.length, Math.trunc(msg.caret)));

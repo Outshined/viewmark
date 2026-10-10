@@ -2426,12 +2426,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (partial.op === "comment.add" || partial.op === "comment.delete" || partial.op === "comment.resolve") {
       lockThroughEnd();
     }
-    emit({
+    const message = {
       type: "edit",
       anchor: state.anchor,
       cursor: state.cursor,
       ...partial,
-    });
+    };
+    // The hub's insert refuses a splice that cuts a comment mark. Raw mode
+    // draws that mark, so the key is stored as typed.
+    if (sourceMode && message.op === "insert") message.raw = true;
+    emit(message);
   }
 
   function emitEdit(partial) {
@@ -5909,8 +5913,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // skipHidden snaps a press inside a comment mark to the mark's edge. That
     // edge is the selection boundary when the selection covers the mark, so the
     // unsnapped offset is what says this press is a drag of the selection.
+    // Source mode draws the marker, so the caret stays on the byte that was hit.
     const raw = pointMapped(event);
-    const skipped = raw == null ? null : skipHidden(state.doc, raw, "nearer");
+    const skipped = sourceMode || raw == null ? raw : skipHidden(state.doc, raw, "nearer");
     gestureOffset = skipped == null || sourceMode ? skipped : blankLinePress(event, skipped);
     gestureArmed = true;
     const from = Math.min(state.anchor, state.cursor);
