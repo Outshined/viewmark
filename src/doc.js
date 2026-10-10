@@ -2441,6 +2441,48 @@ function continueQuoteBars(blocks) {
   }
 }
 
+function addClassName(block, name) {
+  if (!block.classes) block.classes = [];
+  if (block.classes.includes(name)) return;
+  block.classes.push(name);
+}
+
+// A rendered picture has an image part and no text. A raw picture is still that line.
+function imageOnlyLine(block) {
+  const parts = block.parts || [];
+  let hasImage = false;
+  let hasText = false;
+  for (const part of parts) {
+    if (!part) continue;
+    if (part.type === "image") hasImage = true;
+    else if (part.type === "run" && part.text) hasText = true;
+  }
+  if (hasImage && !hasText) return true;
+  return imageLine(typeof block.text === "string" ? block.text : "");
+}
+
+function plainParagraph(block) {
+  if (!block || block.type !== "line" || block.empty) return false;
+  const classes = block.classes || [];
+  if (!classes.includes("md-p")) return false;
+  if (classes.includes("md-li") || classes.includes("md-ol") || classes.includes("md-quote") || classes.includes("md-hr")) return false;
+  if (imageOnlyLine(block)) return false;
+  return true;
+}
+
+// The half line under a paragraph is margin, outside the line box.
+// One blank between two paragraphs is that space, so the blank does not also take a line.
+function markParagraphSpace(blocks) {
+  for (const block of blocks) {
+    if (plainParagraph(block)) addClassName(block, "md-paragraph");
+  }
+  for (let i = 1; i < blocks.length - 1; i += 1) {
+    if (!blankBlock(blocks[i]) || blankBlock(blocks[i - 1]) || blankBlock(blocks[i + 1])) continue;
+    if (!plainParagraph(blocks[i - 1]) || !plainParagraph(blocks[i + 1])) continue;
+    addClassName(blocks[i], "md-paragraph-gap");
+  }
+}
+
 export function plan(doc, cursor) {
   const text = typeof doc === "string" ? doc : "";
   const built = structures(text);
@@ -2486,6 +2528,7 @@ export function plan(doc, cursor) {
   }
   // A blank run between two quoted blocks keeps the bar. The blanks stay blocks.
   continueQuoteBars(blocks);
+  markParagraphSpace(blocks);
   const lines = blocks.filter((block) => block.type === "line");
   const atoms = [];
   for (const block of blocks) {
