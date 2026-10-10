@@ -4148,7 +4148,41 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return event.clientY > bottom;
   }
 
+  // Chromium writes the selection clipboard only while it handles an input
+  // event, and only when the range is not empty. A range left on the focused
+  // editor is written again after navigation, so the next drag cannot replace
+  // it. Collapse before this click returns, then put the highlight back on a
+  // timer. The timer is not an input event, so the browser keeps the caret.
+  function releaseBrowserSelection(event) {
+    if (event && typeof event.button === "number" && event.button !== 0) return;
+    const view = typeof window !== "undefined" ? window : null;
+    const sel = view && typeof view.getSelection === "function" ? view.getSelection() : null;
+    if (!sel || typeof sel.collapse !== "function" || typeof sel.setBaseAndExtent !== "function") return;
+    if (!sel.rangeCount || sel.isCollapsed) return;
+    const anchorNode = sel.anchorNode;
+    const anchorOffset = sel.anchorOffset;
+    const focusNode = sel.focusNode;
+    const focusOffset = sel.focusOffset;
+    if (!anchorNode || !focusNode) return;
+    sel.collapse(focusNode, focusOffset);
+    if (typeof view.setTimeout !== "function") return;
+    view.setTimeout(() => {
+      if (anchorNode.isConnected === false || focusNode.isConnected === false) return;
+      const live = typeof view.getSelection === "function" ? view.getSelection() : null;
+      if (!live || typeof live.setBaseAndExtent !== "function") return;
+      live.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset);
+    }, 0);
+  }
+
   listen("click", (event) => {
+    try {
+      onEditorClick(event);
+    } finally {
+      releaseBrowserSelection(event);
+    }
+  });
+
+  function onEditorClick(event) {
     const armed = gestureArmed;
     gestureArmed = false;
     const stored = armed ? gestureOffset : null;
@@ -4244,7 +4278,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     render();
-  });
+  }
 
   listen("auxclick", (event) => {
     const target = event.target.nodeType === 1 ? event.target : event.target.parentElement;

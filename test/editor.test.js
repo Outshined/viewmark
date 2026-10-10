@@ -12454,3 +12454,67 @@ test("uwtqazmt crlf newlines", () => {
   assert.equal(cr6.doc, "one\r\ntwo\r\n");
   assert.equal(cr6.cursor, 3);
 });
+
+test("a click collapses a range for the browser and the timer restores it", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  const anchor = { nodeType: 3, isConnected: true };
+  const focus = { nodeType: 3, isConnected: true };
+  const calls = [];
+  let timer = null;
+  const selection = {
+    rangeCount: 1,
+    isCollapsed: false,
+    anchorNode: anchor,
+    anchorOffset: 1,
+    focusNode: focus,
+    focusOffset: 4,
+    collapse(node, offset) {
+      calls.push(["collapse", node, offset]);
+      this.isCollapsed = true;
+      this.anchorNode = node;
+      this.anchorOffset = offset;
+      this.focusNode = node;
+      this.focusOffset = offset;
+    },
+    setBaseAndExtent(node, offset, focusNode, focusOffset) {
+      calls.push(["restore", node, offset, focusNode, focusOffset]);
+      this.isCollapsed = false;
+      this.anchorNode = node;
+      this.anchorOffset = offset;
+      this.focusNode = focusNode;
+      this.focusOffset = focusOffset;
+    },
+  };
+  try {
+    createEditor(mounted.root, "alpha beta\n", 0, transport);
+    globalThis.window.getSelection = () => selection;
+    globalThis.window.setTimeout = (fn) => {
+      timer = fn;
+      return 0;
+    };
+    mounted.listeners.click({ button: 0, shiftKey: true, detail: 1, target: mounted.root, preventDefault() {} });
+    assert.deepEqual(calls, [["collapse", focus, 4]]);
+    assert.equal(typeof timer, "function");
+    timer();
+    assert.deepEqual(calls[1], ["restore", anchor, 1, focus, 4]);
+    assert.equal(selection.isCollapsed, false);
+
+    calls.length = 0;
+    timer = null;
+    selection.isCollapsed = false;
+    selection.rangeCount = 1;
+    selection.anchorNode = anchor;
+    selection.focusNode = focus;
+    mounted.listeners.click({ button: 1, shiftKey: true, detail: 1, target: mounted.root, preventDefault() {} });
+    assert.deepEqual(calls, []);
+    assert.equal(timer, null);
+
+    selection.isCollapsed = true;
+    mounted.listeners.click({ button: 0, shiftKey: true, detail: 1, target: mounted.root, preventDefault() {} });
+    assert.deepEqual(calls, []);
+    assert.equal(timer, null);
+  } finally {
+    mounted.restore();
+  }
+});
