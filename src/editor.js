@@ -4922,13 +4922,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return false;
   }
 
+  // Pointerdown on the button or inside the panel belongs to the click handler.
+  function closePopupOutside(panel, button, target) {
+    if (!panel || panel.hidden) return;
+    if (nodeWithin(panel, target) || nodeWithin(button, target)) return;
+    hideElement(panel);
+  }
+
   function onTicketPointerDown(event) {
     const target = event && event.target;
     for (const picker of ticketPickers) picker.dismissOutside(target);
-    if (!docMenuPanel || docMenuPanel.hidden) return;
-    // Pointerdown on the button or inside the panel belongs to the click handler.
-    if (nodeWithin(docMenuPanel, target) || nodeWithin(docMenuButton, target)) return;
-    hideElement(docMenuPanel);
+    const chrome = ticketChrome;
+    closePopupOutside(chrome && chrome.filterMenu, chrome && chrome.filterButton, target);
+    closePopupOutside(docMenuPanel, docMenuButton, target);
   }
 
   function bindTicketPointer() {
@@ -5558,7 +5564,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     filterButton.addEventListener("click", onFilter);
     for (const box of boxes) box.addEventListener("change", onChange);
     if (showAll && typeof showAll.addEventListener === "function") showAll.addEventListener("click", onShowAll);
-    const binding = { button, onClick, filterButton, onFilter, boxes, onChange, showAll, onShowAll };
+    const binding = { button, onClick, filterButton, filterMenu: menu, onFilter, boxes, onChange, showAll, onShowAll };
     ticketBindings.set(button, binding);
     ticketChrome = binding;
   }

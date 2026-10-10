@@ -9015,6 +9015,10 @@ test("T-ticket-filter", () => {
     filter.listeners.click({ preventDefault() {} });
     assert.equal(transport.sent.length, beforeOpen);
     assert.equal(menu.hidden, false);
+    mounted.listeners.pointerdown({ target: filter });
+    assert.equal(menu.hidden, false);
+    mounted.listeners.pointerdown({ target: box("low") });
+    assert.equal(menu.hidden, false);
     assert.equal(drawer.classList.contains("md-ticket-wide"), true);
     assert.equal(ticketNode(mounted.nav, "dddddddd").parentElement.classList.contains("ticket-tree"), true);
     assert.equal(byClass(ticketNode(mounted.nav, "cccccccc"), "md-ticket-expand").length, 0);
@@ -9053,6 +9057,8 @@ test("T-ticket-filter", () => {
     assert.equal(transport.sent.length, beforeClosed);
     assert.ok(ticketNode(mounted.nav, "eeeeeeee"));
     assert.equal(menu.hidden, false);
+    mounted.listeners.pointerdown({ target: mounted.root });
+    assert.equal(menu.hidden, true);
     view.destroy();
     assert.equal(filter.listeners.click, undefined);
     assert.equal(box("low").listeners.change, undefined);
