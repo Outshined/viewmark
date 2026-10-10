@@ -3753,7 +3753,7 @@ test("T-comment-add", async () => {
     const tableFull = path.join(dir, "notes/table.md");
     await fs.writeFile(tableFull, table);
     const row = await run(
-      commentArgs(port, "Ada", ["add", "notes/table.md", "--start", "3:2", "--end", "3:5", "--expect", "yes"]),
+      commentArgs(port, "Ada", ["add", "notes/table.md", "--start", "3:2", "--end", "3:9", "--expect", "yes | n"]),
       {},
       question,
     );
@@ -3761,6 +3761,13 @@ test("T-comment-add", async () => {
     assert.equal(row.stdout, "");
     assert.equal(row.stderr, "error 409\noverlaps a table\n");
     assert.equal(await fs.readFile(tableFull, "utf8"), table);
+    const cell = await run(
+      commentArgs(port, "Ada", ["add", "notes/table.md", "--start", "3:2", "--end", "3:5", "--expect", "yes"]),
+      {},
+      question,
+    );
+    assert.equal(cell.code, 0);
+    assert.equal((await fs.readFile(tableFull, "utf8")).includes("{c1}yes{/c1}"), true);
 
     const marked = "See {c1}fox{/c1}.\n";
     const splitFull = path.join(dir, "notes/split.md");

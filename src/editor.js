@@ -921,7 +921,11 @@ function renderImage(image) {
 
 function renderCell(tag, cell) {
   const el = document.createElement(tag);
-  el.textContent = cell.text;
+  if (cell.parts) {
+    for (const part of cell.parts) el.append(renderRun(part));
+  } else {
+    el.textContent = cell.text;
+  }
   el.dataset.start = String(cell.start);
   el.dataset.end = String(cell.end);
   return el;

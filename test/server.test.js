@@ -3410,14 +3410,15 @@ test("T-comment-add", async () => {
     await fs.writeFile(path.join(dir, "table.md"), table);
     const tabler = await hello(port, "Ada");
     try {
-      const cell = table.indexOf("yes");
+      const yes = table.indexOf("yes");
+      const no = table.indexOf("no");
       tabler.send({
         type: "comment.add",
         username: "Ada",
         path: "table.md",
         rev: 0,
-        anchor: cell,
-        cursor: cell + 3,
+        anchor: yes,
+        cursor: no + 2,
         text: question,
       });
       assert.deepEqual(
@@ -3425,6 +3426,22 @@ test("T-comment-add", async () => {
         { type: "error", status: 409, reason: "overlaps a table" },
       );
       assert.equal(await readDoc(dir, "table.md"), table);
+      tabler.send({
+        type: "comment.add",
+        username: "Ada",
+        path: "table.md",
+        rev: 0,
+        anchor: yes,
+        cursor: yes + 3,
+        text: question,
+      });
+      const msg = await tabler.next((item) => item.type === "comment" || item.type === "error");
+      assert.equal(msg.type, "comment");
+      assert.equal(msg.path, "table.md");
+      assert.equal(msg.id, "c1");
+      assert.equal(msg.note, 0);
+      assert.equal(msg.rev, 1);
+      assert.equal((await readDoc(dir, "table.md")).includes("{c1}yes{/c1}"), true);
     } finally {
       tabler.ws.close();
     }

@@ -729,7 +729,11 @@ export function commentRangeReason(doc, anchor, cursor) {
     if (rangesOverlap(from, to, fence.start, fence.contentEnd)) return "overlaps a fence";
   }
   for (const atom of structures(text).atoms) {
-    if (atom.type === "table" && rangesOverlap(from, to, atom.start, atom.end)) return "overlaps a table";
+    if (atom.type === "table" && rangesOverlap(from, to, atom.start, atom.end)) {
+      const cells = [...atom.header, ...atom.rows.flat()];
+      const inside = cells.some((cell) => from >= cell.start && to <= cell.end && cell.start < cell.end);
+      if (!inside) return "overlaps a table";
+    }
   }
   for (const span of findSpans(text)) {
     const inside = from >= span.interiorStart && to <= span.interiorEnd;
@@ -1188,6 +1192,11 @@ export function lockIndexAt(doc, cursor) {
   return Math.max(0, spans.length - 1);
 }
 
+function paintCell(cell, doc) {
+  const parsed = parseInlines(cell.text, cell.start, "md-p");
+  return { ...cell, parts: paintParts(parsed.parts, findSpans(doc)) };
+}
+
 function structures(doc) {
   // lineSpans adds an empty row at length. It is not a block, same as lockLines.
   const lines = lockLines(doc);
@@ -1242,8 +1251,8 @@ function structures(doc) {
         type: "table",
         start: lines[index].start,
         end: lines[last].end,
-        header: cellRanges(lines[index]),
-        rows,
+        header: cellRanges(lines[index]).map((cell) => paintCell(cell, doc)),
+        rows: rows.map((row) => row.map((cell) => paintCell(cell, doc))),
       };
       atoms.push(atom);
       slots.push({ kind: "atom", atom });
