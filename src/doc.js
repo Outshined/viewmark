@@ -166,6 +166,31 @@ function paragraphBlank(doc, line, cursor) {
   return classify(line.text).kind === "p";
 }
 
+// A quote line, or a paragraph line joined onto a quote above it.
+function quoteEnter(text, line) {
+  const mode = classify(line.text);
+  let quoted = mode.kind === "quote";
+  if (!quoted && mode.kind === "p" && line.text !== "") {
+    let start = line.start;
+    while (start > 0 && text[start - 1] === "\n") {
+      const prevEnd = start - 1;
+      let prevStart = prevEnd;
+      while (prevStart > 0 && text[prevStart - 1] !== "\n") prevStart -= 1;
+      const prev = text.slice(prevStart, prevEnd);
+      const kind = classify(prev).kind;
+      if (kind === "quote") { quoted = true; break; }
+      if (kind !== "p" || prev === "") break;
+      start = prevStart;
+    }
+  }
+  if (!quoted) return null;
+  if (line.text === "> ") {
+    if (line.start === 0) return { text: "", anchor: line.start, cursor: line.end };
+    return { text: "\n", anchor: line.start, cursor: line.end };
+  }
+  return { text: "\n> " };
+}
+
 // Text Enter inserts, and where it replaces when an empty item leaves the list.
 // anchor and cursor are the splice; omitted, the caret's own range is the splice.
 export function enterInsert(doc, cursor) {
@@ -190,6 +215,8 @@ export function enterInsert(doc, cursor) {
   if (at === line.start && (mode.kind === "li" || mode.kind === "ol")) return { text: "\n" };
   const marker = continuedMarker(text, at);
   if (marker) return { text: `\n${marker}` };
+  const quote = quoteEnter(text, line);
+  if (quote) return quote;
   if (mode.kind === "p" && line.text !== "" && !imageLine(line.text)) {
     const onBreak = line.newline && at === line.end && text[at] === "\n";
     const nextBlank = onBreak && (

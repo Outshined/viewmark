@@ -3436,6 +3436,42 @@ test("unxhe3dc enter before a list marker", () => {
   }
 });
 
+test("enter continues a quote, and an empty quote line leaves it", () => {
+  const enter = (doc, cursor) => {
+    const base = createState(doc, cursor);
+    const brk = enterInsert(base.doc, base.cursor);
+    return typeof brk.anchor === "number"
+      ? insert({ ...base, anchor: brk.anchor, cursor: brk.cursor }, brk.text)
+      : insert(base, brk.text);
+  };
+  const cases = [
+    ["> alpha\n", 7, "> alpha\n> \n", 10],
+    ["> alpha\n", 4, "> al\n> pha\n", 7],
+    ["> alpha\n", 2, "> \n> alpha\n", 5],
+    ["> alpha\n> \n", 10, "> alpha\n\n\n", 9],
+    ["> \n", 2, "\n", 0],
+    ["> alpha\n> beta\n", 7, "> alpha\n> \n> beta\n", 10],
+    ["> alpha\nbeta\n", 10, "> alpha\nbe\n> ta\n", 13],
+    ["> alpha\nbeta\n", 12, "> alpha\nbeta\n> \n", 15],
+  ];
+  for (const [doc, cursor, next, at] of cases) {
+    const entered = enter(doc, cursor);
+    assert.equal(entered.doc, next);
+    assert.equal(entered.cursor, at);
+    assert.equal(entered.anchor, at);
+  }
+  const stopped = enter("> alpha\n\nbeta\n", 11);
+  assert.equal(stopped.doc, "> alpha\n\nbe\n\nta\n");
+  assert.equal(stopped.cursor, 13);
+  assert.equal(stopped.anchor, 13);
+  const paragraph = enter("hello\n", 2);
+  assert.equal(paragraph.doc, "he\n\nllo\n");
+  assert.equal(paragraph.cursor, 4);
+  const quotedList = enter("> - alpha", 9);
+  assert.equal(quotedList.doc, "> - alpha\n> - ");
+  assert.equal(quotedList.cursor, quotedList.doc.length);
+});
+
 test("enter at the end of a line inserts a blank line below the caret", () => {
   const mounted = mountEditor();
   const press = (inputType) => {
