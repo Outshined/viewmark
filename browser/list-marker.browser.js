@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { launchBrowser, Page, startHub } from "./harness.js";
 
 const DOC = "- alpha\n- beta\n\n1. alpha\n2. beta\n";
+const NESTED = "\t1. mid\n\t\t1. aaa\n\t\t2. bbb\n> 1. quote\n> 2. other\n";
 
 function near(actual, expected, label) {
   assert.ok(Math.abs(actual - expected) < 1, `${label}: ${actual} vs ${expected}`);
@@ -15,6 +16,14 @@ async function glyphLeft(page, offset) {
   })()`);
   assert.equal(typeof left, "number", `glyph ${offset} left`);
   return left;
+}
+
+async function textIndent(page, offset) {
+  return page.eval(`(() => {
+    const hit = window.__qaTextAt(${offset});
+    const line = hit && hit.node.parentElement && hit.node.parentElement.closest(".md-line");
+    return line ? line.style.textIndent : null;
+  })()`);
 }
 
 async function focusCaret(page, offset) {
@@ -43,7 +52,7 @@ test("a raw list marker hangs in the bullet gutter", async (t) => {
     if (browser) await browser.close();
     await hub.close();
   });
-  await hub.create("lists.md", DOC);
+  await hub.create("lists.md", DOC + NESTED);
   browser = await launchBrowser();
   const page = new Page(browser.session, hub.port);
   await page.init();
@@ -65,4 +74,20 @@ test("a raw list marker hangs in the bullet gutter", async (t) => {
   near(orderedAgain, orderedClosed, "closed ordered after the other caret");
   const orderedRaw = await glyphLeft(page, 28);
   near(orderedRaw, orderedClosed, "raw ordered after the other caret");
+
+  const full = DOC + NESTED;
+  const aaa = full.indexOf("aaa");
+  const bbb = full.indexOf("bbb");
+  const quote = full.indexOf("quote");
+  const aaaClosed = await glyphLeft(page, aaa);
+  await focusCaret(page, aaa);
+  const aaaOpen = await glyphLeft(page, aaa);
+  near(aaaOpen, aaaClosed, "third-level text stays when opened");
+  near(aaaOpen, await glyphLeft(page, bbb), "third-level raw matches closed sibling");
+  assert.match(await textIndent(page, aaa), /^-[\d.]+px$/, "third-level marker hangs");
+  near(await glyphLeft(page, 2), bulletA, "top-level bullet stays put");
+  near(await glyphLeft(page, 19), orderedClosed, "top-level ordered stays put");
+
+  await focusCaret(page, quote);
+  assert.equal(await textIndent(page, quote), "", "quoted item does not hang");
 });

@@ -1003,7 +1003,7 @@ a.md-link {
 .md-raw.md-li,
 .md-raw.md-ol {
   list-style: none;
-  margin-left: 1.3em;
+  margin-left: calc(1.3em + var(--indent, 0) * 1ch);
 }
 
 .md-raw.md-li::marker,

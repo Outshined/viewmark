@@ -2725,7 +2725,7 @@ test("T-nested-lists", () => {
   assert.match(css, /\.editor \{[^}]*tab-size: 4;/);
   assert.match(css, /\.md-line\.md-li \{[^}]*margin-left: calc\(1\.3em \+ var\(--indent, 0\) \* 1ch\);/);
   assert.match(css, /\.md-line\.md-ol \{[^}]*margin-left: calc\(1\.3em \+ var\(--indent, 0\) \* 1ch\);/);
-  assert.match(css, /\.md-raw\.md-li,\n\.md-raw\.md-ol \{[^}]*margin-left: 1\.3em;/);
+  assert.match(css, /\.md-raw\.md-li,\n\.md-raw\.md-ol \{[^}]*margin-left: calc\(1\.3em \+ var\(--indent, 0\) \* 1ch\);/);
   assert.equal(css.includes("#3a3424"), false);
   assert.equal(css.includes(".md-line.md-raw"), false);
   const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
@@ -12560,6 +12560,92 @@ test("tab on a list item writes the tab at the line start and keeps the caret", 
     assert.equal(view.getState().cursor, 8);
     assert.equal(view.getState().anchor, 8);
     view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+function pressShiftTab(mounted) {
+  mounted.listeners.keydown({
+    key: "Tab",
+    shiftKey: true,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    preventDefault() {},
+  });
+}
+
+test("shift tab gives an ordered item the next number at its new level", () => {
+  const mounted = mountEditor();
+  const outdent = (doc, cursor) => {
+    const view = createEditor(mounted.root, doc, cursor);
+    globalThis.window.getSelection = () => null;
+    pressShiftTab(mounted);
+    const state = view.getState();
+    view.destroy();
+    return state;
+  };
+  try {
+    const top = "1. one\n2. two\n\t1. a\n\t2. \n";
+    const topped = outdent(top, top.length - 1);
+    assert.equal(topped.doc, "1. one\n2. two\n\t1. a\n3. \n");
+    assert.equal(topped.cursor, topped.doc.length - 1);
+    assert.notEqual(topped.doc, "1. one\n2. two\n\t1. a\n4. \n");
+
+    const nested = "\t1. one\n\t2. two\n\t\t1. a\n\t\t2. \n";
+    const nestedOut = outdent(nested, nested.length - 1);
+    assert.equal(nestedOut.doc, "\t1. one\n\t2. two\n\t\t1. a\n\t3. \n");
+    assert.equal(nestedOut.cursor, nestedOut.doc.length - 1);
+
+    const afterThree = "\t3. two dot three\n\t\t2. x";
+    const four = outdent(afterThree, afterThree.length);
+    assert.equal(four.doc, "\t3. two dot three\n\t4. x");
+    assert.equal(four.cursor, four.doc.length);
+
+    const twoDot = "2. two dot\n\t2. x";
+    const three = outdent(twoDot, twoDot.length);
+    assert.equal(three.doc, "2. two dot\n3. x");
+    assert.notEqual(three.doc, "2. two dot\n4. x");
+
+    const spaced = "2. two dot\n    2. x";
+    assert.equal(outdent(spaced, spaced.length).doc, "2. two dot\n3. x");
+
+    const paren = "2) two dot\n\t2) x";
+    assert.equal(outdent(paren, paren.length).doc, "2) two dot\n3) x");
+
+    const only = "1. one\n2. two\n\t1. a\n\t2. b\n3. three\n";
+    const line = only.indexOf("\t2. b");
+    const kept = outdent(only, line + "\t2. b".length);
+    assert.equal(kept.doc, "1. one\n2. two\n\t1. a\n3. b\n3. three\n");
+
+    const bullet = "- a\n\t- b\n";
+    assert.equal(outdent(bullet, bullet.length - 1).doc, "- a\n- b\n");
+
+    const stay = "1. a\n2. b\n";
+    assert.equal(outdent(stay, stay.length - 1).doc, stay);
+
+    const grown = "9. y\n\t9. x";
+    const grew = outdent(grown, grown.lastIndexOf("x"));
+    assert.equal(grew.doc, "9. y\n10. x");
+    assert.equal(grew.doc[grew.cursor], "x");
+
+    const shrunkSrc = "2. y\n\t10. x";
+    const shrunk = outdent(shrunkSrc, shrunkSrc.lastIndexOf("x"));
+    assert.equal(shrunk.doc, "2. y\n3. x");
+    assert.equal(shrunk.doc[shrunk.cursor], "x");
+
+    const both = "1. a\n\t1. b\n\t2. c\n";
+    const view = createEditor(mounted.root, both, 0);
+    sourceSelection(mounted, both, both.indexOf("\t1."), both.indexOf("\t2. c") + "\t2. c".length);
+    pressShiftTab(mounted);
+    assert.equal(view.getState().doc, "1. a\n2. b\n3. c\n");
+    view.destroy();
+
+    const nestedEnter = "1. one\n\t2. item";
+    assert.equal(enterInsert(nestedEnter, nestedEnter.length).text, "\n\t3. ");
+    const between = "1. one\n2. two\n\t1. a\n\t2. item";
+    assert.equal(enterInsert(between, between.length).text, "\n\t3. ");
   } finally {
     mounted.restore();
   }

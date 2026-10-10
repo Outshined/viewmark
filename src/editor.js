@@ -1076,11 +1076,13 @@ function appendParts(el, block) {
 }
 
 function rawListMarker(block) {
-  if (!block || !block.raw || block.empty || block.indent) return "";
+  if (!block || !block.raw || block.empty) return "";
   const classes = block.classes || [];
   if (classes.includes("md-quote")) return "";
   if (!classes.includes("md-li") && !classes.includes("md-ol")) return "";
-  const match = /^(?:[-+*](?:[ ]{1,4}|\t)|\d{1,9}[.)](?:[ ]{1,4}|\t))/.exec(block.text || "");
+  // The indent characters stay in the raw text. Hanging them with the marker
+  // puts the item text on the closed line's column; the margin already holds that indent.
+  const match = /^[ \t]*(?:[-+*](?:[ ]{1,4}|\t)|\d{1,9}[.)](?:[ ]{1,4}|\t))/.exec(block.text || "");
   return match ? match[0] : "";
 }
 
@@ -1324,16 +1326,102 @@ function listEdit(doc, lines, insert, shift, anchor, cursor) {
   };
 }
 
+function indentColumns(text) {
+  let column = 0;
+  let index = 0;
+  while (index < text.length && (text[index] === " " || text[index] === "\t")) {
+    column += text[index] === " " ? 1 : 4 - (column % 4);
+    index += 1;
+  }
+  return { column, index };
+}
+
+function orderedMark(text) {
+  const { column, index } = indentColumns(text);
+  const ordered = /^(\d{1,9})([.)])/.exec(text.slice(index));
+  if (!ordered) return null;
+  if (separatorWidth(text, index + ordered[0].length) === 0) return null;
+  return {
+    indent: column,
+    num: ordered[1],
+    numStart: index,
+    numEnd: index + ordered[1].length,
+  };
+}
+
+function bulletMark(text) {
+  const { column, index } = indentColumns(text);
+  const bullet = text[index];
+  if (bullet !== "-" && bullet !== "+" && bullet !== "*") return null;
+  if (separatorWidth(text, index + 1) === 0) return null;
+  return { indent: column };
+}
+
+function blocksOutdentScan(text) {
+  if (text === "") return true;
+  if (text.startsWith("|") || text.startsWith("```")) return true;
+  const core = text.trim();
+  if (!core.startsWith("![")) return false;
+  const labelEnd = core.indexOf("](");
+  if (labelEnd < 2) return false;
+  return core.indexOf(")", labelEnd + 2) === core.length - 1;
+}
+
+// Next number at the indent the item is landing on. Nested items between
+// this line and that sibling are not siblings, so they do not increment it.
+function nextOutdentNumber(all, lineStart, indent, rewritten) {
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    const line = all[i];
+    if (line.start >= lineStart) continue;
+    const text = rewritten.has(line.start) ? rewritten.get(line.start) : line.text;
+    if (blocksOutdentScan(text)) return "1";
+    const ordered = orderedMark(text);
+    if (ordered) {
+      if (ordered.indent > indent) continue;
+      if (ordered.indent < indent) return "1";
+      return String(Number(ordered.num) + 1);
+    }
+    const bullet = bulletMark(text);
+    if (bullet) {
+      if (bullet.indent > indent) continue;
+      return "1";
+    }
+    if (text.startsWith("> ") || text === "---" || text === "***" || text === "___" || /^(#{1,6}) /.test(text)) return "1";
+  }
+  return "1";
+}
+
 // Shift+Tab. One leading tab, else up to four spaces. No indent means no edit.
+// An ordered item takes the next number at the level it lands on. Only that line's number changes.
 function listOutdent(doc, anchor, cursor) {
   const lines = selectedSourceLines(doc, anchor, cursor);
   if (lines.length === 0) return null;
   if (lines.some((line) => !plainListItem(line.text) || offsetInFence(doc, line.start))) return null;
   if (lines.every((line) => outdentWidth(line.text) === 0)) return null;
+  const all = sourceLines(doc);
+  const rewritten = new Map();
+  const numberShifts = [];
+  for (const line of lines) {
+    const width = outdentWidth(line.text);
+    if (width === 0) {
+      rewritten.set(line.start, line.text);
+      continue;
+    }
+    let body = line.text.slice(width);
+    const mark = orderedMark(body);
+    if (mark) {
+      const next = nextOutdentNumber(all, line.start, mark.indent, rewritten);
+      if (next !== mark.num) {
+        numberShifts.push({ at: line.start + width + mark.numEnd, delta: next.length - mark.num.length });
+        body = body.slice(0, mark.numStart) + next + body.slice(mark.numEnd);
+      }
+    }
+    rewritten.set(line.start, body);
+  }
   let insert = "";
   let prev = lines[0].start;
   for (const line of lines) {
-    insert += doc.slice(prev, line.start) + line.text.slice(outdentWidth(line.text));
+    insert += doc.slice(prev, line.start) + rewritten.get(line.start);
     prev = line.end;
   }
   insert += doc.slice(prev, lines[lines.length - 1].end);
@@ -1344,6 +1432,7 @@ function listOutdent(doc, anchor, cursor) {
       if (width === 0 || offset <= line.start) continue;
       next -= Math.min(width, offset - line.start);
     }
+    for (const change of numberShifts) if (offset >= change.at) next += change.delta;
     return next;
   };
   return listEdit(doc, lines, insert, shift, anchor, cursor);
@@ -3003,15 +3092,42 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }]);
   }
 
+  // Canvas measureText ignores tab-size, so a nested marker would hang short of the gutter.
+  function markerWidth(ctx, marker, stop) {
+    if (!Number.isFinite(stop) || stop <= 0 || !marker.includes("\t")) return ctx.measureText(marker).width;
+    let x = 0;
+    let chunk = "";
+    const flush = () => {
+      if (!chunk) return;
+      x += ctx.measureText(chunk).width;
+      chunk = "";
+    };
+    for (const ch of marker) {
+      if (ch !== "\t") {
+        chunk += ch;
+        continue;
+      }
+      flush();
+      x = (Math.floor(x / stop) + 1) * stop;
+    }
+    flush();
+    return x;
+  }
+
   function hangRawMarker(el, marker) {
     if (!marker) return;
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext && canvas.getContext("2d");
     if (!ctx || typeof ctx.measureText !== "function") return;
-    const font = getComputedStyle(root).font;
+    const style = getComputedStyle(root);
+    const font = style.font;
     if (!font) return;
     ctx.font = font;
-    const width = ctx.measureText(marker).width;
+    const tabRaw = style.tabSize != null && style.tabSize !== "" ? String(style.tabSize).trim() : "4";
+    const tabN = Number.parseFloat(tabRaw);
+    const space = ctx.measureText(" ").width;
+    const stop = tabRaw.endsWith("px") ? tabN : space * (Number.isFinite(tabN) && tabN > 0 && !/[a-z%]/i.test(tabRaw) ? tabN : 4);
+    const width = markerWidth(ctx, marker, stop);
     if (!Number.isFinite(width) || width <= 0) return;
     // The 1.3em margin is already the gutter. Padding would cancel this indent
     // and leave the item text a marker-width to the right of a closed sibling.
