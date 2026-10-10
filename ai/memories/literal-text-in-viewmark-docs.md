@@ -16,4 +16,6 @@ The dialect (checked 2026-10-08):
 
 **Generated reports.** Inside a text fence, any line that starts with three backticks ends the fence early. Tool output often spans several lines and holds a document's own fence lines, such as a hub refusal that echoes the file. Flatten every message to one line before it goes into a fence. Run the fence-balance check, and do not publish when the check fails. On 2026-10-08 a report went to the hub with a failed check, and was broken from its middle on until it was republished.
 
+**Comment notes are fences too.** A comment thread is stored as a fence, so a note must never contain a line starting with three backticks: it closes the thread early, leaves the rest of the note as document text, and opens a stray fence. On 2026-10-10 a note with a text fence broke ticket `j9gaprqe` until it was repaired by `edit`. For literal examples in a note, indent the lines instead, and check the document with `plan()` (one comment parsed, fence lines even) after posting.
+
 **How to apply:** any doc written through the hub ([[docs-through-hub-only]]) that quotes markdown goes in text fences. Prose describes markers instead of spelling them out. Comments cannot be anchored inside a fence, so keep the parts the user will annotate, such as decisions, in prose.
