@@ -1798,7 +1798,8 @@ function linePieces(slot, spans, raw) {
 function hardenBreak(block, line, doc) {
   if (!block || block.type !== "line" || block.hr || block.empty || block.collapsed) return;
   if (!line || line.end >= doc.length || doc[line.end] !== "\n") return;
-  const hide = hardHideCount(line.text);
+  let hide = hardHideCount(line.text);
+  if (/^[ \t]+$/.test(line.text) && hide !== line.text.length) hide = line.text.length;
   if (hide === 0) return;
   const parts = trimTail((block.parts || []).map(clonePart), hide);
   parts.push(breakPart(line.end));
@@ -2314,6 +2315,7 @@ export function backspace(state) {
   }
   const line = sourceLine(doc, state.cursor);
   if (bareBreakLine(line, doc)) return deleteBareLine(state, line);
+  if (/^[ \t]+$/.test(line.text)) return deleteBareLine(state, line);
   const atom = renderedAtomAt(doc, state.cursor, (item) => state.cursor > item.start && state.cursor <= item.end);
   if (atom) return applySplice(state, atom.start, atom.end, "", atom.start);
   return snapBreak(applySplice(state, state.cursor - 1, state.cursor, "", state.cursor - 1));
@@ -2330,6 +2332,7 @@ export function deleteForward(state) {
   }
   const line = sourceLine(doc, state.cursor);
   if (bareBreakLine(line, doc)) return deleteBareLine(state, line);
+  if (/^[ \t]+$/.test(line.text)) return deleteBareLine(state, line);
   // Only the hard-break tail sits between the caret and the newline, so the
   // newline goes and the marker characters stay where they are.
   const hide = line.newline ? hardHideCount(line.text) : 0;

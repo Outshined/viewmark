@@ -1812,6 +1812,37 @@ test("BG.ws.3", () => {
   }
 });
 
+test("BG.ws.space", () => {
+  const doc = "one\n\n \n\ntwo\n";
+  assert.equal(doc[5], " ");
+  assert.equal(doc[6], "\n");
+  for (const cursor of [5, 6]) {
+    for (const op of [backspace, deleteForward]) {
+      const next = op(createState(doc, cursor));
+      assert.equal(next.doc, "one\n\n\ntwo\n");
+      assert.equal(next.cursor, 4);
+      assert.equal(next.anchor, 4);
+    }
+  }
+  const slot = plan(doc, 6).blocks.find((block) => block.slot === 5);
+  assert.ok(slot);
+  assert.ok(slot.parts.some((part) => part.type === "break" && part.start === 6));
+});
+
+test("BG.ws.tab", () => {
+  const doc = "one\n\n\t\n\ntwo\n";
+  assert.equal(doc[5], "\t");
+  assert.equal(doc[6], "\n");
+  for (const cursor of [5, 6]) {
+    for (const op of [backspace, deleteForward]) {
+      const next = op(createState(doc, cursor));
+      assert.equal(next.doc, "one\n\n\ntwo\n");
+      assert.equal(next.cursor, 4);
+      assert.equal(next.anchor, 4);
+    }
+  }
+});
+
 test("BG.hbe-p", () => {
   const next = backspace(createState("red  \n\ntwo\n", 6));
   assert.equal(next.doc, "red  \ntwo\n");
