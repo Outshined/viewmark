@@ -360,6 +360,8 @@ test("every byte: a CRLF file is drawn one line per CRLF, → steps over each CR
   await press(page, "x");
   assert.doesNotMatch(await show(hub, "b.md"), /\r(?!\n)/, "typing left a lone CR");
   await open(page, "a.md");
+  // Whether the mode carries to another file is a separate default; this checks the lines.
+  if (!(await isRaw(page))) await toggle(page);
   assert.deepEqual(await lines(page), ["one", "two", "", "three", ""]);
 });
 
