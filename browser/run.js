@@ -451,7 +451,8 @@ function positionExpect(cell, caret, result, shownText) {
     const end = blank < 0 ? bytes.length : blank;
     if (at <= start || at > end) wanted = `after ${start} and at most ${end}`;
   } else if (move === "earlier in the block") {
-    const from = lineStart(bytes, start);
+    const blank = bytes.lastIndexOf("\n\n", start - 1);
+    const from = blank < 0 ? 0 : blank + 2;
     if (at >= start || at <= from) wanted = `before ${start} and after ${from}`;
   }
   if (wanted) result.failed.push(`I2 caret: wanted ${wanted}, got ${range(caret.anchor, caret.focus)} at ${caret.focusPath || "the editor root"}`);
@@ -501,19 +502,71 @@ async function walk(page, bytes, failed) {
   failed.push(`walk: never stopped${problems.length ? `; ${problems.slice(0, 6).join("; ")}` : ""}`);
 }
 
+// R11: a letter typed on an empty line, or at the start of a rule or a fence line, directly
+// under a paragraph line, an item, or a quote writes the file's newline first. The harness
+// states the rule itself rather than asking src/doc.js.
+function probeBreak(bytes, at) {
+  if (at === 0 || bytes[at - 1] !== "\n") return "";
+  const nl = bytes.includes("\r\n") ? "\r\n" : "\n";
+  const lines = bytes.split("\n").map((line) => line.replace(/\r$/, ""));
+  const index = bytes.slice(0, at).split("\n").length - 1;
+  const fence = (line) => /^(```|~~~)/.test(line);
+  let inFence = false;
+  for (let i = 0; i < index; i += 1) if (fence(lines[i])) inFence = !inFence;
+  if (inFence) return "";
+  const line = lines[index] || "";
+  if (line !== "" && !/^(---|\*\*\*|___)$/.test(line) && !fence(line)) return "";
+  const above = lines[index - 1];
+  let aboveInFence = false;
+  for (let i = 0; i < index - 1; i += 1) if (fence(lines[i])) aboveInFence = !aboveInFence;
+  if (aboveInFence || above.trim() === "" || fence(above)) return "";
+  // A line after a hard break belongs to the block above (D28).
+  if (/\\$/.test(above) || / {2,}$/.test(above)) return "";
+  if (/^#{1,6}(\s|$)/.test(above) || /^(---|\*\*\*|___)$/.test(above) || above.startsWith("|") || /^!\[[^\]]*\]\([^)]*\)$/.test(above)) return "";
+  return nl;
+}
+
 function withProbe(marked, letter) {
   const { bytes, focus, anchor } = marked;
   const from = Math.min(focus, anchor);
   const to = Math.max(focus, anchor);
-  return bytes.slice(0, from) + letter + bytes.slice(to);
+  const lead = from === to && letter ? probeBreak(bytes, from) : "";
+  return bytes.slice(0, from) + lead + letter + bytes.slice(to);
+}
+
+// I13: each comment id opens once and closes once after it, has one fence, and crosses no
+// other comment. Markers inside a fence body are text, so only the prose before the first
+// comment fence is read.
+function brokenComment(text) {
+  const at = text.search(/\n*```comment /);
+  const prose = at < 0 ? text : text.slice(0, at);
+  const plain = prose.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, (m) => " ".repeat(m.length));
+  const fences = [...text.matchAll(/^```comment ([A-Za-z][\w-]*)/gm)].map((m) => m[1]);
+  const opens = [...plain.matchAll(/\{([A-Za-z][\w-]*)\}/g)];
+  const closes = [...plain.matchAll(/\{\/([A-Za-z][\w-]*)\}/g)];
+  const ids = new Set([...opens.map((m) => m[1]), ...closes.map((m) => m[1]), ...fences]);
+  const spans = [];
+  for (const id of ids) {
+    const o = opens.filter((m) => m[1] === id);
+    const c = closes.filter((m) => m[1] === id);
+    const f = fences.filter((x) => x === id).length;
+    if (o.length !== 1 || c.length !== 1 || f !== 1) return `${id} opens ${o.length}, closes ${c.length}, and has ${f} fences`;
+    if (o[0].index > c[0].index) return `${id} closes before it opens`;
+    spans.push([o[0].index, c[0].index, id]);
+  }
+  for (const a of spans) for (const b of spans) if (a[0] < b[0] && b[0] < a[1] && a[1] < b[1]) return `${a[2]} and ${b[2]} cross`;
+  return null;
 }
 
 // Backspace removes the probe's Q. When that empties a comment's interior, the same edit
 // removes the comment's markers and its thread (R36). The harness states that rule itself
 // rather than asking src/doc.js, so the check does not take its answer from the code under test.
 function probeAfterBackspace(marked) {
-  const plain = withProbe(marked, "");
   const at = Math.min(marked.focus, marked.anchor);
+  // Backspace takes only the Q. A newline R11 wrote before it stays.
+  const lead = marked.focus === marked.anchor ? probeBreak(marked.bytes, at) : "";
+  if (lead) return marked.bytes.slice(0, at) + lead + marked.bytes.slice(at);
+  const plain = withProbe(marked, "");
   const open = /\{([A-Za-z][\w-]*)\}$/.exec(plain.slice(0, at));
   if (!open || !plain.startsWith(`{/${open[1]}}`, at)) return plain;
   const id = open[1];
@@ -666,9 +719,43 @@ export async function runCell(suite, cell, routeName, serial) {
     }
   }
   // I9: where does the next keystroke land?
+  const beforeProbe = await page.caret();
+  const textBeforeProbe = sent(page, file).text;
+  // The glyph before the caret, to tell a word the Q carries onto the next visual line from a
+  // caret drawn on the wrong line.
+  const leadBefore = beforeProbe.none || !beforeProbe.inside || beforeProbe.focus < 1 ? null : await page.eval(`window.__qaGlyph(${beforeProbe.focus - 1})`);
   await page.key("Q");
   await page.quiet();
   const probed = sent(page, file);
+  // I12: the typed character is drawn where the caret was drawn when the key was pressed (R99).
+  // On an empty line the caret sits on the line's br, and the line's own box is where it is drawn.
+  const drawnCaret = beforeProbe.rect && (!beforeProbe.fallback || beforeProbe.emptyLine || /> br:\d+$/.test(beforeProbe.focusPath || ""));
+  if (!beforeProbe.none && beforeProbe.inside && beforeProbe.anchor === beforeProbe.focus && drawnCaret) {
+    let at = 0;
+    while (at < textBeforeProbe.length && textBeforeProbe[at] === probed.text[at]) at += 1;
+    // R11 can write a newline before the Q, so the Q is the first one at or past the change.
+    const grown = probed.text.length - textBeforeProbe.length;
+    while (grown > 1 && at < probed.text.length && probed.text[at] !== "Q") at += 1;
+    if (grown >= 1 && grown <= 3 && probed.text[at] === "Q") {
+      const glyph = await page.eval(`window.__qaGlyph(${at})`);
+      const caret = beforeProbe.rect;
+      // Bidirectional text places a typed letter by its own rules, not at the caret.
+      const lineStart = textBeforeProbe.lastIndexOf("\n", at - 1) + 1;
+      const lineEnd = textBeforeProbe.indexOf("\n", at) < 0 ? textBeforeProbe.length : textBeforeProbe.indexOf("\n", at);
+      const bidi = /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]/.test(textBeforeProbe.slice(lineStart, lineEnd));
+      if (!bidi && !glyph) result.failed.push(`I12 typed: the Q at offset ${at} is not drawn`);
+      else if (!bidi) {
+        const middle = (glyph.top + glyph.bottom) / 2;
+        const sameLine = middle >= caret.top - 2 && middle <= caret.bottom + 2;
+        // A Q typed at the end of a word that just fits takes the word to the next visual line.
+        // The letter is still right after the glyph the caret followed.
+        const lead = at === beforeProbe.focus && at > 0 && /\S/.test(textBeforeProbe[at - 1]) ? await page.eval(`window.__qaGlyph(${at - 1})`) : null;
+        const carried = leadBefore && lead && Math.abs((lead.top + lead.bottom) / 2 - (leadBefore.top + leadBefore.bottom) / 2) > 2
+          && Math.abs(glyph.left - lead.right) <= 3 && Math.abs(middle - (lead.top + lead.bottom) / 2) <= 2;
+        if ((!sameLine || Math.abs(glyph.left - caret.x) > 3) && !carried) result.failed.push(`I12 typed: the Q is drawn at x ${glyph.left.toFixed(1)} y ${middle.toFixed(1)}, but the caret was drawn at x ${caret.x.toFixed(1)} y ${((caret.top + caret.bottom) / 2).toFixed(1)}`);
+      }
+    }
+  }
   const wanted = withProbe(expect, "Q");
   if (probed.text !== wanted) result.failed.push(`I9 probe: Q wanted ${JSON.stringify(wanted)}, got ${JSON.stringify(probed.text)}`);
   else {
@@ -681,6 +768,8 @@ export async function runCell(suite, cell, routeName, serial) {
   const held = await hub.show(file);
   const last = sent(page, file);
   if (held.text !== last.text) result.failed.push(`I1 bytes: the hub holds ${JSON.stringify(held.text)}, but last sent the page ${JSON.stringify(last.text)}`);
+  const broken = brokenComment(held.text);
+  if (broken) result.failed.push(`I13 comments: ${broken} in ${JSON.stringify(held.text)}`);
   result.observed.sent = page.frames.filter((frame) => frame.dir === "out" && frame.data && frame.data.type !== "lock").map((frame) => frame.data);
   if (result.failed.length) {
     result.status = "FAIL";

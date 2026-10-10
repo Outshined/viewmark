@@ -22,13 +22,28 @@ function readLiteral(text, at) {
 
 // The plan's named texts. LONG@n is LONG with the caret after its n-th character.
 const LONG = `${"alpha beta gamma delta ".repeat(15)}end`;
+const FOX = "the quick brown fox jumps over the lazy dog";
+
+// Greedy fill: each source line takes words while it stays within 77 characters.
+function fill77(text) {
+  const lines = [];
+  for (const word of text.split(" ")) {
+    const last = lines.length - 1;
+    if (last >= 0 && lines[last].length + 1 + word.length <= 77) lines[last] += ` ${word}`;
+    else lines.push(word);
+  }
+  return lines.join("\n");
+}
+
 const NAMES = {
   CM,
   LONG,
+  WRAP: fill77(Array(14).fill(FOX).join(" ")),
+  BIG: `${`${FOX} `.repeat(30)}end`,
   URL: `https://x.test/${"a".repeat(385)}`,
   FILL: Array.from({ length: 60 }, (_, i) => `filler ${i + 1}\n\n`).join(""),
 };
-const NAME = /(CM|LONG|URL|FILL)(?:@(\d+))?/y;
+const NAME = /(CM|LONG|WRAP|BIG|URL|FILL)(?:@(\d+))?/y;
 export const FILL = NAMES.FILL;
 
 // A source or an expectation: literals and names joined by " + ".

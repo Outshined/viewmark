@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = path.join(ROOT, "cli.js");
@@ -32,6 +33,33 @@ export function cli(port, args, input = "") {
   });
 }
 
+// A child that cannot outlive this process. It runs under a shell in a process group of its
+// own. The shell reads a pipe from this process, and when the pipe closes it ends the whole
+// group: the child and everything it started, such as Chromium's renderers and crash
+// handlers. The pipe closes when stopProcess ends it or when this process ends in any way,
+// SIGKILL included. Then it removes the child's temporary directories, the ones named in
+// TIE_RM, and only those under this harness's viewmark-qa- prefix. The child's own stdin is
+// /dev/null, as for any background job in sh.
+const TIE = '"$@" & read _; trap "" TERM; kill -TERM 0; wait; for d in $TIE_RM; do case "$d" in */viewmark-qa-*) rm -rf "$d" ;; esac; done';
+
+function spawnTied(command, args, stdout, stderr, cleanup = []) {
+  return spawn("/bin/sh", ["-c", TIE, "sh", command, ...args], { detached: true, stdio: ["pipe", stdout, stderr], env: { ...process.env, TIE_RM: cleanup.join(" ") } });
+}
+
+// Close the pipe and wait for the group to end; kill the group after 5 s if it has not.
+async function stopProcess(proc) {
+  if (proc.exitCode != null || proc.signalCode != null) return;
+  const exited = new Promise((resolve) => proc.once("exit", resolve));
+  proc.stdin.end();
+  const timer = setTimeout(() => {
+    try {
+      process.kill(-proc.pid, "SIGKILL");
+    } catch {}
+  }, 5000);
+  await exited;
+  clearTimeout(timer);
+}
+
 // A throwaway hub in its own process, on a free port, over a temporary state directory, with
 // one temporary repo. The cells' documents are created and read only through the CLI on that
 // port; nothing here writes to the hub a person uses.
@@ -39,7 +67,7 @@ export async function startHub() {
   const state = mkdtempSync(path.join(tmpdir(), "viewmark-qa-state-"));
   const repo = mkdtempSync(path.join(tmpdir(), "viewmark-qa-repo-"));
   writeFileSync(path.join(repo, "box.svg"), BOX_SVG);
-  const child = spawn(process.execPath, [CLI, "--port", "0", "serve", state], { stdio: ["ignore", "pipe", "inherit"] });
+  const child = spawnTied(process.execPath, [CLI, "--port", "0", "serve", state], "pipe", "inherit", [state, repo]);
   const port = await new Promise((resolve, reject) => {
     let out = "";
     child.stdout.on("data", (chunk) => {
@@ -71,9 +99,7 @@ export async function startHub() {
       return { text: shown.stdout, rev: rev ? Number(rev[1]) : NaN };
     },
     async close() {
-      const exited = new Promise((resolve) => child.once("exit", resolve));
-      child.kill("SIGTERM");
-      await exited;
+      await stopProcess(child);
       rmSync(state, { recursive: true, force: true });
       rmSync(repo, { recursive: true, force: true });
     },
@@ -172,7 +198,7 @@ export async function launchBrowser() {
     "--lang=en-US",
     "about:blank",
   ];
-  const proc = spawn(CHROMIUM, args, { stdio: "ignore" });
+  const proc = spawnTied(CHROMIUM, args, "ignore", "ignore", process.env.VIEWMARK_KEEP_PROFILE === "1" ? [] : [profile]);
   const portFile = path.join(profile, "DevToolsActivePort");
   for (let i = 0; i < 200 && !existsSync(portFile); i += 1) await sleep(50);
   const devtools = readFileSync(portFile, "utf8").split("\n")[0];
@@ -209,8 +235,7 @@ export async function launchBrowser() {
     },
     async close() {
       for (const socket of sockets) socket.close();
-      proc.kill();
-      await new Promise((resolve) => proc.once("exit", resolve));
+      await stopProcess(proc);
       if (process.env.VIEWMARK_KEEP_PROFILE !== "1") rmSync(profile, { recursive: true, force: true });
     },
   };
@@ -481,6 +506,7 @@ window.__qaCaret = async () => {
   const range = sel.getRangeAt(0);
   let rect = null;
   let fallback = false;
+  let emptyLine = false;
   if (range.collapsed) {
     const rects = range.getClientRects();
     if (rects.length) rect = rects[0];
@@ -488,6 +514,9 @@ window.__qaCaret = async () => {
       const holder = sel.focusNode.nodeType === 1 ? sel.focusNode : sel.focusNode.parentElement;
       rect = holder.getBoundingClientRect();
       fallback = true;
+      // An empty line has no glyph; the caret is drawn in the line's own box.
+      const line = holder.closest(".md-line");
+      emptyLine = !!line && line.textContent === "";
     }
   }
   return {
@@ -497,12 +526,69 @@ window.__qaCaret = async () => {
     anchorPath: window.__qaPath(sel.anchorNode) + ":" + sel.anchorOffset,
     focusPath: window.__qaPath(sel.focusNode) + ":" + sel.focusOffset,
     rect: rect ? { x: rect.left, top: rect.top, bottom: rect.bottom } : null,
+    // At a soft wrap a collapsed range has a rect on each line; only one has the caret painted.
+    rects: range.collapsed ? [...range.getClientRects()].map((r) => ({ x: r.left, top: r.top, bottom: r.bottom })) : [],
+    scroll: { x: window.scrollX, y: window.scrollY },
     fallback,
+    emptyLine,
     focused: document.hasFocus() && (document.activeElement === root || root.contains(document.activeElement)),
     raw: [...root.querySelectorAll(".md-raw")].map((el) => el.dataset.start == null ? "?" : el.dataset.start + "-" + el.dataset.end),
   };
 };
 `;
+
+// Counts pure red pixels in an 8-bit RGB or RGBA PNG without interlace, as Chromium writes them.
+function redPixels(png) {
+  let at = 8;
+  let width = 0;
+  let height = 0;
+  let bpp = 4;
+  const idat = [];
+  while (at < png.length) {
+    const length = png.readUInt32BE(at);
+    const type = png.toString("ascii", at + 4, at + 8);
+    const data = png.subarray(at + 8, at + 8 + length);
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bpp = data[9] === 6 ? 4 : 3;
+    }
+    if (type === "IDAT") idat.push(data);
+    at += 12 + length;
+  }
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const stride = width * bpp;
+  let prev = Buffer.alloc(stride);
+  let count = 0;
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[y * (stride + 1)];
+    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    const cur = Buffer.alloc(stride);
+    for (let i = 0; i < stride; i += 1) {
+      const a = i >= bpp ? cur[i - bpp] : 0;
+      const b = prev[i];
+      const c = i >= bpp ? prev[i - bpp] : 0;
+      let v = line[i];
+      if (filter === 1) v += a;
+      else if (filter === 2) v += b;
+      else if (filter === 3) v += (a + b) >> 1;
+      else if (filter === 4) {
+        const p = a + b - c;
+        const pa = Math.abs(p - a);
+        const pb = Math.abs(p - b);
+        const pc = Math.abs(p - c);
+        v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      }
+      cur[i] = v & 255;
+    }
+    for (let x = 0; x < width; x += 1) {
+      const i = x * bpp;
+      if (cur[i] > 200 && cur[i + 1] < 60 && cur[i + 2] < 60) count += 1;
+    }
+    prev = cur;
+  }
+  return count;
+}
 
 const KEYS = {
   Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
@@ -675,8 +761,38 @@ export class Page {
     await this.click(point.x, point.y);
   }
 
-  caret() {
-    return this.eval("window.__qaCaret()");
+  async caret() {
+    const caret = await this.eval("window.__qaCaret()");
+    if (caret && caret.rects && caret.rects.length > 1) {
+      const which = await this.paintedRect(caret.rects, caret.scroll);
+      if (which != null) caret.rect = caret.rects[which];
+      caret.painted = which != null;
+    }
+    return caret;
+  }
+
+  // The caret is painted in red, and the rect whose strip holds red pixels is the painted one.
+  // The caret blinks, so several rounds of screenshots are taken.
+  async paintedRect(rects, scroll) {
+    await this.eval(`(() => {
+      if (document.getElementById("qa-caret-color")) return;
+      const style = document.createElement("style");
+      style.id = "qa-caret-color";
+      style.textContent = "#editor, #editor * { caret-color: rgb(255, 0, 0) !important; }";
+      document.head.appendChild(style);
+    })()`);
+    for (let round = 0; round < 10; round += 1) {
+      const red = [];
+      for (const r of rects) {
+        const clip = { x: Math.max(0, r.x + scroll.x - 2), y: r.top + scroll.y, width: 5, height: Math.max(1, r.bottom - r.top), scale: 1 };
+        const shot = await this.session.send("Page.captureScreenshot", { format: "png", clip });
+        red.push(redPixels(Buffer.from(shot.data, "base64")));
+      }
+      const lit = red.flatMap((n, i) => (n > 0 ? [i] : []));
+      if (lit.length === 1) return lit[0];
+      await sleep(60);
+    }
+    return null;
   }
 
   boundary(offset) {

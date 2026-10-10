@@ -42,9 +42,18 @@ export function defineSuite(name, prefixes) {
       mkdirSync(process.env.VIEWMARK_QA_RESULTS, { recursive: true });
       writeFileSync(path.join(process.env.VIEWMARK_QA_RESULTS, `${name}.json`), JSON.stringify(results, null, 2));
     }
-    if (suite.browser) await suite.browser.close();
-    if (suite.proxy) await suite.proxy.close();
-    if (suite.hub) await suite.hub.close();
+    // Each close runs even when an earlier one fails, so no hub or browser is left holding the
+    // test process open.
+    const failures = [];
+    for (const part of [suite.browser, suite.proxy, suite.hub]) {
+      if (!part) continue;
+      try {
+        await part.close();
+      } catch (err) {
+        failures.push(err);
+      }
+    }
+    if (failures.length) throw failures[0];
   });
 
   for (const cell of cells) {
