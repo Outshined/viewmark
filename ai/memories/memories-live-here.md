@@ -5,7 +5,7 @@ metadata:
   type: feedback
 ---
 
-Store every memory as a file in `/home/paul/src/viewmark/ai/memories/`, with its pointer in `ai/memories/MEMORY.md`. Do not write memories to `~/.claude/projects/.../memory/` or anywhere else.
+Store every memory as a file in `ai/memories/` in this repository, with its pointer in `ai/memories/MEMORY.md`. Do not write memories to `~/.claude/projects/.../memory/` or anywhere else.
 
 **Why:** the user said so directly (2026-10-08), right after a memory was written to the default `~/.claude` location.
 
