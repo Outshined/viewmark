@@ -25,7 +25,7 @@ import {
   parseHash,
   wordSpan,
 } from "../src/editor.js";
-import { splitCommentNote, lockSpans, lockIndexAt, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak } from "../src/doc.js";
+import { splitCommentNote, lockSpans, lockIndexAt, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, moveText } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
@@ -3718,6 +3718,25 @@ test("enter writes a blank line where the caret line would join", () => {
   const joined = apply("alpha\nbeta\n", 5);
   assert.equal(joined.doc, "alpha\n\nbeta\n");
   assert.equal(joined.cursor, 7);
+});
+
+test("a drag moves the selection in one undo step", () => {
+  const after = moveText(createState("alpha beta\n", 5, 0), 10);
+  assert.equal(after.doc, " betaalpha\n");
+  assert.equal(after.cursor, 10);
+  assert.equal(after.anchor, 10);
+  assert.equal(after.changes.length, 2);
+  assert.deepEqual(after.changes[0], { from: 0, to: 5, inserted: "", removed: "alpha" });
+  assert.deepEqual(after.changes[1], { from: 5, to: 5, inserted: "alpha", removed: "" });
+  const back = undo(after);
+  assert.equal(back.doc, "alpha beta\n");
+  assert.equal(back.undo.length, 0);
+  const before = moveText(createState("alpha beta\n", 10, 6), 0);
+  assert.equal(before.doc, "betaalpha \n");
+  assert.equal(before.cursor, 4);
+  const inside = moveText(createState("alpha beta\n", 5, 0), 3);
+  assert.equal(inside.doc, "alpha beta\n");
+  assert.equal(inside.changes, undefined);
 });
 
 test("enter before a blank line keeps the caret line from joining", () => {

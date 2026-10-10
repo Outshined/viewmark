@@ -1610,6 +1610,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   let pointer = null;
   let didDrag = false;
+  // The selection under the press, kept so a drop can move it after the caret has moved.
+  let dragRange = null;
+  let dragSource = null;
   // The first press of a multi-click. Later presses reuse it after a render
   // would have moved the text under the pointer.
   let gestureOffset = null;
@@ -3932,6 +3935,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     if (type === "insertFromPaste" || type === "insertFromDrop") {
+      if (type === "insertFromDrop" && dragSource) {
+        const source = dragSource;
+        dragSource = null;
+        dragRange = null;
+        let dest = state.cursor;
+        const ranges = typeof event.getTargetRanges === "function" ? event.getTargetRanges() : null;
+        if (ranges && ranges.length > 0) {
+          const range = ranges[0];
+          const mapped = mapOffset(range.startContainer, range.startOffset);
+          if (Number.isFinite(mapped)) dest = mapped;
+        }
+        emitEdit({ op: "move", anchor: source.anchor, cursor: source.cursor, dest });
+        return;
+      }
       const text = event.dataTransfer?.getData("text/plain") ?? event.data ?? "";
       consumePaste(text);
     }
@@ -4057,6 +4074,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     gestureOffset = pointOffset(event);
     gestureArmed = true;
+    const from = Math.min(state.anchor, state.cursor);
+    const to = Math.max(state.anchor, state.cursor);
+    const at = gestureOffset;
+    dragRange = from !== to && at != null && at > from && at < to
+      ? { anchor: state.anchor, cursor: state.cursor }
+      : null;
+  });
+
+  listen("dragstart", (event) => {
+    const node = event.target && event.target.nodeType === 1 ? event.target : event.target && event.target.parentElement;
+    if (node && node.closest && node.closest(".file-tree")) return;
+    if (!dragRange) return;
+    dragSource = dragRange;
+  });
+
+  listen("dragend", () => {
+    dragSource = null;
+    dragRange = null;
   });
 
   listen("mouseup", (event) => {

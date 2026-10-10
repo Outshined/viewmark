@@ -11,6 +11,7 @@ import {
   createState,
   deleteForward,
   insert,
+  moveText,
   lockIndexAt,
   lockSpans,
   offsetAt,
@@ -502,7 +503,7 @@ function producedFrom(next, state) {
 }
 
 function runOp(text, cursor, anchor, msg) {
-  if (msg.op === "insert" || msg.op === "backspace" || msg.op === "delete") {
+  if (msg.op === "insert" || msg.op === "backspace" || msg.op === "delete" || msg.op === "move") {
     const state = createState(text, cursor, anchor);
     let next = state;
     if (msg.op === "insert") {
@@ -514,7 +515,8 @@ function runOp(text, cursor, anchor, msg) {
       }
     }
     else if (msg.op === "backspace") next = backspace(state);
-    else next = deleteForward(state);
+    else if (msg.op === "delete") next = deleteForward(state);
+    else next = moveText(state, msg.dest);
     if (next === null) return null;
     return producedFrom(next, state);
   }

@@ -2592,6 +2592,48 @@ export function insert(state, text) {
   return applySplice(state, from, to, value, from + value.length);
 }
 
+// Move a selection to dest. A drop inside it, or on either edge, changes nothing.
+// One undo step. The change list is the delete and the insert, in application order.
+export function moveText(state, dest) {
+  const from = Math.min(state.anchor, state.cursor);
+  const to = Math.max(state.anchor, state.cursor);
+  const at = Math.max(0, Math.min(state.doc.length, Number.isFinite(dest) ? Math.trunc(dest) : from));
+  if (from === to || (at >= from && at <= to)) return state;
+  const text = state.doc.slice(from, to);
+  let doc;
+  let changes;
+  let caret;
+  if (at > to) {
+    const insertAt = at - (to - from);
+    doc = state.doc.slice(0, from) + state.doc.slice(to, at) + text + state.doc.slice(at);
+    changes = [
+      { from, to, inserted: "", removed: text },
+      { from: insertAt, to: insertAt, inserted: text, removed: "" },
+    ];
+    caret = insertAt + text.length;
+  } else {
+    doc = state.doc.slice(0, at) + text + state.doc.slice(at, from) + state.doc.slice(to);
+    changes = [
+      { from: at, to: at, inserted: text, removed: "" },
+      { from: from + text.length, to: to + text.length, inserted: "", removed: text },
+    ];
+    caret = at + text.length;
+  }
+  const cleaned = cleanupComments(doc, caret);
+  if (cleaned.broken) return null;
+  const all = changes.concat(cleaned.changes);
+  const cursor = cleaned.cursor;
+  const nextDoc = cleaned.doc;
+  return {
+    doc: nextDoc,
+    cursor,
+    anchor: cursor,
+    undo: state.undo.concat([{ doc: state.doc, cursor: state.cursor, anchor: state.anchor }]),
+    redo: [],
+    changes: all,
+  };
+}
+
 function deleteSelection(state) {
   const from = Math.min(state.anchor, state.cursor);
   const to = Math.max(state.anchor, state.cursor);

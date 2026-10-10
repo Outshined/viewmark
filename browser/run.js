@@ -55,8 +55,9 @@ function editRange(cell) {
     if (key && key.startsWith("B: ")) key = key.slice(3);
     if (token.text != null) low += [...token.text].length;
     else if (token.compose) low += 1;
-    // A middle-click pastes the primary selection. That insert is an edit (R88).
-    else if (token.action && token.action.startsWith("middle-click")) low += 1;
+    // A middle-click pastes the primary selection. Dragging that selection moves it.
+    // Each of those is one edit (R88).
+    else if (token.action && (token.action.startsWith("middle-click") || token.action.startsWith("drag the selection"))) low += 1;
     else if (token.action || POINTER.test(key)) continue;
     else if (HISTORY.has(key)) high += 1;
     else if (!NO_EDIT.has(key)) low += 1;

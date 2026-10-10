@@ -5,6 +5,7 @@ import {
   createState,
   addComment,
   insert,
+  moveText,
   backspace,
   deleteForward,
   undo,
@@ -132,6 +133,9 @@ export function createMemoryTransport(doc, cursor = 0) {
         next = backspace(base);
       } else if (message.op === "delete") {
         next = deleteForward(base);
+      } else if (message.op === "move") {
+        next = moveText(base, message.dest);
+        if (next == null) return;
       } else if (message.op === "comment.add") {
         const added = addComment(base.doc, base.anchor, base.cursor);
         if (!added) return;
@@ -155,7 +159,7 @@ export function createMemoryTransport(doc, cursor = 0) {
       }
       const oldLength = base.doc.length;
       state = next;
-      if (message.op === "insert" || message.op === "backspace" || message.op === "delete") {
+      if (message.op === "insert" || message.op === "backspace" || message.op === "delete" || message.op === "move") {
         deliver(from, to, inserted, message.username);
       } else {
         deliver(0, oldLength, state.doc, message.username);
