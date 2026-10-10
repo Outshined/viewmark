@@ -733,7 +733,7 @@ export async function runCell(suite, cell, routeName, serial) {
   const probed = sent(page, file);
   // I12: the typed character is drawn where the caret was drawn when the key was pressed (R99).
   // On an empty line the caret sits on the line's br, and the line's own box is where it is drawn.
-  const drawnCaret = beforeProbe.rect && (!beforeProbe.fallback || beforeProbe.emptyLine || /> br:\d+$/.test(beforeProbe.focusPath || ""));
+  const drawnCaret = beforeProbe.rect && (!beforeProbe.fallback || beforeProbe.emptyLine || beforeProbe.painted || /> br:\d+$/.test(beforeProbe.focusPath || ""));
   if (!beforeProbe.none && beforeProbe.inside && beforeProbe.anchor === beforeProbe.focus && drawnCaret) {
     let at = 0;
     while (at < textBeforeProbe.length && textBeforeProbe[at] === probed.text[at]) at += 1;

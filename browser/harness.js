@@ -351,6 +351,16 @@ window.__qaBoundaryMain = (offset) => {
   if (before) return { x: before.right, top: before.top, bottom: before.bottom };
   const br = window.__qaBreak(offset);
   if (br) return { x: br.left, top: br.top, bottom: br.bottom };
+  // A comment marker drawn as a handle has no glyph (R105). A caret just before or after it is
+  // at the marker's edge, at the height of the text it marks.
+  for (const marker of window.__qaRoot().querySelectorAll(".md-comment-marker")) {
+    const from = Number(marker.dataset.start);
+    const to = Number(marker.dataset.end);
+    if (from !== offset && to !== offset) continue;
+    const r = marker.getBoundingClientRect();
+    const near = window.__qaGlyph(to) || (from > 0 ? window.__qaGlyph(from - 1) : null);
+    return { x: from === offset ? r.left : r.right, top: near ? near.top : r.top, bottom: near ? near.bottom : r.bottom };
+  }
   return null;
 };
 // 1 px inside the glyph after the boundary, or inside the glyph before it at a line end.
@@ -523,6 +533,7 @@ window.__qaCaret = async () => {
   let rect = null;
   let fallback = false;
   let emptyLine = false;
+  let between = null;
   if (range.collapsed) {
     const rects = range.getClientRects();
     if (rects.length) rect = rects[0];
@@ -533,6 +544,17 @@ window.__qaCaret = async () => {
       // An empty line has no glyph; the caret is drawn in the line's own box.
       const line = holder.closest(".md-line");
       emptyLine = !!line && line.textContent === "";
+      // The selection can sit on a container, between line elements. The browser paints the
+      // caret at the start of the line after that point, and the harness finds it by its paint.
+      if (!line && sel.focusNode.nodeType === 1) {
+        const next = sel.focusNode.childNodes[sel.focusOffset];
+        const lineEl = next && next.nodeType === 1 ? (next.matches(".md-line") ? next : next.querySelector(".md-line")) : null;
+        if (lineEl) {
+          const lr = lineEl.getBoundingClientRect();
+          between = { left: lr.left - 2, right: lr.right, top: lr.top, bottom: lr.bottom };
+          rect = { left: lr.left, top: lr.top, bottom: lr.bottom };
+        }
+      }
     }
   }
   return {
@@ -547,6 +569,7 @@ window.__qaCaret = async () => {
     scroll: { x: window.scrollX, y: window.scrollY },
     // A raw list item hangs its marker in the gutter, where the range's rect and the painted
     // caret can disagree. The line's box is scanned for the caret's paint.
+    between,
     hanging: (() => {
       if (!range.collapsed || !inside) return null;
       const holder = sel.focusNode.nodeType === 1 ? sel.focusNode : sel.focusNode.parentElement;
@@ -798,8 +821,9 @@ export class Page {
       const which = await this.paintedRect(caret.rects, caret.scroll);
       if (which != null) caret.rect = caret.rects[which];
       caret.painted = which != null;
-    } else if (caret && caret.hanging && caret.rect) {
-      const x = await this.paintedX(caret.hanging, caret.scroll);
+    } else if (caret && (caret.hanging || caret.between) && caret.rect) {
+      const box = caret.hanging || caret.between;
+      const x = await this.paintedX(box, caret.scroll);
       if (x != null) caret.rect = { ...caret.rect, x };
       caret.painted = x != null;
     }
