@@ -2990,22 +2990,32 @@ test("a raw marker hangs in flow so the caret sits on its glyphs", () => {
     const raw = lines[0];
     const hang = hangOf(raw);
     assert.ok(hang);
-    assert.ok(nearPx(px(hang.style.marginLeft), -gutterOf(0)));
-    assert.ok(nearPx(px(hang.style.marginRight), gutterOf(0) - 16));
+    assert.equal(hang.style.marginLeft || "", "");
+    assert.equal(hang.style.marginRight || "", "");
     assert.equal(px(raw.style.marginLeft), 0);
     assert.ok(nearPx(px(raw.style.paddingLeft), gutterOf(0)));
+    assert.ok(nearPx(px(raw.style.textIndent), -gutterOf(0)));
     assert.equal(hang.textContent, "- ");
-    assert.equal(raw.style.textIndent || "", "");
     assert.equal(raw.childNodes[0], hang);
-    assert.equal(raw.childNodes[1].textContent, "alpha");
-    assert.equal(raw.childNodes[1].parentElement, raw);
+    const gap = raw.childNodes[1];
+    assert.equal(gap.classList.contains("md-raw-gap"), true);
+    assert.equal(gap.textContent, " ");
+    assert.equal(gap.style.whiteSpace, "pre");
+    assert.equal(hang.style.letterSpacing, "1px");
+    assert.ok(nearPx(px(gap.style.letterSpacing), gutterOf(0) - 16 - 2 - 8));
+    assert.equal(gap.dataset.start, "2");
+    assert.equal(gap.dataset.end, "2");
+    assert.equal(mapOffset(textAt(gap, 0), 0), 2);
+    assert.equal(raw.childNodes[2].textContent, "alpha");
+    assert.equal(raw.childNodes[2].parentElement, raw);
     const markerText = textAt(hang, 0);
     assert.equal(markerText.textContent, "- ");
     assert.equal(mapOffset(markerText, 0), 0);
     assert.equal(mapOffset(markerText, 1), 1);
     assert.equal(mapOffset(markerText, 2), 2);
-    assert.equal(mapOffset(textAt(raw.childNodes[1], 0), 0), 2);
+    assert.equal(mapOffset(textAt(raw.childNodes[2], 0), 0), 2);
     assert.equal(hangOf(lines[1]), undefined);
+    assert.equal(lines[1].style.textIndent || "", "");
     assert.equal(lines[1].textContent, "beta");
     bullet.destroy();
 
@@ -3013,27 +3023,32 @@ test("a raw marker hangs in flow so the caret sits on its glyphs", () => {
     const strongLine = mounted.findAll((node) => node.classList && node.classList.contains("md-li") && node.classList.contains("md-raw"))[0];
     const strongHang = hangOf(strongLine);
     assert.equal(strongHang.textContent, "- ");
-    assert.ok(nearPx(px(strongHang.style.marginLeft), -gutterOf(0)));
-    assert.equal(strongLine.childNodes[1].textContent, "**a**");
-    assert.equal(strongLine.childNodes[1].classList.contains("md-strong"), true);
-    assert.equal(mapOffset(textAt(strongLine.childNodes[1], 0), 0), 2);
+    assert.equal(strongHang.style.marginLeft || "", "");
+    assert.equal(strongLine.childNodes[1].classList.contains("md-raw-gap"), true);
+    assert.equal(strongLine.childNodes[2].textContent, "**a**");
+    assert.equal(strongLine.childNodes[2].classList.contains("md-strong"), true);
+    assert.equal(mapOffset(textAt(strongLine.childNodes[2], 0), 0), 2);
     marked.destroy();
 
     const task = createEditor(mounted.root, "- [ ] box\n", 0);
-    const taskLine = mounted.findAll((node) => node.textContent && node.textContent.startsWith("- [ ]"))[0];
+    const taskLine = mounted.findAll((node) => node.classList && node.classList.contains("md-li") && node.classList.contains("md-raw") && node.textContent && node.textContent.includes("[ ]"))[0];
     const taskHang = hangOf(taskLine);
     assert.equal(taskHang.textContent, "- ");
-    assert.equal(taskLine.textContent.slice(taskHang.textContent.length), "[ ] box");
+    const taskItem = taskLine.childNodes.filter((node) => node !== taskHang && !(node.classList && node.classList.contains("md-raw-gap")));
+    assert.equal(taskItem.map((node) => node.textContent).join(""), "[ ] box");
     task.destroy();
 
     const nested = createEditor(mounted.root, "\t\t1. aaa\n\t\t2. bbb\n", 0);
     const ordered = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-ol"));
     const nestedHang = hangOf(ordered[0]);
     assert.equal(nestedHang.textContent, "\t\t1. ");
-    assert.ok(nearPx(px(nestedHang.style.marginLeft), -88));
-    assert.ok(nearPx(px(nestedHang.style.marginRight), 0));
+    assert.equal(nestedHang.style.marginLeft || "", "");
+    assert.equal(nestedHang.style.marginRight || "", "");
+    assert.equal(nestedHang.style.letterSpacing || "", "");
+    assert.ok(nearPx(px(ordered[0].style.textIndent), -88));
     assert.ok(nearPx(px(ordered[0].style.paddingLeft), 88));
     assert.ok(nearPx(px(ordered[0].style.marginLeft), gutterOf(8) - 88));
+    assert.equal(ordered[0].childNodes.some((node) => node.classList && node.classList.contains("md-raw-gap")), false);
     assert.equal(ordered[0].childNodes[1].textContent, "aaa");
     assert.equal(mapOffset(textAt(nestedHang, 0), 0), 0);
     assert.equal(mapOffset(textAt(nestedHang, 0), 5), 5);
@@ -3046,10 +3061,12 @@ test("a raw marker hangs in flow so the caret sits on its glyphs", () => {
     const tabLine = mounted.findAll((node) => node.classList && node.classList.contains("md-ol") && node.classList.contains("md-raw"))[0];
     const tabHang = hangOf(tabLine);
     assert.equal(tabHang.textContent, "1.\t");
-    assert.ok(nearPx(px(tabHang.style.marginLeft), -32));
-    assert.ok(nearPx(px(tabHang.style.marginRight), 0));
+    assert.equal(tabHang.style.marginLeft || "", "");
+    assert.equal(tabHang.style.marginRight || "", "");
+    assert.ok(nearPx(px(tabLine.style.textIndent), -32));
     assert.ok(nearPx(px(tabLine.style.paddingLeft), 32));
     assert.ok(nearPx(px(tabLine.style.marginLeft), gutterOf(0) - 32));
+    assert.equal(tabLine.childNodes.some((node) => node.classList && node.classList.contains("md-raw-gap")), false);
     assert.equal(tabLine.childNodes[1].textContent, "alpha");
     assert.equal(mapOffset(textAt(tabLine.childNodes[1], 0), 0), 3);
     tabbed.destroy();
@@ -3067,10 +3084,13 @@ test("a raw marker hangs in flow so the caret sits on its glyphs", () => {
     const wideLines = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-ol"));
     const wideHang = hangOf(wideLines[0]);
     assert.equal(wideHang.textContent, "100. ");
-    assert.ok(nearPx(px(wideHang.style.marginLeft), -40));
-    assert.ok(nearPx(px(wideHang.style.marginRight), 0));
+    assert.equal(wideHang.style.marginLeft || "", "");
+    assert.equal(wideHang.style.marginRight || "", "");
+    assert.equal(wideHang.style.letterSpacing || "", "");
+    assert.ok(nearPx(px(wideLines[0].style.textIndent), -40));
     assert.ok(nearPx(px(wideLines[0].style.paddingLeft), 40));
     assert.ok(nearPx(px(wideLines[0].style.marginLeft), gutterOf(0) - 40));
+    assert.equal(wideLines[0].childNodes.some((node) => node.classList && node.classList.contains("md-raw-gap")), false);
     assert.equal(wideLines[0].childNodes[1].textContent, "hundred");
     assert.equal(mapOffset(textAt(wideLines[0].childNodes[1], 0), 0), 5);
     assert.equal(hangOf(wideLines[1]), undefined);
@@ -3080,7 +3100,11 @@ test("a raw marker hangs in flow so the caret sits on its glyphs", () => {
     const joinedLine = mounted.findAll((node) => node.classList && node.classList.contains("md-li") && node.classList.contains("md-raw"))[0];
     const joinedHang = hangOf(joinedLine);
     assert.equal(joinedHang.textContent, "- ");
-    const space = mounted.findAll((node) => node.nodeType === 3 && node.textContent === " ")[0];
+    const space = mounted.findAll((node) => (
+      node.nodeType === 3
+      && node.textContent === " "
+      && !(node.parentElement && node.parentElement.classList && node.parentElement.classList.contains("md-raw-gap"))
+    ))[0];
     assert.equal(mapOffset(space, 0), 7);
     assert.equal(mapOffset(space, 1), 8);
     joined.destroy();

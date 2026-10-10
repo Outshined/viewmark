@@ -140,8 +140,8 @@ test("a raw list marker hangs in the bullet gutter", async (t) => {
   const aaaOpen = await glyphLeft(page, aaa);
   near(aaaOpen, aaaClosed, "third-level text stays when opened");
   near(aaaOpen, await glyphLeft(page, bbb), "third-level raw matches closed sibling");
-  assert.equal(await textIndent(page, aaa), "", "third-level line has no text-indent");
-  assert.match(await hangMargin(page, aaa), /^-[\d.]+px$/, "third-level marker hangs");
+  assert.match(await textIndent(page, aaa), /^-[\d.]+px$/, "third-level marker hangs");
+  assert.equal(await hangMargin(page, aaa), "", "third-level marker has no margin pull");
   near(await glyphLeft(page, 2), bulletA, "top-level bullet stays put");
   near(await glyphLeft(page, 19), orderedClosed, "top-level ordered stays put");
 

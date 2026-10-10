@@ -892,6 +892,25 @@ function isBreak(node) {
   return !!node && String(node.nodeName || "").toUpperCase() === "BR";
 }
 
+function nodeElement(node) {
+  return node && node.nodeType === 3 ? node.parentElement : node;
+}
+
+function insideRawMarker(node) {
+  const el = nodeElement(node);
+  if (!el || typeof el.closest !== "function") return false;
+  return !!(el.closest(".md-raw-hang") || el.closest(".md-raw-gap"));
+}
+
+// sel.modify from the item text stops in the hanging marker at the same source offset.
+function crossedIntoRawMarker(origin, landed) {
+  if (!origin || !landed || origin === landed) return false;
+  if (insideRawMarker(origin) || !insideRawMarker(landed)) return false;
+  const el = nodeElement(origin);
+  const line = el && typeof el.closest === "function" ? el.closest(".md-line") : null;
+  return !!(line && typeof line.querySelector === "function" && line.querySelector(".md-raw-hang"));
+}
+
 // A line of only spaces or tabs rests on its start, and the next offset snaps
 // there too. A hard break that still shows text rests on its newline. A visible
 // line's break does not: up and down there rest on the marker's first offset.
@@ -1194,8 +1213,8 @@ function splitMarkerRun(el, count) {
   return head;
 }
 
-// The marker has to be its own inline box. text-indent shifts the glyphs and
-// leaves Chromium's caret where the indent was not applied.
+// The marker is its own inline box so the slack after it can be a sibling.
+// The line's text-indent moves that box, and Chromium's caret, into the gutter.
 function takeRawMarker(el, marker) {
   const plan = [];
   let left = marker;
@@ -3336,20 +3355,83 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!hang) return;
     const gutter = listGutter(fontSize, indent, ctx.measureText("0").width);
     if (!(gutter > 0)) return;
-    placeHang(el, hang, gutter, width);
+    placeHang(el, hang, gutter, width, space);
   }
 
   // A marker that fits the gutter starts on the paragraph column, so a letter
   // typed into it stays on the caret when the line stops being a list. A wider
-  // marker hangs further left until its right edge meets the item text. Padding
-  // covers the whole hang, so the caret stays on the glyphs; any extra line
-  // margin is given back and the item text stays on the closed column.
-  function placeHang(el, hang, gutter, width) {
+  // marker hangs further left until its right edge meets the item text. The
+  // line's text-indent moves the glyphs and Chromium's caret together; a
+  // negative margin would leave the caret on the content edge. Slack after a
+  // short marker is a sibling space, so the item text stays on the closed
+  // column and the marker box ends before that text.
+  function placeHang(el, hang, gutter, width, space) {
     const shift = Math.max(gutter, width);
+    const slack = shift - width;
     el.style.marginLeft = `${gutter - shift}px`;
     el.style.paddingLeft = `${shift}px`;
-    hang.style.marginLeft = `-${shift}px`;
-    hang.style.marginRight = `${shift - width}px`;
+    el.style.textIndent = `-${shift}px`;
+    // The painted caret is the left edge of the device pixel that contains it.
+    // One pixel of tracking keeps a letter typed into a short marker on that pixel.
+    const markerText = String(hang.textContent || "");
+    // A tab stop does not grow by letter-spacing, so tracking stays off those markers.
+    const chars = markerText.includes("\t") ? 0 : markerText.length;
+    const tracking = chars > 0 && slack - chars > 1.25 && space > 0 ? 1 : 0;
+    hang.style.letterSpacing = tracking ? "1px" : "";
+    const gapSlack = slack - tracking * chars;
+    if (gapSlack > 0.25 && space > 0) {
+      const gap = ensureRawGap(el, hang);
+      gap.style.whiteSpace = "pre";
+      gap.style.letterSpacing = `${gapSlack - space}px`;
+      tagRawGap(gap, markerEndOf(hang));
+    } else removeRawGap(el);
+  }
+
+  function markerEndOf(hang) {
+    let end = NaN;
+    const walk = (node) => {
+      if (!node || node.nodeType !== 1) return;
+      const raw = node.dataset && node.dataset.end;
+      const value = raw != null && raw !== "" ? Number(raw) : NaN;
+      if (Number.isFinite(value) && !(end > value)) end = value;
+      for (const child of childArray(node)) walk(child);
+    };
+    walk(hang);
+    return end;
+  }
+
+  function tagRawGap(gap, end) {
+    if (!gap || !Number.isFinite(end)) return;
+    gap.dataset.start = String(end);
+    gap.dataset.end = String(end);
+  }
+
+  function ensureRawGap(el, hang) {
+    const kids = childArray(el);
+    const index = kids.indexOf(hang);
+    const next = index >= 0 ? kids[index + 1] : null;
+    if (next && hasClass(next, "md-raw-gap")) return next;
+    const gap = document.createElement("span");
+    gap.className = "md-raw-gap";
+    gap.appendChild(document.createTextNode(" "));
+    placeAfter(el, hang, gap);
+    return gap;
+  }
+
+  function removeRawGap(el) {
+    const gap = findClassChild(el, "md-raw-gap");
+    if (gap) detachNode(gap);
+  }
+
+  // Canvas space is not the used space. Letter-spacing has to match the laid-out one.
+  function usedSpaceWidth(line) {
+    const probe = document.createElement("span");
+    probe.style.whiteSpace = "pre";
+    probe.appendChild(document.createTextNode(" "));
+    line.appendChild(probe);
+    const width = typeof probe.getBoundingClientRect === "function" ? probe.getBoundingClientRect().width : 0;
+    detachNode(probe);
+    return width;
   }
 
   // Canvas ch is not the used ch. Once the line is in the document, size the
@@ -3378,11 +3460,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       const gutter = listGutter(fontSize, indent, ch);
       if (!(gutter > 0)) continue;
+      const space = usedSpaceWidth(line);
+      // Letter-spacing is tracking, not part of the marker's own width.
+      hang.style.letterSpacing = "0px";
       const width = hang.getBoundingClientRect().width;
       if (!(width > 0)) continue;
-      placeHang(line, hang, gutter, width);
+      placeHang(line, hang, gutter, width, space);
+      const applied = hang.style.letterSpacing;
+      hang.style.letterSpacing = "0px";
       const shifted = hang.getBoundingClientRect().width;
-      if (shifted > 0 && Math.abs(shifted - width) >= 0.25) placeHang(line, hang, gutter, shifted);
+      if (shifted > 0 && Math.abs(shifted - width) >= 0.25) placeHang(line, hang, gutter, shifted, space);
+      else hang.style.letterSpacing = applied;
     }
   }
 
@@ -4371,20 +4459,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (rect && rect.height > 0 && Number.isFinite(left)) goalX = left;
     }
     const caretPoint = pointFor(state.cursor);
+    const forward = direction === "forward" || direction === "right";
     placingCaret = true;
     let landed = null;
+    let hangAffinity = false;
     try {
       if (caretPoint) sel.collapse(caretPoint.node, caretPoint.offset);
       sel.modify("move", direction, granularity);
       if (sel.rangeCount !== 0) {
         const range = sel.getRangeAt(0);
         landed = mapOffset(range.startContainer, range.startOffset);
+        if (granularity === "character" && !forward && landed === beforeCursor && caretPoint && crossedIntoRawMarker(caretPoint.node, range.startContainer)) {
+          hangAffinity = true;
+        }
       }
     } finally {
       placingCaret = false;
     }
     if (landed == null) return;
-    const forward = direction === "forward" || direction === "right";
     let next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
     // Up and down on a line drawn empty rest on its start.
     if (granularity === "line") next = lineCaret(state.doc, next);
@@ -4415,6 +4507,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         }
       }
     }
+    // The DOM step stayed on the marker's end, which is also the item's start.
+    // The caret belongs on the last marker glyph.
+    if (hangAffinity && next === beforeCursor && beforeCursor > 0) next = beforeCursor - 1;
     // No line is drawn after the final newline until the caret is on it, so the
     // browser cannot move there. The step is that offset.
     if (forward && next === beforeCursor && state.doc.endsWith("\n")) {
