@@ -1525,6 +1525,38 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // placeCaret and moveCaret write the selection from state. The selectionchange
   // those writes fire must not copy that selection back over state.
   let placingCaret = false;
+  let goalX = null;
+
+  function pointBox(point) {
+    if (!point || !point.node || typeof document === "undefined" || typeof document.createRange !== "function") return null;
+    try {
+      const range = document.createRange();
+      range.setStart(point.node, point.offset || 0);
+      range.collapse(true);
+      const rects = typeof range.getClientRects === "function" ? range.getClientRects() : null;
+      const rect = rects && rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
+      if (!rect || !Number.isFinite(rect.left) || !Number.isFinite(rect.top)) return null;
+      return rect;
+    } catch {
+      return null;
+    }
+  }
+
+  function goalOffset(doc, next, x) {
+    const origin = pointBox(pointFor(next));
+    if (!origin) return next;
+    const [start, end] = lineSpan(doc, next);
+    let best = next;
+    let bestDist = Math.abs(origin.left - x);
+    for (let offset = start; offset <= end && offset <= doc.length; offset += 1) {
+      const box = pointBox(pointFor(offset));
+      if (!box || Math.abs(box.top - origin.top) > 1) continue;
+      const dist = Math.abs(box.left - x);
+      if (dist < bestDist) { best = offset; bestDist = dist; }
+    }
+    return best;
+  }
+
   let compositionOrigin = null;
   // insert collapses at the end of its replacement. This is the selection that
   // still covers the same characters after a list indent.
@@ -1976,6 +2008,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function onSelectionChange() {
     if (closed || placingCaret || composing || gestureHold) return;
+    // Chrome reports the selectionchange from placeCaret after placingCaret is
+    // already false. That echo still names state, so it must not drop the column.
+    const keptX = goalX;
+    goalX = null;
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return;
     const holder = sel.anchorNode || sel.getRangeAt(0).commonAncestorContainer;
@@ -1983,6 +2019,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const mapped = selectionFromDom(sel);
     if (!mapped) return;
     const next = pointer ? mapped : homeSnap(mapped);
+    if (next.anchor === state.anchor && next.cursor === state.cursor) goalX = keptX;
     state = { ...state, anchor: next.anchor, cursor: next.cursor };
     if (next.anchor !== mapped.anchor || next.cursor !== mapped.cursor) placeCaret();
   }
@@ -3546,6 +3583,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const beforeAnchor = state.anchor;
     const before = lineIndexAt(state.doc, beforeCursor);
     // modify("move") on an extended range collapses to the focus and does not advance.
+    if (granularity !== "line") goalX = null;
+    else if (goalX == null) {
+      const rect = caretRect();
+      const left = rect && rect.left;
+      if (Number.isFinite(left)) goalX = left;
+    }
     const caretPoint = pointFor(state.cursor);
     placingCaret = true;
     let landed = null;
@@ -3597,6 +3640,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (forward && next === beforeCursor && state.doc.endsWith("\n")) {
       const end = lineSpan(state.doc, beforeCursor)[1];
       if (end === state.doc.length - 1) next = state.doc.length;
+    }
+    // Up on the first line and down on the last land on that line's edge.
+    // goalOffset would pull them back to the column they were already on.
+    const [lineStart, lineEnd] = lineSpan(state.doc, next);
+    const sameLine = lineStart === lineSpan(state.doc, beforeCursor)[0];
+    const lineEdge = sameLine && (forward ? next === lineEnd : next === lineStart);
+    if (granularity === "line" && typeof goalX === "number" && !bareBreakNewline(state.doc, next) && !lineEdge) {
+      next = goalOffset(state.doc, next, goalX);
     }
     const anchor = extend ? beforeAnchor : next;
     state = { ...state, cursor: next, anchor };
@@ -3856,6 +3907,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   listen("mousedown", (event) => {
+    goalX = null;
     commentFocus = null;
     cancelGestureRender();
     pointer = { x: event.clientX, y: event.clientY };
