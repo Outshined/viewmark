@@ -3371,6 +3371,10 @@ test("enter on a list item continues that item", () => {
     assert.equal(quotedOrdered.doc, "> 1. alpha\n> 2. ");
     assert.equal(quotedOrdered.cursor, quotedOrdered.doc.length);
 
+    const heading = enter("# Title", 2);
+    assert.equal(heading.doc, "\n# Title");
+    assert.equal(heading.cursor, 3);
+
     const split = enter("- alpha", 4);
     assert.equal(split.doc, "- al\n- pha");
     assert.equal(split.cursor, 7);

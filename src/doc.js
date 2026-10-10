@@ -232,6 +232,10 @@ export function enterInsert(doc, cursor) {
   const opened = fenceOpen(line.text);
   if ((opened && opened.lang !== "comment") || fenceBody(text, at) || line.text.startsWith("|")) return { text: "\n" };
   const mode = classify(line.text);
+  // The heading moves down. The splice rewrites the marker so the caret stays on the title.
+  if (mode.kind === "h" && mode.marker > 0 && at === line.start + mode.marker) {
+    return { text: "\n" + line.text.slice(0, mode.marker), anchor: line.start, cursor: at };
+  }
   if ((mode.kind === "li" || mode.kind === "ol") && at === line.end) {
     const head = line.text.slice(0, mode.marker || 0);
     const rest = line.text.slice(head.length);
