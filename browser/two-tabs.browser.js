@@ -46,5 +46,6 @@ test("two tabs of one user are two sessions", async (t) => {
   await sleep(200);
   assert.equal((await hub.show("a.md")).text, "alxpha\n\nbeyta\n");
   // The second tab names who holds alpha, as it would for another user.
-  await B.until(() => labelOn(B, "alpha", "qa-bot"), "the second tab shows qa-bot on alpha", 3000);
+  // The block's text is alxpha after the edit, so the search is that text.
+  await B.until(() => labelOn(B, "alxpha", "qa-bot"), "the second tab shows qa-bot on alpha", 3000);
 });

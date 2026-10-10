@@ -1922,6 +1922,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return typeof active.username === "string" ? active.username : "";
   }
 
+  function selfToken() {
+    return typeof active.token === "string" ? active.token : "";
+  }
+
+  // This tab is its hello token. Another tab of the same user, and a CLI edit
+  // under that username, are someone else. A mirror with no token has only the username.
+  function ownActor(message) {
+    const mine = selfToken();
+    if (mine) return !!message && message.token === mine;
+    return !!message && message.actor === selfName();
+  }
+
+  function ownLock(line) {
+    if (!line || typeof line.username !== "string" || line.username === "") return false;
+    const mine = selfToken();
+    if (mine) return line.token === mine;
+    return line.username === selfName();
+  }
+
   function emit(message, track = true) {
     const framed = { ...message, username: selfName() };
     const type = framed.type;
@@ -3092,7 +3111,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const spans = lockSpans(state.doc);
     const names = [];
     for (const line of lockTable) {
-      if (!line || typeof line.username !== "string" || line.username === "" || line.username === selfName()) continue;
+      if (!line || typeof line.username !== "string" || line.username === "" || ownLock(line)) continue;
       const span = spans[line.index];
       if (!span) continue;
       const at = span.start;
@@ -3811,7 +3830,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function noteFreshComment(previousDoc, message) {
     if (!expectNewComment) return;
     expectNewComment = false;
-    if (message.actor !== selfName()) return;
+    if (!ownActor(message)) return;
     const before = new Set(commentThreads(previousDoc).map((item) => item.id));
     const novel = commentThreads(state.doc).filter((item) => !before.has(item.id));
     if (novel.length === 0) return;
@@ -3826,13 +3845,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function caretFor(message) {
     const length = typeof message.text === "string" ? message.text.length : 0;
     const kept = keptCaret;
-    if (message.type === "doc" && kept && message.actor === selfName() && message.text === kept.text) {
+    if (message.type === "doc" && kept && ownActor(message) && message.text === kept.text) {
       keptCaret = null;
       if (kept.anchor !== kept.cursor) rawSelectionLines = true;
       return { cursor: clampCaret(kept.cursor, length), anchor: clampCaret(kept.anchor, length) };
     }
     if (message.type === "doc" || message.type === "file") keptCaret = null;
-    if (message.type === "file" || message.actor === selfName()) {
+    if (message.type === "file" || ownActor(message)) {
       const cursor = Number.isFinite(message.cursor) ? message.cursor : (message.type === "file" ? 0 : state.cursor);
       const anchor = Number.isFinite(message.anchor) ? message.anchor : cursor;
       return { cursor: clampCaret(cursor, length), anchor: clampCaret(anchor, length) };
@@ -3957,7 +3976,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (outstandingLock && active.memory !== true) {
         const held = new Set();
         for (const line of lockTable) {
-          if (line && line.username === selfName() && Number.isFinite(line.index)) held.add(line.index);
+          if (line && ownLock(line) && Number.isFinite(line.index)) held.add(line.index);
         }
         let ok = outstandingLock.lines.length > 0;
         for (const index of outstandingLock.lines) if (!held.has(index)) ok = false;
@@ -4059,7 +4078,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         emit({ type: "open", path: openPath });
         return;
       }
-      if (message.actor === selfName()) {
+      if (ownActor(message)) {
         const index = conflictWaiters.indexOf("edit");
         if (index >= 0) {
           conflictWaiters.splice(index, 1);

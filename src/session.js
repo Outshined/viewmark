@@ -298,6 +298,7 @@ export function createSocketTransport({ username, socketFactory, location, rando
 
   return {
     username: name,
+    token: sessionToken,
     memory: false,
     url,
     send(message) {

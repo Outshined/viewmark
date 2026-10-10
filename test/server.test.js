@@ -3755,7 +3755,7 @@ test("a closed holder reconnects with its token and the file message carries its
     const index = lockIndexAt(file.text, file.cursor);
     assert.deepEqual(
       file.locks.find((line) => line.username === "A" && line.index === index),
-      { index, username: "A" },
+      { index, username: "A", token },
     );
     again.send({ type: "lock", username: "A", path: "a.md", anchor: 1, cursor: 4, rev: file.rev });
     const locks = await again.next((msg) => msg.type === "locks" || msg.type === "error");
@@ -3787,7 +3787,7 @@ test("a second live socket with that token gets 409 naming the holder", async ()
     const other = await syncLock(b, [a], "B", "a.md", 0, rev);
     assert.deepEqual(
       other.lines.find((line) => line.username === "B"),
-      { index: 0, username: "B" },
+      { index: 0, username: "B", token },
     );
 
     await waitClosed(a.ws);
@@ -3801,7 +3801,7 @@ test("a second live socket with that token gets 409 naming the holder", async ()
     assert.equal(locks.type, "locks");
     assert.deepEqual(
       locks.lines.find((line) => line.index === lockIndexAt(file.text, caret)),
-      { index: lockIndexAt(file.text, caret), username: "A" },
+      { index: lockIndexAt(file.text, caret), username: "A", token },
     );
     b.ws.close();
     again.ws.close();
@@ -3889,7 +3889,7 @@ test("an insert by someone else while the socket is down shifts the caret the fi
     const index = lockIndexAt(file.text, file.cursor);
     assert.deepEqual(
       file.locks.find((line) => line.username === "A" && line.index === index),
-      { index, username: "A" },
+      { index, username: "A", token },
     );
     again.send({
       type: "lock",

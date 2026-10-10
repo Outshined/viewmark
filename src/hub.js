@@ -907,7 +907,11 @@ export async function createHub(stateDir, sourceRoot) {
   function lockSnapshot(file) {
     const lines = [];
     for (const [index, owner] of file.locks) {
-      lines.push({ index, username: owner.session.username });
+      // Two tabs share a username. The hello token is which tab holds the block.
+      // A CLI socket has none, so a tab does not treat that lock as its own.
+      const line = { index, username: owner.session.username };
+      if (owner.session.token) line.token = owner.session.token;
+      lines.push(line);
     }
     lines.sort((a, b) => a.index - b.index);
     return lines;
@@ -1017,6 +1021,7 @@ export async function createHub(stateDir, sourceRoot) {
       cursor: caret.cursor,
       anchor: caret.anchor,
     };
+    if (socket.session.token) body.token = socket.session.token;
     if (wire.length === 1) {
       body.from = wire[0].from;
       body.to = wire[0].to;

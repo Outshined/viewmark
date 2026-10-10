@@ -6951,6 +6951,135 @@ test("locks name another user and a rejected lock does not take the caret", () =
   }
 });
 
+test("another tab of this user is not this session", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  transport.username = "qa-bot";
+  transport.token = "tab-a";
+  const doc = "alpha\n\nbeta\n";
+  const beta = "alpha\n\nbe".length;
+  try {
+    const view = createEditor(mounted.root, doc, beta, transport);
+    const alphaIndex = lockIndexAt(doc, 2);
+    const betaIndex = lockIndexAt(doc, beta);
+    assert.notEqual(alphaIndex, betaIndex);
+    transport.deliver({
+      type: "locks",
+      lines: [
+        { index: alphaIndex, username: "qa-bot", token: "tab-b" },
+        { index: betaIndex, username: "qa-bot", token: "tab-a" },
+      ],
+    });
+    const marked = (text) => {
+      const block = [...mounted.root.childNodes].find((node) => node.textContent && node.textContent.includes(text));
+      assert.ok(block, text);
+      return walkNodes(block, (node) => node.classList && node.classList.contains("md-lock")).map((mark) => mark.textContent);
+    };
+    assert.deepEqual(marked("alpha"), ["qa-bot"]);
+    assert.deepEqual(marked("beta"), []);
+
+    transport.deliver({
+      type: "doc",
+      rev: 1,
+      text: "alxpha\n\nbeta\n",
+      from: 2,
+      to: 2,
+      inserted: "x",
+      actor: "qa-bot",
+      token: "tab-b",
+      cursor: 3,
+      anchor: 3,
+    });
+    assert.equal(view.getState().doc, "alxpha\n\nbeta\n");
+    assert.equal(view.getState().cursor, beta + 1);
+    assert.equal(view.getState().anchor, beta + 1);
+
+    const at = view.getState().cursor;
+    transport.deliver({
+      type: "doc",
+      rev: 2,
+      text: "alxpha\n\nbeyta\n",
+      from: at,
+      to: at,
+      inserted: "y",
+      actor: "qa-bot",
+      token: "tab-a",
+      cursor: at + 1,
+      anchor: at + 1,
+    });
+    assert.equal(view.getState().doc, "alxpha\n\nbeyta\n");
+    assert.equal(view.getState().cursor, at + 1);
+    assert.equal(view.getState().anchor, at + 1);
+
+    const stayed = view.getState().cursor;
+    const end = view.getState().doc.length;
+    transport.deliver({
+      type: "doc",
+      rev: 3,
+      text: `${view.getState().doc}Z`,
+      from: end,
+      to: end,
+      inserted: "Z",
+      actor: "qa-bot",
+      cursor: end + 1,
+      anchor: end + 1,
+    });
+    assert.equal(view.getState().cursor, stayed);
+    assert.equal(view.getState().anchor, stayed);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a same-username doc with another token does not release a queued edit", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  transport.username = "qa-bot";
+  transport.token = "tab-a";
+  try {
+    const view = createEditor(mounted.root, "ab", 1, transport);
+    insertText(mounted, "X");
+    insertText(mounted, "Y");
+    assert.equal(transport.sent.filter((message) => message.type === "edit").length, 1);
+    transport.deliver({
+      type: "doc",
+      rev: 1,
+      text: "Zab",
+      from: 0,
+      to: 0,
+      inserted: "Z",
+      actor: "qa-bot",
+      token: "tab-b",
+      cursor: 1,
+      anchor: 1,
+    });
+    assert.equal(transport.sent.filter((message) => message.type === "edit").length, 1);
+    assert.equal(view.getState().doc, "Zab");
+    assert.equal(view.getState().cursor, 2);
+    assert.equal(view.getState().anchor, 2);
+    transport.deliver({
+      type: "doc",
+      rev: 2,
+      text: "ZaXb",
+      from: 2,
+      to: 2,
+      inserted: "X",
+      actor: "qa-bot",
+      token: "tab-a",
+      cursor: 3,
+      anchor: 3,
+    });
+    const edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 2);
+    assert.equal(edits[1].text, "Y");
+    assert.equal(view.getState().cursor, 3);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test('files ["b.md","sub/a.md"] show b.md and a collapsed sub', () => {
   const mounted = mountEditor();
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
