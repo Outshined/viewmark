@@ -218,6 +218,20 @@ function listContinuationEnter(text, line) {
   return { text: `\n${marker}` };
 }
 
+
+function lineJoins(lineText) {
+  if (lineText === "" || imageLine(lineText) || lineText.startsWith("|")) return false;
+  return classify(lineText).kind === "p";
+}
+
+function nextLineText(text, newlineAt) {
+  const start = newlineAt + 1;
+  if (start >= text.length) return "";
+  let end = start;
+  while (end < text.length && text[end] !== "\n") end += 1;
+  return text.slice(start, end);
+}
+
 // Text Enter inserts, and where it replaces when an empty item leaves the list.
 // anchor and cursor are the splice; omitted, the caret's own range is the splice.
 export function enterInsert(doc, cursor) {
@@ -230,11 +244,17 @@ export function enterInsert(doc, cursor) {
     return { ...moved, anchor: line.end + 1, cursor: line.end + 1 };
   }
   const opened = fenceOpen(line.text);
+  if (isFenceClose(line.text) && line.newline && at === line.end && text[at] === "\n" && lineJoins(nextLineText(text, at))) {
+    return { text: "\n\n", anchor: at + 1, cursor: at + 1, caret: at + 1 };
+  }
   if ((opened && opened.lang !== "comment") || fenceBody(text, at) || line.text.startsWith("|")) return { text: "\n" };
   const mode = classify(line.text);
   // The heading moves down. The splice rewrites the marker so the caret stays on the title.
   if (mode.kind === "h" && mode.marker > 0 && at === line.start + mode.marker) {
     return { text: "\n" + line.text.slice(0, mode.marker), anchor: line.start, cursor: at };
+  }
+  if ((mode.kind === "h" || mode.kind === "hr") && line.newline && at === line.end && text[at] === "\n" && lineJoins(nextLineText(text, at))) {
+    return { text: "\n\n", anchor: at + 1, cursor: at + 1, caret: at + 1 };
   }
   if ((mode.kind === "li" || mode.kind === "ol") && at === line.end) {
     const head = line.text.slice(0, mode.marker || 0);
@@ -257,20 +277,20 @@ export function enterInsert(doc, cursor) {
   if (continued) return continued;
   if (mode.kind === "p" && line.text !== "" && !imageLine(line.text)) {
     const onBreak = line.newline && at === line.end && text[at] === "\n";
-    const nextBlank = onBreak && (
-      at + 1 >= text.length
-      || text[at + 1] === "\n"
-      || (text[at + 1] === "\r" && text[at + 2] === "\n")
-    );
-    if (onBreak && !nextBlank) {
-      const from = text[at - 1] === "\r" ? at - 1 : at;
-      return { text: "\n\n", anchor: from, cursor: at + 1 };
-    }
+    if (onBreak && text[at - 1] === "\r") return { text: "\n\n", anchor: at - 1, cursor: at + 1 };
+    if (onBreak && !lineJoins(nextLineText(text, at))) return { text: "\n\n" };
+    if (onBreak) return { text: "\n\n", anchor: at, cursor: at + 1 };
     // Column 0 pushes the block down with one newline. A double newline there
     // regresses EN.p.4 and EN.sp.2.
     if (!onBreak && at !== line.start) return { text: "\n\n" };
   }
   if (paragraphBlank(text, line, at)) return { text: "\n\n" };
+  if (line.text === "" && line.newline && at === line.end && text[at] === "\n") {
+    const prev = line.start > 0 ? sourceLine(text, line.start - 1).text : "";
+    // The caret stays between the inserted breaks. The end of the pair is the
+    // following paragraph, so text typed there joins it.
+    if (lineJoins(prev) && lineJoins(nextLineText(text, at))) return { text: "\n\n", caret: at + 1 };
+  }
   return { text: "\n" };
 }
 
@@ -299,7 +319,9 @@ export function enterBreak(doc, anchor, cursor) {
   const mapEnd = (off) => (off < from ? off : off === from ? to : off + span);
   const origFrom = mapStart(spliceFrom);
   const origTo = mapEnd(spliceTo);
-  return renumberFollowing(text, origFrom, origTo, inserted);
+  const widened = renumberFollowing(text, origFrom, origTo, inserted);
+  if (typeof widened.caret === "number" || typeof brk.caret !== "number") return widened;
+  return { ...widened, caret: origFrom + (brk.caret - spliceFrom) };
 }
 
 function insertedOrderedMarker(text) {

@@ -3694,8 +3694,35 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
   }
 });
 
-test("enter before a blank line inserts one newline without claiming the run", () => {
+test("enter writes a blank line where the caret line would join", () => {
+  const apply = (doc, cursor) => {
+    const brk = enterBreak(doc, cursor, cursor);
+    const base = createState(doc, cursor);
+    const next = typeof brk.anchor === "number"
+      ? insert({ ...base, anchor: brk.anchor, cursor: brk.cursor }, brk.text)
+      : insert(base, brk.text);
+    return { doc: next.doc, cursor: typeof brk.caret === "number" ? brk.caret : next.cursor };
+  };
+  const end = apply("hello\n", 5);
+  assert.equal(end.doc, "hello\n\n\n");
+  assert.equal(end.cursor, 7);
+  const gap = apply("hello\n\nworld\n", 5);
+  assert.equal(gap.doc, "hello\n\n\n\nworld\n");
+  assert.equal(gap.cursor, 7);
+  const heading = apply("# Title\nmore\n", 7);
+  assert.equal(heading.doc, "# Title\n\n\nmore\n");
+  assert.equal(heading.cursor, 8);
+  const between = apply("one\n\ntwo\n", 4);
+  assert.equal(between.doc, "one\n\n\n\ntwo\n");
+  assert.equal(between.cursor, 5);
+  const joined = apply("alpha\nbeta\n", 5);
+  assert.equal(joined.doc, "alpha\n\nbeta\n");
+  assert.equal(joined.cursor, 7);
+});
+
+test("enter before a blank line keeps the caret line from joining", () => {
   const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
   const press = (inputType, data) => {
     mounted.listeners.beforeinput({
       inputType,
@@ -3753,7 +3780,7 @@ test("enter before a blank line inserts one newline without claiming the run", (
       press(event.inputType, event.data);
       const edit = transport.sent.find((message) => message.type === "edit");
       assert.equal(edit.op, "insert");
-      assert.equal(edit.text, "\n");
+      assert.equal(edit.text, "\n\n");
       assert.equal(edit.cursor, 5);
       assert.equal(edit.anchor, 5);
       assert.equal(transport.sent.some((message) => message.type === "lock"), false);
@@ -3762,9 +3789,9 @@ test("enter before a blank line inserts one newline without claiming the run", (
       const view = createEditor(mounted.root, "hello\n\nworld\n", 0);
       helloEnd();
       press(event.inputType, event.data);
-      assert.equal(view.getState().doc, "hello\n\n\nworld\n");
-      assert.equal(view.getState().cursor, 6);
-      assert.equal(view.getState().anchor, 6);
+      assert.equal(view.getState().doc, "hello\n\n\n\nworld\n");
+      assert.equal(view.getState().cursor, 7);
+      assert.equal(view.getState().anchor, 7);
       view.destroy();
 
       const blockedTransport = rejecting();
