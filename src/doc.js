@@ -61,12 +61,17 @@ export function createState(doc, cursor = 0, anchor = undefined) {
   };
 }
 
+function lineText(doc, start, end) {
+  const cr = end > start && end < doc.length && doc[end] === "\n" && doc[end - 1] === "\r";
+  return doc.slice(start, cr ? end - 1 : end);
+}
+
 function lineSpans(doc) {
   const lines = [];
   let start = 0;
   for (let i = 0; i <= doc.length; i += 1) {
     if (i === doc.length || doc[i] === "\n") {
-      lines.push({ start, end: i, text: doc.slice(start, i) });
+      lines.push({ start, end: i, text: lineText(doc, start, i) });
       start = i + 1;
       if (i === doc.length) break;
     }
@@ -167,6 +172,11 @@ export function enterInsert(doc, cursor) {
   const text = typeof doc === "string" ? doc : "";
   const at = Math.max(0, Math.min(text.length, Number.isFinite(cursor) ? cursor : 0));
   const line = sourceLine(text, at);
+  if (line.newline && at + 1 === line.end && text[at] === "\r") {
+    const moved = enterInsert(text, line.end);
+    if (typeof moved.anchor === "number") return { ...moved, cursor: Math.max(moved.cursor, line.end + 1) };
+    return { ...moved, anchor: line.end + 1, cursor: line.end + 1 };
+  }
   const opened = fenceOpen(line.text);
   if ((opened && opened.lang !== "comment") || fenceBody(text, at) || line.text.startsWith("|")) return { text: "\n" };
   const mode = classify(line.text);
@@ -1591,7 +1601,7 @@ function orderedMarker(line, mode) {
 }
 
 function rawBlock(line, mode, parsed, spans) {
-  const empty = line.start === line.end;
+  const empty = line.text === "";
   let runs = empty ? [] : paintRuns(fillGaps(line, mode, parsed), spans, true);
   // The quote mark is the bar. A one-line quoted item still does not show ">".
   if (!empty && mode.quoted && mode.quote) runs = dropPrefix(runs, line.start + mode.quote);
@@ -1600,7 +1610,7 @@ function rawBlock(line, mode, parsed, spans) {
     raw: true,
     empty,
     start: line.start,
-    end: line.end,
+    end: empty ? line.start : line.end,
     text: line.text,
     classes: blockClasses(mode, true),
     runs,
@@ -1610,13 +1620,13 @@ function rawBlock(line, mode, parsed, spans) {
 }
 
 function renderedBlock(line, mode, parsed, spans) {
-  if (line.start === line.end) {
+  if (line.text === "") {
     return {
       type: "line",
       raw: false,
       empty: true,
       start: line.start,
-      end: line.end,
+      end: line.start,
       text: "",
       classes: blockClasses(mode, false),
       runs: [],
@@ -2228,7 +2238,7 @@ function sourceLine(doc, offset) {
   while (start > 0 && doc[start - 1] !== "\n") start -= 1;
   let end = offset;
   while (end < doc.length && doc[end] !== "\n") end += 1;
-  return { start, end, text: doc.slice(start, end), newline: end < doc.length && doc[end] === "\n" };
+  return { start, end, text: lineText(doc, start, end), newline: end < doc.length && doc[end] === "\n" };
 }
 
 // The caret rests on the first offset of a hard-break marker. Offsets after that,
@@ -2247,7 +2257,8 @@ function hardBreakEdge(doc, offset) {
 function visualEnd(doc, newlineIndex) {
   if (newlineIndex < 0) return 0;
   const line = sourceLine(doc, newlineIndex);
-  return line.end - hardHideCount(line.text);
+  const cr = line.newline && line.end > line.start && doc[line.end - 1] === "\r" ? 1 : 0;
+  return line.end - cr - hardHideCount(line.text);
 }
 
 function markerAt(doc, index) {
@@ -2308,6 +2319,10 @@ export function skipHidden(doc, offset, direction) {
       return direction === "backward" || direction === "left" ? token.start : token.end;
     }
   }
+  if (at > 0 && at < text.length && text[at - 1] === "\r" && text[at] === "\n") {
+    if (direction === "forward" || direction === "right") return at + 1;
+    return at - 1;
+  }
   if (direction === "nearer") {
     const re = /( {2,}|\\)\n/g;
     let match = re.exec(text);
@@ -2367,8 +2382,18 @@ export function replaceDocument(state, doc, cursor) {
   };
 }
 
+function fileNewline(doc) {
+  let paired = false;
+  for (let i = 0; i < doc.length; i += 1) {
+    if (doc[i] !== "\n") continue;
+    if (i === 0 || doc[i - 1] !== "\r") return "\n";
+    paired = true;
+  }
+  return paired ? "\r\n" : "\n";
+}
+
 export function insert(state, text) {
-  const value = typeof text === "string" ? text : "";
+  const value = (typeof text === "string" ? text : "").replace(/\r\n|\n|\r/g, fileNewline(state.doc));
   const from = Math.min(state.anchor, state.cursor);
   const to = Math.max(state.anchor, state.cursor);
   if (value === "" && from === to) return state;
@@ -2400,9 +2425,11 @@ export function backspace(state) {
   const line = sourceLine(doc, state.cursor);
   if (bareBreakLine(line, doc)) return deleteBareLine(state, line);
   if (/^[ \t]+$/.test(line.text)) return deleteBareLine(state, line);
+  if (line.text === "" && line.end > line.start) return deleteBareLine(state, line);
   const atom = renderedAtomAt(doc, state.cursor, (item) => state.cursor > item.start && state.cursor <= item.end);
   if (atom) return applySplice(state, atom.start, atom.end, "", atom.start);
-  return snapBreak(applySplice(state, state.cursor - 1, state.cursor, "", state.cursor - 1));
+  const from = state.cursor > 1 && state.doc[state.cursor - 1] === "\n" && state.doc[state.cursor - 2] === "\r" ? state.cursor - 2 : state.cursor - 1;
+  return snapBreak(applySplice(state, from, state.cursor, "", from));
 }
 
 export function deleteForward(state) {
@@ -2432,7 +2459,8 @@ export function deleteForward(state) {
   if (at === state.doc.length - 1 && doc[at] === "\n" && at > 0 && doc[at - 1] === "\n") {
     cursor = at - 1;
   }
-  return snapBreak(applySplice(state, at, at + 1, "", cursor));
+  const from = doc[at] === "\n" && doc[at - 1] === "\r" ? at - 1 : at;
+  return snapBreak(applySplice(state, from, at + 1, "", cursor));
 }
 
 export function undo(state) {

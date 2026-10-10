@@ -25,7 +25,7 @@ import {
   parseHash,
   wordSpan,
 } from "../src/editor.js";
-import { splitCommentNote, lockSpans, lockIndexAt, commentRangeReason, skipHidden, lineCaret } from "../src/doc.js";
+import { splitCommentNote, lockSpans, lockIndexAt, commentRangeReason, skipHidden, lineCaret, enterInsert } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
@@ -12134,4 +12134,28 @@ test("tab on a list item writes the tab at the line start and keeps the caret", 
   } finally {
     mounted.restore();
   }
+});
+
+test("uwtqazmt crlf newlines", () => {
+  const blank = backspace(createState("one\r\n\r\ntwo\r\n", 5));
+  assert.equal(blank.doc, "one\r\ntwo\r\n");
+  assert.equal(blank.cursor, 3);
+
+  const base = createState("one\r\ntwo\r\n", 3);
+  const brk = enterInsert(base.doc, base.cursor);
+  const entered = typeof brk.anchor === "number"
+    ? insert({ ...base, anchor: brk.anchor, cursor: brk.cursor }, brk.text)
+    : insert(base, brk.text);
+  assert.equal(entered.doc, "one\r\n\r\ntwo\r\n");
+  assert.equal(entered.cursor, 7);
+  assert.deepEqual(plan(entered.doc, entered.cursor).lines.map((line) => line.text), ["one", "", "two"]);
+  assert.equal(skipHidden(entered.doc, 4, "backward"), 3);
+
+  const mid = insert(createState("one\r\n\r\n\r\n\r\ntwo\r\n", 7), "x");
+  assert.equal(mid.doc, "one\r\n\r\nx\r\n\r\ntwo\r\n");
+  assert.equal(mid.cursor, 8);
+
+  const lf = insert(createState("one\n\ntwo\n", 4), "a\r\nb");
+  assert.equal(lf.doc, "one\na\nb\ntwo\n");
+  assert.equal(lf.cursor, 7);
 });
