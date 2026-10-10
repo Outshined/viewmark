@@ -2903,6 +2903,141 @@ test("T-tab-key", () => {
   }
 });
 
+test("a raw marker hangs in flow so the caret sits on its glyphs", () => {
+  const mounted = mountEditor();
+  const create = globalThis.document.createElement;
+  globalThis.document.createElement = (tag) => {
+    const el = create(tag);
+    if (String(tag).toLowerCase() === "canvas") {
+      el.getContext = () => ({
+        measureText(text) {
+          return { width: String(text).length * 8 };
+        },
+      });
+    }
+    return el;
+  };
+  globalThis.window.getComputedStyle = () => ({ font: "16px sans-serif", tabSize: "4" });
+  const hangOf = (line) => (line.childNodes || []).find((node) => node.classList && node.classList.contains("md-raw-hang"));
+  const px = (value) => Number.parseFloat(value || "0");
+  const gutterOf = (indent) => 1.3 * 16 + indent * 8;
+  const nearPx = (actual, expected) => Math.abs(actual - expected) < 1e-6;
+  const textAt = (node, index) => {
+    const found = [];
+    const walk = (current) => {
+      if (!current) return;
+      if (current.nodeType === 3) found.push(current);
+      for (const child of current.childNodes || []) walk(child);
+    };
+    walk(node);
+    return found[index];
+  };
+  try {
+    const bullet = createEditor(mounted.root, "- alpha\n- beta\n", 0);
+    const lines = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-li"));
+    assert.equal(lines.length, 2);
+    const raw = lines[0];
+    const hang = hangOf(raw);
+    assert.ok(hang);
+    assert.ok(nearPx(px(hang.style.marginLeft), -gutterOf(0)));
+    assert.ok(nearPx(px(hang.style.marginRight), gutterOf(0) - 16));
+    assert.equal(px(raw.style.marginLeft), 0);
+    assert.ok(nearPx(px(raw.style.paddingLeft), gutterOf(0)));
+    assert.equal(hang.textContent, "- ");
+    assert.equal(raw.style.textIndent || "", "");
+    assert.equal(raw.childNodes[0], hang);
+    assert.equal(raw.childNodes[1].textContent, "alpha");
+    assert.equal(raw.childNodes[1].parentElement, raw);
+    const markerText = textAt(hang, 0);
+    assert.equal(markerText.textContent, "- ");
+    assert.equal(mapOffset(markerText, 0), 0);
+    assert.equal(mapOffset(markerText, 1), 1);
+    assert.equal(mapOffset(markerText, 2), 2);
+    assert.equal(mapOffset(textAt(raw.childNodes[1], 0), 0), 2);
+    assert.equal(hangOf(lines[1]), undefined);
+    assert.equal(lines[1].textContent, "beta");
+    bullet.destroy();
+
+    const marked = createEditor(mounted.root, "- **a**\n", 0);
+    const strongLine = mounted.findAll((node) => node.classList && node.classList.contains("md-li") && node.classList.contains("md-raw"))[0];
+    const strongHang = hangOf(strongLine);
+    assert.equal(strongHang.textContent, "- ");
+    assert.ok(nearPx(px(strongHang.style.marginLeft), -gutterOf(0)));
+    assert.equal(strongLine.childNodes[1].textContent, "**a**");
+    assert.equal(strongLine.childNodes[1].classList.contains("md-strong"), true);
+    assert.equal(mapOffset(textAt(strongLine.childNodes[1], 0), 0), 2);
+    marked.destroy();
+
+    const task = createEditor(mounted.root, "- [ ] box\n", 0);
+    const taskLine = mounted.findAll((node) => node.textContent && node.textContent.startsWith("- [ ]"))[0];
+    const taskHang = hangOf(taskLine);
+    assert.equal(taskHang.textContent, "- ");
+    assert.equal(taskLine.textContent.slice(taskHang.textContent.length), "[ ] box");
+    task.destroy();
+
+    const nested = createEditor(mounted.root, "\t\t1. aaa\n\t\t2. bbb\n", 0);
+    const ordered = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-ol"));
+    const nestedHang = hangOf(ordered[0]);
+    assert.equal(nestedHang.textContent, "\t\t1. ");
+    assert.ok(nearPx(px(nestedHang.style.marginLeft), -88));
+    assert.ok(nearPx(px(nestedHang.style.marginRight), 0));
+    assert.ok(nearPx(px(ordered[0].style.paddingLeft), 88));
+    assert.ok(nearPx(px(ordered[0].style.marginLeft), gutterOf(8) - 88));
+    assert.equal(ordered[0].childNodes[1].textContent, "aaa");
+    assert.equal(mapOffset(textAt(nestedHang, 0), 0), 0);
+    assert.equal(mapOffset(textAt(nestedHang, 0), 5), 5);
+    assert.equal(mapOffset(textAt(ordered[0].childNodes[1], 0), 0), 5);
+    assert.equal(hangOf(ordered[1]), undefined);
+    assert.equal(ordered[1].textContent, "bbb");
+    nested.destroy();
+
+    const tabbed = createEditor(mounted.root, "1.\talpha\n", 0);
+    const tabLine = mounted.findAll((node) => node.classList && node.classList.contains("md-ol") && node.classList.contains("md-raw"))[0];
+    const tabHang = hangOf(tabLine);
+    assert.equal(tabHang.textContent, "1.\t");
+    assert.ok(nearPx(px(tabHang.style.marginLeft), -32));
+    assert.ok(nearPx(px(tabHang.style.marginRight), 0));
+    assert.ok(nearPx(px(tabLine.style.paddingLeft), 32));
+    assert.ok(nearPx(px(tabLine.style.marginLeft), gutterOf(0) - 32));
+    assert.equal(tabLine.childNodes[1].textContent, "alpha");
+    assert.equal(mapOffset(textAt(tabLine.childNodes[1], 0), 0), 3);
+    tabbed.destroy();
+
+    const quoted = createEditor(mounted.root, "> - item\n> - other\n", 0);
+    const quoteLines = mounted.findAll((node) => node.classList && node.classList.contains("md-quote"));
+    assert.equal(quoteLines.length, 2);
+    assert.equal(hangOf(quoteLines[0]), undefined);
+    assert.equal(quoteLines[0].style.textIndent || "", "");
+    assert.equal(quoteLines[0].textContent.startsWith("- item"), true);
+    assert.equal(hangOf(quoteLines[1]), undefined);
+    quoted.destroy();
+
+    const wide = createEditor(mounted.root, "100. hundred\n101. more\n", 0);
+    const wideLines = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-ol"));
+    const wideHang = hangOf(wideLines[0]);
+    assert.equal(wideHang.textContent, "100. ");
+    assert.ok(nearPx(px(wideHang.style.marginLeft), -40));
+    assert.ok(nearPx(px(wideHang.style.marginRight), 0));
+    assert.ok(nearPx(px(wideLines[0].style.paddingLeft), 40));
+    assert.ok(nearPx(px(wideLines[0].style.marginLeft), gutterOf(0) - 40));
+    assert.equal(wideLines[0].childNodes[1].textContent, "hundred");
+    assert.equal(mapOffset(textAt(wideLines[0].childNodes[1], 0), 0), 5);
+    assert.equal(hangOf(wideLines[1]), undefined);
+    wide.destroy();
+
+    const joined = createEditor(mounted.root, "- Alpha\nBeta\n", 0);
+    const joinedLine = mounted.findAll((node) => node.classList && node.classList.contains("md-li") && node.classList.contains("md-raw"))[0];
+    const joinedHang = hangOf(joinedLine);
+    assert.equal(joinedHang.textContent, "- ");
+    const space = mounted.findAll((node) => node.nodeType === 3 && node.textContent === " ")[0];
+    assert.equal(mapOffset(space, 0), 7);
+    assert.equal(mapOffset(space, 1), 8);
+    joined.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("prism keyword joins", () => {
   const source = readFileSync(new URL("../vendor/prism.js", import.meta.url), "utf8");
   const context = {};

@@ -1086,6 +1086,70 @@ function rawListMarker(block) {
   return match ? match[0] : "";
 }
 
+function setNodeText(node, value) {
+  node.textContent = value;
+  const desc = Object.getOwnPropertyDescriptor(node, "length");
+  if (desc && desc.writable) node.length = value.length;
+}
+
+// A text node's length is live in the browser and a plain field in tests.
+function splitMarkerRun(el, count) {
+  const textNode = childArray(el)[0];
+  const text = String(textNode.textContent || "");
+  const head = document.createElement(String(el.localName || "span").toLowerCase());
+  head.className = el.className || "";
+  if (el.dataset && el.dataset.comment) head.dataset.comment = el.dataset.comment;
+  if (typeof el.href === "string" && el.href !== "") {
+    head.href = el.href;
+    if (el.rel) head.rel = el.rel;
+    head.draggable = false;
+  }
+  const start = el.dataset && el.dataset.start != null && el.dataset.start !== "" ? Number(el.dataset.start) : NaN;
+  if (Number.isFinite(start)) {
+    head.dataset.start = String(start);
+    head.dataset.end = String(start + count);
+    el.dataset.start = String(start + count);
+  }
+  head.appendChild(document.createTextNode(text.slice(0, count)));
+  setNodeText(textNode, text.slice(count));
+  return head;
+}
+
+// The marker has to be its own inline box. text-indent shifts the glyphs and
+// leaves Chromium's caret where the indent was not applied.
+function takeRawMarker(el, marker) {
+  const plan = [];
+  let left = marker;
+  for (const child of childArray(el)) {
+    if (left === "") break;
+    if (!child || child.nodeType !== 1) return null;
+    const text = String(child.textContent || "");
+    if (text.length === 0) return null;
+    if (text.length <= left.length) {
+      if (!left.startsWith(text)) return null;
+      plan.push({ node: child, take: text.length });
+      left = left.slice(text.length);
+      continue;
+    }
+    if (!text.startsWith(left)) return null;
+    const inner = childArray(child);
+    if (inner.length !== 1 || !inner[0] || inner[0].nodeType !== 3 || inner[0].textContent !== text) return null;
+    plan.push({ node: child, take: left.length });
+    left = "";
+  }
+  if (left !== "") return null;
+  const hang = document.createElement("span");
+  hang.className = "md-raw-hang";
+  for (const step of plan) {
+    if (step.take === String(step.node.textContent || "").length) {
+      detachNode(step.node);
+      hang.appendChild(step.node);
+    } else hang.appendChild(splitMarkerRun(step.node, step.take));
+  }
+  placeNodeBefore(el, hang, childArray(el)[0]);
+  return hang;
+}
+
 function renderBlock(block) {
   if (block.type === "table") return renderTable(block);
   if (block.type === "diagram") return renderDiagram(block);
@@ -3116,24 +3180,81 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return x;
   }
 
-  function hangRawMarker(el, marker) {
+  // Same gutter as `.md-li` / `.md-ol`: 1.3em plus one ch per indent column.
+  function listGutter(fontSize, indent, ch) {
+    const columns = Number.isFinite(indent) ? indent : 0;
+    const step = Number.isFinite(ch) && ch > 0 ? ch : 0;
+    return 1.3 * fontSize + columns * step;
+  }
+
+  function hangRawMarker(el, marker, indent) {
     if (!marker) return;
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext && canvas.getContext("2d");
     if (!ctx || typeof ctx.measureText !== "function") return;
-    const style = getComputedStyle(root);
-    const font = style.font;
-    if (!font) return;
-    ctx.font = font;
+    const style = readComputedStyle(root);
+    if (!style || !style.font) return;
+    ctx.font = style.font;
+    const fontSize = cssPx(style.fontSize || style.font);
+    if (!(fontSize > 0)) return;
     const tabRaw = style.tabSize != null && style.tabSize !== "" ? String(style.tabSize).trim() : "4";
     const tabN = Number.parseFloat(tabRaw);
     const space = ctx.measureText(" ").width;
     const stop = tabRaw.endsWith("px") ? tabN : space * (Number.isFinite(tabN) && tabN > 0 && !/[a-z%]/i.test(tabRaw) ? tabN : 4);
     const width = markerWidth(ctx, marker, stop);
     if (!Number.isFinite(width) || width <= 0) return;
-    // The 1.3em margin is already the gutter. Padding would cancel this indent
-    // and leave the item text a marker-width to the right of a closed sibling.
-    el.style.textIndent = `-${width}px`;
+    const hang = takeRawMarker(el, marker);
+    if (!hang) return;
+    const gutter = listGutter(fontSize, indent, ctx.measureText("0").width);
+    if (!(gutter > 0)) return;
+    placeHang(el, hang, gutter, width);
+  }
+
+  // A marker that fits the gutter starts on the paragraph column, so a letter
+  // typed into it stays on the caret when the line stops being a list. A wider
+  // marker hangs further left until its right edge meets the item text. Padding
+  // covers the whole hang, so the caret stays on the glyphs; any extra line
+  // margin is given back and the item text stays on the closed column.
+  function placeHang(el, hang, gutter, width) {
+    const shift = Math.max(gutter, width);
+    el.style.marginLeft = `${gutter - shift}px`;
+    el.style.paddingLeft = `${shift}px`;
+    hang.style.marginLeft = `-${shift}px`;
+    hang.style.marginRight = `${shift - width}px`;
+  }
+
+  // Canvas ch is not the used ch. Once the line is in the document, size the
+  // gutter from the used font and a 1ch probe, and the slack from the marker's laid-out width.
+  function settleRawMarkers() {
+    for (const line of childArray(root)) {
+      if (!line || !line.classList || !line.classList.contains("md-raw") || line.classList.contains("md-quote")) continue;
+      if (!line.classList.contains("md-li") && !line.classList.contains("md-ol")) continue;
+      const hang = findClassChild(line, "md-raw-hang");
+      if (!hang || typeof hang.getBoundingClientRect !== "function") continue;
+      const computed = readComputedStyle(line);
+      if (!computed || typeof computed.getPropertyValue !== "function") continue;
+      const fontSize = cssPx(computed.fontSize);
+      if (!(fontSize > 0)) continue;
+      const indent = cssPx(computed.getPropertyValue("--indent"));
+      let ch = 0;
+      if (indent > 0) {
+        const probe = document.createElement("span");
+        probe.style.display = "inline-block";
+        probe.style.width = "1ch";
+        probe.style.padding = "0";
+        probe.style.border = "0";
+        line.appendChild(probe);
+        ch = probe.getBoundingClientRect().width;
+        detachNode(probe);
+      }
+      const gutter = listGutter(fontSize, indent, ch);
+      if (!(gutter > 0)) continue;
+      const width = hang.getBoundingClientRect().width;
+      if (!(width > 0)) continue;
+      placeHang(line, hang, gutter, width);
+      const shifted = hang.getBoundingClientRect().width;
+      if (shifted > 0 && Math.abs(shifted - width) >= 0.25) placeHang(line, hang, gutter, shifted);
+    }
   }
 
   function render() {
@@ -3153,13 +3274,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const flashBlock = refusal && !refusal.name ? tightestBlock(blocks, refusal.offset) : null;
       const nodes = blocks.map((block) => {
         const el = renderBlock(block);
-        hangRawMarker(el, rawListMarker(block));
+        hangRawMarker(el, rawListMarker(block), block && block.indent);
         appendLockMarks(el, block);
         if (block === flashBlock) el.classList.add("md-flash");
         return el;
       });
       const priorTop = caretTop();
       root.replaceChildren(...nodes);
+      settleRawMarkers();
       markEditingHighlights();
       hideResolvedHighlights();
       renderCommentAside(planned.comments);
