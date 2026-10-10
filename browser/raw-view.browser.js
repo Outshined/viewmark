@@ -4,10 +4,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { AGENT, OTHER, REPO, USER, cli, launchBrowser, Page, startHub } from "./harness.js";
 
 // Acceptance for ticket awtyv87s, the raw view, from the Acceptance section of its body.
-// Each test names the part it checks. A title that says "default" checks a default QA
-// chose where the request left a choice open; a failure there is a question for the owner,
-// not a bug. Every action is a real key or mouse event, except focusing the toggle before
-// Enter or Space, which has no other route.
+// Each test names the part it checks. A title that names R107 checks a point the owner
+// decided on 2026-10-10 after QA had chosen a default; a failure there is a bug like any other.
+// Every action is a real key or mouse event, except focusing the toggle before Enter or Space,
+// which has no other route.
 
 const FOX = "the quick brown fox jumps over the lazy dog";
 function fill77(text) {
@@ -248,7 +248,7 @@ test("nothing rendered: a table, a diagram, an image, headings, emphasis, links,
   assert.equal(style.quote, style.body, "the quote is drawn in another style");
 });
 
-test("nothing rendered (default, a question for the owner): a code fence has no syntax colors", async (t) => {
+test("nothing rendered (R107): a code fence has no syntax colors", async (t) => {
   const doc = "Text.\n\n```js\nconst x = 1; // note\n```\n";
   const { page } = await setup(t, { "a.md": doc });
   await open(page, "a.md");
@@ -315,7 +315,7 @@ test("sharing: an edit from the CLI or another tab shows in the raw tab within o
   await A.until(async () => (await lines(A))[0].includes("Z"), "the other tab's edit shows", 1000);
 });
 
-test("sharing (default, a question for the owner): typing inside a comment marker gets the answer the CLI gets for the same bytes", async (t) => {
+test("sharing (R107): typing inside a comment marker gets the answer the CLI gets for the same bytes", async (t) => {
   const doc = "See {c1}this{/c1} now." + CM("c1");
   const { hub, page } = await setup(t, { "a.md": doc, "twin.md": doc });
   await open(page, "a.md");
@@ -644,7 +644,7 @@ test("button: with a ticket open, it sits in the top right of the ticket's text 
   assert.equal(await covered(page), "", "the button covers text");
 });
 
-test("button (default, a question for the owner): it stays in the visible corner of the pane while the document scrolls", async (t) => {
+test("button (R107): it stays in the visible corner of the pane while the document scrolls", async (t) => {
   const doc = Array.from({ length: 80 }, (_, i) => `line ${i + 1}`).join("\n\n") + "\n";
   const { page } = await setup(t, { "a.md": doc });
   await open(page, "a.md");

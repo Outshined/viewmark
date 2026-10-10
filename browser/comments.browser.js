@@ -535,10 +535,11 @@ test("handles: a drag into a block another session holds is refused with 409, an
   await A.until(() => A.eval(`window.__qa.flashes.some((flash) => flash.name.includes(${JSON.stringify(OTHER)}))`), `${OTHER}'s name flashes`, 3000);
 });
 
-// The raw view draws no comment highlight, only the markers as text. The ticket's acceptance
-// predates the raw view, so whether handles belong there is a question for the owner.
-test("handles: in the raw view the handles show over the comment and dragging one moves that marker", { todo: "open question: the raw view draws markers as text and no highlight; y8qvyrzz predates it" }, async (t) => {
-  const { hub, page } = await setup(t, { "a.md": HDOC });
+// The raw view draws every byte and does not interpret markdown, and a click inside a marker
+// stays on that byte (R107, the owner's decision of 2026-10-10). So the raw view draws the
+// markers as text and no handles over them.
+test("handles: the raw view draws no handles, and its markers stay as text (R107)", async (t) => {
+  const { page } = await setup(t, { "a.md": HDOC });
   await open(page, "a.md");
   await page.until(() => page.eval(`!!document.querySelector(${JSON.stringify(TOGGLE)})`), "the raw view toggle");
   const pt = await page.eval(`(() => { const r = document.querySelector(${JSON.stringify(TOGGLE)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
@@ -547,14 +548,9 @@ test("handles: in the raw view the handles show over the comment and dragging on
   await page.quiet();
   await place(page, 3);
   await hover(page, at("this", 2));
-  const shown = await handles(page);
-  assert.deepEqual(shown.map((h) => h.edge).sort(), ["end", "start"], `handles in the raw view: ${JSON.stringify(shown)}`);
-  const target = await page.eval(`window.__qaClickPoint(${at(".")})`);
-  const edits = await dragHandle(page, "end", target);
-  assert.equal(edits.length, 1, `the drag sent ${edits.length} edits`);
-  const after = await bytes(hub, "a.md");
-  assert.equal(split(after).prose, LEAD + "See {c1}this now{/c1}.");
-  whole(after, "raw view end handle");
+  assert.deepEqual(await handles(page), [], "handles show in the raw view");
+  const text = await page.eval(`document.getElementById("editor").textContent`);
+  assert.ok(text.includes("See {c1}this{/c1} now."), `the markers are not drawn as text: ${JSON.stringify(text)}`);
 });
 
 // Ticket xj3zqv5t moved Commit repo into the comments column. The controls at its top take
