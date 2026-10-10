@@ -207,9 +207,14 @@ export function enterInsert(doc, cursor) {
   const mode = classify(line.text);
   if ((mode.kind === "li" || mode.kind === "ol") && at === line.end) {
     const head = line.text.slice(0, mode.marker || 0);
-    // A nested or quoted empty item is not this exit. A top-level one becomes the blank line.
-    if (head !== "" && line.text === head && !/^[ \t>]/.test(head)) {
-      return { text: "\n", anchor: line.start, cursor: line.end };
+    const rest = line.text.slice(head.length);
+    const empty = head !== "" && (rest === "" || /^\[( |x|X)\][ \t]*$/.test(rest));
+    if (empty) {
+      if (mode.quoted) return { text: line.text.slice(0, mode.quote || 0), anchor: line.start, cursor: line.end };
+      if (line.text.startsWith("\t")) return { text: line.text.slice(1), anchor: line.start, cursor: line.end };
+      if (line.text.startsWith("  ")) return { text: line.text.slice(2), anchor: line.start, cursor: line.end };
+      if (line.start === 0) return { text: "", anchor: line.start, cursor: line.end };
+      if (!/^[ \t>]/.test(head)) return { text: "\n", anchor: line.start, cursor: line.end };
     }
   }
   if (at === line.start && (mode.kind === "li" || mode.kind === "ol")) return { text: "\n" };

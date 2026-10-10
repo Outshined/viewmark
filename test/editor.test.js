@@ -3394,6 +3394,60 @@ test("enter on a list item continues that item", () => {
   }
 });
 
+test("enter on an empty list item leaves the list", () => {
+  const mounted = mountEditor();
+  const press = (inputType = "insertParagraph") => {
+    mounted.listeners.beforeinput({
+      inputType,
+      preventDefault() {},
+    });
+  };
+  const show = (state) => state.doc.slice(0, state.cursor) + "‸" + state.doc.slice(state.cursor);
+  const enter = (marked, inputType) => {
+    const at = marked.indexOf("‸");
+    const view = createEditor(mounted.root, marked.replace("‸", ""), at);
+    press(inputType);
+    const state = view.getState();
+    view.destroy();
+    return show(state);
+  };
+  const cases = [
+    ["- alpha\n- ‸\n", "- alpha\n\n‸\n"],
+    ["- ‸\n", "‸\n"],
+    ["- alpha\n- ‸\n- gamma\n", "- alpha\n\n‸\n- gamma\n"],
+    ["1. alpha\n2. ‸\n", "1. alpha\n\n‸\n"],
+    ["- a\n  - ‸\n", "- a\n- ‸\n"],
+    ["- a\n\t- ‸\n", "- a\n- ‸\n"],
+    ["> - alpha\n> - ‸\n", "> - alpha\n> ‸\n"],
+    ["- [ ] ‸\n", "‸\n"],
+    ["- [x] ‸\n", "‸\n"],
+    ["- [X] ‸\n", "‸\n"],
+    ["- [ ] alpha\n- [ ] ‸\n", "- [ ] alpha\n\n‸\n"],
+    ["- alpha‸\n", "- alpha\n- ‸\n"],
+    ["- alpha‸", "- alpha\n- ‸"],
+    ["  - child‸", "  - child\n  - ‸"],
+    ["> - alpha‸", "> - alpha\n> - ‸"],
+    ["1. alpha‸", "1. alpha\n2. ‸"],
+  ];
+  try {
+    for (const inputType of ["insertParagraph", "insertLineBreak"]) {
+      for (const [before, after] of cases) {
+        assert.equal(enter(before, inputType), after, `${inputType} ${JSON.stringify(before)}`);
+      }
+    }
+    const view = createEditor(mounted.root, "- a", 3);
+    press();
+    press();
+    assert.equal(show(view.getState()), "- a\n\n‸");
+    press("deleteContentBackward");
+    press("deleteContentBackward");
+    assert.equal(show(view.getState()), "- a‸");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("unxhe3dc enter before a list marker", () => {
   const mounted = mountEditor();
   const press = (inputType, data) => {
