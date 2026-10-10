@@ -304,6 +304,28 @@ test("a splice that cuts a comment marker returns null and an empty interior sti
   assert.equal(kept.doc.includes("```comment c1"), true);
 });
 
+function markCount(doc, mark) {
+  return doc.split(mark).length - 1;
+}
+
+test("a paste keeps a brace ident that is not already a comment", () => {
+  assert.equal(insert(createState("hello", 5), "{note}").doc, "hello{note}");
+  assert.equal(insert(createState("hello", 5), "{/note}").doc, "hello{/note}");
+
+  const fence = "\n\n```comment c1\n:: 0\nnote\n```\n";
+  const doc = `See {c1}this{/c1} now.${fence}`;
+  const pasted = insert(createState(doc, doc.length), "{c1}x{/c1}");
+  assert.equal(pasted.doc, `${doc}x`);
+  assert.equal(markCount(pasted.doc, "{c1}"), 1);
+  assert.equal(markCount(pasted.doc, "{/c1}"), 1);
+
+  const fenced = "hello\n\n```comment c1\n:: 0\nnote\n```\n";
+  const stripped = insert(createState(fenced, 5), "{c1}x{/c1}");
+  assert.equal(markCount(stripped.doc, "{c1}"), 0);
+  assert.equal(markCount(stripped.doc, "{/c1}"), 0);
+  assert.ok(stripped.doc.includes("hellox"));
+});
+
 function withThread(body) {
   const marked = body.endsWith("\n") ? body : `${body}\n`;
   return `${marked}\n\`\`\`comment c1\n\n\`\`\`\n`;

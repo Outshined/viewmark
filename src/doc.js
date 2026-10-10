@@ -2660,8 +2660,8 @@ function joinedLineBreak(doc, cursor, value, nl) {
   return joinsDown(sourceLine(doc, line.start - 1).text);
 }
 
-// A paste repeats the marks it copied. A mark already in the document, or one
-// with no fence, would open twice or not at all, so the text is what lands.
+// A paste repeats the marks it copied. An id that is already a comment token
+// or a comment fence would open twice, so that mark does not land.
 function omitCopiedMarkers(doc, text) {
   if (!text || text.indexOf("{") < 0) return text;
   const fenced = new Set();
@@ -2669,7 +2669,7 @@ function omitCopiedMarkers(doc, text) {
   const present = new Set();
   for (const token of commentTokens(doc)) present.add(token.id);
   return text.replace(/\{(?:\/)?([A-Za-z][A-Za-z0-9_-]*)\}/g, (mark, id) => {
-    if (present.has(id) || !fenced.has(id)) return "";
+    if (present.has(id) || fenced.has(id)) return "";
     return mark;
   });
 }
