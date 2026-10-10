@@ -12184,4 +12184,11 @@ test("uwtqazmt crlf newlines", () => {
   const joined = deleteForward(createState("ab\r\ncd", 3));
   assert.equal(joined.doc, "abcd");
   assert.equal(joined.cursor, 2);
+
+  const cr5 = deleteForward(createState("one\r\ntwo\r\n", 3));
+  assert.equal(cr5.doc, "onetwo\r\n");
+  assert.equal(cr5.cursor, 3);
+  const cr6 = deleteForward(createState("one\r\n\r\ntwo\r\n", 3));
+  assert.equal(cr6.doc, "one\r\ntwo\r\n");
+  assert.equal(cr6.cursor, 3);
 });

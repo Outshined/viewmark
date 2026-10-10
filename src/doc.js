@@ -2459,6 +2459,10 @@ export function deleteForward(state) {
   if (at === state.doc.length - 1 && doc[at] === "\n" && at > 0 && doc[at - 1] === "\n") {
     cursor = at - 1;
   }
+  // The CR of a CRLF is the break. Deleting only that CR leaves a bare LF.
+  if (doc[at] === "\r" && doc[at + 1] === "\n") {
+    return snapBreak(applySplice(state, at, at + 2, "", at));
+  }
   const from = doc[at] === "\n" && doc[at - 1] === "\r" ? at - 1 : at;
   return snapBreak(applySplice(state, from, at + 1, "", from < at ? from : cursor));
 }
