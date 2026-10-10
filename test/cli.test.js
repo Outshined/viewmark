@@ -10,7 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { start } from "../server.js";
-import { acceptKey, createParser, encodeFrame } from "../src/ws.js";
+import { MAX_PAYLOAD, acceptKey, createParser, encodeFrame } from "../src/ws.js";
 import { commentThreads, lockIndexAt, parseCommentNotes, splitCommentNote } from "../src/doc.js";
 import { composeTicket, parseTicket } from "../src/ticket.js";
 import { validUsername } from "../cli.js";
@@ -75,7 +75,8 @@ const HELP_NEEDLES = [
   "comment delete <path> <thread>",
   "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin.",
   "Lines count from 1. Offset counts from 0. The end offset is exclusive.",
-  "--repo is required on list, show, create, edit, delete, move, rev, comment, commit, and ticket.",
+  "--repo is required on list, show, create, edit, attach, delete, move, rev, comment, commit, and ticket.",
+  "viewmark [--port PORT] [--user NAME] [--json] --repo NAME attach <path> [--start LINE:OFFSET]",
   "ticket delete",
   "--title",
   "--state",
@@ -3384,7 +3385,7 @@ test("T-comment-usage", async () => {
   ]) {
     assert.ok(help.stdout.includes(line), line);
   }
-  assert.match(help.stdout, /--repo is required on list, show, create, edit, delete, move, rev, comment, commit, and ticket\./);
+  assert.match(help.stdout, /--repo is required on list, show, create, edit, attach, delete, move, rev, comment, commit, and ticket\./);
 
   const gate = await trap();
   try {
@@ -4682,6 +4683,108 @@ test("T-comment-ticket", async () => {
     } finally {
       ada.ws.close();
       witness.ws.close();
+    }
+  });
+});
+
+const PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+function rawGet(port, requestPath) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: "127.0.0.1", port, path: requestPath, method: "GET", headers: { Connection: "close" } },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({ status: res.statusCode, type: res.headers["content-type"] ?? "", body: Buffer.concat(chunks) });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+test("picture: empty and oversized stdin do not open a socket", async () => {
+  const empty = await run(["--port", "1", "--user", "Ada", "--repo", "docs", "attach", "pic.md"], {}, Buffer.alloc(0));
+  assert.equal(empty.code, shellStatus(400));
+  assert.equal(empty.stdout, "");
+  assert.equal(empty.stderr, "error 400\nempty image\n");
+
+  const over = await run(
+    ["--port", "1", "--user", "Ada", "--repo", "docs", "attach", "pic.md"],
+    {},
+    Buffer.alloc(MAX_PAYLOAD + 1),
+  );
+  assert.equal(over.code, shellStatus(400));
+  assert.equal(over.stdout, "");
+  assert.equal(over.stderr, "error 400\nimage is too large\n");
+
+  const flagged = await run(
+    ["--port", "1", "--user", "Ada", "--repo", "docs", "attach", "pic.md", "--end", "1:1"],
+    {},
+    PNG_BYTES,
+  );
+  assert.equal(flagged.code, 2);
+  assert.match(flagged.stderr, /unexpected flag/);
+});
+
+test("picture: attach stores the paragraph and a refusal writes nothing", async () => {
+  await withDocs(async ({ dir, port }) => {
+    await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n");
+    const args = ["--port", String(port), "--user", "Ada", "--repo", "docs"];
+    const attached = await run([...args, "attach", "pic.md", "--start", "1:8"], {}, PNG_BYTES);
+    assert.equal(attached.code, 0);
+    assert.match(attached.stderr, /^rev \d+\n$/);
+    const match = /^alpha beta\n\n!\[([23456789abcdefghjkmnpqrstuvwxyz]{8}\.png)\]\(pic\/\1\)\n$/.exec(attached.stdout);
+    assert.ok(match, attached.stdout);
+    const name = match[1];
+    assert.ok((await fs.readFile(path.join(dir, "pic", name))).equals(PNG_BYTES));
+    const raw = await rawGet(port, `/raw/docs/pic/${name}`);
+    assert.equal(raw.status, 200);
+    assert.equal(raw.type, "image/png");
+    assert.ok(raw.body.equals(PNG_BYTES));
+
+    const json = await run(["--json", ...args, "attach", "pic.md"], {}, PNG_BYTES);
+    assert.equal(json.code, 0);
+    const body = JSON.parse(json.stdout);
+    const again = /^[\s\S]*!\[([23456789abcdefghjkmnpqrstuvwxyz]{8}\.png)\]\(pic\/\1\)\n$/.exec(body.text);
+    assert.ok(again, body.text);
+    assert.notEqual(again[1], name);
+    assert.equal(body.path, "pic.md");
+
+    const listed = await run([...args, "list"]);
+    assert.equal(listed.code, 0);
+    assert.ok(listed.stdout.split("\n").includes("pic.md"));
+    assert.equal(listed.stdout.includes("pic/"), false);
+
+    await fs.writeFile(path.join(dir, "plain.md"), "alpha beta\n");
+    const text = await run([...args, "attach", "plain.md", "--start", "1:8"], {}, Buffer.from("not an image"));
+    assert.equal(text.code, shellStatus(400));
+    assert.equal(text.stdout, "");
+    assert.equal(text.stderr, "error 400\nnot an image\n");
+    assert.equal(await fs.readFile(path.join(dir, "plain.md"), "utf8"), "alpha beta\n");
+    await assert.rejects(fs.lstat(path.join(dir, "plain")), (err) => err.code === "ENOENT");
+
+    const missing = await run([...args, "attach", "missing.md"], {}, PNG_BYTES);
+    assert.equal(missing.code, shellStatus(404));
+    assert.equal(missing.stdout, "");
+    assert.equal(missing.stderr, "error 404\n");
+
+    const holder = await lockWhole(port, "Bea", "plain.md");
+    try {
+      const blocked = await run([...args, "attach", "plain.md", "--start", "1:0"], {}, PNG_BYTES);
+      assert.equal(blocked.code, shellStatus(409));
+      assert.equal(blocked.stdout, "");
+      assert.equal(blocked.stderr, "error 409\nheld by Bea\n");
+      assert.equal(await fs.readFile(path.join(dir, "plain.md"), "utf8"), "alpha beta\n");
+      await assert.rejects(fs.lstat(path.join(dir, "plain")), (err) => err.code === "ENOENT");
+    } finally {
+      holder.ws.close();
     }
   });
 });

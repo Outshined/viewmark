@@ -1,11 +1,14 @@
-import { createHash, randomBytes } from "node:crypto";
-
-export const MAX_PAYLOAD = 1024 * 1024;
+export const MAX_PAYLOAD = 2 * 1024 * 1024;
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
+// The page imports MAX_PAYLOAD. A static node:crypto import would stop that module from loading.
+function nodeCrypto() {
+  return process.getBuiltinModule("node:crypto");
+}
+
 export function acceptKey(key) {
-  return createHash("sha1").update(String(key) + GUID).digest("base64");
+  return nodeCrypto().createHash("sha1").update(String(key) + GUID).digest("base64");
 }
 
 export function encodeFrame(opcode, payload, options = {}) {
@@ -31,7 +34,7 @@ export function encodeFrame(opcode, payload, options = {}) {
   }
   if (!mask) return Buffer.concat([header, data]);
   header[1] |= 0x80;
-  const key = options.maskKey ?? randomBytes(4);
+  const key = options.maskKey ?? nodeCrypto().randomBytes(4);
   key.copy(header, offset);
   const masked = Buffer.alloc(len);
   for (let i = 0; i < len; i += 1) masked[i] = data[i] ^ key[i & 3];
@@ -44,9 +47,11 @@ export function encodeText(value) {
 }
 
 // Client frames must be masked. Fragments share one cap with a single frame.
-export function createParser({ requireMask, onText, onPing, onClose, onError }) {
+// A binary frame is image bytes. Text stays JSON, so a later edit does not resend the picture.
+export function createParser({ requireMask, onText, onBinary, onPing, onClose, onError }) {
   let buf = Buffer.alloc(0);
   let fragments = null;
+  let fragOpcode = 0;
   let fragLen = 0;
   let failed = false;
 
@@ -66,15 +71,20 @@ export function createParser({ requireMask, onText, onPing, onClose, onError }) 
       else fail("protocol");
       return;
     }
-    if (opcode === 0x2) return fail("binary");
-    if (opcode !== 0x0 && opcode !== 0x1) return fail("protocol");
-    if (opcode === 0x1) {
+    if (opcode !== 0x0 && opcode !== 0x1 && opcode !== 0x2) return fail("protocol");
+    if (opcode === 0x1 || opcode === 0x2) {
       if (fragments) return fail("protocol");
       if (fin) {
+        if (opcode === 0x2) {
+          if (typeof onBinary !== "function") return fail("binary");
+          onBinary(payload);
+          return;
+        }
         onText(payload);
         return;
       }
       fragments = [payload];
+      fragOpcode = opcode;
       fragLen = payload.length;
       return;
     }
@@ -84,8 +94,15 @@ export function createParser({ requireMask, onText, onPing, onClose, onError }) 
     fragments.push(payload);
     if (!fin) return;
     const full = Buffer.concat(fragments);
+    const kind = fragOpcode;
     fragments = null;
+    fragOpcode = 0;
     fragLen = 0;
+    if (kind === 0x2) {
+      if (typeof onBinary !== "function") return fail("binary");
+      onBinary(full);
+      return;
+    }
     onText(full);
   }
 

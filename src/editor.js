@@ -34,6 +34,7 @@ import {
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./ticket.js";
+import { MAX_PAYLOAD } from "./ws.js";
 
 export {
   sampleDocument,
@@ -690,6 +691,7 @@ const repoBindings = new WeakMap();
 const docMenuBindings = new WeakMap();
 const docCommitBindings = new WeakMap();
 const docLinkBindings = new WeakMap();
+const docAttachBindings = new WeakMap();
 const REPO_KEY = "viewmark.repo";
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 // Per browser tab. A reload keeps it; another tab does not share it.
@@ -1030,7 +1032,17 @@ function renderRun(part) {
   return el;
 }
 
-function renderImage(image) {
+// https stays an address. A data URL is not a file, so it is not requested.
+function imageSrc(url, repo) {
+  if (typeof url !== "string" || url.length === 0) return "";
+  if (url.startsWith("https://") || url.startsWith("http://")) return url;
+  if (url.startsWith("data:")) return "";
+  if (!repo) return url;
+  const parts = url.split("/").filter((part) => part.length > 0).map((part) => encodeURIComponent(part));
+  return `/raw/${encodeURIComponent(repo)}/${parts.join("/")}`;
+}
+
+function renderImage(image, repo) {
   const el = document.createElement("span");
   el.className = image.comment ? "md-atom md-image md-comment" : "md-atom md-image";
   el.contentEditable = "false";
@@ -1038,7 +1050,7 @@ function renderImage(image) {
   el.dataset.end = String(image.end);
   if (image.comment) el.dataset.comment = image.comment;
   const img = document.createElement("img");
-  img.src = image.url;
+  img.src = imageSrc(image.url, repo);
   img.alt = image.alt;
   img.draggable = false;
   el.appendChild(img);
@@ -1193,11 +1205,11 @@ function pullBreakOntoSlot(node) {
   setStyle(node, "margin-top", "-1lh");
 }
 
-function appendParts(el, block) {
+function appendParts(el, block, repo) {
   const share = markerOnly(block);
   if (block.slot != null) el.appendChild(renderCaretSlot(block.slot));
   for (const part of block.parts) {
-    const node = part.type === "image" ? renderImage(part) : renderRun(part);
+    const node = part.type === "image" ? renderImage(part, repo) : renderRun(part);
     if (share && part.type === "break") pullBreakOntoSlot(node);
     el.appendChild(node);
   }
@@ -1278,7 +1290,7 @@ function takeRawMarker(el, marker) {
   return hang;
 }
 
-function renderBlock(block) {
+function renderBlock(block, repo) {
   if (block.type === "table") return renderTable(block);
   if (block.type === "diagram") return renderDiagram(block);
   if (block.collapsed) return renderCollapsed(block);
@@ -1298,14 +1310,14 @@ function renderBlock(block) {
   }
   if (block.raw) {
     if (block.empty) el.appendChild(document.createElement("br"));
-    else appendParts(el, block);
+    else appendParts(el, block, repo);
     return el;
   }
   if (block.empty || block.hr) {
     if (block.empty) el.appendChild(document.createElement("br"));
     return el;
   }
-  appendParts(el, block);
+  appendParts(el, block, repo);
   if (!el.childNodes || el.childNodes.length === 0) {
     el.dataset.start = String(block.end);
     el.dataset.end = String(block.end);
@@ -1413,6 +1425,66 @@ function lineSpan(doc, offset) {
   while (start > 0 && doc[start - 1] !== "\n") start -= 1;
   while (end < doc.length && doc[end] !== "\n") end += 1;
   return [start, end];
+}
+
+const IMAGE_ONLY_LINE = /^!\[[^\]]*\]\([^)\s]+\)$/;
+
+// A click takes the whole image line, including the newline after it. The caret
+// then sits past that line, so the picture stays drawn and Backspace removes the line.
+function wholeImageLine(doc, offset) {
+  if (typeof doc !== "string") return null;
+  const [start, end] = lineSpan(doc, offset);
+  if (!IMAGE_ONLY_LINE.test(doc.slice(start, end).trim())) return null;
+  const cursor = end < doc.length && doc[end] === "\n" ? end + 1 : end;
+  return { anchor: start, cursor };
+}
+
+function fileListOf(data) {
+  const files = data && data.files;
+  if (!files || typeof files.length !== "number" || files.length === 0) return [];
+  const list = [];
+  for (let i = 0; i < files.length; i += 1) {
+    if (files[i]) list.push(files[i]);
+  }
+  return list;
+}
+
+function isImageFile(file) {
+  const type = String(file && file.type ? file.type : "").toLowerCase();
+  if (type === "image/png" || type === "image/jpeg" || type === "image/gif" || type === "image/webp") return true;
+  const name = String(file && file.name ? file.name : "").toLowerCase();
+  return /\.(png|jpe?g|gif|webp)$/.test(name);
+}
+
+function bytesFromBase64(value) {
+  const clean = String(value).replace(/\s/g, "");
+  if (clean.length === 0 || /[^A-Za-z0-9+/=]/.test(clean)) return null;
+  if (typeof Buffer !== "undefined") {
+    const buf = Buffer.from(clean, "base64");
+    if (buf.length === 0) return null;
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  try {
+    const binary = atob(clean);
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+    return out.length === 0 ? null : out;
+  } catch {
+    return null;
+  }
+}
+
+// One decodable data URL becomes the picture bytes. Any other data:image paste is refused.
+function decodeDataImage(text) {
+  const raw = String(text).trim();
+  const match = /^data:image\/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(raw);
+  if (match) {
+    const bytes = bytesFromBase64(match[2]);
+    if (!bytes || bytes.byteLength === 0) return false;
+    return bytes;
+  }
+  if (String(text).includes("data:image/")) return false;
+  return null;
 }
 
 function separatorWidth(text, index) {
@@ -1922,9 +1994,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let docMenuPanel = null;
   let repoCommitButton = null;
   let docLinkButton = null;
+  let docAttachButton = null;
+  let docAttachInput = null;
   let docMenuOnClick = null;
   let repoCommitOnClick = null;
   let docLinkOnClick = null;
+  let docAttachOnClick = null;
+  let docAttachOnChange = null;
   let docMenuBound = false;
   let repoNames = new Set();
   let sawRepos = false;
@@ -1998,6 +2074,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // that window still describes the DOM replaceChildren just tore down.
   let gestureHold = false;
   let pasteSeen = false;
+  let pendingAttach = false;
+  let noticeTimer = null;
+  let noticeEl = null;
   let composing = false;
   let composed = "";
   // placeCaret and moveCaret write the selection from state. The selectionchange
@@ -2412,6 +2491,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (anchor !== caret) {
       const lo = Math.min(anchor, caret);
       const hi = Math.max(anchor, caret);
+      const imageLine = wholeImageLine(state.doc, lo);
+      if (imageLine && imageLine.anchor === lo && imageLine.cursor === hi) {
+        for (const el of root.querySelectorAll(".md-image")) {
+          const start = Number(el.dataset.start);
+          if (start >= lo && start < hi) {
+            el.classList.add("md-atom-selected");
+            const range = document.createRange();
+            range.selectNode(el);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            return null;
+          }
+        }
+      }
       for (const el of root.querySelectorAll(".md-atom")) {
         if (Number(el.dataset.start) === lo && Number(el.dataset.end) === hi) {
           el.classList.add("md-atom-selected");
@@ -2468,23 +2561,37 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return null;
   }
 
+  function selectedImageLine(sel) {
+    if (!sel || sel.rangeCount === 0 || typeof sel.getRangeAt !== "function") return null;
+    const range = sel.getRangeAt(0);
+    const box = range && range.startContainer;
+    if (!box || box !== range.endContainer || box.nodeType !== 1 || !box.childNodes) return null;
+    if (range.endOffset !== range.startOffset + 1) return null;
+    const child = box.childNodes[range.startOffset];
+    if (!hasClass(child, "md-image")) return null;
+    return wholeImageLine(state.doc, Number(child.dataset.start));
+  }
+
   function selectionFromDom(sel) {
     if (!sel) return null;
+    const imageLine = selectedImageLine(sel);
+    if (imageLine) return imageLine;
     if (sel.anchorNode && sel.focusNode && nearestTagged(sel.anchorNode) && nearestTagged(sel.focusNode)) {
       return {
         anchor: mapOffset(sel.anchorNode, sel.anchorOffset),
         cursor: mapOffset(sel.focusNode, sel.focusOffset),
       };
     }
-    if (sel.rangeCount === 0) return null;
+    if (sel.rangeCount === 0 || typeof sel.getRangeAt !== "function") return null;
     const range = sel.getRangeAt(0);
-    if (range.startContainer === range.endContainer && range.startContainer.nodeType === 1) {
-      const child = range.startContainer.childNodes[range.startOffset];
+    const box = range && range.startContainer;
+    if (box && box === range.endContainer && box.nodeType === 1 && box.childNodes) {
+      const child = box.childNodes[range.startOffset];
       if (hasClass(child, "md-atom") && range.endOffset === range.startOffset + 1) {
         return { anchor: Number(child.dataset.start), cursor: Number(child.dataset.end) };
       }
     }
-    if (!nearestTagged(range.startContainer) || !nearestTagged(range.endContainer)) return null;
+    if (!range || !nearestTagged(range.startContainer) || !nearestTagged(range.endContainer)) return null;
     return {
       anchor: mapOffset(range.startContainer, range.startOffset),
       cursor: mapOffset(range.endContainer, range.endOffset),
@@ -2962,7 +3069,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const stale = [];
     for (const child of commentsAside.childNodes || []) stale.push(child);
     for (const child of stale) {
-      if (child === repoCommitButton) continue;
+      if (child === repoCommitButton || child === docAttachButton || child === docAttachInput) continue;
       detachNode(child);
     }
     commentsAside.appendChild(row);
@@ -3714,7 +3821,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       blocks = blocksForCaret(blocks);
       const flashBlock = refusal && !refusal.name ? tightestBlock(blocks, refusal.offset) : null;
       const nodes = blocks.map((block) => {
-        const el = renderBlock(block);
+        const el = renderBlock(block, activeRepo);
         hangRawMarker(el, rawListMarker(block), block && block.indent);
         appendLockMarks(el, block);
         if (block === flashBlock) el.classList.add("md-flash");
@@ -4405,6 +4512,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     if (message.type === "error") {
+      if (pendingAttach) {
+        pendingAttach = false;
+        const named = typeof message.heldBy === "string" && message.heldBy ? `held by ${message.heldBy}` : "";
+        const reason = typeof message.reason === "string" && message.reason ? message.reason : "";
+        showNotice(named || reason || `error ${message.status}`);
+        return;
+      }
       clearEditTimer();
       keptCaret = null;
       rawSelectionLines = false;
@@ -4481,6 +4595,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         return;
       }
       if (ownActor(message)) {
+        pendingAttach = false;
         const index = conflictWaiters.indexOf("edit");
         if (index >= 0) {
           conflictWaiters.splice(index, 1);
@@ -4497,19 +4612,82 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (ownEdit) flushPendingEdit();
   }
 
-  function consumePaste(text) {
+  function showNotice(text) {
+    const parent = root.parentElement;
+    if (!parent || typeof document === "undefined" || typeof document.createElement !== "function") return;
+    if (!noticeEl || noticeEl.parentElement !== parent) {
+      noticeEl = document.createElement("div");
+      noticeEl.className = "md-notice";
+      if (typeof noticeEl.setAttribute === "function") noticeEl.setAttribute("role", "status");
+      parent.appendChild(noticeEl);
+    }
+    noticeEl.textContent = text;
+    if (noticeTimer != null) clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => {
+      noticeTimer = null;
+      if (noticeEl) noticeEl.textContent = "";
+    }, 4000);
+  }
+
+  function sendImage(bytes) {
+    const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    if (!openPath) {
+      showNotice("missing document");
+      return;
+    }
+    if (payload.byteLength === 0) {
+      showNotice("empty image");
+      return;
+    }
+    if (payload.byteLength > MAX_PAYLOAD) {
+      showNotice("image is too large");
+      return;
+    }
+    pendingAttach = true;
+    emit({ type: "attach", path: openPath, cursor: state.cursor }, false);
+    if (typeof active.sendBinary === "function") active.sendBinary(payload);
+  }
+
+  function consumePaste(text, data) {
     if (pasteSeen) return;
-    pasteSeen = true;
-    if (!adoptDomSelection()) {
+    const files = fileListOf(data);
+    if (files.length > 0) {
+      pasteSeen = true;
       queueMicrotask(() => {
         pasteSeen = false;
       });
+      const file = files.find((item) => isImageFile(item));
+      if (!file) {
+        showNotice("not an image");
+        return;
+      }
+      if (!adoptDomSelection()) return;
+      const read = typeof file.arrayBuffer === "function" ? file.arrayBuffer() : Promise.reject(new Error("empty"));
+      Promise.resolve(read).then((buf) => {
+        if (closed) return;
+        sendImage(new Uint8Array(buf));
+      }).catch(() => {
+        if (!closed) showNotice("not an image");
+      });
       return;
     }
-    if (text) emitEdit({ op: "insert", text });
+    const raw = typeof text === "string" ? text : "";
+    if (raw === "") return;
+    pasteSeen = true;
     queueMicrotask(() => {
       pasteSeen = false;
     });
+    if (!adoptDomSelection()) return;
+    const decoded = decodeDataImage(raw);
+    if (decoded === false) {
+      showNotice("not an image");
+      return;
+    }
+    if (decoded) {
+      sendImage(decoded);
+      return;
+    }
+    emitEdit({ op: "insert", text: raw });
   }
 
   function moveCaret(direction, granularity, extend) {
@@ -4883,14 +5061,27 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         emitEdit({ op: "move", anchor: source.anchor, cursor: source.cursor, dest });
         return;
       }
-      const text = event.dataTransfer?.getData("text/plain") ?? event.data ?? "";
-      consumePaste(text);
+      const transfer = event.dataTransfer;
+      const text = transfer?.getData?.("text/plain") ?? event.data ?? "";
+      consumePaste(text, transfer);
     }
   });
 
   listen("paste", (event) => {
     event.preventDefault();
-    consumePaste(event.clipboardData?.getData("text/plain") ?? "");
+    consumePaste(event.clipboardData?.getData("text/plain") ?? "", event.clipboardData);
+  });
+
+  listen("dragover", (event) => {
+    if (fileListOf(event.dataTransfer).length === 0) return;
+    if (typeof event.preventDefault === "function") event.preventDefault();
+  });
+
+  listen("drop", (event) => {
+    if (dragSource) return;
+    if (fileListOf(event.dataTransfer).length === 0) return;
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    consumePaste("", event.dataTransfer);
   });
 
   listen("copy", (event) => {
@@ -5251,6 +5442,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (atom && root.contains(atom)) {
       event.preventDefault();
       if (!keepCurrent) currentCommentId = null;
+      if (hasClass(atom, "md-image")) {
+        const line = wholeImageLine(state.doc, Number(atom.dataset.start));
+        if (line) {
+          if (detail === 1) gestureHold = true;
+          state = { ...state, anchor: line.anchor, cursor: line.cursor };
+          if (!claimLines(line.anchor, line.cursor)) {
+            if (detail === 1) gestureHold = false;
+            return;
+          }
+          render();
+          return;
+        }
+      }
       if (detail === 1) gestureHold = true;
       const next = atomClickOffset(atom, target);
       state = { ...state, anchor: next, cursor: next };
@@ -7069,9 +7273,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function syncEntryLink() {
-    if (!docLinkButton) return;
-    if (activeRepo && openPath) showElement(docLinkButton);
-    else hideElement(docLinkButton);
+    const open = activeRepo && openPath;
+    if (docLinkButton) {
+      if (open) showElement(docLinkButton);
+      else hideElement(docLinkButton);
+    }
+    if (docAttachButton) {
+      if (open) showElement(docAttachButton);
+      else hideElement(docAttachButton);
+    }
   }
 
   function unbindDocMenu() {
@@ -7096,9 +7306,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       if (binding === docLinkOnClick) docLinkBindings.delete(docLinkButton);
     }
+    if (docAttachButton && docAttachOnClick) {
+      const binding = docAttachBindings.get(docAttachButton);
+      if (binding === docAttachOnClick && typeof docAttachButton.removeEventListener === "function") {
+        docAttachButton.removeEventListener("click", docAttachOnClick);
+      }
+      if (binding === docAttachOnClick) docAttachBindings.delete(docAttachButton);
+    }
+    if (docAttachInput && docAttachOnChange && typeof docAttachInput.removeEventListener === "function") {
+      docAttachInput.removeEventListener("change", docAttachOnChange);
+    }
     docMenuOnClick = null;
     repoCommitOnClick = null;
     docLinkOnClick = null;
+    docAttachOnClick = null;
+    docAttachOnChange = null;
     docMenuBound = false;
   }
 
@@ -7117,6 +7339,33 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       commentsAside.appendChild(commit);
       repoCommitButton = commit;
     }
+    if (!docAttachButton || docAttachButton.parentElement !== commentsAside) {
+      docAttachButton = findClassChild(commentsAside, "md-attach");
+    }
+    if (!docAttachButton) {
+      const attach = document.createElement("button");
+      attach.type = "button";
+      attach.className = "md-attach";
+      attach.textContent = "Attach image";
+      if (typeof attach.setAttribute === "function") attach.setAttribute("type", "button");
+      hideElement(attach);
+      placeAfter(commentsAside, repoCommitButton, attach);
+      docAttachButton = attach;
+    }
+    if (!docAttachInput || docAttachInput.parentElement !== commentsAside) {
+      docAttachInput = findClassChild(commentsAside, "md-attach-input");
+    }
+    if (!docAttachInput) {
+      const input = document.createElement("input");
+      input.className = "md-attach-input";
+      if (typeof input.setAttribute === "function") {
+        input.setAttribute("type", "file");
+        input.setAttribute("accept", "image/png,image/jpeg,image/gif,image/webp");
+      }
+      hideElement(input);
+      placeAfter(commentsAside, docAttachButton, input);
+      docAttachInput = input;
+    }
     if (!docMenuBound) {
       const previousCommit = docCommitBindings.get(repoCommitButton);
       if (previousCommit && typeof repoCommitButton.removeEventListener === "function") {
@@ -7130,6 +7379,33 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       };
       if (typeof repoCommitButton.addEventListener === "function") repoCommitButton.addEventListener("click", repoCommitOnClick);
       docCommitBindings.set(repoCommitButton, repoCommitOnClick);
+      const previousAttach = docAttachBindings.get(docAttachButton);
+      if (previousAttach && docAttachButton && typeof docAttachButton.removeEventListener === "function") {
+        docAttachButton.removeEventListener("click", previousAttach);
+      }
+      docAttachOnClick = (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        if (docAttachInput && typeof docAttachInput.click === "function") docAttachInput.click();
+      };
+      if (docAttachButton && typeof docAttachButton.addEventListener === "function") {
+        docAttachButton.addEventListener("click", docAttachOnClick);
+      }
+      if (docAttachButton) docAttachBindings.set(docAttachButton, docAttachOnClick);
+      docAttachOnChange = () => {
+        const input = docAttachInput;
+        const file = input && input.files && input.files[0];
+        if (input) input.value = "";
+        if (!file || typeof file.arrayBuffer !== "function") return;
+        Promise.resolve(file.arrayBuffer()).then((buf) => {
+          if (closed) return;
+          sendImage(new Uint8Array(buf));
+        }).catch(() => {
+          if (!closed) showNotice("not an image");
+        });
+      };
+      if (docAttachInput && typeof docAttachInput.addEventListener === "function") {
+        docAttachInput.addEventListener("change", docAttachOnChange);
+      }
       docMenuBound = true;
     }
     syncRepoCommit();
@@ -7201,6 +7477,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       cancelGestureRender();
       clearEditTimer();
       clearRefusal();
+      if (noticeTimer != null) {
+        clearTimeout(noticeTimer);
+        noticeTimer = null;
+      }
+      if (noticeEl && noticeEl.parentElement && typeof noticeEl.parentElement.removeChild === "function") {
+        noticeEl.parentElement.removeChild(noticeEl);
+      }
+      noticeEl = null;
       unsubscribe();
       unbindRepoSelect();
       unbindDocMenu();

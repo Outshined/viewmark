@@ -165,6 +165,7 @@ export function createMemoryTransport(doc, cursor = 0) {
         deliver(0, oldLength, state.doc, message.username);
       }
     },
+    sendBinary() {},
     subscribe(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);
@@ -207,6 +208,12 @@ export function createSocketTransport({ username, socketFactory, location, rando
     // A dropped socket does not queue. The next open sends hello and repos only.
     if (closed || !socketOpen || !socket || typeof socket.send !== "function") return;
     socket.send(JSON.stringify({ ...message, username: name }));
+  }
+
+  function transmitBinary(bytes) {
+    if (closed || !socketOpen || !socket || typeof socket.send !== "function") return;
+    const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    socket.send(payload);
   }
 
   function deliver(message) {
@@ -304,6 +311,9 @@ export function createSocketTransport({ username, socketFactory, location, rando
     send(message) {
       if (!message || message.type === "hello") return;
       transmit(message);
+    },
+    sendBinary(bytes) {
+      transmitBinary(bytes);
     },
     subscribe(fn) {
       listeners.add(fn);

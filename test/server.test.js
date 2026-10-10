@@ -10,13 +10,40 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { start } from "../server.js";
-import { readBuild } from "../src/hub.js";
-import { commentThreads, lockIndexAt, lockSpans, parseCommentNotes, splitCommentNote } from "../src/doc.js";
+import { allocateImageId, assetDirOf, imageFileName, imageKind, imagePlacement, readBuild, rewriteImageDirs } from "../src/hub.js";
+import { commentThreads, lockIndexAt, lockSpans, parseCommentNotes, plan, splitCommentNote } from "../src/doc.js";
 import { TICKET_ALPHABET, composeTicket, parseTicket } from "../src/ticket.js";
-import { createParser, encodeFrame } from "../src/ws.js";
+import { MAX_PAYLOAD, createParser, encodeFrame } from "../src/ws.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ALPHA = "alpha\nbeta\ngamma\n";
+
+function getRaw(port, requestPath) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: requestPath,
+        method: "GET",
+        headers: { Connection: "close" },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode,
+            type: res.headers["content-type"] ?? "",
+            body: Buffer.concat(chunks),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
 
 function get(port, requestPath) {
   return new Promise((resolve, reject) => {
@@ -1269,7 +1296,7 @@ test("T-frame", async () => {
     const header = Buffer.alloc(10);
     header[0] = 0x81;
     header[1] = 0xff;
-    header.writeBigUInt64BE(BigInt(1024 * 1024 + 1), 2);
+    header.writeBigUInt64BE(BigInt(2 * 1024 * 1024 + 1), 2);
     huge.on("data", () => {});
     huge.on("error", () => {});
     huge.write(header);
@@ -3991,5 +4018,513 @@ test("T-rev", async () => {
     opener.ws.close();
     other.ws.close();
     asker.ws.close();
+  });
+});
+
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
+const IMAGE_ID = "[23456789abcdefghjkmnpqrstuvwxyz]{8}";
+
+function rollsFor(id) {
+  const size = TICKET_ALPHABET.length;
+  const rolls = [];
+  for (const ch of id) rolls.push((TICKET_ALPHABET.indexOf(ch) + 0.5) / size);
+  return rolls;
+}
+
+function sendBytes(client, bytes) {
+  client.ws.send(Buffer.from(bytes));
+}
+
+async function attachBytes(client, username, rel, bytes, extra = {}, timeout = 3000) {
+  client.send({ type: "attach", username, path: rel, ...extra });
+  sendBytes(client, bytes);
+  const first = await client.next((msg) => msg.type === "doc" || msg.type === "error", timeout);
+  if (first.type === "error") return first;
+  await client.next((msg) => msg.type === "locks" && msg.path === rel && msg.rev === first.rev, timeout);
+  const file = await client.next((msg) => (msg.type === "file" && msg.path === rel) || msg.type === "error", timeout);
+  if (file.type === "error") return file;
+  return { doc: first, file };
+}
+
+function imageFiles(text, dir, ext) {
+  const found = [];
+  const re = new RegExp(`!\\[(${IMAGE_ID}\\.${ext})\\]\\(${dir}/\\1\\)`, "g");
+  for (const match of text.matchAll(re)) found.push(match[1]);
+  return found;
+}
+
+function imageFile(text, dir, ext) {
+  return imageFiles(text, dir, ext)[0] || "";
+}
+
+async function waitAbsent(full) {
+  for (let i = 0; i < 40; i += 1) {
+    try {
+      await fs.lstat(full);
+    } catch (err) {
+      if (err && err.code === "ENOENT") return;
+      throw err;
+    }
+    await delay(25);
+  }
+  throw new Error(`still present ${full}`);
+}
+
+async function stays(full) {
+  const start = Date.now();
+  while (Date.now() - start < 200) {
+    await fs.lstat(full);
+    await delay(20);
+  }
+}
+
+test("picture: names, kinds, and placement", () => {
+  const line = "![abcdefgh.png](pic/abcdefgh.png)";
+  const para = imagePlacement("alpha beta\n", 8, line);
+  assert.equal(para.doc, `alpha beta\n\n${line}\n`);
+  assert.equal(para.caret, para.doc.length);
+  assert.ok(plan(para.doc, para.caret).atoms.some((atom) => atom.type === "image" && atom.alt === "abcdefgh.png" && atom.url === "pic/abcdefgh.png"));
+
+  const both = imagePlacement("alpha beta\n\ngamma\n", 8, line);
+  assert.equal(both.doc, `alpha beta\n\n${line}\n\ngamma\n`);
+  assert.equal(both.caret, both.doc.indexOf(line) + line.length + 1);
+  assert.ok(plan(both.doc, both.caret).atoms.some((atom) => atom.type === "image"));
+
+  const empty = imagePlacement("", null, line);
+  assert.equal(empty.doc, `${line}\n`);
+  assert.equal(empty.caret, empty.doc.length);
+
+  const note = "Hello\n\n```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nA note.\n```\n";
+  const placed = imagePlacement(note, note.indexOf("A note.") + 2, line);
+  assert.equal(placed.doc, `${note}\n${line}\n`);
+  assert.equal(placed.doc.slice(0, placed.doc.lastIndexOf("```")).includes("!["), false);
+
+  const seq = rollsFor("abcdefgh").concat(rollsFor("23456789"));
+  let at = 0;
+  const named = imageFileName("pic", "png", "![abcdefgh.png](pic/abcdefgh.png)\n", new Set(), () => seq[at++]);
+  assert.equal(named.file, "23456789.png");
+  assert.equal(named.rel, "pic/23456789.png");
+  assert.ok(at > 8);
+
+  const letter = (TICKET_ALPHABET.indexOf("a") + 0.5) / TICKET_ALPHABET.length;
+  const same = () => letter;
+  assert.equal(allocateImageId(() => true, same), null);
+  assert.equal(allocateImageId(() => false, same), "aaaaaaaa");
+
+  assert.equal(imageKind(PNG), "png");
+  assert.equal(imageKind(Buffer.from([0xff, 0xd8, 0xff, 0])), "jpg");
+  assert.equal(imageKind(Buffer.from("GIF89a")), "gif");
+  assert.equal(imageKind(Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WEBP")])), "webp");
+  assert.equal(imageKind(Buffer.from("hello")), null);
+  assert.equal(imageKind(Buffer.alloc(0)), null);
+  assert.equal(imageKind(Buffer.alloc(MAX_PAYLOAD + 1)), null);
+  assert.equal(imageKind(Buffer.alloc(MAX_PAYLOAD)), null);
+
+  assert.equal(assetDirOf("tickets/abcdefgh.md"), "tickets/abcdefgh");
+  assert.equal(assetDirOf("notes/welcome.md"), "notes/welcome");
+  assert.equal(assetDirOf("notes/welcome.markdown"), "notes/welcome");
+  assert.equal(assetDirOf("tickets.md"), null);
+  assert.equal(assetDirOf("tickets.markdown"), null);
+  assert.equal(assetDirOf("pic"), null);
+
+  const remote = "![remote](https://example.com/a.png)\n\n![local](notes/welcome/abcdefgh.png)\n\n![blob](data:image/png;base64,aaaa)\n\n![web](http://example.com/b.png)\n";
+  assert.equal(
+    rewriteImageDirs(remote, "notes/welcome", "archive/welcome"),
+    "![remote](https://example.com/a.png)\n\n![local](archive/welcome/abcdefgh.png)\n\n![blob](data:image/png;base64,aaaa)\n\n![web](http://example.com/b.png)\n",
+  );
+});
+
+test("picture: a PNG attach is its own paragraph and GET /raw returns the bytes", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n");
+    const ada = await hello(port, "Ada");
+    const wit = await hello(port, "Wit");
+    try {
+      await openDoc(wit, "Wit", "pic.md");
+      const attached = await attachBytes(ada, "Ada", "pic.md", PNG, { cursor: 8 });
+      const name = imageFile(attached.file.text, "pic", "png");
+      const line = `![${name}](pic/${name})`;
+      assert.equal(attached.file.text, `alpha beta\n\n${line}\n`);
+      assert.equal(attached.doc.text, attached.file.text);
+      assert.equal(attached.doc.inserted.includes(line), true);
+      assert.equal(JSON.stringify(attached.doc).includes(PNG.toString("base64")), false);
+      assert.equal(attached.file.cursor, attached.file.text.length);
+      assert.equal(attached.file.anchor, attached.file.text.length);
+      assert.ok(plan(attached.file.text, attached.file.cursor).atoms.some((atom) => atom.type === "image" && atom.alt === name));
+      assert.equal(await readDoc(dir, "pic.md"), attached.file.text);
+      assert.ok((await fs.readFile(path.join(dir, "pic", name))).equals(PNG));
+
+      const seen = await wit.next((msg) => msg.type === "doc" && msg.path === "pic.md");
+      assert.equal(seen.text, attached.file.text);
+      assert.equal(seen.inserted.includes(line), true);
+      assert.equal(JSON.stringify(seen).includes(PNG.toString("base64")), false);
+
+      const raw = await getRaw(port, `/raw/docs/pic/${name}`);
+      assert.equal(raw.status, 200);
+      assert.equal(raw.type, "image/png");
+      assert.ok(raw.body.equals(PNG));
+
+      ada.send({ type: "list", username: "Ada" });
+      const docs = await ada.next((msg) => msg.type === "docs");
+      assert.ok(docs.files.includes("pic.md"));
+      assert.equal(docs.files.some((file) => file === "pic" || file.startsWith("pic/")), false);
+      ada.send({ type: "open", username: "Ada", path: "pic" });
+      const missing = await ada.next((msg) => (msg.type === "error" && msg.status === 404) || (msg.type === "file" && msg.path === "pic"));
+      assert.equal(missing.type, "error");
+
+      const again = await attachBytes(ada, "Ada", "pic.md", PNG);
+      const names = imageFiles(again.file.text, "pic", "png");
+      assert.deepEqual(names.slice(0, 1), [name]);
+      const second = names[names.length - 1];
+      assert.notEqual(second, name);
+      assert.ok((await fs.readFile(path.join(dir, "pic", second))).equals(PNG));
+
+      const samples = [
+        { ext: "jpg", type: "image/jpeg", bytes: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0]) },
+        { ext: "gif", type: "image/gif", bytes: Buffer.concat([Buffer.from("GIF89a"), Buffer.from([0, 0])]) },
+        { ext: "webp", type: "image/webp", bytes: Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WEBP")]) },
+      ];
+      for (const sample of samples) {
+        const rel = `${sample.ext}.md`;
+        await fs.writeFile(path.join(dir, rel), "alpha beta\n");
+        const done = await attachBytes(ada, "Ada", rel, sample.bytes, { cursor: 8 });
+        const file = imageFile(done.file.text, sample.ext, sample.ext);
+        assert.equal(done.file.text, `alpha beta\n\n![${file}](${sample.ext}/${file})\n`);
+        const body = await getRaw(port, `/raw/docs/${sample.ext}/${file}`);
+        assert.equal(body.status, 200);
+        assert.equal(body.type, sample.type);
+        assert.ok(body.body.equals(sample.bytes));
+      }
+    } finally {
+      ada.ws.close();
+      wit.ws.close();
+    }
+  });
+});
+
+test("picture: a non-image and one byte over 2 MiB write nothing", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n");
+    const ada = await hello(port, "Ada");
+    try {
+      ada.send({ type: "attach", username: "Ada", path: "missing.md" });
+      sendBytes(ada, PNG);
+      const missing = await ada.next((msg) => msg.type === "error" || msg.type === "doc");
+      assert.equal(missing.type, "error");
+      assert.equal(missing.status, 404);
+      assert.equal(await readDoc(dir, "pic.md"), "alpha beta\n");
+
+      const empty = await attachBytes(ada, "Ada", "pic.md", Buffer.alloc(0), { cursor: 8 });
+      assert.equal(empty.status, 400);
+      assert.equal(empty.reason, "empty image");
+      const text = await attachBytes(ada, "Ada", "pic.md", Buffer.from("not an image"), { cursor: 8 });
+      assert.equal(text.status, 400);
+      assert.equal(text.reason, "not an image");
+      assert.equal(await readDoc(dir, "pic.md"), "alpha beta\n");
+      await assert.rejects(fs.lstat(path.join(dir, "pic")), (err) => err.code === "ENOENT");
+    } finally {
+      ada.ws.close();
+    }
+
+    const huge = await hello(port, "Ada");
+    const until = closed(huge.ws);
+    huge.ws.addEventListener("error", () => {});
+    const over = Buffer.alloc(MAX_PAYLOAD + 1);
+    PNG.copy(over, 0);
+    huge.send({ type: "attach", username: "Ada", path: "pic.md", cursor: 8 });
+    sendBytes(huge, over);
+    await Promise.race([
+      until,
+      delay(5000).then(() => {
+        throw new Error("oversized frame left the socket open");
+      }),
+    ]);
+    assert.equal(await readDoc(dir, "pic.md"), "alpha beta\n");
+    await assert.rejects(fs.lstat(path.join(dir, "pic")), (err) => err.code === "ENOENT");
+  });
+});
+
+test("picture: exactly 2 MiB is kept", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n");
+    const bytes = Buffer.alloc(MAX_PAYLOAD);
+    PNG.copy(bytes, 0);
+    const ada = await hello(port, "Ada");
+    try {
+      const attached = await attachBytes(ada, "Ada", "pic.md", bytes, { cursor: 8 }, 20000);
+      const name = imageFile(attached.file.text, "pic", "png");
+      assert.notEqual(name, "");
+      assert.equal(attached.file.text, `alpha beta\n\n![${name}](pic/${name})\n`);
+      const raw = await getRaw(port, `/raw/docs/pic/${name}`);
+      assert.equal(raw.status, 200);
+      assert.equal(raw.type, "image/png");
+      assert.equal(raw.body.length, MAX_PAYLOAD);
+      assert.ok(raw.body.equals(bytes));
+    } finally {
+      ada.ws.close();
+    }
+  });
+});
+
+test("picture: a held span names that user and writes nothing", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n");
+    const bea = await hello(port, "Bea");
+    const ada = await hello(port, "Ada");
+    try {
+      const opened = await openDoc(bea, "Bea", "pic.md");
+      await syncLock(bea, [], "Bea", "pic.md", 0, opened.rev);
+      const refused = await attachBytes(ada, "Ada", "pic.md", PNG, { cursor: 0 });
+      assert.equal(refused.status, 409);
+      assert.equal(refused.heldBy, "Bea");
+      assert.equal(await readDoc(dir, "pic.md"), "alpha beta\n");
+      await assert.rejects(fs.lstat(path.join(dir, "pic")), (err) => err.code === "ENOENT");
+    } finally {
+      ada.ws.close();
+      bea.ws.close();
+    }
+  });
+});
+
+test("picture: undo restores the line and the last close drops an unreferenced file", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n");
+    const ada = await hello(port, "Ada");
+    try {
+      const attached = await attachBytes(ada, "Ada", "pic.md", PNG, { cursor: 8 });
+      const name = imageFile(attached.file.text, "pic", "png");
+      const full = path.join(dir, "pic", name);
+      ada.send({ type: "undo", username: "Ada", path: "pic.md", rev: attached.file.rev });
+      const undone = await takeDoc(ada);
+      assert.equal(undone.text, "alpha beta\n");
+      assert.ok((await fs.readFile(full)).equals(PNG));
+      ada.send({ type: "redo", username: "Ada", path: "pic.md", rev: undone.rev });
+      const redone = await takeDoc(ada);
+      assert.equal(redone.text, attached.file.text);
+      assert.ok((await fs.readFile(full)).equals(PNG));
+
+      const extra = await attachBytes(ada, "Ada", "pic.md", PNG);
+      const kept = imageFiles(extra.file.text, "pic", "png").find((file) => file !== name);
+      assert.ok(kept);
+      const keptFull = path.join(dir, "pic", kept);
+      const start = extra.file.text.indexOf(`![${name}]`);
+      const end = extra.file.text.indexOf("\n", start) + 1;
+      ada.send({
+        type: "edit",
+        username: "Ada",
+        path: "pic.md",
+        rev: extra.file.rev,
+        anchor: start,
+        cursor: end,
+        op: "delete",
+      });
+      const removed = await takeDoc(ada);
+      assert.equal(removed.text.includes(`![${name}]`), false);
+      assert.equal(removed.text.includes(`![${kept}]`), true);
+      assert.ok((await fs.readFile(full)).equals(PNG));
+      ada.send({ type: "undo", username: "Ada", path: "pic.md", rev: removed.rev });
+      const back = await takeDoc(ada);
+      assert.equal(back.text.includes(`![${name}]`), true);
+      assert.ok((await fs.readFile(full)).equals(PNG));
+      const again = back.text.indexOf(`![${name}]`);
+      ada.send({
+        type: "edit",
+        username: "Ada",
+        path: "pic.md",
+        rev: back.rev,
+        anchor: again,
+        cursor: back.text.indexOf("\n", again) + 1,
+        op: "delete",
+      });
+      const gone = await takeDoc(ada);
+      assert.equal(gone.text.includes(`![${name}]`), false);
+
+      const bea = await hello(port, "Bea");
+      try {
+        await openDoc(bea, "Bea", "pic.md");
+        await waitClosed(ada.ws);
+        await stays(full);
+        await stays(keptFull);
+      } finally {
+        await waitClosed(bea.ws);
+      }
+      await waitAbsent(full);
+      assert.ok((await fs.readFile(keptFull)).equals(PNG));
+    } finally {
+      ada.ws.close();
+    }
+  });
+});
+
+test("picture: a title change does not move the file, and a move rewrites that document", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.mkdir(path.join(dir, "notes"), { recursive: true });
+    await fs.mkdir(path.join(dir, "archive"), { recursive: true });
+    await fs.writeFile(path.join(dir, "archive", "keep.md"), "keep\n");
+    await fs.writeFile(path.join(dir, "titled.md"), "# Old title\n\nbody\n");
+    await fs.writeFile(
+      path.join(dir, "notes", "welcome.md"),
+      "alpha beta\n\n![remote](https://example.com/a.png)\n\n![blob](data:image/png;base64,aaaa)\n",
+    );
+    await fs.writeFile(path.join(dir, "notes", "plain.md"), "plain\n");
+    await fs.mkdir(path.join(dir, "archive", "plain"));
+    await fs.mkdir(path.join(dir, "archive", "welcome"));
+    const ada = await hello(port, "Ada");
+    try {
+      const titled = await attachBytes(ada, "Ada", "titled.md", PNG, { cursor: 2 });
+      const titledName = imageFile(titled.file.text, "titled", "png");
+      const titledFull = path.join(dir, "titled", titledName);
+      ada.send({
+        type: "edit",
+        username: "Ada",
+        path: "titled.md",
+        rev: titled.file.rev,
+        anchor: 2,
+        cursor: 5,
+        op: "insert",
+        text: "New",
+      });
+      const renamed = await takeDoc(ada);
+      assert.match(renamed.text, /^# New title\n/);
+      assert.equal(renamed.text.includes(`titled/${titledName}`), true);
+      assert.ok((await fs.readFile(titledFull)).equals(PNG));
+
+      ada.send({ type: "move", username: "Ada", path: "notes/plain.md", dir: "archive" });
+      const plain = await ada.next((msg) => msg.type === "moved" || msg.type === "error");
+      assert.equal(plain.type, "error");
+      assert.equal(plain.status, 409);
+      assert.equal(await readDoc(dir, "notes/plain.md"), "plain\n");
+      assert.equal((await fs.lstat(path.join(dir, "archive", "plain"))).isDirectory(), true);
+
+      const welcome = await attachBytes(ada, "Ada", "notes/welcome.md", PNG, { cursor: 8 });
+      const name = imageFile(welcome.file.text, "notes/welcome", "png");
+      assert.equal(welcome.file.text.includes("https://example.com/a.png"), true);
+      assert.equal(welcome.file.text.includes("data:image/png;base64,aaaa"), true);
+      assert.equal(welcome.file.text.startsWith(`alpha beta\n\n![${name}](notes/welcome/${name})\n`), true);
+      const from = path.join(dir, "notes", "welcome", name);
+      ada.send({ type: "move", username: "Ada", path: "notes/welcome.md", dir: "archive" });
+      const blocked = await ada.next((msg) => msg.type === "moved" || msg.type === "error");
+      assert.equal(blocked.status, 409);
+      assert.equal(await readDoc(dir, "notes/welcome.md"), welcome.file.text);
+      assert.ok((await fs.readFile(from)).equals(PNG));
+      assert.equal((await fs.lstat(path.join(dir, "archive", "welcome"))).isDirectory(), true);
+
+      await fs.rm(path.join(dir, "archive", "welcome"), { recursive: true });
+      ada.send({ type: "move", username: "Ada", path: "notes/welcome.md", dir: "archive" });
+      const moved = await ada.next((msg) => msg.type === "moved" || msg.type === "error");
+      assert.equal(moved.type, "moved");
+      const next = await readDoc(dir, "archive/welcome.md");
+      assert.equal(next.includes(`archive/welcome/${name}`), true);
+      assert.equal(next.includes("notes/welcome/"), false);
+      assert.equal(next.includes("https://example.com/a.png"), true);
+      assert.equal(next.includes("data:image/png;base64,aaaa"), true);
+      assert.ok((await fs.readFile(path.join(dir, "archive", "welcome", name))).equals(PNG));
+      await assert.rejects(fs.lstat(path.join(dir, "notes", "welcome.md")), (err) => err.code === "ENOENT");
+      await assert.rejects(fs.lstat(path.join(dir, "notes", "welcome")), (err) => err.code === "ENOENT");
+
+      await fs.mkdir(path.join(dir, "notes", "nested"), { recursive: true });
+      await fs.writeFile(path.join(dir, "notes", "nested", "leaf.md"), "leaf\n");
+      const leaf = await attachBytes(ada, "Ada", "notes/nested/leaf.md", PNG);
+      const leafName = imageFile(leaf.file.text, "notes/nested/leaf", "png");
+      ada.send({ type: "move", username: "Ada", path: "notes/nested", dir: "archive" });
+      const tree = await ada.next((msg) => msg.type === "moved" || msg.type === "error");
+      assert.equal(tree.type, "moved");
+      const leafText = await readDoc(dir, "archive/nested/leaf.md");
+      assert.equal(leafText.includes(`archive/nested/leaf/${leafName}`), true);
+      assert.ok((await fs.readFile(path.join(dir, "archive", "nested", "leaf", leafName))).equals(PNG));
+    } finally {
+      ada.ws.close();
+    }
+  });
+});
+
+test("picture: deleting the document or the ticket removes the directory", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n");
+    const ada = await hello(port, "Ada");
+    const bea = await hello(port, "Bea");
+    try {
+      const attached = await attachBytes(ada, "Ada", "pic.md", PNG, { cursor: 8 });
+      const name = imageFile(attached.file.text, "pic", "png");
+      const full = path.join(dir, "pic", name);
+      await openDoc(bea, "Bea", "pic.md");
+      ada.send({ type: "delete", username: "Ada", path: "pic.md" });
+      const held = await ada.next((msg) => msg.type === "deleted" || msg.type === "error");
+      assert.equal(held.status, 409);
+      assert.equal(held.heldBy, "Bea");
+      assert.equal(await readDoc(dir, "pic.md"), attached.file.text);
+      assert.ok((await fs.readFile(full)).equals(PNG));
+      await waitClosed(bea.ws);
+      let deleted;
+      for (let i = 0; i < 20; i += 1) {
+        ada.send({ type: "delete", username: "Ada", path: "pic.md" });
+        deleted = await ada.next((msg) => msg.type === "deleted" || msg.type === "error");
+        if (deleted.type === "deleted") break;
+        await delay(25);
+      }
+      assert.equal(deleted.type, "deleted");
+      assert.equal(deleted.path, "pic.md");
+      await assert.rejects(fs.lstat(path.join(dir, "pic.md")), (err) => err.code === "ENOENT");
+      await assert.rejects(fs.lstat(full), (err) => err.code === "ENOENT");
+
+      const made = await createTicket(ada, "Ada", "Picture", undefined, undefined, "alpha beta\n");
+      const rel = made.file.path;
+      const id = made.file.ticket.id;
+      const shot = await attachBytes(ada, "Ada", rel, PNG, { cursor: 8 });
+      const shotName = imageFile(shot.file.text, `tickets/${id}`, "png");
+      const shotFull = path.join(dir, "tickets", id, shotName);
+      ada.send({ type: "ticket.set", username: "Ada", path: rel, title: "Renamed" });
+      await ada.next((msg) => msg.type === "tickets");
+      const titled = await ada.next((msg) => msg.type === "ticket" && msg.path === rel);
+      assert.equal(titled.title, "Renamed");
+      assert.ok((await fs.readFile(shotFull)).equals(PNG));
+      const stored = parseTicket(id, await fs.readFile(path.join(dir, rel), "utf8"));
+      assert.equal(stored.title, "Renamed");
+      assert.equal(stored.body.includes(`tickets/${id}/${shotName}`), true);
+      ada.send({ type: "ticket.set", username: "Ada", path: rel, state: "closed" });
+      await ada.next((msg) => msg.type === "tickets");
+      await ada.next((msg) => msg.type === "ticket" && msg.path === rel && msg.state === "closed");
+      ada.send({ type: "ticket.purge", username: "Ada" });
+      const left = await ada.next((msg) => msg.type === "tickets");
+      assert.equal(left.tickets.some((ticket) => ticket.id === id), false);
+      await assert.rejects(fs.lstat(path.join(dir, rel)), (err) => err.code === "ENOENT");
+      await assert.rejects(fs.lstat(shotFull), (err) => err.code === "ENOENT");
+
+      const other = await createTicket(ada, "Ada", "Gone", undefined, undefined, "alpha beta\n");
+      const otherRel = other.file.path;
+      const otherId = other.file.ticket.id;
+      const otherShot = await attachBytes(ada, "Ada", otherRel, PNG, { cursor: 8 });
+      const otherName = imageFile(otherShot.file.text, `tickets/${otherId}`, "png");
+      ada.send({ type: "ticket.delete", username: "Ada", id: otherId });
+      const removed = await ada.next((msg) => msg.type === "deleted" || msg.type === "error");
+      assert.equal(removed.type, "deleted");
+      assert.equal(removed.path, otherRel);
+      await assert.rejects(fs.lstat(path.join(dir, otherRel)), (err) => err.code === "ENOENT");
+      await assert.rejects(fs.lstat(path.join(dir, "tickets", otherId, otherName)), (err) => err.code === "ENOENT");
+    } finally {
+      ada.ws.close();
+      bea.ws.close();
+    }
+  });
+});
+
+test("picture: a comment note stays text", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const note = "Hello\n\n```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nA note.\n```\n";
+    await fs.writeFile(path.join(dir, "noted.md"), note);
+    const ada = await hello(port, "Ada");
+    try {
+      const attached = await attachBytes(ada, "Ada", "noted.md", PNG, { cursor: note.indexOf("A note.") + 2 });
+      const name = imageFile(attached.file.text, "noted", "png");
+      assert.equal(attached.file.text, `${note}\n![${name}](noted/${name})\n`);
+      assert.equal(attached.file.text.slice(0, attached.file.text.lastIndexOf("```")).includes("!["), false);
+      assert.equal(attached.file.text.includes("A note."), true);
+      assert.ok((await fs.readFile(path.join(dir, "noted", name))).equals(PNG));
+    } finally {
+      ada.ws.close();
+    }
   });
 });

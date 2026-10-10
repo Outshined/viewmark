@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { start } from "./server.js";
 import { parseUnifiedDiff } from "./src/doc.js";
 import { TICKET_ALPHABET, TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./src/ticket.js";
+import { MAX_PAYLOAD } from "./src/ws.js";
 
 const HELP = `viewmark talks to the document hub, one command, then exit.
 
@@ -15,6 +16,7 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME show <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME create <path> [--file PATH]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME edit <path> [--start LINE:OFFSET --end LINE:OFFSET]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME attach <path> [--start LINE:OFFSET]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME delete <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME move <path> [--dir DIR]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME rev <path>
@@ -43,7 +45,7 @@ Usage:
 --port or VIEWMARK_PORT, default 8765. --user or VIEWMARK_USER; the flag wins.
 Missing, empty, NUL, CR, LF, <, or > is rejected. There is no default name.
 --json is global. --help, help, or no args exits 0.
---repo is required on list, show, create, edit, delete, move, rev, comment, commit, and ticket.
+--repo is required on list, show, create, edit, attach, delete, move, rev, comment, commit, and ticket.
 serve keeps running. The default directory is \`state\` beside the program, and --user is not required.
 
 stdout and stderr:
@@ -80,6 +82,12 @@ edit:
   No hunks leaves the file as it was and does not open a socket.
   Zero matches exits 409 and does not write. Several matches or an overlap exits 2 and does not write.
   A change outside the slice does not reject the diff. --rev, --find, and --replace are rejected.
+
+attach:
+  The image is stdin. Empty stdin, or more than 2 MiB, exits 400 and does not open a socket.
+  --start LINE:OFFSET names a point. Lines count from 1. Offset counts from 0. The picture follows the block that holds that point. No --start follows the last block.
+  --end, --rev, --find, and --replace are rejected.
+  stdout and stderr match show. A refusal writes nothing on stdout.
 
 create:
   The body is stdin when stdin is not a terminal. A terminal sends an empty body. --file PATH reads that file instead and does not read stdin.
@@ -186,6 +194,17 @@ function readStdin() {
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => chunks.push(chunk));
     process.stdin.on("end", () => resolve(chunks.join("")));
+    process.stdin.on("error", reject);
+  });
+}
+
+// The picture is raw bytes. A text encoding would change them before the hub sees the frame.
+function readStdinBytes() {
+  if (process.stdin.isTTY === true) return Promise.resolve(Buffer.alloc(0));
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    process.stdin.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    process.stdin.on("end", () => resolve(Buffer.concat(chunks)));
     process.stdin.on("error", reject);
   });
 }
@@ -466,6 +485,11 @@ function connectHub(port, username) {
     ws.send(JSON.stringify(obj));
   }
 
+  function sendBinary(bytes) {
+    const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    ws.send(payload);
+  }
+
   const ready = new Promise((resolve, reject) => {
     readyReject = reject;
     ws.addEventListener("open", () => {
@@ -540,7 +564,7 @@ function connectHub(port, username) {
     }).catch(() => finish(1));
   });
 
-  return { ready, send, next, finish };
+  return { ready, send, sendBinary, next, finish };
 }
 
 function serverError(msg) {
@@ -644,6 +668,19 @@ async function runCreate(hub, username, path, json, text) {
   }
   process.stdout.write(`${doc.path}\n`);
   process.stderr.write(`rev ${doc.rev}\n`);
+  return 0;
+}
+
+async function runAttach(hub, username, docPath, bytes, start, json) {
+  const payload = { type: "attach", username, path: docPath };
+  if (start) payload.start = start;
+  hub.send(payload);
+  hub.sendBinary(bytes);
+  const msg = await hub.next((item) => item.type === "file" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  const doc = asDoc(msg);
+  if (!doc) return 1;
+  printShow(doc, json);
   return 0;
 }
 
@@ -1570,7 +1607,11 @@ async function main() {
     usage("unexpected flag");
     return;
   }
-  if ((args.startSet || args.endSet) && cmd !== "comment" && cmd !== "edit") {
+  if (args.endSet && cmd !== "comment" && cmd !== "edit") {
+    usage("unexpected flag");
+    return;
+  }
+  if (args.startSet && cmd !== "comment" && cmd !== "edit" && cmd !== "attach") {
     usage("unexpected flag");
     return;
   }
@@ -1633,7 +1674,7 @@ async function main() {
     return;
   }
 
-  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "delete" && cmd !== "move" && cmd !== "rev" && cmd !== "comment" && cmd !== "ticket" && cmd !== "commit") {
+  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "attach" && cmd !== "delete" && cmd !== "move" && cmd !== "rev" && cmd !== "comment" && cmd !== "ticket" && cmd !== "commit") {
     usage("unknown command");
     return;
   }
@@ -1736,6 +1777,33 @@ async function main() {
   }
   if (cmd === "move") {
     await withHub(port, user, (hub) => runMove(hub, user, rest[0], args.dir, args.json), args.repo);
+    return;
+  }
+  if (cmd === "attach") {
+    if (args.revSet || args.findSet || args.replaceSet) {
+      usage("unexpected flag");
+      return;
+    }
+    let start = null;
+    if (args.startSet) {
+      start = parseLineOffset(args.start);
+      if (!start || start.line < 1 || start.offset < 0) {
+        usage("invalid position");
+        return;
+      }
+    }
+    const bytes = await readStdinBytes();
+    if (bytes.length === 0) {
+      process.stderr.write("error 400\nempty image\n");
+      process.exitCode = 400;
+      return;
+    }
+    if (bytes.length > MAX_PAYLOAD) {
+      process.stderr.write("error 400\nimage is too large\n");
+      process.exitCode = 400;
+      return;
+    }
+    await withHub(port, user, (hub) => runAttach(hub, user, rest[0], bytes, start, args.json), args.repo);
     return;
   }
 

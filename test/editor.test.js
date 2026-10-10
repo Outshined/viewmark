@@ -4355,11 +4355,19 @@ test("fence clicks open source", () => {
     const imageView = createEditor(mounted.root, F, 0);
     const image = mounted.findAll((node) => node.classList && node.classList.contains("md-image"))[0];
     mounted.listeners.click({ target: image, clientX: 1, clientY: 1, preventDefault() {} });
-    assert.equal(imageView.getState().cursor, 3);
     assert.equal(imageView.getState().anchor, 3);
-    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-image")).length, 0);
-    assert.ok(mounted.findAll((node) => (node.textContent || "").includes("![alt]")).length > 0);
+    assert.equal(imageView.getState().cursor, F.length);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-image")).length, 1);
+    mounted.listeners.beforeinput({ inputType: "deleteContentBackward", preventDefault() {} });
+    assert.equal(imageView.getState().doc, "Go\n");
     imageView.destroy();
+
+    const imageDelete = createEditor(mounted.root, F, 0);
+    const imageAgain = mounted.findAll((node) => node.classList && node.classList.contains("md-image"))[0];
+    mounted.listeners.click({ target: imageAgain, clientX: 1, clientY: 1, preventDefault() {} });
+    mounted.listeners.beforeinput({ inputType: "deleteContentForward", preventDefault() {} });
+    assert.equal(imageDelete.getState().doc, "Go\n");
+    imageDelete.destroy();
 
     const diagram = createEditor(mounted.root, E, E.length);
     const box = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
@@ -4390,6 +4398,90 @@ test("fence clicks open source", () => {
     assert.equal(mapOffset(emptyBr, 0), bare.length - 1);
     emptyFence.destroy();
   } finally {
+    mounted.restore();
+  }
+});
+
+test("a paste inside a paragraph sends the picture at that caret", async () => {
+  const mounted = mountEditor();
+  const parent = {
+    childNodes: [],
+    appendChild(child) {
+      this.childNodes.push(child);
+      child.parentElement = this;
+      return child;
+    },
+  };
+  mounted.root.parentElement = parent;
+  const sent = [];
+  const binaries = [];
+  let deliver = null;
+  const transport = {
+    username: "ada",
+    memory: false,
+    send(message) { sent.push(message); },
+    sendBinary(bytes) { binaries.push(Uint8Array.from(bytes)); },
+    subscribe(fn) {
+      deliver = fn;
+      return () => {};
+    },
+  };
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  const editor = createEditor(mounted.root, "alpha beta\n", 8, transport);
+  try {
+    deliver({ type: "file", path: "pic.md", rev: 0, text: "alpha beta\n", cursor: 8, anchor: 8 });
+    const file = {
+      type: "image/png",
+      name: "dot.png",
+      arrayBuffer() {
+        return Promise.resolve(png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength));
+      },
+    };
+    mounted.listeners.paste({
+      preventDefault() {},
+      clipboardData: { getData: () => "", files: [file] },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(editor.getState().doc, "alpha beta\n");
+    const attach = sent.filter((message) => message.type === "attach");
+    assert.equal(attach.length, 1);
+    assert.equal(attach[0].cursor, 8);
+    assert.equal(attach[0].path, "pic.md");
+    assert.deepEqual(binaries[0], png);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    sent.length = 0;
+    const dataUrl = `data:image/png;base64,${Buffer.from(png).toString("base64")}`;
+    mounted.listeners.paste({
+      preventDefault() {},
+      clipboardData: { getData: () => dataUrl },
+    });
+    assert.equal(editor.getState().doc, "alpha beta\n");
+    assert.equal(sent.filter((message) => message.type === "attach").length, 1);
+    assert.equal(sent.some((message) => message.type === "edit"), false);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    sent.length = 0;
+    mounted.listeners.paste({
+      preventDefault() {},
+      clipboardData: { getData: () => "see data:image/png;base64,@@" },
+    });
+    assert.equal(editor.getState().doc, "alpha beta\n");
+    assert.equal(sent.length, 0);
+    const notice = parent.childNodes.find((node) => node.className === "md-notice");
+    assert.equal(notice.textContent, "not an image");
+    assert.equal(notice.attrs.get("role"), "status");
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    mounted.listeners.paste({
+      preventDefault() {},
+      clipboardData: { getData: () => "![a](https://example.com/a.png)" },
+    });
+    const edit = sent.find((message) => message.type === "edit");
+    assert.equal(edit.text, "![a](https://example.com/a.png)");
+    assert.equal(editor.getState().doc, "alpha beta\n");
+  } finally {
+    editor.destroy();
     mounted.restore();
   }
 });
@@ -5076,10 +5168,13 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.ok(tops[1] >= tops[0] + 30);
     const menu = docMenuOf(mounted.aside);
     assert.equal(mounted.aside.childNodes[0], menu.commit);
-    assert.equal(mounted.aside.childNodes[1], menu.row);
+    assert.equal(mounted.aside.childNodes[1].textContent, "Attach image");
+    assert.equal(mounted.aside.childNodes[1].classList.contains("md-attach"), true);
+    assert.equal(mounted.aside.childNodes[2].classList.contains("md-attach-input"), true);
+    assert.equal(mounted.aside.childNodes[3], menu.row);
     assert.equal(menu.row.hidden, true);
     assert.equal(menu.row.hasAttribute("hidden"), true);
-    assert.equal(cards[0], mounted.aside.childNodes[2]);
+    assert.equal(cards[0], mounted.aside.childNodes[4]);
     assert.equal(menu.commit.tagName, "BUTTON");
     assert.equal(menu.commit.type, "button");
     assert.equal(menu.commit.textContent, "Commit repo");
@@ -5387,7 +5482,8 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(showMenu.row.hidden, false);
     assert.equal(showMenu.row.hasAttribute("hidden"), false);
     assert.equal(mounted.aside.childNodes[0], showMenu.commit);
-    assert.equal(mounted.aside.childNodes[1], showMenu.row);
+    assert.equal(mounted.aside.childNodes[1].classList.contains("md-attach"), true);
+    assert.equal(mounted.aside.childNodes[3], showMenu.row);
     assert.notEqual(mounted.aside.childNodes[0], show);
     assert.equal(showMenu.label.textContent, "show resolved");
     assert.equal(showMenu.label.parentElement, showMenu.row);
@@ -11284,8 +11380,23 @@ test("T-deep-link", () => {
     assert.equal(opens()[0].path, "docs/a.md");
     assert.equal(urls.length, 0);
     assert.equal(docLinks().length, 0);
-    assert.equal(docMenuOf(mounted.aside).commit.hidden, false);
-    assert.equal(docMenuOf(mounted.aside).commit.textContent, "Commit repo");
+    const menu = docMenuOf(mounted.aside);
+    assert.equal(menu.commit.hidden, false);
+    assert.equal(menu.commit.textContent, "Commit repo");
+    const attach = walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-attach"));
+    assert.equal(attach.length, 1);
+    assert.equal(attach[0].tagName, "BUTTON");
+    assert.equal(attach[0].textContent, "Attach image");
+    assert.equal(attach[0].hidden, false);
+    assert.equal(attach[0].parentElement, mounted.aside);
+    assert.equal(mounted.aside.childNodes[0], menu.commit);
+    assert.equal(mounted.aside.childNodes[1], attach[0]);
+    const fileInput = walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-attach-input"));
+    assert.equal(fileInput.length, 1);
+    assert.equal(fileInput[0].hidden, true);
+    assert.equal(fileInput[0].getAttribute("type"), "file");
+    assert.equal(walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-doc-menu")).length, 0);
+    assert.equal(walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-doc-menu-panel")).length, 0);
     fireHash();
     assert.equal(opens().length, 1);
     const commentDoc = "See {c1}fox{/c1}.\n\n```comment c1 resolved\nhi\n```\n";

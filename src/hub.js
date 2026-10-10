@@ -34,7 +34,7 @@ import {
   parseTicket,
   rejectLink,
 } from "./ticket.js";
-import { acceptKey, createParser, encodeFrame, encodeText } from "./ws.js";
+import { MAX_PAYLOAD, acceptKey, createParser, encodeFrame, encodeText } from "./ws.js";
 
 const PING_MS = 15000;
 const CHECKPOINT_MS = 3600000;
@@ -739,6 +739,272 @@ export async function readBuild(root) {
   }
 }
 
+const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
+
+// tickets/<id>.md owns tickets/<id>/. notes/welcome.md owns notes/welcome/.
+// tickets.md does not own tickets/: that directory is the ticket store.
+export function assetDirOf(rel) {
+  if (typeof rel !== "string") return null;
+  let dir = null;
+  if (rel.endsWith(".markdown")) dir = rel.slice(0, -".markdown".length);
+  else if (rel.endsWith(".md")) dir = rel.slice(0, -3);
+  if (dir === "tickets") return null;
+  return dir;
+}
+
+export function imageKind(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_PAYLOAD) return null;
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+    && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) {
+    return "png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "jpg";
+  if (bytes.length >= 6) {
+    const sig = bytes.subarray(0, 6).toString("ascii");
+    if (sig === "GIF87a" || sig === "GIF89a") return "gif";
+  }
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP") {
+    return "webp";
+  }
+  return null;
+}
+
+// A taken id is drawn again. Eight draws is the same cap as a new ticket.
+export function allocateImageId(taken, random = Math.random) {
+  const hold = typeof taken === "function" ? taken : () => false;
+  for (let draw = 0; draw < 8; draw += 1) {
+    const id = generateId(random);
+    if (!hold(id)) return id;
+  }
+  return null;
+}
+
+function sourceLines(doc) {
+  const text = typeof doc === "string" ? doc : "";
+  const lines = [];
+  let start = 0;
+  for (let i = 0; i <= text.length; i += 1) {
+    if (i === text.length || text[i] === "\n") {
+      const cr = i > start && text[i - 1] === "\r";
+      lines.push({
+        start,
+        end: i,
+        text: text.slice(start, cr ? i - 1 : i),
+        nl: i < text.length,
+      });
+      start = i + 1;
+      if (i === text.length) break;
+    }
+  }
+  if (lines.length > 1 && lines[lines.length - 1].start === text.length) lines.pop();
+  return lines;
+}
+
+function fenceOpenLine(text) {
+  return /^```[ \t]*([^`\s]*)/.test(text);
+}
+
+function fenceCloseLine(text) {
+  return /^```[ \t]*$/.test(text);
+}
+
+function delimiterRow(text) {
+  let body = text.trim();
+  if (!body.includes("-")) return false;
+  if (body.startsWith("|")) body = body.slice(1);
+  if (body.endsWith("|")) body = body.slice(0, -1);
+  const cells = body.split("|");
+  return cells.length > 0 && cells.every((cell) => /^\s*:?-{3,}:?\s*$/.test(cell));
+}
+
+function tableStartLine(lines, index) {
+  if (index + 1 >= lines.length) return false;
+  const header = lines[index].text;
+  if (!header.includes("|") || delimiterRow(header)) return false;
+  return delimiterRow(lines[index + 1].text);
+}
+
+function tableBodyLine(text) {
+  return text.trim() !== "" && text.includes("|");
+}
+
+function enclosingFence(lines, index) {
+  let i = 0;
+  while (i < lines.length) {
+    if (!fenceOpenLine(lines[i].text)) {
+      i += 1;
+      continue;
+    }
+    let end = i + 1;
+    while (end < lines.length && !fenceCloseLine(lines[end].text)) end += 1;
+    const last = end < lines.length ? end : lines.length - 1;
+    if (index >= i && index <= last) return { from: i, to: last };
+    i = last + 1;
+  }
+  return null;
+}
+
+function enclosingTable(lines, index) {
+  let i = 0;
+  while (i < lines.length) {
+    if (!tableStartLine(lines, i)) {
+      i += 1;
+      continue;
+    }
+    let end = i + 2;
+    while (end < lines.length && tableBodyLine(lines[end].text)) end += 1;
+    const last = end - 1;
+    if (index >= i && index <= last) return { from: i, to: last };
+    i = end;
+  }
+  return null;
+}
+
+function lineIndexAtOffset(lines, offset) {
+  for (let i = 0; i < lines.length; i += 1) {
+    if (offset >= lines[i].start && offset <= lines[i].end) return i;
+  }
+  return lines.length - 1;
+}
+
+function afterLine(line) {
+  if (!line) return 0;
+  return line.nl ? line.end + 1 : line.end;
+}
+
+function afterSpan(doc, span) {
+  if (!span) return doc.length;
+  if (span.end < doc.length && doc[span.end] === "\n") return span.end + 1;
+  return span.end;
+}
+
+// The picture follows the block that holds the point. A fence or a table is one block,
+// so the line does not land inside a comment note or between table rows.
+function insertionAt(doc, offset) {
+  const text = typeof doc === "string" ? doc : "";
+  const lines = sourceLines(text);
+  if (offset == null) {
+    if (lines.length === 0) return 0;
+    return afterLine(lines[lines.length - 1]);
+  }
+  const at = Math.max(0, Math.min(text.length, offset));
+  if (lines.length === 0) return 0;
+  const index = lineIndexAtOffset(lines, at);
+  const fence = enclosingFence(lines, index);
+  if (fence) return afterLine(lines[fence.to]);
+  const table = enclosingTable(lines, index);
+  if (table) return afterLine(lines[table.to]);
+  const spans = lockSpans(text);
+  let span = null;
+  for (const item of spans) {
+    if (at >= item.start && at <= item.end) {
+      span = item;
+      break;
+    }
+  }
+  if (!span) span = spans[spans.length - 1] || null;
+  return afterSpan(text, span);
+}
+
+// One blank line on each side when a neighbor is there. The caret sits just after the image line.
+export function imagePlacement(doc, offset, imageLine) {
+  const text = typeof doc === "string" ? doc : "";
+  const line = typeof imageLine === "string" ? imageLine : "";
+  const at = insertionAt(text, offset);
+  let gapStart = at;
+  while (gapStart > 0 && text[gapStart - 1] === "\n") gapStart -= 1;
+  let gapEnd = at;
+  while (gapEnd < text.length && text[gapEnd] === "\n") gapEnd += 1;
+  const before = text.slice(0, gapStart);
+  const after = text.slice(gapEnd);
+  let inserted;
+  if (before.length === 0 && after.length === 0) inserted = `${line}\n`;
+  else if (before.length === 0) inserted = `${line}\n\n`;
+  else if (after.length === 0) inserted = `\n\n${line}\n`;
+  else inserted = `\n\n${line}\n\n`;
+  // The extra newline after the image line separates the following block. The caret
+  // sits just past the image line, so that line stays drawn.
+  const caret = before.length + inserted.length - (after.length === 0 ? 0 : 1);
+  return {
+    from: gapStart,
+    to: gapEnd,
+    inserted,
+    removed: text.slice(gapStart, gapEnd),
+    caret,
+    doc: before + inserted + after,
+  };
+}
+
+export function imageLineFor(dir, file) {
+  return `![${file}](${dir}/${file})`;
+}
+
+// Eight draws, same as a new ticket. A name already in the text or in occupied is skipped.
+export function imageFileName(dir, ext, text, occupied, random = Math.random) {
+  const blocked = new Set();
+  const body = typeof text === "string" ? text : "";
+  const hold = occupied instanceof Set ? occupied : new Set();
+  for (let round = 0; round < 8; round += 1) {
+    const id = allocateImageId((candidate) => blocked.has(candidate), random);
+    if (!id) return null;
+    const file = `${id}.${ext}`;
+    const rel = `${dir}/${file}`;
+    if (body.includes(`](${rel})`) || hold.has(file) || hold.has(rel)) {
+      blocked.add(id);
+      continue;
+    }
+    return { id, file, rel };
+  }
+  return null;
+}
+
+async function listAssetNames(rootDir, dirRel) {
+  let entries;
+  try {
+    entries = await fs.readdir(path.join(rootDir, dirRel), { withFileTypes: true });
+  } catch (err) {
+    if (err && (err.code === "ENOENT" || err.code === "ENOTDIR")) return [];
+    throw err;
+  }
+  const names = [];
+  for (const entry of entries) {
+    if (entry.isSymbolicLink() || !entry.isFile()) continue;
+    names.push(entry.name);
+  }
+  names.sort();
+  return names;
+}
+
+export function rewriteImageDirs(text, fromDir, toDir) {
+  if (typeof text !== "string" || !fromDir || !toDir || fromDir === toDir) return text;
+  const from = `${fromDir}/`;
+  const to = `${toDir}/`;
+  return text.replace(/!\[[^\]]*\]\([^)\s]+\)/g, (token) => {
+    const urlStart = token.indexOf("](") + 2;
+    const url = token.slice(urlStart, -1);
+    if (url.startsWith("https://") || url.startsWith("http://") || url.startsWith("data:")) return token;
+    if (!url.startsWith(from)) return token;
+    return `${token.slice(0, urlStart)}${to}${url.slice(from.length)})`;
+  });
+}
+
+function referencedImageNames(text, dir) {
+  const names = new Set();
+  if (typeof text !== "string" || !dir) return names;
+  const prefix = `${dir}/`;
+  const re = /!\[[^\]]*\]\(([^)\s]+)\)/g;
+  let match = re.exec(text);
+  while (match) {
+    const url = match[1];
+    if (!url.startsWith("https://") && !url.startsWith("http://") && !url.startsWith("data:") && url.startsWith(prefix)) {
+      const name = url.slice(prefix.length);
+      if (name.length > 0 && !name.includes("/")) names.add(name);
+    }
+    match = re.exec(text);
+  }
+  return names;
+}
+
 export async function createHub(stateDir, sourceRoot) {
   const build = await readBuild(sourceRoot);
   const repos = await loadRepos(stateDir);
@@ -1066,8 +1332,76 @@ export async function createHub(stateDir, sourceRoot) {
       syncLocks(file);
       if (file.subscribers.size > 0) {
         broadcast(file, { type: "locks", path: file.rel, rev: file.rev, lines: lockSnapshot(file) });
+      } else {
+        await sweepUnreferencedImages(session.repo, file.rel, file.text, session.username);
       }
     }
+  }
+
+  // The bytes stay while someone still has the document. A file no image line names goes away
+  // with the last subscriber, so undo can put the line back and the picture is still there.
+  async function sweepUnreferencedImages(repo, rel, text, username) {
+    if (!repo || !rel) return;
+    const dir = assetDirOf(rel);
+    if (!dir) return;
+    const keep = referencedImageNames(text, dir);
+    const names = await listAssetNames(repo.path, dir);
+    for (const name of names) {
+      if (keep.has(name)) continue;
+      await fs.rm(path.join(repo.path, dir, name), { force: true });
+      await markDelete(repo, `${dir}/${name}`, username);
+    }
+  }
+
+  async function removeAssetDir(repo, rel, username) {
+    const dir = assetDirOf(rel);
+    if (!dir || !repo) return;
+    const names = await listAssetNames(repo.path, dir);
+    await fs.rm(path.join(repo.path, dir), { recursive: true, force: true });
+    for (const name of names) await markDelete(repo, `${dir}/${name}`, username);
+  }
+
+  async function prepareAssetDir(repo, dirRel) {
+    const full = path.resolve(repo.path, dirRel);
+    try {
+      await fs.mkdir(full, { recursive: true });
+    } catch {
+      return null;
+    }
+    let real;
+    try {
+      real = await fs.realpath(full);
+    } catch {
+      return null;
+    }
+    if (!inside(repo.path, real)) return null;
+    return real;
+  }
+
+  async function claimImageFile(repo, dir, ext, text) {
+    const occupied = new Set();
+    for (let round = 0; round < 8; round += 1) {
+      const named = imageFileName(dir, ext, text, occupied);
+      if (!named) return null;
+      if (await existsPath(path.join(repo.path, named.rel))) {
+        occupied.add(named.rel);
+        continue;
+      }
+      return named;
+    }
+    return null;
+  }
+
+  function holderAt(file, socket, offset) {
+    if (offset == null || !file) return null;
+    const spans = lockSpans(file.text);
+    for (let index = 0; index < spans.length; index += 1) {
+      const span = spans[index];
+      if (offset < span.start || offset > span.end) continue;
+      const owner = file.locks.get(index);
+      if (owner && owner !== socket) return owner.session.username;
+    }
+    return null;
   }
 
   async function loadFile(repo, rel) {
@@ -1301,12 +1635,37 @@ export async function createHub(stateDir, sourceRoot) {
       }
     }
 
+    const assetPlans = [];
+    for (const pair of pairs) {
+      const srcDir = assetDirOf(pair.src);
+      const destDir = assetDirOf(pair.dest);
+      if (!srcDir || !destDir || srcDir === destDir) continue;
+      const srcFull = path.join(docsDir, srcDir);
+      const destAsset = path.join(docsDir, destDir);
+      let info;
+      try {
+        info = await fs.lstat(srcFull);
+      } catch (err) {
+        if (err && err.code === "ENOENT") info = null;
+        else throw err;
+      }
+      // The destination directory already belongs to another document. Leave both.
+      if (fileMove && (await existsPath(destAsset))) return fail(socket, 409);
+      if (!info || info.isSymbolicLink() || !info.isDirectory()) continue;
+      const names = await listAssetNames(docsDir, srcDir);
+      assetPlans.push({ srcDir, destDir, srcFull, destAsset, names });
+    }
+
     const srcReal = await resolveInside(docsDir, rel);
     if (!srcReal) return fail(socket, 404);
     const destFull = await placedFull(docsDir, dir, baseName(rel));
     if (!destFull) return fail(socket, 404);
     if (await existsPath(destFull)) return fail(socket, 409);
     await fs.rename(srcReal, destFull);
+    // A directory rename already carried the nested asset directories.
+    if (fileMove) {
+      for (const plan of assetPlans) await fs.rename(plan.srcFull, plan.destAsset);
+    }
 
     const opened = [];
     for (const pair of pairs) {
@@ -1318,10 +1677,39 @@ export async function createHub(stateDir, sourceRoot) {
       files.set(pair.dest, cached);
       opened.push({ src: pair.src, file: cached });
     }
+    for (const pair of pairs) {
+      const fromDir = assetDirOf(pair.src);
+      const toDir = assetDirOf(pair.dest);
+      const cached = opened.find((item) => item.src === pair.src);
+      const full = cached
+        ? cached.file.full
+        : (fileMove ? destFull : path.join(destFull, pair.src.slice(rel.length + 1)));
+      let text = cached ? cached.file.text : null;
+      if (text == null) {
+        try {
+          text = await fs.readFile(full, "utf8");
+        } catch {
+          continue;
+        }
+      }
+      const next = rewriteImageDirs(text, fromDir, toDir);
+      if (next === text) continue;
+      if (cached) {
+        cached.file.text = next;
+        cached.file.rev += 1;
+      }
+      await writeAtomic(full, next);
+    }
     const username = socket.session.username;
     for (const pair of pairs) {
       await markDelete(repo, pair.src, username);
       mark(repo, pair.dest, username);
+    }
+    for (const plan of assetPlans) {
+      for (const name of plan.names) {
+        await markDelete(repo, `${plan.srcDir}/${name}`, username);
+        mark(repo, `${plan.destDir}/${name}`, username);
+      }
     }
     for (const item of opened) retargetOpen(item.src, item.file);
     broadcastDocs(repo, await docsPayload(repo));
@@ -1578,6 +1966,7 @@ export async function createHub(stateDir, sourceRoot) {
     repo.files.delete(rel);
     await fs.rm(cached ? cached.full : path.join(repo.path, rel), { force: true });
     await markDelete(repo, rel, socket.session.username);
+    await removeAssetDir(repo, rel, socket.session.username);
     send(socket, { type: "deleted", path: rel });
     broadcastDocs(repo, await docsPayload(repo));
   }
@@ -1629,6 +2018,7 @@ export async function createHub(stateDir, sourceRoot) {
       files.delete(rel);
       await fs.rm(cached ? cached.full : path.join(docsDir, rel), { force: true });
       await markDelete(repo, rel, socket.session.username);
+      await removeAssetDir(repo, rel, socket.session.username);
     }
     for (const ticket of all) {
       if (closedIds.has(ticket.id)) continue;
@@ -2288,6 +2678,89 @@ export async function createHub(stateDir, sourceRoot) {
     sendComment(socket, file, added.id, reply.note.id);
   }
 
+  async function onAttach(socket, msg, payload) {
+    const session = socket.session;
+    if (!session || session.gone || session.ending) return;
+    const repo = session.repo;
+    if (!repo || !session.username) return fail(socket, 400);
+    if (!msg || typeof msg !== "object") return fail(socket, 400);
+    const rel = safeRel(msg.path);
+    const dir = rel ? assetDirOf(rel) : null;
+    if (!rel || !dir || !isMarkdownPath(rel)) return fail(socket, 404);
+    if (rel.startsWith("tickets/") && !ticketIdFromRel(rel)) return fail(socket, 404);
+    const file = await loadFile(repo, rel);
+    if (!file) return fail(socket, 404);
+    const bytes = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || []);
+    if (bytes.length === 0) return fail(socket, 400, { reason: "empty image" });
+    if (bytes.length > MAX_PAYLOAD) return fail(socket, 400, { reason: "image is too large" });
+    const ext = imageKind(bytes);
+    if (!ext) return fail(socket, 400, { reason: "not an image" });
+
+    let point = null;
+    if (msg.start !== undefined) {
+      const start = linePosition(msg.start);
+      if (!start) return fail(socket, 400);
+      const at = offsetAt(file.text, start.line, start.offset);
+      if (at.error) return fail(socket, 400);
+      point = at.offset;
+    } else if (Object.prototype.hasOwnProperty.call(msg, "cursor")) {
+      if (!Number.isInteger(msg.cursor) || msg.cursor < 0 || msg.cursor > file.text.length) return fail(socket, 400);
+      point = msg.cursor;
+    }
+
+    const named = await claimImageFile(repo, dir, ext, file.text);
+    if (!named) return fail(socket, 500);
+    const line = imageLineFor(dir, named.file);
+    const place = imagePlacement(file.text, point, line);
+    const change = {
+      from: place.from,
+      to: place.to,
+      inserted: place.inserted,
+      removed: place.removed,
+    };
+    const held = holderAt(file, socket, point) || holderOf(file, socket, [change]);
+    if (held) return fail(socket, 409, { heldBy: held });
+
+    const dirReal = await prepareAssetDir(repo, dir);
+    if (!dirReal) return fail(socket, 404);
+    const imageFull = path.join(dirReal, named.file);
+    if (!inside(repo.path, imageFull) || (await existsPath(imageFull))) return fail(socket, 500);
+    await writeAtomic(imageFull, bytes);
+
+    const prior = session.docPath === file.rel
+      ? { cursor: session.cursor, anchor: session.anchor }
+      : { cursor: 0, anchor: 0 };
+    await ensureSubscribed(socket, file);
+    const entry = {
+      changes: copyChanges([change]),
+      cursor: prior.cursor,
+      anchor: prior.anchor,
+      cursorAfter: place.caret,
+      anchorAfter: place.caret,
+      poison: false,
+    };
+    const wrote = await publish(
+      socket,
+      file,
+      file.text,
+      [change],
+      { cursor: place.caret, anchor: place.caret },
+      null,
+      "edit",
+    );
+    if (wrote !== true) {
+      await fs.rm(imageFull, { force: true });
+      return wrote && wrote.heldBy ? failHeld(socket, wrote) : fail(socket, 500);
+    }
+    mark(repo, named.rel, session.username);
+    session.redo = [];
+    pushCap(session.undo, entry);
+    const reply = fileFrame(file);
+    reply.cursor = place.caret;
+    reply.anchor = place.caret;
+    send(socket, reply);
+  }
+
   async function handleText(socket, payload) {
     if (socket.session?.gone || socket.session?.ending) return;
     let msg;
@@ -2340,6 +2813,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "ticket.purge") return onTicketPurge(socket);
     if (msg.type === "delete") return onDelete(socket, msg);
     if (msg.type === "ticket.delete") return onTicketDelete(socket, msg);
+    if (msg.type === "attach") return;
     if (msg.type === "lock") return onLock(socket, msg);
     if (msg.type === "diff") return onDiff(socket, msg);
     if (msg.type === "edit") return onEdit(socket, msg);
@@ -2367,7 +2841,35 @@ export async function createHub(stateDir, sourceRoot) {
     const parser = createParser({
       requireMask: true,
       onText(payload) {
+        let preview = null;
+        try {
+          preview = JSON.parse(payload.toString("utf8"));
+        } catch {
+          preview = null;
+        }
+        // The binary frame is the next message. Record it before the queue runs so a
+        // picture is not mistaken for an unexpected binary frame.
+        if (preview && preview.type === "attach") {
+          session.expectImage = true;
+          session.attach = preview;
+        } else {
+          session.expectImage = false;
+          session.attach = null;
+        }
         enqueue(() => handleText(socket, payload)).catch((err) => {
+          console.error(err);
+          fail(socket, 500);
+        });
+      },
+      onBinary(payload) {
+        if (!session.expectImage || !session.attach) {
+          endSocket(socket, "binary");
+          return;
+        }
+        const attached = session.attach;
+        session.expectImage = false;
+        session.attach = null;
+        enqueue(() => onAttach(socket, attached, payload)).catch((err) => {
           console.error(err);
           fail(socket, 500);
         });
