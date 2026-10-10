@@ -12158,4 +12158,8 @@ test("uwtqazmt crlf newlines", () => {
   const lf = insert(createState("one\n\ntwo\n", 4), "a\r\nb");
   assert.equal(lf.doc, "one\na\nb\ntwo\n");
   assert.equal(lf.cursor, 7);
+
+  const joined = deleteForward(createState("ab\r\ncd", 3));
+  assert.equal(joined.doc, "abcd");
+  assert.equal(joined.cursor, 2);
 });

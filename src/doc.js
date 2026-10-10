@@ -2460,7 +2460,7 @@ export function deleteForward(state) {
     cursor = at - 1;
   }
   const from = doc[at] === "\n" && doc[at - 1] === "\r" ? at - 1 : at;
-  return snapBreak(applySplice(state, from, at + 1, "", cursor));
+  return snapBreak(applySplice(state, from, at + 1, "", from < at ? from : cursor));
 }
 
 export function undo(state) {
