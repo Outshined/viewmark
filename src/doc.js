@@ -2585,10 +2585,39 @@ function fileNewline(doc) {
   return paired ? "\r\n" : "\n";
 }
 
+// A paragraph, list item, or quote joins the line under it across one newline.
+function joinsDown(text) {
+  if (text === "" || imageLine(text) || text.startsWith("|") || fenceOpen(text)) return false;
+  const kind = classify(text).kind;
+  return kind === "p" || kind === "li" || kind === "ol" || kind === "quote";
+}
+
+// Fence lines are source. The opener's first byte is the line a paragraph can join.
+function enclosedByFence(doc, offset) {
+  for (const fence of fenceContentRanges(doc)) {
+    if (offset > fence.start && offset < fence.end) return true;
+  }
+  return false;
+}
+
+// That joined line is drawn on the block above. An insert with no break of its
+// own writes one first, so the typed text stays on the line. A break already in
+// the text is that line.
+function joinedLineBreak(doc, cursor, value, nl) {
+  if (value === "" || value.includes(nl)) return false;
+  const line = sourceLine(doc, cursor);
+  // The row lineSpans adds at length is not a block.
+  if (cursor !== line.start || line.start === 0 || line.start === doc.length) return false;
+  if (enclosedByFence(doc, cursor)) return false;
+  return joinsDown(sourceLine(doc, line.start - 1).text);
+}
+
 export function insert(state, text) {
-  const value = (typeof text === "string" ? text : "").replace(/\r\n|\n|\r/g, fileNewline(state.doc));
+  const nl = fileNewline(state.doc);
+  let value = (typeof text === "string" ? text : "").replace(/\r\n|\n|\r/g, nl);
   const from = Math.min(state.anchor, state.cursor);
   const to = Math.max(state.anchor, state.cursor);
+  if (from === to && joinedLineBreak(state.doc, from, value, nl)) value = nl + value;
   if (value === "" && from === to) return state;
   return applySplice(state, from, to, value, from + value.length);
 }
