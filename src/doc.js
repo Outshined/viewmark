@@ -2493,6 +2493,39 @@ function deleteBareLine(state, line) {
   return snapBreak(applySplice(state, line.start, line.end + 1, "", caret));
 }
 
+// Directly after a marker, Backspace removes that marker. A nested item outdents.
+function markerBackspace(doc, cursor) {
+  if (fenceBody(doc, cursor)) return null;
+  const line = sourceLine(doc, cursor);
+  const mode = classify(line.text);
+  const at = cursor - line.start;
+  const kind = mode.kind;
+  if (kind !== "li" && kind !== "ol" && kind !== "quote") return null;
+  if ((kind === "li" || kind === "ol") && at > (mode.marker || 0)) {
+    const between = line.text.slice(mode.marker || 0, at);
+    if (/^\[( |x|X)\][ \t]+$/.test(between)) {
+      const from = line.start + (mode.marker || 0);
+      return { from, to: cursor, caret: from };
+    }
+  }
+  if (at !== (mode.marker || 0) || at === 0) return null;
+  if (kind === "quote") return { from: line.start, to: cursor, caret: line.start };
+  if (mode.quoted) {
+    const quote = mode.quote || 0;
+    if (quote <= 0 || quote >= at) return null;
+    const from = line.start + quote;
+    return { from, to: cursor, caret: from };
+  }
+  let width = 0;
+  if (line.text.startsWith("\t")) width = 1;
+  else while (width < 4 && line.text[width] === " ") width += 1;
+  if (width > 0) {
+    const to = line.start + width;
+    return { from: line.start, to, caret: cursor - width };
+  }
+  return { from: line.start, to: cursor, caret: line.start };
+}
+
 export function backspace(state) {
   if (state.anchor !== state.cursor) return deleteSelection(state);
   if (state.cursor <= 0) return state;
@@ -2502,6 +2535,8 @@ export function backspace(state) {
     if (cutting.start === 0) return state;
     return snapBreak(applySplice(state, cutting.start - 1, cutting.start, "", cutting.end - 1));
   }
+  const marked = markerBackspace(doc, state.cursor);
+  if (marked) return snapBreak(applySplice(state, marked.from, marked.to, "", marked.caret));
   const line = sourceLine(doc, state.cursor);
   if (bareBreakLine(line, doc)) return deleteBareLine(state, line);
   if (/^[ \t]+$/.test(line.text)) return deleteBareLine(state, line);
