@@ -878,13 +878,13 @@ test("list item is one block", () => {
   assert.equal(shownText(nestedOrderedBlocks[0]), "a");
   assert.equal(nestedOrderedBlocks[0].marker, "1. ");
   assert.equal(shownText(nestedOrderedBlocks[0]).includes("more"), false);
-  assert.equal(shownText(nestedOrderedBlocks[1]), "b    more");
+  assert.equal(shownText(nestedOrderedBlocks[1]), "b more");
   assert.equal(nestedOrderedBlocks[1].marker, "2. ");
   assert.equal(nestedOrderedBlocks[1].indent, 3);
   const onMore = proseBlocks(nestedOrdered, nestedOrdered.indexOf("more"));
   assert.equal(onMore.length, 2);
   assert.equal(shownText(onMore[0]), "a");
-  assert.equal(shownText(onMore[1]), "   2. b    more");
+  assert.equal(shownText(onMore[1]), "   2. b more");
   assert.equal(onMore[1].raw, true);
   assert.equal(Object.hasOwn(onMore[1], "marker"), false);
 
@@ -1162,6 +1162,40 @@ test("list item maps the joining space and keeps the source", () => {
   } finally {
     mounted.restore();
   }
+});
+
+test("bwx2b8ru numbered continuation reflow", () => {
+  const doc = "1. alpha\n   continues\n";
+  assert.equal(doc[8], "\n");
+  assert.equal(doc.slice(9, 12), "   ");
+  const rawBlocks = proseBlocks(doc, 0);
+  const renderedBlocks = proseBlocks(doc, doc.length);
+  assert.equal(shownText(rawBlocks[0]), "1. alpha continues");
+  assert.equal(shownText(renderedBlocks[0]), "alpha continues");
+  for (const block of [rawBlocks[0], renderedBlocks[0]]) {
+    assert.ok(block.parts.some((part) => part.start <= 8 && 8 < part.end));
+    assert.ok(block.parts.some((part) => part.start <= 9 && part.end > 11));
+  }
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  try {
+    const view = createEditor(mounted.root, doc, 0);
+    const lines = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-ol"));
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].textContent.split("\u200b").join(""), "1. alpha continues");
+    const space = mounted.findAll((node) => node.nodeType === 3 && node.textContent === " ")[0];
+    assert.ok(space);
+    assert.equal(mapOffset(space, 0), 8);
+    const indent = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "\u200b\u200b\u200b")[0];
+    assert.ok(indent);
+    assert.equal(mapOffset(indent, 0), 9);
+    assert.equal(mapOffset(indent, 1), 10);
+    assert.equal(view.getState().doc, doc);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+  assert.equal(doc, "1. alpha\n   continues\n");
 });
 
 test("quoted item is one block", () => {

@@ -1827,6 +1827,66 @@ export function lineCaret(doc, offset) {
   return at;
 }
 
+// A tab advances to the next multiple of 4, the same stop classifyList uses.
+function contentColumn(text, marker) {
+  const count = Math.min(Math.max(0, marker || 0), text.length);
+  let column = 0;
+  for (let i = 0; i < count; i += 1) {
+    column += text[i] === "\t" ? 4 - (column % 4) : 1;
+  }
+  return column;
+}
+
+// Character count of the leading spaces and tabs that sit inside `columns`.
+function continuationIndent(text, columns) {
+  let column = 0;
+  let index = 0;
+  while (index < text.length && column < columns) {
+    const ch = text[index];
+    if (ch !== " " && ch !== "\t") break;
+    column += ch === "\t" ? 4 - (column % 4) : 1;
+    index += 1;
+  }
+  return index;
+}
+
+// Indent columns are not words. Zero-width spaces keep a caret on each one.
+function foldOlIndent(pieces, lineStart, leading) {
+  const cut = lineStart + leading;
+  const indent = {
+    type: "indent",
+    text: "\u200b".repeat(leading),
+    start: lineStart,
+    end: cut,
+    classes: ["md-ol-indent"],
+  };
+  const out = [];
+  let placed = false;
+  for (const part of pieces) {
+    if (!part || part.end <= part.start || part.type !== "run" || part.end <= lineStart || part.start >= cut) {
+      out.push(part);
+      continue;
+    }
+    if (part.start < lineStart) {
+      const head = clonePart(part);
+      head.end = lineStart;
+      head.text = head.text.slice(0, lineStart - part.start);
+      if (head.text.length > 0 && head.end > head.start) out.push(head);
+    }
+    if (!placed) {
+      out.push(indent);
+      placed = true;
+    }
+    if (part.end > cut) {
+      const tail = clonePart(part);
+      tail.text = tail.text.slice(cut - part.start);
+      tail.start = cut;
+      if (tail.text.length > 0 && tail.end > tail.start) out.push(tail);
+    }
+  }
+  return placed ? out : pieces;
+}
+
 function wrappedBlock(group, doc, cursor, spans) {
   const start = group[0].line.start;
   const end = group[group.length - 1].line.end;
@@ -1848,6 +1908,20 @@ function wrappedBlock(group, doc, cursor, spans) {
       pieces = dropPrefix(pieces, slot.line.start + marker);
     } else if (raw && slot.mode.quoted && slot.mode.quote) {
       pieces = dropPrefix(pieces, slot.line.start + slot.mode.quote);
+    }
+    // A hard break stays a break, so the next line keeps the spaces it wrote.
+    if (i > 0 && group[0].mode.kind === "ol") {
+      const prev = group[i - 1];
+      const prevNewline = prev.line.end < doc.length && doc[prev.line.end] === "\n";
+      const prevMarker = openerMarker(prev, i - 1);
+      const prevSource = prevMarker > 0
+        ? prev.line.text.slice(Math.min(prevMarker, prev.line.text.length))
+        : prev.line.text;
+      if (prevNewline && hardHideCount(prevSource) === 0) {
+        const columns = contentColumn(group[0].line.text, group[0].mode.marker || 0);
+        const leading = continuationIndent(slot.line.text, columns);
+        if (leading > 0) pieces = foldOlIndent(pieces, slot.line.start, leading);
+      }
     }
     for (const piece of pieces) parts.push(piece);
     if (!newline) continue;
