@@ -13755,8 +13755,29 @@ test("raw mode is a view and Enter stores one newline", () => {
     pressViewToggle(mounted.root);
     input(mounted, "insertParagraph");
     assert.equal(crlf.getState().doc, "a\r\nb\r\n");
-    assert.equal(joinedSource(mounted.root), "a\r\nb\r\n");
+    assert.equal(joinedSource(mounted.root), "a\nb\n");
+    const drawnCrlf = sourceLinesOf(mounted.root);
+    assert.deepEqual(drawnCrlf.map((line) => line.text), ["a", "b", ""]);
+    assert.equal(drawnCrlf[0].end, 1);
+    assert.equal(drawnCrlf[1].end, 4);
     crlf.destroy();
+
+    const stepping = createEditor(mounted.root, "one\r\ntwo\r\n\r\nthree\r\n", 0);
+    pressViewToggle(mounted.root);
+    assert.deepEqual(sourceLinesOf(mounted.root).map((line) => line.text), ["one", "two", "", "three", ""]);
+    const stops = [];
+    for (let i = 0; i < 5; i += 1) {
+      keyDown(mounted, "ArrowRight");
+      stops.push(stepping.getState().cursor);
+    }
+    assert.deepEqual(stops, [1, 2, 3, 5, 6]);
+    keyDown(mounted, "ArrowLeft");
+    assert.equal(stepping.getState().cursor, 5);
+    keyDown(mounted, "ArrowLeft");
+    assert.equal(stepping.getState().cursor, 3);
+    keyDown(mounted, "ArrowRight");
+    assert.equal(stepping.getState().cursor, 5);
+    stepping.destroy();
 
     const plain = createEditor(mounted.root, "- one", 2);
     pressViewToggle(mounted.root);

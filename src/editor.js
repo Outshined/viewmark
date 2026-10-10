@@ -2792,7 +2792,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // Chrome reports the selectionchange from placeCaret after placingCaret is
     // already false. That echo still names state, so it must not drop the column.
     const keptX = goalX;
-    goalX = null;
+    // Raw up and down keep the column across the selectionchange placeCaret echoes.
+    if (!sourceMode) goalX = null;
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return;
     const holder = sel.anchorNode || sel.getRangeAt(0).commonAncestorContainer;
@@ -2801,7 +2802,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!mapped) return;
     const snapped = sourceMode || pointer ? mapped : homeSnap(mapped);
     const next = sourceMode ? snapped : withMarkerEdges(state.doc, state, snapped);
-    if (next.anchor === state.anchor && next.cursor === state.cursor) goalX = keptX;
+    if (sourceMode || (next.anchor === state.anchor && next.cursor === state.cursor)) goalX = keptX;
     state = { ...state, anchor: next.anchor, cursor: next.cursor };
     if (snapped.anchor !== mapped.anchor || snapped.cursor !== mapped.cursor) placeCaret();
   }
@@ -4026,13 +4027,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     else root.classList.remove("md-source");
   }
 
-  function renderSourceLine(line) {
+  // The CR of a CRLF is the caret after the last drawn character, not a glyph.
+  // A following LF is the line itself, so it is not a stop between those two.
+  function renderSourceLine(doc, line) {
     const el = document.createElement("div");
     el.className = "md-line md-source-line";
+    const cr = line.end < doc.length && doc[line.end] === "\n" && line.text.endsWith("\r");
+    const shown = cr ? line.text.slice(0, -1) : line.text;
+    const end = cr ? line.end - 1 : line.end;
     el.dataset.start = String(line.start);
-    el.dataset.end = String(line.end);
-    if (line.text === "") el.appendChild(document.createElement("br"));
-    else el.appendChild(document.createTextNode(line.text));
+    el.dataset.end = String(end);
+    if (shown === "") el.appendChild(document.createElement("br"));
+    else el.appendChild(document.createTextNode(shown));
     return el;
   }
 
@@ -4050,7 +4056,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const lines = sourceLines(state.doc);
     const flashLine = refusal && !refusal.name ? tightestBlock(lines, refusal.offset) : null;
     const nodes = lines.map((line) => {
-      const el = renderSourceLine(line);
+      const el = renderSourceLine(state.doc, line);
       appendLockMarks(el, line);
       if (line === flashLine) el.classList.add("md-flash");
       return el;
@@ -5347,6 +5353,153 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return next;
   }
 
+  // The LF of a CRLF is not a stop. Right from the CR lands after the pair.
+  // Left from the next line lands on the CR.
+  function rawSibling(doc, offset, direction) {
+    const at = Math.max(0, Math.min(doc.length, offset));
+    if (direction > 0) {
+      if (at < doc.length && doc[at] === "\r" && doc[at + 1] === "\n") return Math.min(doc.length, at + 2);
+      return Math.min(doc.length, at + 1);
+    }
+    if (at > 1 && doc[at - 1] === "\n" && doc[at - 2] === "\r") return at - 2;
+    return Math.max(0, at - 1);
+  }
+
+  function rawCharRect(node, index) {
+    if (typeof document === "undefined" || typeof document.createRange !== "function") return null;
+    try {
+      const range = document.createRange();
+      range.setStart(node, index);
+      range.setEnd(node, index + 1);
+      let rect = null;
+      if (typeof range.getClientRects === "function") {
+        const rects = range.getClientRects();
+        if (rects && rects.length) rect = rects[0];
+      }
+      if ((!rect || !Number.isFinite(rect.top)) && typeof range.getBoundingClientRect === "function") rect = range.getBoundingClientRect();
+      if (!rect || !Number.isFinite(rect.top) || !Number.isFinite(rect.left) || !Number.isFinite(rect.bottom)) return null;
+      if (!(rect.height > 0) && !(rect.width > 0)) return null;
+      return rect;
+    } catch {
+      return null;
+    }
+  }
+
+  // Glyphs of the drawn source, plus the br an empty line uses as its caret.
+  // No layout (the unit host) yields nothing, and movement stays on source lines.
+  function rawLayoutSlots() {
+    if (typeof document === "undefined" || typeof document.createRange !== "function" || typeof document.createTreeWalker !== "function") return [];
+    let probe = null;
+    try {
+      probe = document.createRange();
+    } catch {
+      return [];
+    }
+    if (!probe || (typeof probe.getClientRects !== "function" && typeof probe.getBoundingClientRect !== "function")) return [];
+    const slots = [];
+    let walker = null;
+    try {
+      const show = typeof NodeFilter === "undefined" ? 4 : NodeFilter.SHOW_TEXT;
+      walker = document.createTreeWalker(root, show);
+    } catch {
+      return [];
+    }
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.parentElement?.closest?.(".md-atom") || node.parentElement?.closest?.(".md-lock")) continue;
+      const tagged = nearestTagged(node);
+      if (!tagged) continue;
+      const start = Number(tagged.dataset.start);
+      const end = Number(tagged.dataset.end);
+      const len = textLength(node);
+      if (!Number.isFinite(start) || len !== end - start || len <= 0) continue;
+      for (let i = 0; i < len; i += 1) {
+        const rect = rawCharRect(node, i);
+        if (!rect) continue;
+        slots.push({
+          offset: start + i,
+          left: rect.left,
+          right: rect.right,
+          mid: (rect.top + rect.bottom) / 2,
+          bare: false,
+        });
+      }
+    }
+    if (typeof root.querySelectorAll !== "function") return slots;
+    for (const br of root.querySelectorAll("br")) {
+      const line = br.parentElement && typeof br.parentElement.closest === "function" ? br.parentElement.closest(".md-source-line") : null;
+      if (!line) continue;
+      const start = Number(line.dataset && line.dataset.start);
+      const end = Number(line.dataset && line.dataset.end);
+      if (start !== end) continue;
+      if (typeof br.getBoundingClientRect !== "function") continue;
+      const rect = br.getBoundingClientRect();
+      if (!rect || !Number.isFinite(rect.top) || !Number.isFinite(rect.bottom) || !(rect.height > 0)) continue;
+      slots.push({
+        offset: start,
+        left: rect.left,
+        right: rect.left,
+        mid: (rect.top + rect.bottom) / 2,
+        bare: true,
+      });
+    }
+    return slots;
+  }
+
+  function rawSlotAt(slots, offset) {
+    let at = null;
+    let before = null;
+    for (const slot of slots) {
+      if (slot.offset === offset) at = slot;
+      else if (slot.offset === offset - 1 && !slot.bare) before = slot;
+    }
+    return at || before;
+  }
+
+  // Home and End use the browser's wrapped line. Up and Down step to the next
+  // wrapped line and keep the caret's x. Null means the host has no layout.
+  function rawVisualOffset(key) {
+    const slots = rawLayoutSlots();
+    if (slots.length === 0) return null;
+    const origin = rawSlotAt(slots, state.cursor);
+    if (!origin) return null;
+    const same = [];
+    for (const slot of slots) if (Math.abs(slot.mid - origin.mid) <= 3) same.push(slot);
+    if (same.length === 0) return null;
+    if (key === "Home") {
+      let best = same[0].offset;
+      for (const slot of same) if (slot.offset < best) best = slot.offset;
+      return best;
+    }
+    if (key === "End") {
+      let last = null;
+      for (const slot of same) {
+        if (slot.bare) continue;
+        if (last == null || slot.offset > last) last = slot.offset;
+      }
+      if (last == null) return origin.offset;
+      return Math.min(state.doc.length, last + 1);
+    }
+    const below = key === "ArrowDown";
+    const x = typeof goalX === "number" ? goalX : origin.left;
+    let band = null;
+    for (const slot of slots) {
+      if (below ? slot.mid <= origin.mid + 3 : slot.mid >= origin.mid - 3) continue;
+      if (band == null || (below ? slot.mid < band - 3 : slot.mid > band + 3)) band = slot.mid;
+    }
+    if (band == null) return state.cursor;
+    let best = null;
+    let bestDist = Infinity;
+    for (const slot of slots) {
+      if (Math.abs(slot.mid - band) > 3) continue;
+      const dist = Math.abs(slot.left - x);
+      if (!best || dist < bestDist || (dist === bestDist && slot.offset < best.offset)) {
+        best = slot;
+        bestDist = dist;
+      }
+    }
+    return best ? best.offset : state.cursor;
+  }
+
   function moveRawCaret(key, extend, jump) {
     const vertical = key === "ArrowUp" || key === "ArrowDown";
     if (!vertical) {
@@ -5365,11 +5518,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const before = lineIndexAt(state.doc, beforeCursor);
     let next = beforeCursor;
     if (jump && (key === "Home" || key === "End")) next = key === "Home" ? 0 : state.doc.length;
-    else if (key === "ArrowLeft") next = Math.max(0, beforeCursor - 1);
-    else if (key === "ArrowRight") next = Math.min(state.doc.length, beforeCursor + 1);
-    else if (key === "Home") next = lineSpan(state.doc, beforeCursor)[0];
-    else if (key === "End") next = lineSpan(state.doc, beforeCursor)[1];
-    else if (vertical) next = rawVerticalOffset(key === "ArrowDown");
+    else if (key === "ArrowLeft") next = rawSibling(state.doc, beforeCursor, -1);
+    else if (key === "ArrowRight") next = rawSibling(state.doc, beforeCursor, 1);
+    else if (key === "Home" || key === "End" || vertical) {
+      const visual = rawVisualOffset(key);
+      if (visual == null) {
+        if (key === "Home") next = lineSpan(state.doc, beforeCursor)[0];
+        else if (key === "End") next = lineSpan(state.doc, beforeCursor)[1];
+        else next = rawVerticalOffset(key === "ArrowDown");
+      } else next = visual;
+    }
     const anchor = extend ? beforeAnchor : next;
     state = { ...state, cursor: next, anchor };
     if (!claimLines(anchor, next)) return;
