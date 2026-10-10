@@ -143,6 +143,7 @@ test("Delete on a card with the caret elsewhere, and on a resolved thread", asyn
   const box = await page.eval(`(() => { const r = document.getElementById("show-resolved").getBoundingClientRect(); return { x: r.left + 4, y: r.top + 4 }; })()`);
   await page.click(box.x, box.y);
   await page.quiet();
+  assert.equal(await page.eval(`document.getElementById("show-resolved").checked`), true, "the click did not reach the show resolved box");
   await cardClick(page, "c1");
   await cardDelete(page, "c1");
   assert.equal(await bytes(hub, "r.md"), "See this now.\n");
@@ -540,3 +541,30 @@ test("handles: in the raw view the handles show over the comment and dragging on
   assert.equal(split(after).prose, LEAD + "See {c1}this now{/c1}.");
   whole(after, "raw view end handle");
 });
+
+// Ticket xj3zqv5t moved Commit repo into the comments column. The controls at its top take
+// their own clicks, with or without a resolved thread, and no comment card covers them.
+for (const [label, doc] of [
+  ["with no resolved thread", P + CM("c1")],
+  ["with a resolved thread", "See {c1}this{/c1} now {c2}too{/c2}." + CM("c1") + CM("c2", true).slice(1)],
+]) {
+  test(`the comments column's controls are not covered by a card, ${label}`, async (t) => {
+    const { page } = await setup(t, { "a.md": doc });
+    await open(page, "a.md");
+    await page.until(() => page.eval(`!!document.querySelector(".md-comment-card")`), "a comment card");
+    const covered = await page.eval(`(() => {
+      const aside = document.querySelector("aside.comments") || document.querySelector(".comments");
+      const controls = [...aside.querySelectorAll("button, input")].filter((el) => !el.closest(".md-comment-card") && el.getClientRects().length > 0);
+      const out = [];
+      for (const el of controls) {
+        const r = el.getBoundingClientRect();
+        for (const [x, y] of [[r.left + 2, r.top + 2], [r.right - 2, r.top + 2], [r.left + 2, r.bottom - 2], [r.right - 2, r.bottom - 2], [(r.left + r.right) / 2, (r.top + r.bottom) / 2]]) {
+          const hit = document.elementFromPoint(x, y);
+          if (hit && hit !== el && !el.contains(hit)) { out.push((el.textContent || el.id || el.className).trim() + " at " + Math.round(x) + "," + Math.round(y) + " is under " + hit.tagName + "." + String(hit.className).split(" ")[0]); break; }
+        }
+      }
+      return out;
+    })()`);
+    assert.deepEqual(covered, [], covered.join("; "));
+  });
+}
