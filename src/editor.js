@@ -1057,6 +1057,15 @@ function appendParts(el, block) {
   for (const part of block.parts) el.appendChild(part.type === "image" ? renderImage(part) : renderRun(part));
 }
 
+function rawListMarker(block) {
+  if (!block || !block.raw || block.empty || block.indent) return "";
+  const classes = block.classes || [];
+  if (classes.includes("md-quote")) return "";
+  if (!classes.includes("md-li") && !classes.includes("md-ol")) return "";
+  const match = /^(?:[-+*](?:[ ]{1,4}|\t)|\d{1,9}[.)](?:[ ]{1,4}|\t))/.exec(block.text || "");
+  return match ? match[0] : "";
+}
+
 function renderBlock(block) {
   if (block.type === "table") return renderTable(block);
   if (block.type === "diagram") return renderDiagram(block);
@@ -2783,6 +2792,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }]);
   }
 
+  function hangRawMarker(el, marker) {
+    if (!marker) return;
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext && canvas.getContext("2d");
+    if (!ctx || typeof ctx.measureText !== "function") return;
+    const font = getComputedStyle(root).font;
+    if (!font) return;
+    ctx.font = font;
+    const width = ctx.measureText(marker).width;
+    if (!Number.isFinite(width) || width <= 0) return;
+    // The 1.3em margin is already the gutter. Padding would cancel this indent
+    // and leave the item text a marker-width to the right of a closed sibling.
+    el.style.textIndent = `-${width}px`;
+  }
+
   function render() {
     if (gestureTimer != null) {
       clearTimeout(gestureTimer);
@@ -2800,6 +2824,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const flashBlock = refusal && !refusal.name ? tightestBlock(blocks, refusal.offset) : null;
       const nodes = blocks.map((block) => {
         const el = renderBlock(block);
+        hangRawMarker(el, rawListMarker(block));
         appendLockMarks(el, block);
         if (block === flashBlock) el.classList.add("md-flash");
         return el;
