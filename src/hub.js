@@ -1256,11 +1256,27 @@ export async function createHub(stateDir, sourceRoot) {
     }
   }
 
+  // A gone page is parked, not subscribed, so its lines do not hold a block.
+  // They still move with the document so a later hello adopts the shifted caret.
+  function parkedSockets(file) {
+    if (!file.suspended || file.suspended.size === 0) return [];
+    const out = [];
+    for (const sock of file.suspended) {
+      if (!sock || !sock.session || file.subscribers.has(sock)) continue;
+      out.push(sock);
+    }
+    return out;
+  }
+
   // Claims are previewed on copies. A span another socket holds aborts before the write.
   function replayClaims(socket, file, before, changes, mode) {
     const sets = new Map();
     for (const sock of file.subscribers) sets.set(sock, new Set(sock.session.lines));
     if (!sets.has(socket)) sets.set(socket, new Set(socket.session.lines));
+    const parked = new Map();
+    for (const sock of parkedSockets(file)) {
+      if (sock !== socket) parked.set(sock, new Set(sock.session.lines));
+    }
     let doc = before;
     const claims = mode === "edit" || mode === "comment" || mode === "diff" || mode === "history";
     for (const change of changes) {
@@ -1268,14 +1284,16 @@ export async function createHub(stateDir, sourceRoot) {
       const actor = sets.get(socket);
       for (const index of touched.hit) {
         for (const [sock, lines] of sets) {
-          if (sock !== socket && lines.has(index)) return { heldBy: sock.session.username };
+          // The same token is this page, including a socket the navigation has not closed yet.
+          if (!sameSession(sock, socket) && lines.has(index)) return { heldBy: sock.session.username };
         }
         if (claims) actor.add(index);
       }
       for (const [sock, lines] of [...sets]) sets.set(sock, rebaseLineSet(lines, touched, change));
+      for (const [sock, lines] of [...parked]) parked.set(sock, rebaseLineSet(lines, touched, change));
       doc = applyOne(doc, change);
     }
-    return { doc, sets };
+    return { doc, sets, parked };
   }
 
   async function publish(socket, file, before, changes, caret, entry, mode, retain) {
@@ -1292,12 +1310,20 @@ export async function createHub(stateDir, sourceRoot) {
     file.text = after;
     file.rev += 1;
     for (const [sock, lines] of preview.sets) sock.session.lines = lines;
+    for (const [sock, lines] of preview.parked) sock.session.lines = lines;
     for (const change of changes) {
       for (const sock of file.subscribers) {
         if (sock !== socket) {
           sock.session.cursor = shiftOffset(sock.session.cursor, change.from, change.to, change.inserted.length);
           sock.session.anchor = shiftOffset(sock.session.anchor, change.from, change.to, change.inserted.length);
         }
+        rebaseStack(sock.session.undo, change, "undo", entry);
+        rebaseStack(sock.session.redo, change, "redo", entry);
+      }
+      for (const sock of parkedSockets(file)) {
+        if (sock === socket) continue;
+        sock.session.cursor = shiftOffset(sock.session.cursor, change.from, change.to, change.inserted.length);
+        sock.session.anchor = shiftOffset(sock.session.anchor, change.from, change.to, change.inserted.length);
         rebaseStack(sock.session.undo, change, "undo", entry);
         rebaseStack(sock.session.redo, change, "redo", entry);
       }
@@ -1318,7 +1344,7 @@ export async function createHub(stateDir, sourceRoot) {
       for (const index of caretLines) {
         let taken = false;
         for (const sock of file.subscribers) {
-          if (sock !== socket && sock.session.lines.has(index)) taken = true;
+          if (!sameSession(sock, socket) && sock.session.lines.has(index)) taken = true;
         }
         if (!taken) kept.add(index);
       }
@@ -1356,28 +1382,44 @@ export async function createHub(stateDir, sourceRoot) {
     return true;
   }
 
-  async function releaseFile(socket) {
+  // keep parks the caret for a later hello. Otherwise the session drops the document.
+  async function dropSubscription(socket, keep) {
     const session = socket.session;
     const files = session?.repo?.files;
     if (!session || !files) return;
     const rel = session.docPath;
     if (!rel) return;
     const file = files.get(rel);
-    session.docPath = null;
-    session.lines = new Set();
-    session.undo = [];
-    session.redo = [];
-    session.anchor = 0;
-    session.cursor = 0;
-    if (file) {
-      file.subscribers.delete(socket);
-      syncLocks(file);
-      if (file.subscribers.size > 0) {
-        broadcast(file, { type: "locks", path: file.rel, rev: file.rev, lines: lockSnapshot(file) });
-      } else {
-        await sweepUnreferencedImages(session.repo, file.rel, file.text, session.username);
-      }
+    if (!keep) {
+      session.docPath = null;
+      session.lines = new Set();
+      session.undo = [];
+      session.redo = [];
+      session.anchor = 0;
+      session.cursor = 0;
     }
+    if (!file) return;
+    file.subscribers.delete(socket);
+    if (keep) {
+      if (!file.suspended) file.suspended = new Set();
+      file.suspended.add(socket);
+    } else if (file.suspended) {
+      file.suspended.delete(socket);
+    }
+    syncLocks(file);
+    if (file.subscribers.size > 0) {
+      broadcast(file, { type: "locks", path: file.rel, rev: file.rev, lines: lockSnapshot(file) });
+    } else {
+      await sweepUnreferencedImages(session.repo, file.rel, file.text, session.username);
+    }
+  }
+
+  async function releaseFile(socket) {
+    await dropSubscription(socket, false);
+  }
+
+  async function suspendFile(socket) {
+    await dropSubscription(socket, true);
   }
 
   // The bytes stay while someone still has the document. A file no image line names goes away
@@ -1434,6 +1476,13 @@ export async function createHub(stateDir, sourceRoot) {
     return null;
   }
 
+  // One page token is one session, even while a navigation still has the previous socket open.
+  function sameSession(a, b) {
+    if (a === b) return true;
+    const token = a?.session?.token;
+    return typeof token === "string" && token.length > 0 && token === b?.session?.token;
+  }
+
   function holderAt(file, socket, offset) {
     if (offset == null || !file) return null;
     const spans = lockSpans(file.text);
@@ -1441,7 +1490,7 @@ export async function createHub(stateDir, sourceRoot) {
       const span = spans[index];
       if (offset < span.start || offset > span.end) continue;
       const owner = file.locks.get(index);
-      if (owner && owner !== socket) return owner.session.username;
+      if (owner && !sameSession(owner, socket)) return owner.session.username;
     }
     return null;
   }
@@ -1583,13 +1632,14 @@ export async function createHub(stateDir, sourceRoot) {
   function retargetOpen(oldRel, file) {
     const message = fileFrame(file);
     const targets = new Set(file.subscribers);
+    for (const sock of parkedSockets(file)) targets.add(sock);
     for (const sock of sockets) {
       if (sock.session?.docPath === oldRel) targets.add(sock);
     }
     for (const sock of targets) {
       if (!sock.session) continue;
       sock.session.docPath = file.rel;
-      send(sock, message);
+      if (!sock.session.gone) send(sock, message);
     }
   }
 
@@ -1792,7 +1842,20 @@ export async function createHub(stateDir, sourceRoot) {
       message.anchor = session.anchor;
     }
     if (file.ticket) message.ticket = ticketView(file.ticket, file.rev);
+    // The previous socket of this page can still be connected. Opening another
+    // document drops it, or the pictures would stay until that socket noticed.
+    await releaseOtherTokenDocs(socket, rel);
     send(socket, message);
+  }
+
+  async function releaseOtherTokenDocs(socket, rel) {
+    const token = socket.session?.token;
+    if (!token) return;
+    for (const sock of [...sockets]) {
+      if (sock === socket || sock.session?.token !== token) continue;
+      if (!sock.session.docPath || sock.session.docPath === rel) continue;
+      await releaseFile(sock);
+    }
   }
 
   async function onCreate(socket, msg) {
@@ -2105,7 +2168,7 @@ export async function createHub(stateDir, sourceRoot) {
     for (const splice of splices) {
       for (const index of touchedIndices(file.text, splice).hit) {
         const owner = file.locks.get(index);
-        if (owner && owner !== socket) return owner.session.username;
+        if (owner && !sameSession(owner, socket)) return owner.session.username;
       }
     }
     return null;
@@ -2293,8 +2356,8 @@ export async function createHub(stateDir, sourceRoot) {
     return typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value) ? value : "";
   }
 
-  // The closed socket stays in file.subscribers until this runs, so an edit while it is
-  // down still shifts its caret. onSelect returns immediately when repo is already set.
+  // The closed socket is parked, not subscribed, so an edit while it is down still
+  // shifts its caret. onSelect returns immediately when repo is already set.
   function adoptSession(from, to) {
     const old = from.session;
     const next = to.session;
@@ -2309,6 +2372,7 @@ export async function createHub(stateDir, sourceRoot) {
     const file = old.repo && old.docPath ? old.repo.files.get(old.docPath) : null;
     if (file) {
       file.subscribers.delete(from);
+      if (file.suspended) file.suspended.delete(from);
       file.subscribers.add(to);
       syncLocks(file);
     }
@@ -2349,13 +2413,17 @@ export async function createHub(stateDir, sourceRoot) {
     if (!session || session.gone) return;
     session.gone = true;
     sockets.delete(socket);
-    // Still subscribed, so replayClaims and shiftOffset keep running. A later close of a
-    // socket whose caret was already adopted must not release that file.
-    if (session.token || session.adopted) return;
+    // The live socket already owns this document. Sweeping here would delete
+    // pictures that socket still has open.
+    if (session.adopted) return;
+    // A page token is gone as a subscriber and holds no block. The caret stays
+    // parked so the next hello with this token can adopt it. No subscriber left
+    // means the unreferenced pictures go, including a closed browser.
+    if (session.token) {
+      await suspendFile(socket);
+      return;
+    }
     await releaseFile(socket);
-    session.undo = [];
-    session.redo = [];
-    session.lines = new Set();
   }
 
   function reposPayload() {

@@ -3966,6 +3966,194 @@ test("the hub ignores a session token outside the accepted pattern", async () =>
   });
 });
 
+test("a gone token leaves the lock and the last close deletes an unreferenced picture", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n");
+    const ada = await hello(port, "Ada", "docs", "ada-tab");
+    const attached = await attachBytes(ada, "Ada", "pic.md", PNG, { cursor: 8 });
+    const name = imageFile(attached.file.text, "pic", "png");
+    const full = path.join(dir, "pic", name);
+    const extra = await attachBytes(ada, "Ada", "pic.md", PNG, { cursor: 8 });
+    const kept = imageFiles(extra.file.text, "pic", "png").find((file) => file !== name);
+    const keptFull = path.join(dir, "pic", kept);
+    const start = extra.file.text.indexOf(`![${name}]`);
+    const end = extra.file.text.indexOf("\n", start) + 1;
+    ada.send({
+      type: "edit",
+      username: "Ada",
+      path: "pic.md",
+      rev: extra.file.rev,
+      anchor: start,
+      cursor: end,
+      op: "delete",
+    });
+    const removed = await takeDoc(ada);
+    assert.equal(removed.text.includes(`![${name}]`), false);
+    assert.equal(removed.text.includes(`![${kept}]`), true);
+    assert.ok((await fs.readFile(full)).equals(PNG));
+    const caret = removed.cursor;
+    await waitClosed(ada.ws);
+    await waitAbsent(full);
+    assert.ok((await fs.readFile(keptFull)).equals(PNG));
+
+    const bea = await hello(port, "Bea", "docs", "bea-tab");
+    const opened = await openDoc(bea, "Bea", "pic.md");
+    bea.send({ type: "lock", username: "Bea", path: "pic.md", anchor: caret, cursor: caret, rev: opened.rev });
+    const locks = await bea.next((msg) => msg.type === "locks" || msg.type === "error");
+    assert.equal(locks.type, "locks");
+    assert.equal(locks.lines.some((line) => line.username === "Ada"), false);
+    bea.ws.close();
+  });
+});
+
+test("a different token is another session, and its document keeps the picture until that tab leaves", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n\ngamma\n");
+    const ada = await hello(port, "Ada", "docs", "ada-tab");
+    const attached = await attachBytes(ada, "Ada", "pic.md", PNG, { cursor: 8 });
+    const name = imageFile(attached.file.text, "pic", "png");
+    const full = path.join(dir, "pic", name);
+    const start = attached.file.text.indexOf(`![${name}]`);
+    const end = attached.file.text.indexOf("\n", start) + 1;
+    ada.send({
+      type: "edit",
+      username: "Ada",
+      path: "pic.md",
+      rev: attached.file.rev,
+      anchor: start,
+      cursor: end,
+      op: "delete",
+    });
+    const removed = await takeDoc(ada);
+    assert.equal(removed.text.includes(`![${name}]`), false);
+    assert.ok((await fs.readFile(full)).equals(PNG));
+    const bea = await hello(port, "Ada", "docs", "bea-tab");
+    const opened = await openDoc(bea, "Ada", "pic.md");
+    const caret = opened.text.indexOf("gamma");
+    await syncLock(ada, [bea], "Ada", "pic.md", caret, opened.rev);
+    bea.send({ type: "lock", username: "Ada", path: "pic.md", anchor: caret, cursor: caret, rev: opened.rev });
+    assert.deepEqual(await bea.next((msg) => msg.type === "error" || msg.type === "locks"), {
+      type: "error",
+      status: 409,
+      heldBy: "Ada",
+    });
+    await waitClosed(ada.ws);
+    await stays(full);
+    const freed = await bea.next((msg) => msg.type === "locks" && msg.path === "pic.md");
+    assert.equal(freed.lines.some((line) => line.token === "ada-tab"), false);
+    bea.send({ type: "lock", username: "Ada", path: "pic.md", anchor: caret, cursor: caret, rev: freed.rev });
+    const took = await bea.next((msg) => msg.type === "locks" || msg.type === "error");
+    assert.equal(took.type, "locks");
+    assert.equal(
+      took.lines.some((line) => line.token === "bea-tab" && line.index === lockIndexAt(opened.text, caret)),
+      true,
+    );
+    await waitClosed(bea.ws);
+    await waitAbsent(full);
+  });
+});
+
+test("a second open with the same token is not held by that user", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "again.md"), "alpha beta\n\ngamma delta\n");
+    const token = "same-tab";
+    const ada = await hello(port, "Ada", "docs", token);
+    const opened = await openDoc(ada, "Ada", "again.md");
+    await syncLock(ada, [], "Ada", "again.md", 3, opened.rev);
+    await waitClosed(ada.ws);
+    const again = await hello(port, "Ada", "docs", token);
+    const file = await openDoc(again, "Ada", "again.md");
+    assert.equal(file.cursor, 3);
+    const attached = await attachBytes(again, "Ada", "again.md", PNG, { cursor: 3 });
+    assert.notEqual(attached.status, 409, attached.heldBy || JSON.stringify(attached));
+    assert.equal(attached.file.text.includes("!["), true);
+    assert.notEqual(attached.file.text, file.text);
+    again.ws.close();
+  });
+});
+
+test("a live socket with the same token does not hold a paste, and opening another document drops it", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "again.md"), "alpha beta\n\ngamma delta\n");
+    await fs.writeFile(path.join(dir, "away.md"), "Away.\n");
+    await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n");
+    const token = "same-tab";
+    const first = await hello(port, "Ada", "docs", token);
+    const opened = await openDoc(first, "Ada", "again.md");
+    await syncLock(first, [], "Ada", "again.md", 3, opened.rev);
+    const second = await hello(port, "Ada", "docs", token);
+    await openDoc(second, "Ada", "again.md");
+    const attached = await attachBytes(second, "Ada", "again.md", PNG, { cursor: 3 });
+    assert.notEqual(attached.status, 409, attached.heldBy || JSON.stringify(attached));
+    assert.equal(attached.file.text.includes("!["), true);
+    first.ws.close();
+    second.ws.close();
+
+    const holder = await hello(port, "Ada", "docs", token);
+    const shot = await attachBytes(holder, "Ada", "pic.md", PNG, { cursor: 8 });
+    const name = imageFile(shot.file.text, "pic", "png");
+    const full = path.join(dir, "pic", name);
+    const extra = await attachBytes(holder, "Ada", "pic.md", PNG, { cursor: 8 });
+    const kept = imageFiles(extra.file.text, "pic", "png").find((file) => file !== name);
+    const start = extra.file.text.indexOf(`![${name}]`);
+    const end = extra.file.text.indexOf("\n", start) + 1;
+    holder.send({
+      type: "edit",
+      username: "Ada",
+      path: "pic.md",
+      rev: extra.file.rev,
+      anchor: start,
+      cursor: end,
+      op: "delete",
+    });
+    const removed = await takeDoc(holder);
+    assert.equal(removed.text.includes(`![${name}]`), false);
+    assert.ok((await fs.readFile(full)).equals(PNG));
+    const later = await hello(port, "Ada", "docs", token);
+    later.send({ type: "open", username: "Ada", path: "away.md" });
+    const away = await later.next((msg) => msg.type === "file" && msg.path === "away.md");
+    assert.equal(away.text, "Away.\n");
+    await waitAbsent(full);
+    assert.ok((await fs.readFile(path.join(dir, "pic", kept))).equals(PNG));
+    assert.equal(holder.ws.readyState, WebSocket.OPEN);
+    holder.ws.close();
+    later.ws.close();
+  });
+});
+
+test("opening another document is the last close for a token socket", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "pic.md"), "alpha beta\n");
+    await fs.writeFile(path.join(dir, "away.md"), "Away.\n");
+    const ada = await hello(port, "Ada", "docs", "ada-tab");
+    const attached = await attachBytes(ada, "Ada", "pic.md", PNG, { cursor: 8 });
+    const name = imageFile(attached.file.text, "pic", "png");
+    const full = path.join(dir, "pic", name);
+    const extra = await attachBytes(ada, "Ada", "pic.md", PNG, { cursor: 8 });
+    const kept = imageFiles(extra.file.text, "pic", "png").find((file) => file !== name);
+    const start = extra.file.text.indexOf(`![${name}]`);
+    const end = extra.file.text.indexOf("\n", start) + 1;
+    ada.send({
+      type: "edit",
+      username: "Ada",
+      path: "pic.md",
+      rev: extra.file.rev,
+      anchor: start,
+      cursor: end,
+      op: "delete",
+    });
+    const removed = await takeDoc(ada);
+    assert.equal(removed.text.includes(`![${name}]`), false);
+    assert.ok((await fs.readFile(full)).equals(PNG));
+    ada.send({ type: "open", username: "Ada", path: "away.md" });
+    const away = await ada.next((msg) => msg.type === "file" && msg.path === "away.md");
+    assert.equal(away.text, "Away.\n");
+    await waitAbsent(full);
+    assert.ok((await fs.readFile(path.join(dir, "pic", kept))).equals(PNG));
+    ada.ws.close();
+  });
+});
+
 test("T-rev", async () => {
   await withDocs(async ({ port, dir }) => {
     const helloText = "hello line\nsecond line\n";
