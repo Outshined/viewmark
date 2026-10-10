@@ -681,8 +681,7 @@ test("IMG.u9 a second session sees the picture without a reload, and the frames 
 
 // ---- D. Select and delete ----------------------------------------------------------------------
 
-// The second picture defaults to the 1 by 1 GIF. A test that clicks a picture passes two of a
-// size a pointer can hit.
+// The second picture is the 1 by 1 GIF. A click on a picture that small must still select it.
 async function pictureDoc(ctx, file, text, count = 1, fixtures = [PNG, GIF]) {
   await ctx.hub.create(file, text);
   for (let i = 0; i < count; i += 1) {
@@ -750,7 +749,7 @@ test("IMG.s3 Ctrl+Z puts the line back, and the picture loads", async (t) => {
 
 test("IMG.s4 at the last close the hub deletes each file no line names, and keeps a named one", async (t) => {
   const ctx = await setup(t, { "away.md": "Away.\n" });
-  const doc = await pictureDoc(ctx, "two.md", "One.\n\nTwo.\n", 2, [PNG, png(160, 60)]);
+  const doc = await pictureDoc(ctx, "two.md", "One.\n\nTwo.\n", 2);
   const lines = imageLines(doc.text);
   assert.equal(lines.length, 2);
   const page = await openPage(ctx, "two.md");
