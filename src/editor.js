@@ -2378,12 +2378,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const author = document.createElement("span");
     author.className = "md-comment-author";
     author.textContent = name || "";
-    by.appendChild(author);
-    if (time) {
+    if (index === 0 && time) {
       const threadId = document.createElement("span");
       threadId.className = "md-comment-time";
       threadId.textContent = `(${id})`;
       by.appendChild(threadId);
+    }
+    by.appendChild(author);
+    if (time) {
       const clock = document.createElement("time");
       clock.className = "md-comment-time";
       if (typeof clock.setAttribute === "function") clock.setAttribute("datetime", time);

@@ -5713,8 +5713,8 @@ test("a comment note keeps the poster who saved it", () => {
     const doc = `See {c1}fox{/c1}.\n\n\`\`\`comment c1\n${grok}\n::\n${paul}\n\`\`\`\n`;
     const view = named(doc, "Ada");
     assert.deepEqual(authors().map((node) => node.textContent), ["Grok", "Paul"]);
-    assert.deepEqual(times().map((node) => node.tagName), ["SPAN", "TIME", "SPAN", "TIME"]);
-    assert.deepEqual(times().map((node) => node.textContent), ["(c1)", "2026-10-04 20:30", "(c1)", "2026-10-04 21:15"]);
+    assert.deepEqual(times().map((node) => node.tagName), ["SPAN", "TIME", "TIME"]);
+    assert.deepEqual(times().map((node) => node.textContent), ["(c1)", "2026-10-04 20:30", "2026-10-04 21:15"]);
     assert.deepEqual(times().filter((node) => node.tagName === "TIME").map((node) => node.getAttribute("datetime")), [
       "2026-10-04T20:30:22.000Z",
       "2026-10-04T21:15:00.000Z",
@@ -5724,10 +5724,10 @@ test("a comment note keeps the poster who saved it", () => {
     assert.equal(view.getState().doc.includes("Ada"), false);
     const firstBy = cards()[0].childNodes[0].childNodes[0].childNodes[0];
     assert.equal(firstBy.classList.contains("md-comment-by"), true);
-    assert.equal(firstBy.childNodes[0].classList.contains("md-comment-author"), true);
-    assert.equal(firstBy.childNodes[1].classList.contains("md-comment-time"), true);
-    assert.equal(firstBy.childNodes[1].tagName, "SPAN");
-    assert.equal(firstBy.childNodes[1].textContent, "(c1)");
+    assert.equal(firstBy.childNodes[0].tagName, "SPAN");
+    assert.equal(firstBy.childNodes[0].textContent, "(c1)");
+    assert.equal(firstBy.childNodes[1].classList.contains("md-comment-author"), true);
+    assert.equal(firstBy.childNodes[1].textContent, "Grok");
     assert.equal(firstBy.childNodes[2].tagName, "TIME");
     assert.equal(firstBy.childNodes[2].classList.contains("md-comment-time"), true);
     assert.equal(firstBy.childNodes[2].textContent, "2026-10-04 20:30");
@@ -5745,7 +5745,7 @@ test("a comment note keeps the poster who saved it", () => {
     assert.equal(replyBy.childNodes[0].textContent, "Ada");
     assert.equal(authors()[0].textContent, "Grok");
     assert.equal(authors()[1].textContent, "Paul");
-    assert.equal(times().length, 4);
+    assert.equal(times().length, 3);
     reply.childNodes[1].value = "thanks";
     press("Save");
     const saved = view.getState().doc;
@@ -11796,7 +11796,7 @@ test("a saved note opens only for its author", () => {
   try {
     const view = createEditor(mounted.root, doc, 0, memory);
     assert.deepEqual(texts().map((node) => node.textContent), ["question", "reply", "bare"]);
-    assert.deepEqual(times().map((node) => node.textContent), ["(c1)", "2026-10-04 20:30", "(c1)", "2026-10-04 21:15"]);
+    assert.deepEqual(times().map((node) => node.textContent), ["(c1)", "2026-10-04 20:30", "2026-10-04 21:15"]);
     assert.equal(times()[0].tagName, "SPAN");
     assert.equal(times()[1].tagName, "TIME");
     mounted.aside.listeners.click({ target: texts()[1], preventDefault() {} });
