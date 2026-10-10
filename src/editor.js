@@ -5699,6 +5699,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (button && typeof button.setAttribute === "function") button.setAttribute("aria-expanded", "false");
   }
 
+  // The menu button and panel sit outside #editor, so Escape there never reaches the editor listener.
+  function onTicketMenuEscape(event) {
+    if (!event || event.key !== "Escape" || !ticketMenuOpen) return;
+    closeTicketMenu();
+  }
+
   function relationPresence(ticket) {
     const id = ticket.id;
     return {
@@ -6244,6 +6250,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         menuButton.setAttribute("aria-expanded", ticketMenuOpen ? "true" : "false");
       }
     });
+    menuButton.addEventListener("keydown", onTicketMenuEscape);
+    menuPanel.addEventListener("keydown", onTicketMenuEscape);
     form.replaceChildren(fields, facts, menuButton, menuPanel);
     if (selectWidth > 0) {
       const extra = selectChromeGap(sized);

@@ -11780,6 +11780,15 @@ test("a ticket pane menu shows relation fields and Blocks writes the other ticke
     assert.equal(panel().hidden, true);
     assert.equal(menuButton().getAttribute("aria-expanded"), "false");
     menuButton().listeners.click({ preventDefault() {} });
+    assert.equal(panel().hidden, false);
+    menuButton().listeners.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(panel().hidden, true);
+    assert.equal(menuButton().getAttribute("aria-expanded"), "false");
+    menuButton().listeners.click({ preventDefault() {} });
+    panel().listeners.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(panel().hidden, true);
+    assert.equal(menuButton().getAttribute("aria-expanded"), "false");
+    menuButton().listeners.click({ preventDefault() {} });
     panel().childNodes[0].listeners.click({ preventDefault() {} });
     assert.deepEqual(writes, ["https://viewmark.test/app#viewmark/ticket/aaaaaaaa"]);
     assert.equal(writes[0].includes("\n"), false);
