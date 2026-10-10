@@ -5,7 +5,7 @@ import { FILL, literalIn } from "./cells.js";
 
 const PHANTOM = (bytes, offset) => offset === bytes.length && bytes.endsWith("\n");
 const HISTORY = new Set(["Ctrl+Z", "Ctrl+Y", "Ctrl+Shift+Z"]);
-const NO_EDIT = new Set(["read", "reconnect", "offline", "online", "walk", "Shift+End", "←", "→", "↑", "↓", "Home", "End", "PageDown", "Escape", "Ctrl+A", "Ctrl+C", "Ctrl+Home", "Ctrl+End", "Ctrl+→", "Shift+←", "Shift+→", "Shift+↑", "Shift+↓", "Shift+Home", "Shift+End"]);
+const NO_EDIT = new Set(["read", "reconnect", "offline", "online", "walk", "Shift+End", "←", "→", "↑", "↓", "Home", "End", "PageDown", "Escape", "Ctrl+A", "Ctrl+C", "Ctrl+Home", "Ctrl+End", "Ctrl+←", "Ctrl+→", "Ctrl+Shift+←", "Ctrl+Shift+→", "Shift+←", "Shift+→", "Shift+↑", "Shift+↓", "Shift+Home", "Shift+End"]);
 const POINTER = /^(Shift\+click|middle-click|click|dblclick|tripleclick|drag) /;
 
 // Seven BG cells also run every other route the plan names.
