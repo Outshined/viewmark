@@ -1831,6 +1831,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let addCommentButton = null;
   let commentFocus = null;
   let currentCommentId = null;
+  // Delete takes the card button. The caret is put back in the editor after the thread is gone.
+  let restoreEditorFocus = false;
   let showResolved = false;
   const unsavedThreads = new Set();
   const replyDrafts = new Map();
@@ -2231,12 +2233,23 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
+  function focusEditor() {
+    if (root && typeof root.focus === "function") root.focus();
+  }
+
   function placeCaretFromState() {
     const sel = window.getSelection();
     if (!sel) return;
     // Chromium focuses the editing host when a range is added.
+    // A comment card's button is not that host. Leave it focused, unless this
+    // delete removed the button and the caret has to land back in the prose.
     const active = typeof document !== "undefined" && document ? document.activeElement : null;
-    if (active && active.nodeType === 1 && active !== root && !root.contains(active)) return;
+    const outside = active && active.nodeType === 1 && active !== root && !root.contains(active);
+    if (outside && !restoreEditorFocus) return;
+    if (restoreEditorFocus) {
+      restoreEditorFocus = false;
+      if (outside) focusEditor();
+    }
     clearAtomMark();
     const { anchor, cursor: caret } = state;
     if (anchor !== caret) {
@@ -2493,6 +2506,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const icon = strokeIcon(d);
     if (icon) button.appendChild(icon);
+    // Delete sits outside the editor. Taking focus there drops the caret, and
+    // the key that follows (undo) never reaches the document.
+    if (label === "Delete") {
+      button.addEventListener("mousedown", (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+      });
+    }
     button.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       onClick();
@@ -2580,7 +2600,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     replyDrafts.delete(id);
     if (currentCommentId === id) currentCommentId = null;
     commentFocus = null;
+    restoreEditorFocus = true;
     emitEdit({ op: "comment.delete", id });
+    focusEditor();
   }
 
   function onResolve(id) {
@@ -3286,8 +3308,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       hideResolvedHighlights();
       renderCommentAside(planned.comments);
       layoutComments();
-      if (commentFocus) focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
-      else placeCaret(priorTop);
+      if (commentFocus) {
+        restoreEditorFocus = false;
+        focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
+      } else placeCaret(priorTop);
       updateCommentButton();
       if (scrollCommentId) {
         const card = findCommentCard(scrollCommentId);

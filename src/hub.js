@@ -2182,10 +2182,20 @@ export async function createHub(stateDir, sourceRoot) {
     const denied = denyUnlessAuthor(socket, found.thread);
     if (denied) return fail(socket, denied);
     const file = loaded.file;
-    const before = createState(file.text);
+    // The deleter's caret stays in the prose. A fresh state would publish offset 0,
+    // and this user's page would adopt that.
+    const before = createState(file.text, socket.session.cursor, socket.session.anchor);
     const produced = removeCommentThread(before, msg.id);
     if (produced === before || !Array.isArray(produced.changes) || produced.changes.length === 0) return fail(socket, 404);
-    const wrote = await publish(socket, file, file.text, produced.changes, { cursor: 0, anchor: 0 }, null, "comment");
+    const wrote = await publish(
+      socket,
+      file,
+      file.text,
+      produced.changes,
+      { cursor: produced.cursor, anchor: produced.anchor },
+      null,
+      "comment",
+    );
     if (wrote !== true) return failHeld(socket, wrote);
     send(socket, { type: "comment", path: file.rel, id: msg.id, rev: file.rev });
   }
