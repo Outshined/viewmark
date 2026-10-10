@@ -5,3 +5,4 @@
 - [QA rules are proposals](qa-rules-are-proposals.md) — rules QA adds are marked not approved; tickets cite the owner rule, not the proposal
 - [Do not cut down instructions](do-not-cut-down-instructions.md) — apply what the owner says in full; moved text goes word for word, checked against the source
 - [Ticket body for content](ticket-body-for-content.md) — criteria, plans, and evidence go in the body; comments are discussion; leave closed tickets alone
+- [Owner decisions stand](owner-decisions-stand.md) — restore an owner decision the implementer edited away and report it; do not re-ask a settled question
