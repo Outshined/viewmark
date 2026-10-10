@@ -8572,7 +8572,7 @@ test("T-file-drawer", () => {
     pending.pop().fn();
     buttons[1].scrollWidth = 100;
     fileBlock.listeners.pointerenter();
-    assert.equal(panel.styleProps.width, "140px");
+    assert.equal(panel.styleProps.width, "160px");
     const enter = fileBlock.listeners.pointerenter;
     let intrinsic = 220;
     const origCreate = document.createElement;
@@ -8603,7 +8603,7 @@ test("T-file-drawer", () => {
       transport.deliver({ type: "docs", files: ["a.md"] });
       assert.equal(fileBlock.listeners.pointerenter, enter);
       assert.equal(panel.classList.contains("md-file-wide"), true);
-      assert.equal(panel.styleProps.width, "70px");
+      assert.equal(panel.styleProps.width, "160px");
       columnStays();
     } finally {
       document.createElement = origCreate;

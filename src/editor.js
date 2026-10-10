@@ -1626,11 +1626,13 @@ function capPaneWidth(width) {
   return width > cap ? cap : width;
 }
 
+// A short title must not pull the open drawer under the closed column.
 function filePaneWidth(block, rect) {
   const compact = rect && typeof rect.width === "number" && Number.isFinite(rect.width) ? rect.width : 0;
   const scroll = widestFileButton(block);
   if (!(scroll > 0)) return compact;
-  return capPaneWidth(scroll + horizontalPadding(block) + horizontalBorder(block));
+  const fitted = capPaneWidth(scroll + horizontalPadding(block) + horizontalBorder(block));
+  return fitted > compact ? fitted : compact;
 }
 
 function commentsAsideOf(root) {
