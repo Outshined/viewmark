@@ -4416,6 +4416,8 @@ test("an image line has a caret mark at its start and through its newline", () =
     assert.equal(marks[0].dataset.end, "4");
     assert.equal(marks[0].textContent.length, 1);
     assert.equal(Number(marks[0].dataset.end) - Number(marks[0].dataset.start), marks[0].textContent.length);
+    assert.equal(marks[0].styleProps["pointer-events"], "none");
+    assert.equal(marks[1].styleProps["pointer-events"], "none");
     assert.equal(marks[1].dataset.edge, "end");
     assert.equal(marks[1].classList.contains("md-break"), true);
     assert.equal(marks[1].dataset.start, "18");

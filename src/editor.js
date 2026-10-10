@@ -1212,6 +1212,8 @@ function imageCaret(offset, edge) {
   el.dataset.edge = edge;
   if (typeof el.setAttribute === "function") el.setAttribute("aria-hidden", "true");
   setStyle(el, "color", "transparent");
+  // The mark is only a caret slot. A hit belongs to the picture underneath it.
+  setStyle(el, "pointer-events", "none");
   el.appendChild(document.createTextNode(edge === "end" ? "\u00b7\u200b" : "\u00b7"));
   return el;
 }
