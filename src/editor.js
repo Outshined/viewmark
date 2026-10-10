@@ -664,6 +664,67 @@ const docCommitBindings = new WeakMap();
 const docLinkBindings = new WeakMap();
 const REPO_KEY = "viewmark.repo";
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+// Per browser tab. A reload keeps it; another tab does not share it.
+const RAW_MODE_KEY = "viewmark.raw";
+const EYE_OUTLINE = "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z";
+const EYE_PUPIL = "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z";
+
+function storedRaw(storage) {
+  if (!storage || typeof storage.getItem !== "function") return false;
+  try {
+    return storage.getItem(RAW_MODE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function storeRaw(storage, on) {
+  if (!storage || typeof storage.setItem !== "function") return;
+  try {
+    storage.setItem(RAW_MODE_KEY, on ? "1" : "0");
+  } catch {
+    // Session storage is optional. The tab still keeps the mode in memory.
+  }
+}
+
+// A lone LF wins. A file whose breaks are all CRLF pairs stays CRLF.
+function fileBreak(doc) {
+  const text = typeof doc === "string" ? doc : "";
+  let paired = false;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== "\n") continue;
+    if (i === 0 || text[i - 1] !== "\r") return "\n";
+    paired = true;
+  }
+  return paired ? "\r\n" : "\n";
+}
+
+function viewIcon(raw) {
+  if (typeof document === "undefined" || typeof document.createElementNS !== "function") return null;
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  svg.appendChild(strokePath(EYE_OUTLINE));
+  svg.appendChild(strokePath(EYE_PUPIL));
+  if (!raw) return svg;
+  const line = document.createElementNS(SVG_NS, "line");
+  line.setAttribute("x1", "3");
+  line.setAttribute("y1", "21");
+  line.setAttribute("x2", "21");
+  line.setAttribute("y2", "3");
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "rgb(220, 38, 38)");
+  line.setAttribute("stroke-width", "2");
+  line.setAttribute("stroke-linecap", "round");
+  line.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(line);
+  return svg;
+}
 
 function decodeHashSegment(segment) {
   if (typeof segment !== "string" || segment === "") return null;
@@ -1823,6 +1884,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let writingHash = false;
   let closed = false;
   const repoStorage = storage || null;
+  // This tab's view. Opening another file does not reset it.
+  let sourceMode = storedRaw(repoStorage);
+  let viewToggle = null;
   // Create is answered by its own error or by the file from onOpen.
   // A 409 for that create is not a rejected caret grant.
   const conflictWaiters = [];
@@ -1887,6 +1951,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // those writes fire must not copy that selection back over state.
   let placingCaret = false;
   let goalX = null;
+  // The column ArrowUp and ArrowDown keep after a shorter line clamps the caret.
+  let rawColumn = null;
 
   function pointBox(point) {
     if (!point || !point.node || typeof document === "undefined" || typeof document.createRange !== "function") return null;
@@ -2057,6 +2123,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function emitEdit(partial) {
     if (boundaryNoop(partial)) return;
     goalX = null;
+    rawColumn = null;
     if (!live) return;
     if (editHeld()) {
       pendingEdits.push({ edit: partial });
@@ -2410,7 +2477,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!holder || !root.contains(holder)) return;
     const mapped = selectionFromDom(sel);
     if (!mapped) return;
-    const next = pointer ? mapped : homeSnap(mapped);
+    const next = sourceMode || pointer ? mapped : homeSnap(mapped);
     if (next.anchor === state.anchor && next.cursor === state.cursor) goalX = keptX;
     state = { ...state, anchor: next.anchor, cursor: next.cursor };
     if (next.anchor !== mapped.anchor || next.cursor !== mapped.cursor) placeCaret();
@@ -3177,8 +3244,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   // A locks message names holders. The bytes did not change, so the nodes stay.
   function refreshLockMarks() {
-    const blocks = plan(state.doc, state.cursor).blocks;
-    const children = root.childNodes || [];
+    const blocks = sourceMode ? sourceLines(state.doc) : plan(state.doc, state.cursor).blocks;
+    const children = [];
+    for (const child of root.childNodes || []) {
+      if (hasClass(child, "md-line") || hasClass(child, "md-atom")) children.push(child);
+    }
     const count = Math.min(blocks.length, children.length);
     for (let i = 0; i < count; i += 1) {
       stripLockMarks(children[i]);
@@ -3316,6 +3386,156 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
+  function syncSourceClass() {
+    if (!root.classList) return;
+    if (sourceMode) root.classList.add("md-source");
+    else root.classList.remove("md-source");
+  }
+
+  function renderSourceLine(line) {
+    const el = document.createElement("div");
+    el.className = "md-line md-source-line";
+    el.dataset.start = String(line.start);
+    el.dataset.end = String(line.end);
+    if (line.text === "") el.appendChild(document.createElement("br"));
+    else el.appendChild(document.createTextNode(line.text));
+    return el;
+  }
+
+  // Cards are a rendered projection. Removing them must not drop unsaved drafts.
+  function hideCommentCards() {
+    if (!commentsAside) return;
+    const stale = [];
+    for (const child of commentsAside.childNodes || []) {
+      if (child && child.classList && child.classList.contains("md-comment-card")) stale.push(child);
+    }
+    for (const child of stale) detachNode(child);
+  }
+
+  function renderSourceView(priorTop) {
+    const lines = sourceLines(state.doc);
+    const flashLine = refusal && !refusal.name ? tightestBlock(lines, refusal.offset) : null;
+    const nodes = lines.map((line) => {
+      const el = renderSourceLine(line);
+      appendLockMarks(el, line);
+      if (line === flashLine) el.classList.add("md-flash");
+      return el;
+    });
+    root.replaceChildren(...nodes);
+    if (typeof root.scrollLeft === "number") root.scrollLeft = 0;
+    hideCommentCards();
+    layoutComments();
+    hideCommentButton();
+    placeCaret(priorTop);
+  }
+
+  function stopViewEvent(event) {
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+  }
+
+  function ensureViewToggle() {
+    if (viewToggle) return viewToggle;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "md-view-toggle icon-btn";
+    button.contentEditable = "false";
+    if (typeof button.setAttribute === "function") {
+      button.setAttribute("type", "button");
+      button.setAttribute("aria-label", "Raw");
+      button.setAttribute("contenteditable", "false");
+    }
+    if (typeof button.addEventListener === "function") {
+      button.addEventListener("mousedown", stopViewEvent, { signal: ac.signal });
+      button.addEventListener("pointerdown", stopViewEvent, { signal: ac.signal });
+      button.addEventListener("click", (event) => {
+        stopViewEvent(event);
+        toggleSourceMode();
+      }, { signal: ac.signal });
+    }
+    viewToggle = button;
+    return button;
+  }
+
+  function replaceButtonIcon(button) {
+    const icon = viewIcon(sourceMode);
+    if (!icon) return;
+    if (typeof button.replaceChildren === "function") {
+      button.replaceChildren(icon);
+      return;
+    }
+    const children = button.childNodes;
+    if (children && typeof children.splice === "function") children.splice(0, children.length);
+    if (typeof button.appendChild === "function") button.appendChild(icon);
+  }
+
+  // Last, so a line's child index stays the block it paints. Fixed, once the
+  // pane has a box, so the control stays in the visible corner while text scrolls.
+  function mountViewToggle() {
+    const button = ensureViewToggle();
+    if (typeof button.setAttribute === "function") button.setAttribute("aria-pressed", sourceMode ? "true" : "false");
+    replaceButtonIcon(button);
+    const children = root.childNodes || [];
+    const index = typeof children.indexOf === "function" ? children.indexOf(button) : -1;
+    if (index < 0 || index !== children.length - 1) {
+      if (index >= 0 && typeof children.splice === "function") children.splice(index, 1);
+      root.appendChild(button);
+    }
+    pinViewToggle();
+    const view = typeof window !== "undefined" ? window : null;
+    if (view && typeof view.requestAnimationFrame === "function") {
+      view.requestAnimationFrame(() => {
+        if (!closed) pinViewToggle();
+      });
+    }
+  }
+
+  function pinViewToggle() {
+    const button = viewToggle;
+    if (!button || typeof root.getBoundingClientRect !== "function") return;
+    const view = typeof window !== "undefined" ? window : null;
+    const viewWidth = view && Number.isFinite(view.innerWidth) ? view.innerWidth : null;
+    if (viewWidth == null) return;
+    let rect = null;
+    try {
+      rect = root.getBoundingClientRect();
+    } catch {
+      return;
+    }
+    if (!rect) return;
+    const width = Number(rect.width);
+    const height = Number(rect.height);
+    const top = Number(rect.top);
+    const right = Number(rect.right);
+    if (!(width > 0) || !(height > 0) || !Number.isFinite(top) || !Number.isFinite(right)) return;
+    const inset = 6;
+    const visibleTop = top < 0 ? 0 : top;
+    const visibleRight = right > viewWidth ? viewWidth : right;
+    setStyle(button, "position", "fixed");
+    setStyle(button, "top", `${visibleTop + inset}px`);
+    setStyle(button, "right", `${viewWidth - visibleRight + inset}px`);
+    setStyle(button, "left", "auto");
+  }
+
+  function toggleSourceMode() {
+    sourceMode = !sourceMode;
+    rawColumn = null;
+    goalX = null;
+    storeRaw(repoStorage, sourceMode);
+    const anchor = state.anchor;
+    const cursor = state.cursor;
+    render();
+    state = { ...state, anchor, cursor };
+    placingCaret = true;
+    try {
+      if (typeof root.focus === "function") root.focus();
+    } finally {
+      placingCaret = false;
+    }
+    state = { ...state, anchor, cursor };
+    placeCaret();
+  }
+
   function render() {
     if (gestureTimer != null) {
       clearTimeout(gestureTimer);
@@ -3323,6 +3543,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const gestureHeld = gestureHold;
     try {
+      syncSourceClass();
+      if (sourceMode) {
+        renderSourceView(caretTop());
+        mountViewToggle();
+        return;
+      }
       const planned = plan(state.doc, state.cursor);
       let blocks = planned.blocks;
       if (rawSelectionLines) {
@@ -3355,6 +3581,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         scrollCommentId = null;
         if (card && typeof card.scrollIntoView === "function") card.scrollIntoView();
       }
+      mountViewToggle();
     } finally {
       if (gestureHeld) gestureHold = false;
     }
@@ -4286,6 +4513,115 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return true;
   }
 
+  // One code unit. The hub's backspace and delete treat markers, atoms, and CRLF specially.
+  function rawErase(direction) {
+    let from = Math.min(state.anchor, state.cursor);
+    let to = Math.max(state.anchor, state.cursor);
+    if (from === to) {
+      if (direction < 0) {
+        if (from <= 0) return;
+        from -= 1;
+      } else {
+        if (to >= state.doc.length) return;
+        to += 1;
+      }
+    }
+    emitEdit({ op: "insert", text: "", anchor: from, cursor: to });
+  }
+
+  function rawEraseWord(direction) {
+    if (state.anchor !== state.cursor) {
+      rawErase(direction);
+      return;
+    }
+    const edges = wordEdges(state.doc, state.cursor, direction);
+    if (edges[0] === edges[1]) return;
+    emitEdit({ op: "insert", text: "", anchor: edges[0], cursor: edges[1] });
+  }
+
+  // Enter is one file newline. enterBreak would insert a marker and renumber.
+  function rawBeforeInput(type, event) {
+    if (type === "insertText") {
+      if (event.data === "\t") return true;
+      if (event.data === "\n" || event.data === "\r" || event.data === "\r\n") {
+        if (event.data === composed) return true;
+        emitEdit({ op: "insert", text: fileBreak(state.doc) });
+        return true;
+      }
+      if (event.data && event.data !== composed) emitEdit({ op: "insert", text: event.data });
+      return true;
+    }
+    if (type === "insertParagraph" || type === "insertLineBreak") {
+      emitEdit({ op: "insert", text: fileBreak(state.doc) });
+      return true;
+    }
+    if (type === "deleteContentBackward") {
+      rawErase(-1);
+      return true;
+    }
+    if (type === "deleteContentForward") {
+      rawErase(1);
+      return true;
+    }
+    if (type === "deleteWordBackward" || type === "deleteWordForward") {
+      rawEraseWord(type === "deleteWordBackward" ? -1 : 1);
+      return true;
+    }
+    return false;
+  }
+
+  function rawMoveKey(key) {
+    return key === "ArrowLeft" || key === "ArrowRight" || key === "ArrowUp" || key === "ArrowDown" || key === "Home" || key === "End";
+  }
+
+  function rawVerticalOffset(forward) {
+    const doc = state.doc;
+    const cursor = state.cursor;
+    const [start, end] = lineSpan(doc, cursor);
+    if (!forward && start === 0) return 0;
+    if (forward && end === doc.length) return doc.length;
+    const column = rawColumn == null ? cursor - start : rawColumn;
+    const neighbor = forward ? end + 1 : start - 1;
+    const [nStart, nEnd] = lineSpan(doc, neighbor);
+    const next = Math.min(nStart + column, nEnd);
+    if (typeof goalX === "number") {
+      const aimed = goalOffset(doc, next, goalX);
+      if (Number.isFinite(aimed)) return aimed;
+    }
+    return next;
+  }
+
+  function moveRawCaret(key, extend, jump) {
+    const vertical = key === "ArrowUp" || key === "ArrowDown";
+    if (!vertical) {
+      goalX = null;
+      rawColumn = null;
+    } else {
+      if (goalX == null) {
+        const rect = caretRect();
+        const left = rect && rect.left;
+        if (rect && rect.height > 0 && Number.isFinite(left)) goalX = left;
+      }
+      if (rawColumn == null) rawColumn = state.cursor - lineSpan(state.doc, state.cursor)[0];
+    }
+    const beforeCursor = state.cursor;
+    const beforeAnchor = state.anchor;
+    const before = lineIndexAt(state.doc, beforeCursor);
+    let next = beforeCursor;
+    if (jump && (key === "Home" || key === "End")) next = key === "Home" ? 0 : state.doc.length;
+    else if (key === "ArrowLeft") next = Math.max(0, beforeCursor - 1);
+    else if (key === "ArrowRight") next = Math.min(state.doc.length, beforeCursor + 1);
+    else if (key === "Home") next = lineSpan(state.doc, beforeCursor)[0];
+    else if (key === "End") next = lineSpan(state.doc, beforeCursor)[1];
+    else if (vertical) next = rawVerticalOffset(key === "ArrowDown");
+    const anchor = extend ? beforeAnchor : next;
+    state = { ...state, cursor: next, anchor };
+    if (!claimLines(anchor, next)) return;
+    const after = lineIndexAt(state.doc, state.cursor);
+    if (before !== after) render();
+    else placeCaret();
+  }
+
   // Enter on an item inserts the same kind of marker. A paragraph whose next
   // line would join it inserts the blank line that keeps them apart.
   function emitBreak() {
@@ -4314,6 +4650,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       || type === "insertFromPaste"
       || type === "insertFromDrop";
     if (edits && !adoptDomSelection()) return;
+    if (sourceMode && rawBeforeInput(type, event)) return;
     if (type === "insertText") {
       if (event.data === "\t") return;
       if (event.data === "\n") {
@@ -4402,7 +4739,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!adoptDomSelection()) return;
     const text = selectedSlice(state);
     event.clipboardData.setData("text/plain", text);
-    if (state.anchor !== state.cursor) emitEdit({ op: "delete" });
+    if (state.anchor === state.cursor) return;
+    if (sourceMode) rawErase(1);
+    else emitEdit({ op: "delete" });
   });
 
   listen("compositionstart", () => {
@@ -4427,6 +4766,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   listen("keydown", (event) => {
     gestureHold = false;
     commentFocus = null;
+    if (sourceMode && event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      if (event.shiftKey) return;
+      if (!adoptDomSelection()) return;
+      emitEdit({ op: "insert", text: "\t" });
+      return;
+    }
     if (event.key === "Tab" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       if (!adoptDomSelection()) return;
@@ -4460,6 +4806,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       state = { ...state, anchor: 0, cursor: state.doc.length };
       if (!claimLines(0, state.doc.length)) return;
       render();
+      return;
+    }
+    if (sourceMode && rawMoveKey(event.key)) {
+      event.preventDefault();
+      const extend = event.shiftKey === true && !event.ctrlKey && !event.altKey && !event.metaKey;
+      moveRawCaret(event.key, extend, event.ctrlKey === true || event.metaKey === true);
       return;
     }
     if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
@@ -4496,6 +4848,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function pointOffset(event) {
     const mapped = pointMapped(event);
     if (mapped == null) return null;
+    if (sourceMode) return mapped;
     return skipHidden(state.doc, mapped, "nearer");
   }
 
@@ -4775,9 +5128,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-    window.addEventListener("resize", () => layoutComments(), { signal: ac.signal });
+    window.addEventListener("resize", () => {
+      layoutComments();
+      pinViewToggle();
+    }, { signal: ac.signal });
+    window.addEventListener("scroll", () => pinViewToggle(), { capture: true, signal: ac.signal });
     window.addEventListener("hashchange", () => onHashChange(), { signal: ac.signal });
   }
+  listen("scroll", () => pinViewToggle());
 
   function visibleTicketList() {
     const on = enabledFilters(filesNav());

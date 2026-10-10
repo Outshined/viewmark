@@ -666,9 +666,21 @@ aside.comments {
 }
 
 #editor {
+  position: relative;
   grid-column: 2;
   grid-row: 1 / span 2;
   min-width: 0;
+}
+
+button.icon-btn.md-view-toggle:not(.md-file):not(.md-dir-toggle) {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  z-index: 2;
+  margin: 0;
+  background: #1c1b19;
+  color: inherit;
+  user-select: none;
 }
 
 .ticket-form {
@@ -887,12 +899,22 @@ button.md-ticket-filter-all:hover,
   box-sizing: border-box;
   min-height: 100vh;
   min-width: 0;
-  padding: 1.5rem 1.4rem 4rem;
+  padding: 1.5rem 3rem 4rem 1.4rem;
   outline: none;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   caret-color: #e7e2d8;
   tab-size: 4;
+}
+
+#editor.md-source {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-x: hidden;
+}
+
+#editor.md-source .md-source-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .md-line {

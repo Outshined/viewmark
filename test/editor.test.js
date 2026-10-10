@@ -13070,3 +13070,397 @@ test("a click collapses a range for the browser and the timer restores it", () =
     mounted.restore();
   }
 });
+
+function viewToggleOf(root) {
+  for (const child of root.childNodes) {
+    if (child.classList && child.classList.contains("md-view-toggle")) return child;
+  }
+  return null;
+}
+
+function pressViewToggle(root) {
+  const button = viewToggleOf(root);
+  button.listeners.click({ button: 0, preventDefault() {}, stopPropagation() {} });
+  return button;
+}
+
+function sourceLinesOf(root) {
+  const lines = [];
+  for (const child of root.childNodes) {
+    if (!child.classList || !child.classList.contains("md-source-line")) continue;
+    let text = "";
+    for (const node of child.childNodes) {
+      if (node.classList && node.classList.contains("md-lock")) continue;
+      if (node.nodeType === 3) text += node.textContent;
+    }
+    lines.push({
+      text,
+      start: Number(child.dataset.start),
+      end: Number(child.dataset.end),
+      className: child.className,
+    });
+  }
+  return lines;
+}
+
+function joinedSource(root) {
+  return sourceLinesOf(root).map((line) => line.text).join("\n");
+}
+
+function strokeValues(button) {
+  const svg = [...button.childNodes].find((node) => node.localName === "svg");
+  const found = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (typeof node.getAttribute === "function" && node.getAttribute("stroke") != null) found.push(node.getAttribute("stroke"));
+    for (const child of node.childNodes || []) walk(child);
+  };
+  walk(svg);
+  return { svg, found };
+}
+
+function slashLine(button) {
+  const svg = [...button.childNodes].find((node) => node.localName === "svg");
+  return [...svg.childNodes].find((node) => node.localName === "line") || null;
+}
+
+function memoryStorage(initial = {}) {
+  const data = { ...initial };
+  return {
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(data, key) ? data[key] : null;
+    },
+    setItem(key, value) {
+      data[key] = String(value);
+    },
+    data,
+  };
+}
+
+function keyDown(mounted, key, extra = {}) {
+  mounted.listeners.keydown({
+    key,
+    shiftKey: false,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    preventDefault() {},
+    ...extra,
+  });
+}
+
+function input(mounted, inputType, data) {
+  mounted.listeners.beforeinput({
+    inputType,
+    data,
+    preventDefault() {},
+  });
+}
+
+test("raw mode is a view and Enter stores one newline", () => {
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(css, /#editor\.md-source\s*\{[^}]*font-family:\s*ui-monospace,\s*SFMono-Regular,\s*Menlo,\s*Consolas,\s*monospace;/);
+  assert.match(css, /button\.icon-btn\.md-view-toggle/);
+  assert.equal(css.includes(".md-line.md-raw"), false);
+  assert.match(css, /\.editor \{[^}]*tab-size: 4;/);
+
+  const mounted = mountEditor();
+  try {
+    const transport = holdingTransport();
+    const view = createEditor(mounted.root, "- one", 5, transport);
+    const button = viewToggleOf(mounted.root);
+    assert.equal(button.tagName, "BUTTON");
+    assert.equal(button.type, "button");
+    assert.equal(button.getAttribute("aria-label"), "Raw");
+    assert.equal(button.getAttribute("aria-pressed"), "false");
+    assert.equal(button.classList.contains("icon-btn"), true);
+    assert.notEqual(mounted.root.childNodes[0], button);
+    assert.equal(mounted.root.childNodes[0].classList.contains("md-line"), true);
+    const renderedIcon = strokeValues(button);
+    assert.equal(renderedIcon.svg.getAttribute("viewBox"), "0 0 24 24");
+    assert.equal(renderedIcon.svg.getAttribute("aria-hidden"), "true");
+    assert.equal(renderedIcon.svg.getAttribute("fill"), "none");
+    assert.equal(renderedIcon.svg.getAttribute("stroke"), "currentColor");
+    assert.equal(renderedIcon.svg.getAttribute("stroke-width"), "2");
+    assert.equal(renderedIcon.svg.getAttribute("stroke-linecap"), "round");
+    assert.equal(renderedIcon.svg.getAttribute("stroke-linejoin"), "round");
+    assert.equal(slashLine(button), null);
+    assert.equal(renderedIcon.found.every((stroke) => stroke === "currentColor"), true);
+    assert.equal(mounted.root.classList.contains("md-source"), false);
+
+    view.getState();
+    mounted.listeners.keydown({
+      key: "a",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+    });
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, 5);
+    transport.sent.length = 0;
+    pressViewToggle(mounted.root);
+    assert.equal(transport.sent.some((message) => message.type === "edit" || message.type === "undo" || message.type === "redo"), false);
+    assert.equal(view.getState().doc, "- one");
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, 5);
+    assert.equal(mounted.root.focused, true);
+    assert.equal(button.getAttribute("aria-pressed"), "true");
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    const slash = slashLine(button);
+    assert.equal(slash.getAttribute("x1"), "3");
+    assert.equal(slash.getAttribute("y1"), "21");
+    assert.equal(slash.getAttribute("x2"), "21");
+    assert.equal(slash.getAttribute("y2"), "3");
+    assert.equal(slash.getAttribute("stroke"), "rgb(220, 38, 38)");
+    const rawStrokes = strokeValues(button).found;
+    assert.deepEqual(rawStrokes.filter((stroke) => stroke !== "currentColor"), ["rgb(220, 38, 38)"]);
+    assert.equal(joinedSource(mounted.root), "- one");
+    view.destroy();
+
+    const broken = {
+      getItem() {
+        throw new Error("closed");
+      },
+      setItem() {
+        throw new Error("closed");
+      },
+    };
+    const stored = createEditor(mounted.root, "a\n", 0, holdingTransport(), broken);
+    pressViewToggle(mounted.root);
+    assert.equal(stored.getState().doc, "a\n");
+    stored.destroy();
+
+    const typing = createEditor(mounted.root, "- one", 5);
+    pressViewToggle(mounted.root);
+    input(mounted, "insertParagraph");
+    assert.equal(typing.getState().doc, "- one\n");
+    assert.equal(typing.getState().cursor, 6);
+    assert.equal(typing.getState().doc.includes("\n- "), false);
+    input(mounted, "insertText", "Z");
+    assert.equal(typing.getState().doc, "- one\nZ");
+    assert.equal(typing.getState().cursor, 7);
+    typing.destroy();
+
+    const crlf = createEditor(mounted.root, "a\r\nb", 4);
+    pressViewToggle(mounted.root);
+    input(mounted, "insertParagraph");
+    assert.equal(crlf.getState().doc, "a\r\nb\r\n");
+    assert.equal(joinedSource(mounted.root), "a\r\nb\r\n");
+    crlf.destroy();
+
+    const plain = createEditor(mounted.root, "- one", 2);
+    pressViewToggle(mounted.root);
+    input(mounted, "deleteContentBackward");
+    assert.equal(plain.getState().doc, "-one");
+    assert.equal(plain.getState().cursor, 1);
+    input(mounted, "deleteContentForward");
+    assert.equal(plain.getState().doc, "-ne");
+    assert.equal(plain.getState().cursor, 1);
+    plain.destroy();
+
+    const erasing = holdingTransport();
+    const erase = createEditor(mounted.root, "- one", 2, erasing);
+    pressViewToggle(mounted.root);
+    erasing.sent.length = 0;
+    input(mounted, "deleteContentBackward");
+    const back = erasing.sent.find((message) => message.type === "edit");
+    assert.equal(back.op, "insert");
+    assert.equal(back.text, "");
+    assert.equal(back.anchor, 1);
+    assert.equal(back.cursor, 2);
+    assert.equal(erasing.sent.some((message) => message.op === "backspace" || message.op === "delete"), false);
+    erase.destroy();
+
+    const tabbed = holdingTransport();
+    const tabs = createEditor(mounted.root, "- one", 5, tabbed);
+    pressViewToggle(mounted.root);
+    tabbed.sent.length = 0;
+    keyDown(mounted, "Tab", { shiftKey: true });
+    assert.equal(tabbed.sent.some((message) => message.type === "edit"), false);
+    assert.equal(tabs.getState().doc, "- one");
+    keyDown(mounted, "Tab");
+    const tab = tabbed.sent.find((message) => message.type === "edit");
+    assert.equal(tab.op, "insert");
+    assert.equal(tab.text, "\t");
+    tabs.destroy();
+
+    const memoryTab = createEditor(mounted.root, "- one", 5);
+    pressViewToggle(mounted.root);
+    keyDown(mounted, "Tab");
+    assert.equal(memoryTab.getState().doc, "- one\t");
+    memoryTab.destroy();
+
+    const moving = createEditor(mounted.root, "- one\nmore\n", 4);
+    pressViewToggle(mounted.root);
+    keyDown(mounted, "ArrowLeft");
+    assert.equal(moving.getState().cursor, 3);
+    keyDown(mounted, "Home");
+    assert.equal(moving.getState().cursor, 0);
+    keyDown(mounted, "End");
+    assert.equal(moving.getState().cursor, 5);
+    keyDown(mounted, "ArrowRight");
+    assert.equal(moving.getState().cursor, 6);
+    moving.destroy();
+
+    const columns = createEditor(mounted.root, "abcd\nxy\nABCDEF\n", 12);
+    pressViewToggle(mounted.root);
+    keyDown(mounted, "ArrowUp");
+    assert.equal(columns.getState().cursor, 7);
+    keyDown(mounted, "ArrowUp");
+    assert.equal(columns.getState().cursor, 4);
+    keyDown(mounted, "ArrowDown");
+    assert.equal(columns.getState().cursor, 7);
+    keyDown(mounted, "ArrowDown");
+    assert.equal(columns.getState().cursor, 12);
+    columns.destroy();
+
+    const history = createEditor(mounted.root, "Z", 1);
+    input(mounted, "insertText", "a");
+    assert.equal(history.getState().doc, "Za");
+    pressViewToggle(mounted.root);
+    input(mounted, "insertText", "b");
+    assert.equal(history.getState().doc, "Zab");
+    keyDown(mounted, "z", { ctrlKey: true });
+    assert.equal(history.getState().doc, "Za");
+    keyDown(mounted, "z", { ctrlKey: true });
+    assert.equal(history.getState().doc, "Z");
+    history.destroy();
+
+    const round = createEditor(mounted.root, "- one\n", 3);
+    pressViewToggle(mounted.root);
+    assert.equal(joinedSource(mounted.root), "- one\n");
+    pressViewToggle(mounted.root);
+    assert.equal(round.getState().doc, "- one\n");
+    assert.equal(round.getState().cursor, 3);
+    assert.equal(round.getState().anchor, 3);
+    assert.equal(mounted.root.classList.contains("md-source"), false);
+    assert.equal(sourceLinesOf(mounted.root).length, 0);
+    assert.equal(mounted.root.childNodes[0].classList.contains("md-li"), true);
+    assert.equal(slashLine(viewToggleOf(mounted.root)), null);
+    round.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("raw mode draws every byte and keeps the tab's mode", () => {
+  const mounted = mountSheet();
+  const count = (name) => mounted.findAll((node) => node.classList && node.classList.contains(name)).length;
+  try {
+    const doc = "hello {c1}fox{/c1} two\n\n```comment c1\nhi\n```\n";
+    const at = doc.indexOf("{c1}") + 1;
+    const transport = holdingTransport();
+    const view = createEditor(mounted.root, doc, at, transport);
+    assert.ok(count("md-comment-card") > 0);
+    pressViewToggle(mounted.root);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, at);
+    assert.equal(joinedSource(mounted.root), doc);
+    assert.equal(count("md-comment-card"), 0);
+    assert.equal(joinedSource(mounted.root).includes("{c1}"), true);
+    assert.equal(joinedSource(mounted.root).includes("```comment c1"), true);
+    transport.sent.length = 0;
+    input(mounted, "insertText", "Q");
+    const edit = transport.sent.find((message) => message.type === "edit");
+    assert.equal(edit.op, "insert");
+    assert.equal(edit.text, "Q");
+    assert.equal(edit.anchor, at);
+    assert.equal(edit.cursor, at);
+    pressViewToggle(mounted.root);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, at);
+    assert.ok(count("md-comment-card") > 0);
+    assert.equal(mounted.root.classList.contains("md-source"), false);
+    view.destroy();
+
+    const rich = [
+      "> hi",
+      "red  ",
+      "blue",
+      "| a | b |",
+      "| --- | --- |",
+      "| 1 | 2 |",
+      "```mermaid",
+      "graph TD",
+      "```",
+      "![alt](sample.svg)",
+      "```js",
+      "const x = 1",
+      "```",
+      "",
+    ].join("\n");
+    const drawn = createEditor(mounted.root, rich, 0);
+    pressViewToggle(mounted.root);
+    assert.equal(joinedSource(mounted.root), rich);
+    const lines = sourceLinesOf(mounted.root);
+    assert.equal(lines[0].text, "> hi");
+    assert.equal(lines[0].className.includes("md-quote"), false);
+    assert.equal(lines[1].text, "red  ");
+    assert.equal(lines[2].text, "blue");
+    assert.equal(lines[lines.length - 1].text, "");
+    assert.equal(lines[lines.length - 1].start, lines[lines.length - 1].end);
+    assert.equal(count("md-table"), 0);
+    assert.equal(count("md-diagram"), 0);
+    assert.equal(count("md-image"), 0);
+    assert.equal(count("md-break"), 0);
+    assert.equal(count("md-comment-card"), 0);
+    assert.equal(mounted.findAll((node) => node.tagName === "IMG" || node.tagName === "TABLE").length, 0);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("token")).length, 0);
+    const tail = createEditor(mounted.root, "a\n", 0);
+    pressViewToggle(mounted.root);
+    const tailLines = sourceLinesOf(mounted.root);
+    assert.equal(tailLines.length, 2);
+    assert.equal(tailLines[0].text, "a");
+    assert.equal(tailLines[1].text, "");
+    assert.equal(tailLines[1].start, 2);
+    assert.equal(tailLines[1].end, 2);
+    tail.destroy();
+    drawn.destroy();
+
+    const refused = holdingTransport();
+    refused.username = "bea";
+    const held = createEditor(mounted.root, "- one\n", 2, refused);
+    pressViewToggle(mounted.root);
+    refused.deliver({ type: "locks", lines: [{ index: 0, username: "ada" }] });
+    refused.sent.length = 0;
+    input(mounted, "insertText", "Q");
+    assert.equal(refused.sent.some((message) => message.type === "edit" && message.op === "insert" && message.text === "Q"), true);
+    refused.deliver({ type: "error", status: 409, heldBy: "ada" });
+    assert.equal(held.getState().doc, "- one\n");
+    const label = mounted.findAll((node) => node.classList && node.classList.contains("md-lock") && node.textContent === "ada")[0];
+    assert.equal(label.classList.contains("md-flash"), true);
+    held.destroy();
+
+    const storage = memoryStorage();
+    const first = createEditor(mounted.root, "hello\n", 1, holdingTransport(), storage);
+    pressViewToggle(mounted.root);
+    assert.equal(storage.getItem("viewmark.raw"), "1");
+    first.destroy();
+    const next = holdingTransport();
+    const second = createEditor(mounted.root, "hello\n", 1, next, storage);
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    assert.equal(viewToggleOf(mounted.root).getAttribute("aria-pressed"), "true");
+    next.deliver({
+      type: "file",
+      rev: 4,
+      path: "b.md",
+      text: "beta\n",
+      cursor: 2,
+      anchor: 2,
+    });
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    assert.equal(joinedSource(mounted.root), "beta\n");
+    assert.equal(second.getState().cursor, 2);
+    assert.equal(second.getState().doc, "beta\n");
+    second.destroy();
+    const fresh = memoryStorage();
+    const third = createEditor(mounted.root, "beta\n", 0, holdingTransport(), fresh);
+    assert.equal(mounted.root.classList.contains("md-source"), false);
+    assert.equal(viewToggleOf(mounted.root).getAttribute("aria-pressed"), "false");
+    third.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
