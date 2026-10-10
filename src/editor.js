@@ -1158,6 +1158,8 @@ function markerOnly(block) {
 
 // The slot br already is the line. Pull the break's br up by one line box so
 // both carets share it. 1lh is that box, whatever the paragraph line-height is.
+// The block then starts at the line's left edge; the hidden tab or spaces still
+// own the column a letter typed at the newline is drawn on.
 function pullBreakOntoSlot(node) {
   setStyle(node, "display", "block");
   setStyle(node, "margin-top", "-1lh");
@@ -3624,6 +3626,41 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     placeCaret();
   }
 
+  // A tab stop is the font's space, not 1ch. Measure the hidden run in this editor.
+  function whitespaceAdvance(text) {
+    const probe = document.createElement("span");
+    setStyle(probe, "white-space", "pre");
+    probe.appendChild(document.createTextNode(text));
+    root.appendChild(probe);
+    let width = 0;
+    if (typeof probe.getBoundingClientRect === "function") {
+      const rect = probe.getBoundingClientRect();
+      if (rect && Number.isFinite(rect.width)) width = rect.width;
+    }
+    detachNode(probe);
+    return width;
+  }
+
+  // display:block shares the slot's line and paints the newline caret on the
+  // line's left edge. margin-left is the hidden whitespace, so that caret is
+  // the column the next letter uses.
+  function settleBlankBreaks() {
+    const doc = state.doc;
+    for (const line of childArray(root)) {
+      if (!hasClass(line, "md-line")) continue;
+      const brk = findClassChild(line, "md-break");
+      if (!brk || inlineStyle(brk, "margin-top").value !== "-1lh") continue;
+      const slot = Number(line.dataset && line.dataset.start);
+      const at = Number(brk.dataset && brk.dataset.start);
+      if (!Number.isFinite(slot) || !Number.isFinite(at) || at < slot) continue;
+      const hidden = doc.slice(slot, at);
+      if (!/^[\t ]+$/.test(hidden)) continue;
+      const width = whitespaceAdvance(hidden);
+      if (!(width > 0)) continue;
+      setStyle(brk, "margin-left", `${width}px`);
+    }
+  }
+
   function render() {
     if (gestureTimer != null) {
       clearTimeout(gestureTimer);
@@ -3654,6 +3691,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       });
       const priorTop = caretTop();
       root.replaceChildren(...nodes);
+      settleBlankBreaks();
       settleRawMarkers();
       markEditingHighlights();
       hideResolvedHighlights();
@@ -4940,11 +4978,50 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return mapped;
   }
 
+  function whitespaceLineStart(doc, offset) {
+    const text = typeof doc === "string" ? doc : "";
+    if (!Number.isFinite(offset)) return null;
+    const at = Math.max(0, Math.min(text.length, offset));
+    let start = at;
+    while (start > 0 && text[start - 1] !== "\n") start -= 1;
+    let end = at;
+    while (end < text.length && text[end] !== "\n") end += 1;
+    if (!/^[\t ]+$/.test(text.slice(start, end))) return null;
+    return start;
+  }
+
+  function breakCaretLeft(offset) {
+    for (const line of childArray(root)) {
+      if (!hasClass(line, "md-line")) continue;
+      const brk = findClassChild(line, "md-break");
+      if (!brk || Number(brk.dataset && brk.dataset.start) !== offset) continue;
+      const br = childArray(brk).find((node) => isBreak(node)) || brk;
+      if (typeof br.getBoundingClientRect !== "function") return null;
+      const rect = br.getBoundingClientRect();
+      return rect && Number.isFinite(rect.left) ? rect.left : null;
+    }
+    return null;
+  }
+
+  // The pulled break is a block, so a press on the open part of the line hits
+  // the newline. A spaces-or-tab line's click belongs at its start. The newline
+  // stays only for a press on the break's caret, the column a letter uses.
+  // That press is the one placed a pixel into the break.
+  function blankLinePress(event, offset) {
+    const start = whitespaceLineStart(state.doc, offset);
+    if (start == null || start === offset) return offset;
+    const left = breakCaretLeft(offset);
+    if (left == null || !event || !Number.isFinite(event.clientX)) return offset;
+    const dx = event.clientX - left;
+    if (dx >= 0 && dx <= 2) return offset;
+    return start;
+  }
+
   function pointOffset(event) {
     const mapped = pointMapped(event);
     if (mapped == null) return null;
     if (sourceMode) return mapped;
-    return skipHidden(state.doc, mapped, "nearer");
+    return blankLinePress(event, skipHidden(state.doc, mapped, "nearer"));
   }
 
   listen("mousedown", (event) => {
@@ -4963,7 +5040,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // edge is the selection boundary when the selection covers the mark, so the
     // unsnapped offset is what says this press is a drag of the selection.
     const raw = pointMapped(event);
-    gestureOffset = raw == null ? null : skipHidden(state.doc, raw, "nearer");
+    const skipped = raw == null ? null : skipHidden(state.doc, raw, "nearer");
+    gestureOffset = skipped == null || sourceMode ? skipped : blankLinePress(event, skipped);
     gestureArmed = true;
     const from = Math.min(state.anchor, state.cursor);
     const to = Math.max(state.anchor, state.cursor);

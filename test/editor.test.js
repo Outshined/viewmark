@@ -1968,6 +1968,61 @@ test("a tab on a blank line shares that line with its break", () => {
   }
 });
 
+test("a blank line indents its break by the hidden whitespace and a click rests at the start", () => {
+  const mounted = mountEditor();
+  const create = document.createElement;
+  document.createElement = (tag) => {
+    const el = create(tag);
+    const kind = String(tag).toUpperCase();
+    if (kind === "SPAN" || kind === "BR") {
+      el.getBoundingClientRect = () => {
+        if (kind === "BR") return { left: 30, top: 1, right: 30, bottom: 11, width: 0, height: 10 };
+        const text = el.textContent || "";
+        const width = text === "\t" ? 18.5 : text === " " ? 4.5 : 0;
+        return { left: 0, top: 0, right: width, bottom: 0, width, height: 0 };
+      };
+    }
+    return el;
+  };
+  const press = (view, node, x) => {
+    document.caretPositionFromPoint = () => ({ offsetNode: node, offset: 0 });
+    const event = {
+      target: node,
+      clientX: x,
+      clientY: 6,
+      detail: 1,
+      button: 0,
+      shiftKey: false,
+      preventDefault() {},
+    };
+    mounted.listeners.mousedown(event);
+    mounted.listeners.click(event);
+    return view.getState();
+  };
+  try {
+    const tab = createEditor(mounted.root, "one\n\n\t\n\ntwo\n", 0);
+    const tabBreak = mounted.findAll((node) => node.classList && node.classList.contains("md-break") && node.dataset && node.dataset.start === "6")[0];
+    assert.ok(tabBreak);
+    assert.equal(tabBreak.styleProps.display, "block");
+    assert.equal(tabBreak.styleProps["margin-top"], "-1lh");
+    assert.equal(tabBreak.styleProps["margin-left"], "18.5px");
+    assert.equal(press(tab, tabBreak, 4).cursor, 5);
+    assert.equal(press(tab, tabBreak, 31).cursor, 6);
+    tab.destroy();
+
+    const space = createEditor(mounted.root, "one\n\n \n\ntwo\n", 0);
+    const spaceBreak = mounted.findAll((node) => node.classList && node.classList.contains("md-break") && node.dataset && node.dataset.start === "6")[0];
+    assert.ok(spaceBreak);
+    assert.equal(spaceBreak.styleProps["margin-left"], "4.5px");
+    assert.equal(press(space, spaceBreak, 4).cursor, 5);
+    assert.equal(press(space, spaceBreak, 4).anchor, 5);
+    assert.equal(press(space, spaceBreak, 31).cursor, 6);
+    space.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("BG.hbe-p", () => {
   const next = backspace(createState("red  \n\ntwo\n", 6));
   assert.equal(next.doc, "red  \ntwo\n");
