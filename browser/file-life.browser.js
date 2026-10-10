@@ -4,8 +4,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { AGENT, OTHER, REPO, cli, launchBrowser, Page, startHub } from "./harness.js";
 
 // R106, decided by the owner on 2026-10-10 (editing.md, c10): a file a session has open cannot
-// be deleted, and a rename or a move updates every session that has it open. D36 (a closed
-// session lets go within 30 seconds) and D37 (a move keeps the caret's place) are QA proposals.
+// be deleted, and a rename or a move updates every session that has it open. A closed tab, or
+// a page that is left, lets go of its file at once (the owner, 2026-10-10, in place of D36).
+// D37 (a move keeps the caret's place) is a QA proposal.
 
 const run = (hub, ...args) => cli(hub.port, ["--user", AGENT, "--repo", REPO, ...args]);
 
@@ -49,7 +50,7 @@ async function deleteWithin(hub, file, ms) {
   while (Date.now() - started < ms) {
     last = await run(hub, "delete", file);
     if (last.code === 0) return { ok: true, after: Date.now() - started };
-    await sleep(2000);
+    await sleep(200);
   }
   return { ok: false, last };
 }
@@ -99,25 +100,26 @@ test("a file the session left by the files list can be deleted", async (t) => {
   await A.until(async () => !(await files(A)).some((f) => f.startsWith("a.md=")), "a.md leaves the files list");
 });
 
-test("a closed tab lets go of its file within 30 seconds", async (t) => {
+test("a closed tab lets go of its file at once", async (t) => {
   const { hub, browser } = await setup(t, { "z.md": "zed line\n\nsecond\n" });
   const { B, targetId } = await second(browser, hub);
   await B.open("z.md");
   await B.clickOffset(2);
   await B.quiet();
   await browser.closeTarget(targetId);
-  const result = await deleteWithin(hub, "z.md", 35000);
-  assert.ok(result.ok, `z.md is still held 35 s after its tab closed: ${result.last && result.last.stderr.trim()}`);
+  // At once: within 2 s, the time a close takes to reach the hub.
+  const result = await deleteWithin(hub, "z.md", 2000);
+  assert.ok(result.ok, `z.md is still held 2 s after its tab closed: ${result.last && result.last.stderr.trim()}`);
 });
 
-test("a reload lets go of the file it left within 30 seconds", async (t) => {
+test("a reload lets go of the file it left at once", async (t) => {
   const { hub, A } = await setup(t, { "a.md": "a\n", "c.md": "c\n" });
   await A.open("a.md");
   await A.clickOffset(1);
   await A.quiet();
   await A.open("c.md");
-  const result = await deleteWithin(hub, "a.md", 35000);
-  assert.ok(result.ok, `a.md is still held 35 s after the page reloaded to c.md: ${result.last && result.last.stderr.trim()}`);
+  const result = await deleteWithin(hub, "a.md", 2000);
+  assert.ok(result.ok, `a.md is still held 2 s after the page reloaded to c.md: ${result.last && result.last.stderr.trim()}`);
 });
 
 test("a move updates every session that has the file open", async (t) => {

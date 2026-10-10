@@ -53,6 +53,7 @@ function editRange(cell) {
       continue;
     }
     if (key && key.startsWith("B: ")) key = key.slice(3);
+    if (key && /^pause \d+ ms$/.test(key)) continue;
     if (token.text != null) low += [...token.text].length;
     else if (token.compose) low += 1;
     // A middle-click pastes the primary selection. Dragging that selection moves it.
@@ -292,6 +293,9 @@ async function act(page, token, interval, context) {
     return act(other, { key: inner }, interval, context);
   }
   if (token.key && token.key.startsWith("agent: ")) return agent(context, token.key.slice(7));
+  // A pause between keys, for rules that depend on time, such as an undo run (D33).
+  const pause = /^pause (\d+) ms$/.exec(token.key || "");
+  if (pause) return sleep(Number(pause[1]));
   if (token.key === "reconnect") return reconnect(page, context);
   if (token.key === "offline") return context.proxy.offline();
   if (token.key === "online") {
