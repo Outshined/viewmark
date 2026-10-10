@@ -3396,6 +3396,14 @@ test("enter on a list item continues that item", () => {
     assert.equal(afterBlank.doc, "- alpha\n\nbe\n\nta");
     assert.equal(afterBlank.cursor, 13);
 
+    const task = enter("- [ ] alpha", 11);
+    assert.equal(task.doc, "- [ ] alpha\n- [ ] ");
+    assert.equal(task.cursor, task.doc.length);
+
+    const checked = enter("- [x] alpha", 11);
+    assert.equal(checked.doc, "- [x] alpha\n- [ ] ");
+    assert.equal(checked.cursor, checked.doc.length);
+
     const prose = enter("hello", 5);
     assert.equal(prose.doc, "hello\n\n");
     assert.equal(prose.cursor, 7);

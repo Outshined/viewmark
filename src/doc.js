@@ -286,7 +286,12 @@ export function continuedMarker(doc, cursor) {
   const mode = classify(line);
   if (mode.kind !== "li" && mode.kind !== "ol") return null;
   const head = line.slice(0, mode.marker || 0);
-  if (mode.kind === "li") return head;
+  if (mode.kind === "li") {
+    const rest = line.slice(head.length);
+    // A checked item continues unchecked. The checkbox is not part of the list marker.
+    if (/^\[( |x|X)\][ \t]+/.test(rest)) return head + "[ ] ";
+    return head;
+  }
   const quote = mode.quoted ? line.slice(0, mode.quote || 0) : "";
   const body = head.slice(quote.length);
   const match = /^([ \t]*)(\d+)([.)])([ \t]+)$/.exec(body);
