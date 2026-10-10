@@ -3376,6 +3376,22 @@ test("enter on a list item continues that item", () => {
     assert.equal(split.cursor, 7);
     assert.equal(split.doc[split.cursor], "p");
 
+    const joined = enter("- alpha\nbeta", 10);
+    assert.equal(joined.doc, "- alpha\nbe\n- ta");
+    assert.equal(joined.cursor, 13);
+
+    const joinedQuote = enter("> alpha\nbeta", 10);
+    assert.equal(joinedQuote.doc, "> alpha\nbe\n> ta");
+    assert.equal(joinedQuote.cursor, 13);
+
+    const joinedOrdered = enter("1. alpha\nbeta", 11);
+    assert.equal(joinedOrdered.doc, "1. alpha\nbe\n2. ta");
+    assert.equal(joinedOrdered.cursor, 15);
+
+    const afterBlank = enter("- alpha\n\nbeta", 11);
+    assert.equal(afterBlank.doc, "- alpha\n\nbe\n\nta");
+    assert.equal(afterBlank.cursor, 13);
+
     const prose = enter("hello", 5);
     assert.equal(prose.doc, "hello\n\n");
     assert.equal(prose.cursor, 7);

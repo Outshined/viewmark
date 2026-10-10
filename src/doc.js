@@ -191,6 +191,33 @@ function quoteEnter(text, line) {
   return { text: "\n> " };
 }
 
+
+// A paragraph line joined onto a list item continues that item.
+function listContinuationEnter(text, line) {
+  const mode = classify(line.text);
+  if (mode.kind !== "p" || line.text === "") return null;
+  let start = line.start;
+  let opener = null;
+  while (start > 0 && text[start - 1] === "\n") {
+    const prevEnd = start - 1;
+    let prevStart = prevEnd;
+    while (prevStart > 0 && text[prevStart - 1] !== "\n") prevStart -= 1;
+    const prev = text.slice(prevStart, prevEnd);
+    if (prev === "" || imageLine(prev) || fenceOpen(prev) || prev.startsWith("|")) break;
+    const kind = classify(prev).kind;
+    if (kind === "li" || kind === "ol") {
+      opener = prevStart;
+      break;
+    }
+    if (kind !== "p") break;
+    start = prevStart;
+  }
+  if (opener == null) return null;
+  const marker = continuedMarker(text, opener);
+  if (!marker) return null;
+  return { text: `\n${marker}` };
+}
+
 // Text Enter inserts, and where it replaces when an empty item leaves the list.
 // anchor and cursor are the splice; omitted, the caret's own range is the splice.
 export function enterInsert(doc, cursor) {
@@ -222,6 +249,8 @@ export function enterInsert(doc, cursor) {
   if (marker) return { text: `\n${marker}` };
   const quote = quoteEnter(text, line);
   if (quote) return quote;
+  const continued = listContinuationEnter(text, line);
+  if (continued) return continued;
   if (mode.kind === "p" && line.text !== "" && !imageLine(line.text)) {
     const onBreak = line.newline && at === line.end && text[at] === "\n";
     const nextBlank = onBreak && (
