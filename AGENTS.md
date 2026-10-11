@@ -49,7 +49,7 @@ A ticket is `tickets/<id>.md`. `ticket create` reads the body from stdin. `ticke
 
 ## Changing this source
 
-Node and git are the toolchain. There are no packages. From the repository root, `node --test` runs the suite and `node cli.js serve` starts the hub.
+Node and git are the toolchain. There are no packages. From the repository root, `node --test` runs the unit tests in `test/` and `node cli.js serve` starts the hub. The browser tests are separate, below.
 
 `src/doc.js` is the model: strings, offsets, and tokens. `src/editor.js` is the page and re-exports the names the editor tests call. `src/hub.js` stores the open files and publishes edits. `src/session.js` is the page socket. `cli.js` opens one socket, finishes the command, and exits. The page retries a dropped socket. The CLI stays one-shot.
 
@@ -62,3 +62,15 @@ This repository tracks the program. `docs/` and `state/` are gitignored, and a d
 The main branch is `master`. The words for lists of permitted and excluded things are whitelist and blacklist.
 
 A glyph that a change does not specify exactly is a 24 by 24 stroke icon: viewBox `0 0 24 24`, no fill, stroke `currentColor`, stroke width 2, round caps and round joins, and `aria-hidden` on the SVG.
+
+## Browser tests
+
+`node --test` does not run the browser tests. They are the `browser/*.browser.js` files, and they drive the page in a real browser with real input events.
+
+- `node --test browser/enter.browser.js` runs one file. `node --test --test-concurrency=3 browser/*.browser.js` runs them all, in about ten minutes in Chromium.
+- `--test-name-pattern` picks tests by name. A cell is a test named by its id, so `--test-name-pattern='^SE\.q\.2$'` runs that cell, and `--test-name-pattern='^SE\.'` runs every Shift+Enter cell.
+- A cell's file is the one whose `defineSuite` line lists the cell's prefix: `BG.` in `empty-line`; `BS.`, `DL.`, `WB.`, `WD.`, and `CR.` in `delete`; `MS.` in `sessions`; `CK.`, `DC.`, `T3.`, `DG.`, and `DD.` in `pointer`; `TB.`, `MV.`, `RD.`, and `WK.` in `tab-move`; `TY.` and `TC.` in `typing`; `EN.`, `SE.`, `EB.`, and `EF.` in `enter`; and `SX.`, `CB.`, `UR.`, and `IM.` in `selection`.
+- They run in Chromium at `/usr/bin/chromium`, and `VIEWMARK_CHROMIUM` names another. `VIEWMARK_BROWSER=firefox` runs the same tests in Firefox, inside cage when cage is installed and headless otherwise.
+- Each test starts its own hub on a free port, with its own state and repo directories, and removes them when it ends. It never writes to the live hub.
+- The cell suites read their cells from `qa/editor-matrix-test-plan.md` in the `viewmark` repo of the running hub, so that hub must be up. `VIEWMARK_PLAN_PORT` names its port when it is not 8765.
+- A ticket that names a test or a cell is not done until that test passes in Chromium and in Firefox. Run it in both before closing the ticket.
