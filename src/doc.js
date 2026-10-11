@@ -2669,19 +2669,23 @@ function plainParagraph(block) {
 
 // Padding on the paragraph is the break. One blank between two paragraphs is
 // that padding, so the blank takes no height and the caret does not stop on it.
-// Enter at the end of a paragraph writes that blank and then the caret's line.
-function markParagraphSpace(blocks) {
+// The same blank under an item or a quote is what keeps the next paragraph
+// from joining that block. Enter at the end of a paragraph writes that blank
+// and then the caret's line.
+function markParagraphSpace(blocks, doc) {
   for (const block of blocks) {
     if (plainParagraph(block)) addClassName(block, "md-paragraph");
   }
   for (let i = 1; i < blocks.length - 1; i += 1) {
-    if (!blankBlock(blocks[i]) || blankBlock(blocks[i - 1]) || !plainParagraph(blocks[i - 1])) continue;
+    if (!blankBlock(blocks[i]) || blankBlock(blocks[i - 1])) continue;
     const next = blocks[i + 1];
-    if (plainParagraph(next)) {
-      addClassName(blocks[i], "md-paragraph-gap");
+    if (plainParagraph(blocks[i - 1])) {
+      if (plainParagraph(next) || (blankBlock(next) && i + 1 === blocks.length - 1)) {
+        addClassName(blocks[i], "md-paragraph-gap");
+      }
       continue;
     }
-    if (blankBlock(next) && i + 1 === blocks.length - 1) addClassName(blocks[i], "md-paragraph-gap");
+    if (keepsParagraphApart(doc, sourceLine(doc, blocks[i].start))) addClassName(blocks[i], "md-paragraph-gap");
   }
 }
 
@@ -2730,7 +2734,7 @@ export function plan(doc, cursor) {
   }
   // A blank run between two quoted blocks keeps the bar. The blanks stay blocks.
   continueQuoteBars(blocks);
-  markParagraphSpace(blocks);
+  markParagraphSpace(blocks, text);
   const lines = blocks.filter((block) => block.type === "line");
   const atoms = [];
   for (const block of blocks) {
@@ -3220,11 +3224,42 @@ function deleteBareLine(state, line) {
   return snapBreak(applySplice(state, line.start, line.end + 1, "", caret));
 }
 
+// A following paragraph joins this line, or the item or quote this line continues.
+function absorbsParagraph(doc, line) {
+  let current = line;
+  while (current) {
+    if (enclosedByFence(doc, current.start)) return false;
+    const kind = classify(current.text).kind;
+    if (kind === "li" || kind === "ol" || kind === "quote") return true;
+    if (kind !== "p" || current.text === "" || imageLine(current.text) || current.text.startsWith("|")) return false;
+    if (keepsHeadingLine(current.text) || fenceOpen(current.text) || isFenceClose(current.text)) return false;
+    if (current.start === 0 || doc[current.start - 1] !== "\n") return false;
+    const above = sourceLine(doc, current.start - 1);
+    if (above.text === "" || above.start === current.start) return false;
+    current = above;
+  }
+  return false;
+}
+
+// The blank is the only separator between an item or a quote and the paragraph
+// under it. Removing it folds that paragraph into the block.
+function keepsParagraphApart(doc, blank) {
+  if (!blank || blank.text !== "" || !blank.newline) return false;
+  if (blank.start === 0 || doc[blank.start - 1] !== "\n") return false;
+  const prev = sourceLine(doc, blank.start - 1);
+  if (prev.text === "" || enclosedByFence(doc, prev.start)) return false;
+  const next = sourceLine(doc, blank.end + 1);
+  if (next.start !== blank.end + 1 || !proseParagraph(next.text) || enclosedByFence(doc, next.start)) return false;
+  return absorbsParagraph(doc, prev);
+}
+
 // Delete removes this line's break, so the next line moves up. The caret stays
 // on that line's first byte, before a marker. A trailing empty line has no
 // next text; the caret stays on the break that remains, not past it.
 // A line of spaces is not this: Backspace and Delete both rest on the line above.
+// A blank that keeps a paragraph out of an item or a quote stays.
 function deleteEmptyForward(state, line) {
+  if (keepsParagraphApart(state.doc, line)) return state;
   const from = line.start;
   const to = line.end + 1;
   const caret = to === state.doc.length && from > 0 ? visualEnd(state.doc, from - 1) : from;

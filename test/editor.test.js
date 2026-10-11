@@ -614,6 +614,56 @@ test("movement skips the blank between paragraphs", () => {
   assert.equal(skipHidden("hello\n\n\n", 6, "nearer"), 5);
 });
 
+test("a blank under an item or a quote is a gap and Delete leaves the paragraph", () => {
+  for (const doc of ["- a\n\nnext\n", "> a\n\nnext\n", "1. a\n\nnext\n", "> - a\n\nnext\n", "- a\nmore\n\nnext\n", "* a\n\nnext\n"]) {
+    const blocks = plan(doc, 0).blocks;
+    const gap = blocks.find((block) => block.empty);
+    assert.ok(gap, doc);
+    assert.equal(gap.classes.includes("md-paragraph-gap"), true, doc);
+    const next = blocks.find((block) => block.text && block.text.includes("next"));
+    assert.ok(next, doc);
+    assert.equal(next.classes.includes("md-paragraph-gap"), false, doc);
+    assert.equal(next.classes.includes("md-li") || next.classes.includes("md-quote") || next.classes.includes("md-ol"), false, doc);
+    const blank = doc.indexOf("\n\n") + 1;
+    assert.equal(doc[blank], "\n");
+    assert.equal(skipHidden(doc, blank, "nearer"), blank - 1, doc);
+    assert.equal(skipHidden(doc, blank, "forward"), blank + 1, doc);
+    assert.equal(skipHidden(doc, blank, "backward"), blank - 1, doc);
+    assert.equal(placeMove(doc, blank - 1, blank, "forward", "line"), blank + 1, doc);
+    assert.equal(placeMove(doc, blank + 1, blank, "backward", "line"), blank - 1, doc);
+    const kept = deleteForward(createState(doc, blank));
+    assert.equal(kept.doc, doc, doc);
+    assert.equal(kept.cursor, blank, doc);
+    assert.equal(kept.anchor, blank, doc);
+  }
+  const joined = plan("- a\nnext\n", 0).blocks;
+  assert.equal(joined.length, 1);
+  assert.equal(joined[0].classes.includes("md-li"), true);
+  assert.equal(joined[0].text.includes("a"), true);
+  assert.equal(joined[0].text.includes("next"), true);
+  const quoted = plan("> a\nnext\n", 0).blocks;
+  assert.equal(quoted.length, 1);
+  assert.equal(quoted[0].classes.includes("md-quote"), true);
+
+  const wide = "- a\n\n\nnext\n";
+  assert.equal(plan(wide, 0).blocks.some((block) => block.classes.includes("md-paragraph-gap")), false);
+  const pulled = deleteForward(createState(wide, 4));
+  assert.equal(pulled.doc, "- a\n\nnext\n");
+  assert.equal(pulled.cursor, 4);
+  assert.equal(plan(pulled.doc, pulled.cursor).blocks.some((block) => block.empty && block.classes.includes("md-paragraph-gap")), true);
+
+  const headed = plan("- a\n\n# Next\n", 0).blocks;
+  assert.equal(headed.some((block) => block.classes.includes("md-paragraph-gap")), false);
+  const beforeList = plan("# Title\n\n- a\n", 0).blocks;
+  assert.equal(beforeList.some((block) => block.classes.includes("md-paragraph-gap")), false);
+  const items = plan("- a\n\n- b\n", 0).blocks;
+  assert.equal(items.some((block) => block.classes.includes("md-paragraph-gap")), false);
+
+  const back = backspace(createState("- a\n\nnext\n", 4));
+  assert.equal(back.doc, "- a\nnext\n");
+  assert.equal(back.cursor, 3);
+});
+
 function imageBlock(block) {
   return imageText(block.text) || (block.parts || []).some((part) => part && part.type === "image");
 }
@@ -2342,6 +2392,30 @@ test("BS.pad.2", () => {
   const onBlank = backspace(createState("red  \n\ntwo\n", 6));
   assert.equal(onBlank.doc, "red  \ntwo\n");
   assert.equal(onBlank.cursor, 3);
+});
+
+test("DL.bl.2", () => {
+  const next = deleteForward(createState("\ntwo\n", 0));
+  assert.equal(next.doc, "two\n");
+  assert.equal(next.cursor, 0);
+  assert.equal(next.anchor, 0);
+  assert.equal(next.doc[next.cursor], "t");
+});
+
+test("DL.bl.3", () => {
+  const next = deleteForward(createState("- a\n\n# Next\n", 4));
+  assert.equal(next.doc, "- a\n# Next\n");
+  assert.equal(next.cursor, 4);
+  assert.equal(next.anchor, 4);
+  assert.equal(next.doc[next.cursor], "#");
+});
+
+test("DL.bl.4", () => {
+  const next = deleteForward(createState("# Title\n\n- a\n", 8));
+  assert.equal(next.doc, "# Title\n- a\n");
+  assert.equal(next.cursor, 8);
+  assert.equal(next.anchor, 8);
+  assert.equal(next.doc[next.cursor], "-");
 });
 
 test("DL.pad.1", () => {

@@ -39,35 +39,49 @@ for (const [label, body, kind] of [
     await hub.create("a.md", body);
     await page.open("a.md");
     await page.until(() => page.eval(`document.querySelectorAll("#editor .md-line").length > 0`), "the file drawn");
-    // Aim at the empty line, the way a person would: a click on it, if it is drawn.
+    const hasKind = (line, name) => line.kind.split(/\s+/).includes(name);
+    const apart = async (where) => {
+      const text = (await hub.show("a.md")).text;
+      assert.equal(text, body, `${where}: the blank left the file: ${JSON.stringify(text)}`);
+      const lines = await page.eval(LINES);
+      const block = lines.find((line) => hasKind(line, kind) && line.text.includes("a") && !line.text.includes("next"));
+      const next = lines.find((line) => line.text === "next");
+      assert.ok(block && next, `${where}: the two blocks are not drawn apart: ${JSON.stringify(lines.map((line) => line.text))}`);
+      assert.ok(!hasKind(next, kind), `${where}: next is drawn as part of ${label}: ${next.kind}`);
+      const between = lines.filter((line) => line.top >= block.bottom - 1 && line.bottom <= next.top + 1 && line.height > 4);
+      assert.deepEqual(between.map((line) => line.text), [], `${where}: an empty line is drawn between the blocks`);
+    };
+    await apart("before Delete");
+    // The blank is not a stop. ↓ from the item and ↑ from the paragraph go past it.
+    assert.ok(await page.clickOffset(2), "no point on a");
+    await page.quiet();
+    await page.key("↓");
+    await page.quiet();
+    assert.notEqual((await page.caret()).focus, 4, "↓ stopped on the blank line");
+    assert.ok(await page.clickOffset(5), "no point on next");
+    await page.quiet();
+    await page.key("↑");
+    await page.quiet();
+    assert.notEqual((await page.caret()).focus, 4, "↑ stopped on the blank line");
+    // If a click can still put the caret on that blank, Delete must not fold next in.
     const empty = await page.eval(`(() => {
       const line = [...document.querySelectorAll("#editor .md-line")].find((l) => l.textContent === "" && l.getBoundingClientRect().height > 4);
       if (!line) return null;
       const r = line.getBoundingClientRect();
       return { x: r.left + 20, y: (r.top + r.bottom) / 2 };
     })()`);
-    if (!empty) {
-      t.diagnostic("no empty line is drawn between the blocks, so the caret cannot stand there");
-      return;
+    if (empty) {
+      await page.click(empty.x, empty.y);
+      await page.quiet();
+    } else if (await page.clickOffset(4)) {
+      await page.quiet();
     }
-    await page.click(empty.x, empty.y);
-    await page.quiet();
     const placed = await page.caret();
-    if (placed.anchor !== 4 || placed.focus !== 4) {
-      t.diagnostic(`a click on the empty line put the caret at ${placed.anchor}, not on the blank line`);
-      return;
+    if (placed.anchor === 4 && placed.focus === 4) {
+      await page.key("Delete");
+      await page.quiet();
+      await sleep(200);
     }
-    await page.key("Delete");
-    await page.quiet();
-    await sleep(200);
-    const text = (await hub.show("a.md")).text;
-    assert.match(text, /^[->] a\n\n+next\n$/, `next is no longer its own paragraph: ${JSON.stringify(text)}`);
-    const lines = await page.eval(LINES);
-    const block = lines.find((line) => line.kind.includes(kind));
-    const next = lines.find((line) => line.text === "next");
-    assert.ok(block && next, `the two blocks are not drawn apart: ${JSON.stringify(lines.map((line) => line.text))}`);
-    assert.ok(!next.kind.includes(kind), `next is drawn as part of ${label}: ${next.kind}`);
-    const between = lines.filter((line) => line.top >= block.bottom - 1 && line.bottom <= next.top + 1 && line.height > 4);
-    assert.deepEqual(between.map((line) => line.text), [], "an empty line is still drawn between the blocks after Delete");
+    await apart("after Delete");
   });
 }
