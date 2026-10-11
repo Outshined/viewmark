@@ -2183,6 +2183,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let repoOnChange = null;
   let docMenuButton = null;
   let docMenuPanel = null;
+  let docMenuDelete = null;
   let docLinkButton = null;
   let docAttachInput = null;
   let docLinkOnClick = null;
@@ -4438,6 +4439,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       const attach = plainButton("md-doc-menu-item", "Attach image");
       const remove = plainButton("md-doc-menu-item", "Delete file");
+      docMenuDelete = remove;
       // A host with no listeners still has to build the items. The click is the only binding.
       const onItem = (button, run) => {
         if (typeof button.addEventListener !== "function") return;
@@ -4459,14 +4461,23 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         panel.appendChild(attach);
         panel.appendChild(remove);
       }
+      syncDocMenuDelete();
       docMenuPanel = panel;
     }
     appendEditorChrome(docMenuButton);
     appendEditorChrome(docMenuPanel);
   }
 
+  // The item is built once. The next open follows the file that is open now.
+  function syncDocMenuDelete() {
+    if (!docMenuDelete) return;
+    if (openPath && !openPath.startsWith("tickets/")) showElement(docMenuDelete);
+    else hideElement(docMenuDelete);
+  }
+
   function openDocMenu() {
     if (!docMenuPanel) return;
+    syncDocMenuDelete();
     showElement(docMenuPanel);
     if (docMenuButton && typeof docMenuButton.setAttribute === "function") docMenuButton.setAttribute("aria-expanded", "true");
     pinViewToggle();

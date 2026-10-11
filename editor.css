@@ -658,6 +658,10 @@ button.md-doc-menu-item {
   cursor: pointer;
 }
 
+button.md-doc-menu-item[hidden] {
+  display: none;
+}
+
 .ticket-form {
   position: relative;
   box-sizing: border-box;

@@ -619,6 +619,13 @@ test("Id row: a click puts exactly the 8-character id on the clipboard, and the 
   assert.equal(await fileBytes(hub, id), before);
 });
 
+async function openDocMenu(page) {
+  await page.until(() => page.eval(SHOWN("button.md-doc-menu")), "document menu button");
+  const shown = `(() => { const el = document.querySelector(".md-doc-menu-panel"); return !!el && !el.hidden && el.getClientRects().length > 0; })()`;
+  if (!(await page.eval(shown))) await press(page, "button.md-doc-menu");
+  await page.until(() => page.eval(shown), "document menu open");
+}
+
 test("the document menu lists Attach image and Delete file, and Commit repo is absent", async (t) => {
   const { hub, page } = await setup(t);
   await hub.create("a.md", "alpha\n");
@@ -633,7 +640,7 @@ test("the document menu lists Attach image and Delete file, and Commit repo is a
     return {
       label: button && button.getAttribute("aria-label"),
       role: panel && panel.getAttribute("role"),
-      items: panel ? [...panel.querySelectorAll("button")].map((el) => el.textContent.trim()) : null,
+      items: panel ? [...panel.querySelectorAll("button")].filter((el) => !el.hidden && el.getClientRects().length > 0).map((el) => el.textContent.trim()) : null,
       commit,
       attach: document.querySelectorAll("button.md-attach").length,
       menu: menu && { left: menu.left, right: menu.right, top: menu.top, bottom: menu.bottom },
@@ -641,6 +648,7 @@ test("the document menu lists Attach image and Delete file, and Commit repo is a
     };
   })()`);
   await page.open("a.md");
+  await openDocMenu(page);
   const doc = await read();
   assert.equal(doc.label, "Menu");
   assert.equal(doc.role, "menu");
@@ -650,8 +658,9 @@ test("the document menu lists Attach image and Delete file, and Commit repo is a
   assert.ok(doc.menu.right <= doc.raw.left + 1, "the menu covers the raw toggle");
   assert.ok(doc.menu.top < doc.raw.bottom && doc.raw.top < doc.menu.bottom, "the menu is not beside the raw toggle");
   await openTicket(page, id);
+  await openDocMenu(page);
   const ticket = await read();
-  assert.deepEqual(ticket.items, ["Attach image", "Delete file"]);
+  assert.deepEqual(ticket.items, ["Attach image"]);
   assert.equal(ticket.commit, false);
   assert.equal(ticket.label, "Menu");
   assert.ok(ticket.menu.right <= ticket.raw.left + 1, "the menu covers the raw toggle on a ticket");

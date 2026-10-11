@@ -9941,6 +9941,7 @@ test("document menu offers Attach image and Delete file", () => {
   assert.match(rule[0], /background:\s*#1c1b19/);
   assert.match(css, /div\.md-doc-menu-panel\s*\{[^}]*position:\s*absolute/);
   assert.match(css, /div\.md-doc-menu-panel\[hidden\]\s*\{[^}]*display:\s*none/);
+  assert.match(css, /button\.md-doc-menu-item\[hidden\]\s*\{[^}]*display:\s*none/);
   assert.match(css, /button\.md-doc-menu-item\s*\{[^}]*text-align:\s*left/);
   assert.match(css, /button\.icon-btn\.md-view-toggle[^{]*\{[^}]*right:\s*0\.35rem/);
   assert.equal(/button\.md-doc-commit/.test(css), false);
@@ -9983,6 +9984,8 @@ test("document menu offers Attach image and Delete file", () => {
     assert.equal(panel.getAttribute("role"), "menu");
     assert.equal(panel.hidden, true);
     assert.deepEqual(panel.childNodes.map((node) => node.textContent), ["Attach image", "Delete file"]);
+    assert.equal(panel.childNodes[1].hidden, true);
+    assert.equal(panel.childNodes[1].hasAttribute("hidden"), true);
     assert.equal(mounted.root.childNodes.at(-1), toggle);
     assert.ok(mounted.root.childNodes.indexOf(button) < mounted.root.childNodes.indexOf(toggle));
     assert.equal(mounted.root.childNodes.indexOf(panel), mounted.root.childNodes.indexOf(button) + 1);
@@ -9990,6 +9993,7 @@ test("document menu offers Attach image and Delete file", () => {
 
     click(button);
     assert.equal(panel.hidden, false);
+    assert.equal(panel.childNodes[1].hidden, true);
     assert.equal(button.getAttribute("aria-expanded"), "true");
     pointer(button);
     pointer(panel.childNodes[0]);
@@ -10017,6 +10021,8 @@ test("document menu offers Attach image and Delete file", () => {
 
     transport.deliver({ type: "file", rev: 1, text: "ab\n\ncd\n", path: "notes/a.md", cursor: 0, anchor: 0, locks: [] });
     click(button);
+    assert.equal(panel.childNodes[1].hidden, false);
+    assert.equal(panel.childNodes[1].hasAttribute("hidden"), false);
     click(panel.childNodes[1]);
     const dialog = confirm();
     assert.equal(panel.hidden, true);
@@ -10030,6 +10036,8 @@ test("document menu offers Attach image and Delete file", () => {
     transport.deliver({ type: "file", rev: 1, text: "ticket\n", path: "tickets/aaaaaaaa.md", cursor: 0, anchor: 0, locks: [] });
     const quiet = transport.sent.length;
     click(button);
+    assert.equal(panel.childNodes[1].hidden, true);
+    assert.equal(panel.childNodes[1].hasAttribute("hidden"), true);
     click(panel.childNodes[1]);
     assert.equal(panel.hidden, true);
     assert.equal(confirm().open, false);
