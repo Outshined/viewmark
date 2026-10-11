@@ -36,6 +36,8 @@ import {
   shiftBreak,
   lineCaret,
   wordStop,
+  endBeforeTail,
+  ruleLineStop,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./ticket.js";
@@ -5491,6 +5493,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     let next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
     // Up and down on a line drawn empty rest on its start.
     if (granularity === "line") next = lineCaret(state.doc, next);
+    // Firefox's lineboundary stops on the br, which is the hidden tail.
+    if (!sourceMode && granularity === "lineboundary" && forward) next = endBeforeTail(state.doc, next);
     // Rendered markers have no glyphs, so one press crosses the whole marker.
     // Source mode draws those bytes, and a caret inside one stays there.
     if (!sourceMode) {
@@ -5527,8 +5531,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // The caret belongs on the last marker glyph.
     if (hangAffinity && next === beforeCursor && beforeCursor > 0) next = beforeCursor - 1;
     // No line is drawn after the final newline until the caret is on it, so the
-    // browser cannot move there. The step is that offset.
-    if (forward && next === beforeCursor && state.doc.endsWith("\n")) {
+    // browser cannot move there. The step is that offset. End stays on the line.
+    if (granularity !== "lineboundary" && forward && next === beforeCursor && state.doc.endsWith("\n")) {
       const end = lineSpan(state.doc, beforeCursor)[1];
       if (end === state.doc.length - 1) next = state.doc.length;
     }
@@ -5540,6 +5544,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (granularity === "line" && typeof goalX === "number" && !bareBreakNewline(state.doc, next) && !lineEdge) {
       next = goalOffset(state.doc, next, goalX);
     }
+    // Firefox's character step from the line above a rule lands on the line
+    // after it. The rule has no glyphs, so the stop is the rule's start.
+    if (!sourceMode && granularity === "character" && forward) {
+      const rule = ruleLineStop(state.doc, beforeCursor);
+      if (rule != null) next = rule;
+    }
+    if (!sourceMode && granularity === "lineboundary" && forward) next = endBeforeTail(state.doc, next);
     const anchor = extend ? beforeAnchor : next;
     state = { ...state, cursor: next, anchor };
     if (!claimLines(anchor, next)) return;
@@ -5549,6 +5560,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // is where the next letter is drawn, so the caret has to be placed there.
     if (before !== after) render();
     else if (anchor !== next || next !== landed || inRawGap(drawn && drawn.node)) placeCaret();
+  }
+
+  // The newline of this line sits in a hidden hard-break tail.
+  function hiddenTailLine(doc, offset) {
+    const end = lineSpan(doc, offset)[1];
+    if (end >= doc.length || doc[end] !== "\n") return false;
+    return endBeforeTail(doc, end) < end;
   }
 
   function lineElementOf(node) {
@@ -6133,6 +6151,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       const extend = event.shiftKey === true && !event.ctrlKey && !event.altKey && !event.metaKey;
       moveRawCaret(event.key, extend, event.ctrlKey === true || event.metaKey === true);
+      return;
+    }
+    // A hard-break line's End. Firefox's lineboundary stops after the hidden
+    // tail. Other lines keep the browser's own End, which is the visual line.
+    if (event.key === "End" && !event.ctrlKey && !event.altKey && !event.metaKey && hiddenTailLine(state.doc, state.cursor)) {
+      event.preventDefault();
+      moveCaret("forward", "lineboundary", event.shiftKey === true);
       return;
     }
     if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {

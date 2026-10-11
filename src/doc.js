@@ -2854,6 +2854,33 @@ function hardBreakEdge(doc, offset) {
   return null;
 }
 
+// End stops before the hidden marker. A landing in the tail, including the
+// newline, is that marker's first offset. A spaces-only break's newline is the
+// line's own caret, so it stays.
+export function endBeforeTail(doc, offset) {
+  const text = typeof doc === "string" ? doc : "";
+  const at = Math.max(0, Math.min(text.length, Number.isFinite(offset) ? Math.trunc(offset) : 0));
+  const edge = hardBreakEdge(text, at);
+  if (edge == null) return at;
+  const line = sourceLine(text, edge);
+  if (bareBreakLine(line, text) && at === line.end) return at;
+  return edge;
+}
+
+// A rule is drawn with no glyphs, so → from the end of the line above can land
+// past it. The stop is the rule's start, which draws the rule raw.
+export function ruleLineStop(doc, from) {
+  const text = typeof doc === "string" ? doc : "";
+  if (!Number.isFinite(from)) return null;
+  const at = Math.max(0, Math.min(text.length, Math.trunc(from)));
+  const line = sourceLine(text, at);
+  if (at !== line.end || !line.newline) return null;
+  const next = sourceLine(text, line.end + 1);
+  if (next.start <= at) return null;
+  if (classify(next.text).kind !== "hr") return null;
+  return next.start;
+}
+
 function visualEnd(doc, newlineIndex) {
   if (newlineIndex < 0) return 0;
   const line = sourceLine(doc, newlineIndex);

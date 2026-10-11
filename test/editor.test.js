@@ -25,7 +25,7 @@ import {
   parseHash,
   wordSpan,
 } from "../src/editor.js";
-import { splitCommentNote, lockSpans, lockIndexAt, blockSpan, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, shiftBreak, moveText } from "../src/doc.js";
+import { splitCommentNote, lockSpans, lockIndexAt, blockSpan, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, shiftBreak, moveText, endBeforeTail, ruleLineStop } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
@@ -2389,6 +2389,188 @@ test("a click or an arrow leaves a hidden marker", () => {
   const widened = backspace(createState("red   \n", 5));
   assert.equal(widened.doc, "red  \n");
   assert.equal(widened.cursor, 3);
+});
+
+test("End stops before a hard break's hidden tail", () => {
+  const spaces = "red  \nblue\n";
+  assert.equal(endBeforeTail(spaces, 3), 3);
+  assert.equal(endBeforeTail(spaces, 4), 3);
+  assert.equal(endBeforeTail(spaces, 5), 3);
+  assert.equal(endBeforeTail(spaces, 6), 6);
+  assert.equal(endBeforeTail(spaces, 1), 1);
+  const slash = "red\\\nblue\n";
+  assert.equal(endBeforeTail(slash, 4), 3);
+  assert.equal(endBeforeTail(slash, 3), 3);
+  const bare = "  \n";
+  assert.equal(endBeforeTail(bare, 2), 2);
+  assert.equal(endBeforeTail(bare, 1), 0);
+  assert.equal(endBeforeTail("alpha beta\n", 10), 10);
+});
+
+test("right arrow from the line above a rule stops on the rule", () => {
+  assert.equal(ruleLineStop("one\n---\ntwo\n", 3), 4);
+  assert.equal(ruleLineStop("one\n***\ntwo\n", 3), 4);
+  assert.equal(ruleLineStop("one\n___\ntwo\n", 3), 4);
+  assert.equal(ruleLineStop("one\n---\ntwo\n", 2), null);
+  assert.equal(ruleLineStop("one\n- alpha\n", 3), null);
+  assert.equal(ruleLineStop("one\n\n---\n", 3), null);
+  assert.equal(ruleLineStop("one\n| --- |\n", 3), null);
+});
+
+// selection.modify lands where Firefox lands. The snap still stops before the
+// hidden tail and on the rule, and a landing that is already there stays.
+function firefoxSelection(mounted, land) {
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const texts = () => {
+    const found = [];
+    const walk = (node) => {
+      if (node.nodeType === 3) found.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(mounted.root);
+    return found;
+  };
+  globalThis.document.createTreeWalker = () => {
+    const nodes = texts();
+    let index = 0;
+    return { nextNode() { return index < nodes.length ? nodes[index++] : null; } };
+  };
+  globalThis.document.createRange = () => {
+    const range = {
+      startContainer: null,
+      startOffset: 0,
+      collapsed: true,
+      setStart(node, offset) {
+        range.startContainer = node;
+        range.startOffset = offset;
+      },
+      setEnd() {},
+      collapse() { range.collapsed = true; },
+      selectNode() {},
+      setStartAfter() {},
+      setStartBefore() {},
+    };
+    return range;
+  };
+  let focusNode = null;
+  let focusOffset = 0;
+  const sel = {
+    rangeCount: 1,
+    get anchorNode() { return focusNode; },
+    get anchorOffset() { return focusOffset; },
+    get focusNode() { return focusNode; },
+    get focusOffset() { return focusOffset; },
+    collapse(node, offset) {
+      focusNode = node;
+      focusOffset = offset;
+    },
+    setBaseAndExtent(node, offset) {
+      focusNode = node;
+      focusOffset = offset;
+    },
+    removeAllRanges() {},
+    addRange(range) {
+      focusNode = range.startContainer;
+      focusOffset = range.startOffset;
+    },
+    modify() { land(sel); },
+    getRangeAt() {
+      return { startContainer: focusNode, startOffset: focusOffset, endContainer: focusNode, endOffset: focusOffset, collapsed: true };
+    },
+    place(node, offset) {
+      focusNode = node;
+      focusOffset = offset;
+    },
+  };
+  // modify replaces the caret, so land reads the nodes and writes through place.
+  sel.modify = () => land(sel);
+  globalThis.window.getSelection = () => sel;
+  return sel;
+}
+
+test("MV.he.9 End before the hidden tail, then a letter keeps the break", () => {
+  const mounted = mountEditor();
+  try {
+    const doc = "red  \nblue\n";
+    const view = createEditor(mounted.root, doc, 1);
+    const br = mounted.findAll((node) => node.tagName === "BR")[0];
+    const red = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "red")[0];
+    assert.ok(br);
+    assert.ok(red);
+    firefoxSelection(mounted, (sel) => sel.place(br, 0));
+    keyDown(mounted, "End");
+    assert.equal(view.getState().cursor, 3);
+    assert.equal(view.getState().anchor, 3);
+    input(mounted, "insertText", "x");
+    assert.equal(view.getState().doc, "redx  \nblue\n");
+    assert.equal(view.getState().cursor, 4);
+    view.destroy();
+
+    const kept = createEditor(mounted.root, doc, 1);
+    const redAgain = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "red")[0];
+    firefoxSelection(mounted, (sel) => sel.place(redAgain, redAgain.length));
+    keyDown(mounted, "End");
+    assert.equal(kept.getState().cursor, 3);
+    input(mounted, "insertText", "x");
+    assert.equal(kept.getState().doc, "redx  \nblue\n");
+    kept.destroy();
+
+    const last = createEditor(mounted.root, "red  \n", 1);
+    const lastBr = mounted.findAll((node) => node.tagName === "BR")[0];
+    firefoxSelection(mounted, (sel) => sel.place(lastBr, 0));
+    keyDown(mounted, "End");
+    assert.equal(last.getState().cursor, 3);
+    last.destroy();
+
+    const soft = createEditor(mounted.root, "alpha\nbeta\n", 1);
+    const beta = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "beta")[0];
+    firefoxSelection(mounted, (sel) => sel.place(beta, beta.length));
+    soft.moveCaret("forward", "lineboundary", false);
+    assert.equal(soft.getState().cursor, 10);
+    assert.equal(soft.getState().doc, "alpha\nbeta\n");
+    soft.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("MV.hr.1 right arrow lands on the rule and draws it raw", () => {
+  const mounted = mountEditor();
+  try {
+    const doc = "one\n---\ntwo\n";
+    const view = createEditor(mounted.root, doc, 3);
+    const two = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "two")[0];
+    assert.ok(two);
+    firefoxSelection(mounted, (sel) => sel.place(two, 0));
+    keyDown(mounted, "ArrowRight");
+    assert.equal(view.getState().cursor, 4);
+    assert.equal(view.getState().anchor, 4);
+    const ruled = mounted.findAll((node) => node.classList && node.classList.contains("md-hr"));
+    assert.equal(ruled.length, 1);
+    assert.equal(ruled[0].classList.contains("md-raw"), true);
+    assert.equal(ruled[0].textContent, "---");
+    view.destroy();
+
+    const stayed = createEditor(mounted.root, doc, 3);
+    const rule = mounted.findAll((node) => node.classList && node.classList.contains("md-hr"))[0];
+    firefoxSelection(mounted, (sel) => sel.place(rule, 0));
+    keyDown(mounted, "ArrowRight");
+    assert.equal(stayed.getState().cursor, 4);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-hr"))[0].classList.contains("md-raw"), true);
+    stayed.destroy();
+
+    const mid = createEditor(mounted.root, doc, 2);
+    const one = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "one")[0];
+    firefoxSelection(mounted, (sel) => sel.place(one, 3));
+    keyDown(mounted, "ArrowRight");
+    assert.equal(mid.getState().cursor, 3);
+    const still = mounted.findAll((node) => node.classList && node.classList.contains("md-hr"))[0];
+    assert.equal(still.classList.contains("md-raw"), false);
+    assert.equal(still.textContent, "");
+    mid.destroy();
+  } finally {
+    mounted.restore();
+  }
 });
 
 test("T-table-atom", () => {
