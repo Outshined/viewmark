@@ -2470,11 +2470,21 @@ function plainParagraph(block) {
   return true;
 }
 
-// Padding on the paragraph line is the break between paragraphs.
-// A blank line stays a line, so up and down can stop on it.
+// Padding on the paragraph is the break. One blank between two paragraphs is
+// that padding, so the blank takes no height and the caret does not stop on it.
+// Enter at the end of a paragraph writes that blank and then the caret's line.
 function markParagraphSpace(blocks) {
   for (const block of blocks) {
     if (plainParagraph(block)) addClassName(block, "md-paragraph");
+  }
+  for (let i = 1; i < blocks.length - 1; i += 1) {
+    if (!blankBlock(blocks[i]) || blankBlock(blocks[i - 1]) || !plainParagraph(blocks[i - 1])) continue;
+    const next = blocks[i + 1];
+    if (plainParagraph(next)) {
+      addClassName(blocks[i], "md-paragraph-gap");
+      continue;
+    }
+    if (blankBlock(next) && i + 1 === blocks.length - 1) addClassName(blocks[i], "md-paragraph-gap");
   }
 }
 
@@ -2604,6 +2614,26 @@ function crossedAtom(doc, cursor, landed, forward, granularity) {
   return nearest;
 }
 
+function paragraphGapBlock(block) {
+  return Boolean(block && block.classes && block.classes.includes("md-paragraph-gap"));
+}
+
+// The blank has no height. A step that lands on it continues to the paragraph
+// on that side. A click, which has no direction, stays with the paragraph above.
+function paragraphGapLeave(doc, offset, direction) {
+  const text = typeof doc === "string" ? doc : "";
+  if (!Number.isFinite(offset)) return null;
+  const at = Math.max(0, Math.min(text.length, Math.trunc(offset)));
+  if (at >= text.length || text[at] !== "\n" || at === 0 || text[at - 1] !== "\n") return null;
+  const blocks = plan(text, at).blocks;
+  const index = blocks.findIndex((block) => paragraphGapBlock(block) && at >= block.start && at <= block.end);
+  if (index < 0) return null;
+  const forward = direction === "forward" || direction === "right";
+  const neighbor = blocks[forward ? index + 1 : index - 1];
+  if (!neighbor || typeof neighbor.start !== "number" || typeof neighbor.end !== "number") return null;
+  return forward ? neighbor.start : neighbor.end;
+}
+
 export function placeMove(doc, cursor, landed, direction, granularity) {
   const forward = direction === "forward" || direction === "right";
   const snapped = movementAtom(doc, cursor, landed, forward);
@@ -2613,6 +2643,8 @@ export function placeMove(doc, cursor, landed, direction, granularity) {
   if (crossed) next = inwardOffset(crossed, forward);
   const fence = skippedFence(doc, cursor, landed, forward);
   if (fence) next = forward ? fence.start : fence.end;
+  const gap = paragraphGapLeave(doc, next, direction);
+  if (gap != null) return gap;
   return next;
 }
 
@@ -2722,6 +2754,8 @@ function snapBreak(next) {
 export function skipHidden(doc, offset, direction) {
   const text = typeof doc === "string" ? doc : "";
   const at = Math.max(0, Math.min(text.length, Number.isFinite(offset) ? Math.trunc(offset) : 0));
+  const gap = paragraphGapLeave(text, at, direction);
+  if (gap != null) return gap;
   for (const token of commentTokens(text)) {
     if (at > token.start && at < token.end) {
       if (direction === "nearer") return at - token.start <= token.end - at ? token.start : token.end;
@@ -2956,6 +2990,23 @@ function deleteBareLine(state, line) {
   return snapBreak(applySplice(state, line.start, line.end + 1, "", caret));
 }
 
+// Enter at the end of a paragraph writes a blank line and an empty caret line.
+// Backspace on that caret line removes both breaks. The caret rests on the
+// paragraph's newline. An item, a quote, and a caret inside a paragraph do not.
+function paragraphEnterBackspace(doc, cursor) {
+  const line = sourceLine(doc, cursor);
+  if (cursor !== line.start || line.text !== "") return null;
+  if (!line.newline || line.end + 1 !== doc.length) return null;
+  if (line.start === 0 || doc[line.start - 1] !== "\n") return null;
+  const prev = sourceLine(doc, line.start - 1);
+  if (prev.text !== "" || prev.start === 0 || doc[prev.start - 1] !== "\n") return null;
+  const para = sourceLine(doc, prev.start - 1);
+  if (para.text === "" || imageLine(para.text) || classify(para.text).kind !== "p") return null;
+  const from = para.end > para.start && doc[para.end - 1] === "\r" ? para.end - 1 : para.end;
+  if (from >= cursor) return null;
+  return { from, to: cursor, caret: from };
+}
+
 // Directly after a marker, Backspace removes that marker. A nested item outdents.
 function markerBackspace(doc, cursor) {
   if (fenceBody(doc, cursor)) return null;
@@ -3071,6 +3122,8 @@ export function backspace(state) {
       return snapBreak(applySplice(state, brk.from, brk.to, "", brk.caret));
     }
   }
+  const undone = paragraphEnterBackspace(doc, state.cursor);
+  if (undone) return snapBreak(applySplice(state, undone.from, undone.to, "", undone.caret));
   const from = state.cursor > 1 && state.doc[state.cursor - 1] === "\n" && state.doc[state.cursor - 2] === "\r" ? state.cursor - 2 : state.cursor - 1;
   return snapBreak(applySplice(state, from, state.cursor, "", from));
 }

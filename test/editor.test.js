@@ -523,13 +523,13 @@ test("a plain paragraph keeps its mark and a blank stays a line", () => {
   assert.equal(paired.length, 3);
   assert.ok(paired[0].classes.includes("md-paragraph"));
   assert.equal(paired[1].empty, true);
-  assert.equal(paired[1].classes.includes("md-paragraph-gap"), false);
+  assert.ok(paired[1].classes.includes("md-paragraph-gap"));
   assert.equal(paired[1].classes.includes("md-paragraph"), false);
   assert.ok(paired[2].classes.includes("md-paragraph"));
 
   const inTwo = plan("one\n\ntwo\n", 6).blocks;
   assert.equal(inTwo[1].empty, true);
-  assert.equal(inTwo[1].classes.includes("md-paragraph-gap"), false);
+  assert.ok(inTwo[1].classes.includes("md-paragraph-gap"));
   assert.equal(inTwo[2].raw, true);
   assert.ok(inTwo[0].classes.includes("md-paragraph"));
   assert.ok(inTwo[2].classes.includes("md-paragraph"));
@@ -537,8 +537,18 @@ test("a plain paragraph keeps its mark and a blank stays a line", () => {
   const onBlank = plan("one\n\ntwo\n", 4).blocks;
   assert.equal(onBlank[1].empty, true);
   assert.equal(onBlank[1].raw, true);
-  assert.equal(onBlank[1].classes.includes("md-paragraph-gap"), false);
+  assert.ok(onBlank[1].classes.includes("md-paragraph-gap"));
   assert.equal(onBlank[1].classes.includes("md-paragraph"), false);
+
+  const entered = plan("hello\n\n\n", 7).blocks;
+  assert.equal(entered.length, 3);
+  assert.ok(entered[1].classes.includes("md-paragraph-gap"));
+  assert.equal(entered[2].empty, true);
+  assert.equal(entered[2].raw, true);
+  assert.equal(entered[2].classes.includes("md-paragraph-gap"), false);
+  const away = plan("hello\n\n\n", 2).blocks;
+  assert.ok(away[1].classes.includes("md-paragraph-gap"));
+  assert.equal(away[2].classes.includes("md-paragraph-gap"), false);
 
   const wide = plan("one\n\n\ntwo\n", 0).blocks;
   const empties = wide.filter((block) => block.empty);
@@ -587,14 +597,21 @@ test("a plain paragraph keeps its mark and a blank stays a line", () => {
   assert.equal(rule.some((block) => block.classes.includes("md-paragraph")), false);
 });
 
-test("line movement stops on the blank between paragraphs", () => {
-  assert.equal(placeMove("one\n\ntwo\n", 1, 4, "forward", "line"), 4);
-  assert.equal(placeMove("one\n\ntwo\n", 5, 4, "backward", "line"), 4);
-  assert.equal(placeMove("one\n\ntwo\n", 4, 4, "forward", "line"), 4);
-  assert.equal(placeMove("one\n\ntwo\n", 4, 4, "backward", "line"), 4);
+test("movement skips the blank between paragraphs", () => {
+  assert.equal(placeMove("one\n\ntwo\n", 1, 4, "forward", "line"), 5);
+  assert.equal(placeMove("one\n\ntwo\n", 5, 4, "backward", "line"), 3);
+  assert.equal(placeMove("one\n\ntwo\n", 4, 4, "forward", "line"), 5);
+  assert.equal(placeMove("one\n\ntwo\n", 4, 4, "backward", "line"), 3);
   assert.equal(placeMove("one\n\ntwo\n", 0, 6, "forward", "line"), 6);
   assert.equal(placeMove("one\n\ntwo\n", 6, 0, "backward", "line"), 0);
-  assert.equal(placeMove("one\n\ntwo\n", 1, 4, "forward", "character"), 4);
+  assert.equal(placeMove("one\n\ntwo\n", 1, 4, "forward", "character"), 5);
+  assert.equal(placeMove("one\n\ntwo\n", 5, 4, "backward", "character"), 3);
+  assert.equal(placeMove("hello\n\n\n", 5, 6, "forward", "character"), 7);
+  assert.equal(placeMove("hello\n\n\n", 7, 6, "backward", "character"), 5);
+  assert.equal(skipHidden("one\n\ntwo\n", 4, "forward"), 5);
+  assert.equal(skipHidden("one\n\ntwo\n", 4, "backward"), 3);
+  assert.equal(skipHidden("one\n\ntwo\n", 4, "nearer"), 3);
+  assert.equal(skipHidden("hello\n\n\n", 6, "nearer"), 5);
 });
 
 function imageBlock(block) {
@@ -609,10 +626,13 @@ function imageText(text) {
 test("the last line of a paragraph is half a line taller", () => {
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
   assert.match(css, /\.md-line\.md-paragraph\s*\{[^}]*padding-bottom:\s*calc\(1\.55em \/ 2\);/);
-  assert.equal(css.includes("md-paragraph-gap"), false);
+  assert.match(
+    css,
+    /\.md-line\.md-paragraph-gap\s*,\s*\.md-line\.md-paragraph-gap br\s*\{[^}]*height:\s*0;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;[^}]*margin:\s*0;/,
+  );
 });
 
-test("a blank between paragraphs stays an ordinary line", () => {
+test("a blank between paragraphs takes no line and keeps its offset", () => {
   const doc = "one\n\ntwo\n";
   const blank = doc.indexOf("\n\n") + 1;
   const caret = doc.indexOf("two") + 1;
@@ -622,11 +642,11 @@ test("a blank between paragraphs stays an ordinary line", () => {
   try {
     const view = createEditor(mounted.root, doc, caret);
     const lines = mounted.findAll((node) => node.classList && node.classList.contains("md-line") && !node.classList.contains("md-source-line"));
-    assert.equal(lines.some((node) => node.classList.contains("md-paragraph-gap")), false);
-    const empty = lines.find((node) => node.textContent === "");
-    assert.ok(empty);
-    assert.equal(empty.classList.contains("md-paragraph"), false);
-    const br = empty.childNodes.find((node) => String(node.nodeName).toUpperCase() === "BR");
+    const gap = lines.find((node) => node.classList.contains("md-paragraph-gap"));
+    assert.ok(gap);
+    assert.equal(lines.filter((node) => node.classList.contains("md-paragraph-gap")).length, 1);
+    assert.equal(gap.classList.contains("md-paragraph"), false);
+    const br = gap.childNodes.find((node) => String(node.nodeName).toUpperCase() === "BR");
     assert.ok(br);
     assert.equal(mapOffset(br, 0), blank);
     const paragraphs = lines.filter((node) => node.classList.contains("md-paragraph"));
@@ -1839,6 +1859,27 @@ test("T-delete", () => {
   const end = createState("ab", 2);
   assert.equal(deleteForward(end), end);
   assert.equal(end.undo.length, 0);
+});
+
+test("backspace on the empty line Enter leaves under a paragraph restores it", () => {
+  const doc = "hello\n\n\n";
+  assert.equal(doc.length, 8);
+  assert.equal(enterInsert("hello\n", 5).text, "\n\n");
+  const next = backspace(createState(doc, 7));
+  assert.equal(next.doc, "hello\n");
+  assert.equal(next.cursor, 5);
+  assert.equal(next.anchor, 5);
+  const returned = backspace(createState(doc, 7));
+  assert.equal(returned.doc, "hello\n");
+  assert.equal(returned.cursor, 5);
+  assert.equal(backspace(createState("hello\n", 3)).doc, "helo\n");
+  assert.equal(backspace(createState("- ab\n", 4)).doc, "- a\n");
+  assert.equal(backspace(createState("> ab\n", 4)).doc, "> a\n");
+  const split = "hello\n\n world\n";
+  assert.equal(split[7], " ");
+  const inside = backspace(createState(split, 7));
+  assert.equal(inside.doc, "hello\n world\n");
+  assert.equal(inside.cursor, 6);
 });
 
 test("collapsed caret removes a blank line and keeps a joining newline", () => {
@@ -10782,9 +10823,11 @@ test("detail 2 selects the word and detail 3 selects the line", () => {
     const at = Number(empty.parentElement.dataset.start);
     globalThis.document.caretPositionFromPoint = () => ({ offsetNode: empty, offset: 0 });
     click(empty, 3);
-    assert.equal(blank.getState().anchor, at);
-    assert.equal(blank.getState().cursor, at);
-    assert.equal(selectedSlice(blank.getState()), "");
+    assert.notEqual(blank.getState().cursor, at);
+    assert.notEqual(blank.getState().anchor, at);
+    assert.equal(blank.getState().anchor, 0);
+    assert.equal(blank.getState().cursor, 5);
+    assert.equal(selectedSlice(blank.getState()), "hello");
     blank.destroy();
   } finally {
     mounted.restore();
