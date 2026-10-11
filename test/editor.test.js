@@ -2798,6 +2798,50 @@ test("EF.17", () => {
   assert.equal(back.anchor, 5);
 });
 
+test("MV.mm.2", () => {
+  const doc = "x\n```mermaid\nA-->B\n```\ntwo\n";
+  const at = doc.indexOf("```");
+  const next = insert(createState(doc, at), "Q");
+  assert.equal(next.doc, "x\n\nQ```mermaid\nA-->B\n```\ntwo\n");
+  assert.equal(next.cursor, at + 2);
+  assert.equal(next.anchor, at + 2);
+  const holder = plan(next.doc, next.cursor).blocks.find((block) => typeof block.text === "string" && block.text.includes("Q"));
+  assert.ok(holder);
+  assert.equal(holder.text.includes("x"), false);
+  const back = backspace(next);
+  assert.equal(back.doc, "x\n\n```mermaid\nA-->B\n```\ntwo\n");
+  assert.equal(back.cursor, at + 1);
+  const paired = "x\r\n```mermaid\r\nA-->B\r\n```\r\ntwo\r\n";
+  const pairedAt = paired.indexOf("```");
+  assert.equal(insert(createState(paired, pairedAt), "Q").doc, "x\r\n\r\nQ```mermaid\r\nA-->B\r\n```\r\ntwo\r\n");
+  assert.equal(insert(createState("# T\n```js\nlet x\n```\n", 4), "Q").doc, "# T\nQ```js\nlet x\n```\n");
+  assert.equal(insert(createState("```js\nlet x\n", 6), "Q").doc, "```js\nQlet x\n");
+});
+
+test("EN.fu.1", () => {
+  const doc = "```js\nlet x";
+  const entered = insert(createState(doc, doc.length), "\n");
+  assert.equal(entered.doc, "```js\nlet x\n");
+  assert.equal(entered.cursor, entered.doc.length);
+  assert.equal(enterInsert(doc, doc.length).text, "\n");
+  const before = plan(entered.doc, entered.cursor).blocks.find((block) => block.classes && block.classes.includes("md-codeblock"));
+  assert.equal(before.raw, false);
+  assert.equal(before.text.includes("`"), false);
+  assert.equal(before.text.includes("let x"), true);
+  const typed = insert(entered, "Q");
+  assert.equal(typed.doc, "```js\nlet x\nQ");
+  assert.equal(typed.cursor, typed.doc.length);
+  const block = plan(typed.doc, typed.cursor).blocks.find((item) => item.classes && item.classes.includes("md-codeblock"));
+  assert.equal(block.raw, false);
+  assert.equal(block.text.includes("`"), false);
+  assert.equal(block.text.includes("let x"), true);
+  assert.equal(block.text.includes("Q"), true);
+  assert.equal(block.parts.filter((part) => part.type === "break").length, 1);
+  const mid = "```js\nlet".length;
+  assert.equal(plan(doc, mid).blocks[0].raw, true);
+  assert.equal(insert(createState(doc, doc.length), "y").doc, "```js\nlet xy");
+});
+
 test("a letter at the end of the file stays where the line above does not join", () => {
   assert.equal(insert(createState("# Title\n", 8), "Q").doc, "# Title\nQ");
   assert.equal(insert(createState("```\ncode\n", 9), "Q").doc, "```\ncode\nQ");

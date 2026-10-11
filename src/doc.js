@@ -1740,6 +1740,8 @@ function structures(doc) {
           lang: opened.lang,
           closed,
           lines: fenceLines,
+          // No newline after the last line. A caret there is the end of the file.
+          eof: !closed && lines[last].end === doc.length,
         });
       }
       index = last + 1;
@@ -2533,7 +2535,11 @@ function fenceBlock(slot, cursor, spans) {
   const lines = slot.lines;
   const start = lines[0].start;
   const end = lines[lines.length - 1].end;
-  const raw = cursor >= start && cursor <= end;
+  // The rendered body is the line the caret already sits on. Opening the source
+  // draws the opener above that line, so a letter typed at the end of the file
+  // would leave the caret.
+  const bodyEof = slot.eof === true && lines.length > 1 && cursor === end;
+  const raw = cursor >= start && cursor <= end && !bodyEof;
   const shown = fenceShown(lines, slot.closed, raw);
   const parts = [];
   for (let i = 0; i < shown.length; i += 1) {
@@ -3142,9 +3148,11 @@ function joinsDown(text) {
   return kind === "p" || kind === "li" || kind === "ol" || kind === "quote";
 }
 
-// A paragraph, list item, or quote joins. An empty line does not, and neither does a rule.
+// A paragraph, list item, or quote joins. An empty line does not, and neither
+// does a rule or a fence line. A letter on a fence line stays on that line.
 function caretLineJoins(text) {
   if (text === "") return false;
+  if (fenceOpen(text) || isFenceClose(text)) return false;
   const kind = classify(text).kind;
   return kind === "p" || kind === "li" || kind === "ol" || kind === "quote";
 }
