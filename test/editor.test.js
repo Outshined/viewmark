@@ -2408,6 +2408,156 @@ test("a blank line indents its break by the hidden whitespace and a click rests 
   }
 });
 
+// Firefox reports the offset after a tab for a press on any part of it.
+// The box is the one a one-character range draws: 40px from 20 + source * 40.
+function tabPressBox(at) {
+  const left = 20 + at * 40;
+  return { left, right: left + 40, mid: left + 20 };
+}
+
+function installTabLayout() {
+  globalThis.document.createTreeWalker = (root) => {
+    const nodes = walkNodes(root, (node) => node.nodeType === 3);
+    let i = 0;
+    return {
+      nextNode() {
+        return i < nodes.length ? nodes[i++] : null;
+      },
+    };
+  };
+  globalThis.document.createRange = () => {
+    const range = {
+      startNode: null,
+      start: 0,
+      end: 0,
+      setStart(node, offset) {
+        range.startNode = node;
+        range.start = offset;
+      },
+      setEnd(_node, offset) {
+        range.end = offset;
+      },
+      collapse() {},
+      selectNode() {},
+      setStartAfter() {},
+      setStartBefore() {},
+      getClientRects() {
+        const node = range.startNode;
+        if (!node || range.end !== range.start + 1) return [];
+        const text = String(node.textContent || "");
+        if (text[range.start] !== "\t") return [];
+        let el = node.parentElement;
+        let origin = NaN;
+        while (el) {
+          if (el.dataset && el.dataset.start != null && el.dataset.start !== "") {
+            origin = Number(el.dataset.start);
+            break;
+          }
+          el = el.parentElement;
+        }
+        if (!Number.isFinite(origin)) return [];
+        const box = tabPressBox(origin + range.start);
+        return [{ left: box.left, right: box.right, top: 10, bottom: 26, width: 40, height: 16 }];
+      },
+      getBoundingClientRect() {
+        const rects = range.getClientRects();
+        return rects[0] || { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 };
+      },
+    };
+    return range;
+  };
+}
+
+function domPointAt(root, source) {
+  const nodes = walkNodes(root, (node) => node.nodeType === 3);
+  for (const node of nodes) {
+    const len = typeof node.length === "number" ? node.length : String(node.textContent || "").length;
+    for (let i = 0; i <= len; i += 1) {
+      if (mapOffset(node, i) === source) return { offsetNode: node, offset: i };
+    }
+  }
+  return null;
+}
+
+test("a press on the left half of a tab is the offset before it", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  installTabLayout();
+  const press = (target, x) => {
+    const event = {
+      target,
+      clientX: x,
+      clientY: 18,
+      detail: 1,
+      button: 0,
+      shiftKey: false,
+      preventDefault() {},
+    };
+    mounted.listeners.mousedown(event);
+    mounted.listeners.mouseup(event);
+    mounted.listeners.click(event);
+  };
+  const clickAt = (view, x, reported, expected) => {
+    const point = domPointAt(mounted.root, reported);
+    assert.ok(point, `drawn point ${reported}`);
+    globalThis.document.caretPositionFromPoint = () => {
+      const live = domPointAt(mounted.root, reported);
+      if (!live) throw new Error(`missing drawn point ${reported}`);
+      return live;
+    };
+    press(point.offsetNode, x);
+    assert.equal(view.getState().anchor, expected);
+    assert.equal(view.getState().cursor, expected);
+  };
+  try {
+    const doc = "a\tb\n";
+    const tabAt = 1;
+    assert.equal(doc[tabAt], "\t");
+    const box = tabPressBox(tabAt);
+    const view = createEditor(mounted.root, doc, 0);
+    // Firefox: every press on the tab is reported after it.
+    clickAt(view, box.left + 1, tabAt + 1, tabAt);
+    clickAt(view, box.right - 1, tabAt + 1, tabAt + 1);
+    clickAt(view, box.mid, tabAt + 1, tabAt + 1);
+    clickAt(view, box.left - 4, tabAt + 1, tabAt + 1);
+    clickAt(view, box.right + 1, tabAt + 1, tabAt + 1);
+    // Chromium already splits the tab. The reported offset stays.
+    clickAt(view, box.left + 1, tabAt, tabAt);
+    clickAt(view, box.right - 1, tabAt + 1, tabAt + 1);
+    clickAt(view, 4, 0, 0);
+
+    pressViewToggle(mounted.root);
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    clickAt(view, box.left + 1, tabAt + 1, tabAt);
+    clickAt(view, box.right - 1, tabAt + 1, tabAt + 1);
+    clickAt(view, box.left + 1, tabAt, tabAt);
+    clickAt(view, box.right - 1, tabAt + 1, tabAt + 1);
+    view.destroy();
+
+    const tabs = "\t\tb\n";
+    assert.equal(tabs[0], "\t");
+    assert.equal(tabs[1], "\t");
+    const first = tabPressBox(0);
+    const second = tabPressBox(1);
+    const nested = createEditor(mounted.root, tabs, 0);
+    // The half belongs to the tab before the reported offset, not an earlier one.
+    clickAt(nested, first.left + 1, 1, 0);
+    clickAt(nested, first.right - 1, 1, 1);
+    clickAt(nested, second.left + 1, 2, 1);
+    clickAt(nested, second.right - 1, 2, 2);
+    clickAt(nested, second.left + 1, 1, 1);
+    clickAt(nested, first.left + 1, 0, 0);
+    pressViewToggle(mounted.root);
+    clickAt(nested, second.left + 1, 2, 1);
+    clickAt(nested, second.right - 1, 2, 2);
+    clickAt(nested, second.left + 1, 1, 1);
+    nested.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
+    mounted.restore();
+  }
+});
+
 test("BG.hbe-p", () => {
   const next = backspace(createState("red  \n\ntwo\n", 6));
   assert.equal(next.doc, "red  \ntwo\n");

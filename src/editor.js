@@ -6354,13 +6354,31 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return null;
   }
 
+  // Firefox's caretPositionFromPoint reports the offset after a tab for a press
+  // on any part of it. The left half of that tab's box is the offset before it.
+  // Chromium already reports the left half as before, so this does not move it.
+  function tabHalf(event, offset) {
+    if (!event || !Number.isFinite(event.clientX) || !(offset > 0) || state.doc[offset - 1] !== "\t") return offset;
+    if (typeof NodeFilter === "undefined" || !NodeFilter) return offset;
+    const point = pointFor(offset - 1);
+    if (!point || !point.node || point.node.nodeType !== 3) return offset;
+    const index = point.offset;
+    if (String(point.node.textContent || "")[index] !== "\t") return offset;
+    const box = rawCharRect(point.node, index);
+    if (!box || !(box.right > box.left)) return offset;
+    const mid = (box.left + box.right) / 2;
+    if (event.clientX < box.left || event.clientX >= mid) return offset;
+    return offset - 1;
+  }
+
   function pressOffset(event) {
     const gap = gapUnderPoint(event);
     if (gap != null) return gap;
     const mapped = pointMapped(event);
     if (mapped == null) return null;
-    if (sourceMode) return mapped;
-    return blankLinePress(event, skipHidden(state.doc, mapped, "nearer"));
+    const placed = tabHalf(event, mapped);
+    if (sourceMode) return placed;
+    return blankLinePress(event, skipHidden(state.doc, placed, "nearer"));
   }
 
   function pointOffset(event) {
