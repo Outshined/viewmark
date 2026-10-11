@@ -7365,6 +7365,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const binding = { button, onClick, filterButton, filterMenu: menu, onFilter, boxes, onChange, showAll, onShowAll };
     ticketBindings.set(button, binding);
     ticketChrome = binding;
+    // The filter sits on every document. A ticket picker does not, so the outside press is bound here.
+    bindTicketPointer();
   }
 
   let newFileButton = null;
