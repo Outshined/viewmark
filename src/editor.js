@@ -2154,6 +2154,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let ticketMenuOpen = false;
   const expandedTickets = new Set();
   let ticketForm = null;
+  let ticketFormKey = "";
+  let rebuildingTicketForm = false;
+  // Server value last written into a field. A focused field whose text differs is unsaved.
+  const paintedField = new WeakMap();
+  const linkFill = new WeakMap();
   const ticketPickers = [];
   let ticketPointerBound = false;
   let ticketChrome = null;
@@ -6914,6 +6919,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     input.type = "text";
     input.className = "md-ticket-match";
     input.value = typeof options.value === "string" ? options.value : "";
+    markField(input, input.value);
     if (typeof input.setAttribute === "function") input.setAttribute("type", "text");
     const menu = document.createElement("div");
     menu.className = "md-ticket-menu";
@@ -7024,20 +7030,27 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     let selected = null;
     const links = document.createElement("div");
     links.className = "md-ticket-links";
-    for (const ticket of tickets) {
-      const row = plainButton("md-ticket-link", ticket.title || ticket.id);
-      row.dataset.id = ticket.id;
-      row.addEventListener("click", (event) => {
-        if (event && typeof event.preventDefault === "function") event.preventDefault();
-        selected = ticket;
-        for (const child of links.childNodes) {
-          if (!child.classList || !child.classList.contains("md-ticket-link")) continue;
-          if (child === row) child.classList.add("md-ticket-selected");
-          else child.classList.remove("md-ticket-selected");
-        }
-      });
-      links.appendChild(row);
+    function fill(next) {
+      selected = null;
+      const rows = [];
+      for (const ticket of next || []) {
+        const row = plainButton("md-ticket-link", ticket.title || ticket.id);
+        row.dataset.id = ticket.id;
+        row.addEventListener("click", (event) => {
+          if (event && typeof event.preventDefault === "function") event.preventDefault();
+          selected = ticket;
+          for (const child of links.childNodes) {
+            if (!child.classList || !child.classList.contains("md-ticket-link")) continue;
+            if (child === row) child.classList.add("md-ticket-selected");
+            else child.classList.remove("md-ticket-selected");
+          }
+        });
+        rows.push(row);
+      }
+      links.replaceChildren(...rows);
     }
+    fill(tickets);
+    linkFill.set(links, fill);
     return {
       links,
       removeSelected() {
@@ -7047,13 +7060,185 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     };
   }
 
+  function knownTicket(id) {
+    return ticketList.find((item) => item.id === id) || {
+      id,
+      title: id,
+      created: "",
+      parent: "",
+      depends: [],
+      rev: 0,
+    };
+  }
+
+  function childTicketsOf(ticket) {
+    return ticketList
+      .filter((item) => item.parent === ticket.id && item.id !== ticket.id)
+      .sort(compareTickets);
+  }
+
+  function blockersOf(ticket) {
+    return ticketList
+      .filter((item) => item.id !== ticket.id && Array.isArray(item.depends) && item.depends.includes(ticket.id))
+      .sort(compareTickets);
+  }
+
+  function parentLabel(ticket) {
+    if (!ticket || !ticket.parent) return "";
+    const parentTicket = ticketList.find((item) => item.id === ticket.parent);
+    return parentTicket ? (parentTicket.title || parentTicket.id) : ticket.parent;
+  }
+
+  function ticketStructureKey(ticket) {
+    const parts = [ticket.id];
+    for (const key of ["parent", "depends", "children", "blocks"]) {
+      if (relationShown[key]) parts.push(key);
+    }
+    return parts.join("\n");
+  }
+
+  function activeInForm() {
+    const active = typeof document !== "undefined" && document ? document.activeElement : null;
+    if (!active || !ticketForm || !nodeWithin(ticketForm, active)) return null;
+    return active;
+  }
+
+  function markField(input, value) {
+    if (!input) return;
+    paintedField.set(input, value == null ? "" : String(value));
+  }
+
+  function inputUnsaved(input) {
+    if (!input || activeInForm() !== input || !paintedField.has(input)) return false;
+    return String(input.value || "") !== paintedField.get(input);
+  }
+
+  function paintField(input, value) {
+    if (!input) return;
+    const next = value == null ? "" : String(value);
+    if (inputUnsaved(input)) {
+      if (String(input.value || "") === next) markField(input, next);
+      return;
+    }
+    if (input.value !== next) input.value = next;
+    markField(input, next);
+  }
+
+  function paintText(node, value) {
+    if (!node) return;
+    const next = value == null ? "" : String(value);
+    if (node.textContent !== next) node.textContent = next;
+  }
+
+  function ticketFieldKey(el) {
+    if (!el || !el.classList) return "";
+    if (el.classList.contains("md-ticket-assignee")) return "assignee";
+    if (el.classList.contains("md-ticket-title-input")) return "title";
+    const section = typeof el.closest === "function"
+      ? el.closest(".md-ticket-parent, .md-ticket-depends, .md-ticket-children, .md-ticket-blocks")
+      : null;
+    if (!section || !section.classList) return "";
+    if (section.classList.contains("md-ticket-parent")) return "parent";
+    if (section.classList.contains("md-ticket-depends")) return "depends";
+    if (section.classList.contains("md-ticket-children")) return "children";
+    if (section.classList.contains("md-ticket-blocks")) return "blocks";
+    return "";
+  }
+
+  function heldTicketField() {
+    const active = activeInForm();
+    const tag = active ? String(active.tagName || "").toUpperCase() : "";
+    if (tag !== "INPUT" && tag !== "TEXTAREA") return null;
+    const key = ticketFieldKey(active);
+    if (!key || !paintedField.has(active)) return null;
+    return {
+      key,
+      value: String(active.value || ""),
+      unsaved: String(active.value || "") !== paintedField.get(active),
+      start: active.selectionStart,
+      end: active.selectionEnd,
+    };
+  }
+
+  function findHeldInput(key) {
+    if (!ticketForm) return null;
+    if (key === "assignee") return findDeep(ticketForm, "md-ticket-assignee");
+    if (key === "title") return findDeep(ticketForm, "md-ticket-title-input");
+    const sectionName = {
+      parent: "md-ticket-parent",
+      depends: "md-ticket-depends",
+      children: "md-ticket-children",
+      blocks: "md-ticket-blocks",
+    }[key];
+    if (!sectionName) return null;
+    const section = findElement(ticketForm, (el) => el.classList && el.classList.contains(sectionName));
+    return section && findElement(section, (el) => el.classList && el.classList.contains("md-ticket-match"));
+  }
+
+  function restoreHeld(held) {
+    if (!held) return;
+    const input = findHeldInput(held.key);
+    if (!input) return;
+    if (held.unsaved) input.value = held.value;
+    if (held.key === "title") {
+      hideElement(findDeep(ticketForm, "md-ticket-heading"));
+      showElement(input);
+    }
+    if (typeof input.focus === "function") input.focus();
+    if (Number.isFinite(held.start) && Number.isFinite(held.end)) selectInput(input, held.start, held.end);
+  }
+
+  function refreshLinkList(sectionClass, tickets) {
+    const section = findElement(ticketForm, (el) => el.classList && el.classList.contains(sectionClass));
+    if (!section) return;
+    const links = findElement(section, (el) => el.classList && el.classList.contains("md-ticket-links"));
+    const fill = links && linkFill.get(links);
+    if (typeof fill === "function") fill(tickets);
+  }
+
+  // Replacing the input drops the caret. Firefox then paints the remote value.
+  function refreshTicketForm(ticket) {
+    const form = ticketForm;
+    const titleInput = findDeep(form, "md-ticket-title-input");
+    if (!inputUnsaved(titleInput)) {
+      paintText(findDeep(form, "md-ticket-heading"), ticket.title);
+      paintField(titleInput, ticket.title);
+    }
+    const choice = (className, value) => {
+      const select = findDeep(form, className);
+      if (!select) return;
+      const next = value == null ? "" : String(value);
+      if (select.value !== next) select.value = next;
+    };
+    choice("md-ticket-state", ticket.state);
+    choice("md-ticket-type", ticket.type);
+    choice("md-ticket-priority", ticket.priority);
+    paintField(findDeep(form, "md-ticket-assignee"), ticket.assignee || "");
+    paintText(findDeep(form, "md-ticket-reporter"), ticket.reporter);
+    paintText(findDeep(form, "md-ticket-created"), ticket.created);
+    const parent = findElement(form, (el) => el.classList && el.classList.contains("md-ticket-parent"));
+    if (parent) {
+      paintField(findElement(parent, (el) => el.classList && el.classList.contains("md-ticket-match")), parentLabel(ticket));
+    }
+    refreshLinkList("md-ticket-depends", (ticket.depends || []).map(knownTicket));
+    refreshLinkList("md-ticket-children", childTicketsOf(ticket));
+    refreshLinkList("md-ticket-blocks", blockersOf(ticket));
+  }
+
   function renderTicketForm() {
     const form = ticketForm;
     if (!form || !openTicket || typeof document === "undefined" || typeof document.createElement !== "function") return;
-    ticketPickers.length = 0;
     const ticket = openTicket;
     syncRelationShown(ticket);
     showElement(form);
+    const key = ticketStructureKey(ticket);
+    if (key === ticketFormKey && findDeep(form, "md-ticket-assignee")) {
+      refreshTicketForm(ticket);
+      return;
+    }
+    const held = heldTicketField();
+    ticketFormKey = key;
+    ticketPickers.length = 0;
     const heading = document.createElement("div");
     heading.className = "md-ticket-heading";
     heading.textContent = ticket.title;
@@ -7061,6 +7246,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     titleInput.type = "text";
     titleInput.className = "md-ticket-title-input";
     titleInput.value = ticket.title;
+    markField(titleInput, ticket.title);
     if (typeof titleInput.setAttribute === "function") titleInput.setAttribute("type", "text");
     hideElement(titleInput);
     let pendingTitle = null;
@@ -7074,8 +7260,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
     function restoreTitle() {
       pendingTitle = null;
-      titleInput.value = ticket.title;
-      showHeading(ticket.title);
+      const title = openTicket ? openTicket.title : "";
+      titleInput.value = title;
+      markField(titleInput, title);
+      showHeading(title);
     }
 
     function commitTitle() {
@@ -7088,16 +7276,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (next === openTicket.title || next === pendingTitle) {
         showHeading(next === openTicket.title ? openTicket.title : next);
         titleInput.value = heading.textContent;
+        markField(titleInput, titleInput.value);
         return;
       }
       pendingTitle = next;
       showHeading(next);
+      titleInput.value = next;
+      markField(titleInput, next);
       sendTicketSet({ title: next });
     }
 
     heading.addEventListener("click", () => {
       if (!openTicket) return;
       titleInput.value = heading.textContent;
+      markField(titleInput, titleInput.value);
       hideElement(heading);
       showElement(titleInput);
       if (typeof titleInput.focus === "function") titleInput.focus();
@@ -7115,10 +7307,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       commitTitle();
     });
     titleInput.addEventListener("blur", () => {
-      if (skipTitleBlur) {
+      if (rebuildingTicketForm || skipTitleBlur) {
         skipTitleBlur = false;
         return;
       }
+      if (findDeep(ticketForm, "md-ticket-title-input") !== titleInput) return;
       commitTitle();
     });
 
@@ -7161,17 +7354,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     assigneeInput.type = "text";
     assigneeInput.className = "md-ticket-assignee";
     assigneeInput.value = ticket.assignee || "";
+    markField(assigneeInput, assigneeInput.value);
     if (typeof assigneeInput.setAttribute === "function") assigneeInput.setAttribute("type", "text");
     let skipAssigneeBlur = false;
     function commitAssignee() {
       if (!openTicket) return;
       const raw = String(assigneeInput.value || "");
       if (/[\r\n\t]/.test(raw)) {
-        assigneeInput.value = openTicket.assignee || "";
+        const stored = openTicket.assignee || "";
+        assigneeInput.value = stored;
+        markField(assigneeInput, stored);
         return;
       }
       const next = raw.trim();
       assigneeInput.value = next;
+      markField(assigneeInput, next);
       if (next === (openTicket.assignee || "")) return;
       sendTicketSet({ assignee: next });
     }
@@ -7180,7 +7377,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (event.key === "Escape") {
         if (typeof event.preventDefault === "function") event.preventDefault();
         skipAssigneeBlur = true;
-        assigneeInput.value = openTicket ? (openTicket.assignee || "") : "";
+        const stored = openTicket ? (openTicket.assignee || "") : "";
+        assigneeInput.value = stored;
+        markField(assigneeInput, stored);
         return;
       }
       if (event.key !== "Enter") return;
@@ -7188,10 +7387,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       commitAssignee();
     });
     assigneeInput.addEventListener("blur", () => {
-      if (skipAssigneeBlur) {
+      if (rebuildingTicketForm || skipAssigneeBlur) {
         skipAssigneeBlur = false;
         return;
       }
+      if (findDeep(ticketForm, "md-ticket-assignee") !== assigneeInput) return;
       commitAssignee();
     });
     assigneeLabel.append(fieldName("Assignee"), assigneeInput);
@@ -7212,25 +7412,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
     parentField.append(fieldName("Parent"), parentPicker);
 
-    function knownTicket(id) {
-      return ticketList.find((item) => item.id === id) || {
-        id,
-        title: id,
-        created: "",
-        parent: "",
-        depends: [],
-        rev: 0,
-      };
-    }
-
     const depends = document.createElement("div");
     depends.className = "md-ticket-depends";
     const dependList = buildLinkList((ticket.depends || []).map(knownTicket), (selected) => {
-      sendTicketSet({ depends: (ticket.depends || []).filter((id) => id !== selected.id) });
+      const current = openTicket;
+      if (!current) return;
+      sendTicketSet({ depends: (current.depends || []).filter((id) => id !== selected.id) });
     });
     const dependPicker = buildTicketPicker({
       onAdd: (chosen) => {
-        const ids = (ticket.depends || []).slice();
+        const current = openTicket;
+        if (!current) return;
+        const ids = (current.depends || []).slice();
         if (!ids.includes(chosen.id)) ids.push(chosen.id);
         sendTicketSet({ depends: ids });
       },
@@ -7243,9 +7436,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
     const children = document.createElement("div");
     children.className = "md-ticket-children";
-    const childTickets = ticketList
-      .filter((item) => item.parent === ticket.id && item.id !== ticket.id)
-      .sort(compareTickets);
+    const childTickets = childTicketsOf(ticket);
     const childList = buildLinkList(childTickets, (selected) => {
       sendTicketSet({
         path: `tickets/${selected.id}.md`,
@@ -7303,9 +7494,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return row;
     }
 
-    const blockers = ticketList
-      .filter((item) => item.id !== ticket.id && Array.isArray(item.depends) && item.depends.includes(ticket.id))
-      .sort(compareTickets);
+    const blockers = blockersOf(ticket);
     const blocks = document.createElement("div");
     blocks.className = "md-ticket-blocks";
     const blockList = buildLinkList(blockers, (selected) => {
@@ -7408,12 +7597,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
     menuButton.addEventListener("keydown", onTicketMenuEscape);
     menuPanel.addEventListener("keydown", onTicketMenuEscape);
-    form.replaceChildren(fields, facts, menuButton, menuPanel);
+    rebuildingTicketForm = true;
+    try {
+      form.replaceChildren(fields, facts, menuButton, menuPanel);
+    } finally {
+      rebuildingTicketForm = false;
+    }
     if (selectWidth > 0) {
       const extra = selectChromeGap(sized);
       if (extra > 0) paintSelectWidth(sized, selectWidth + extra);
     }
-    if (ticket.title === "New ticket") {
+    if (held) restoreHeld(held);
+    else if (ticket.title === "New ticket") {
       hideElement(heading);
       showElement(titleInput);
       if (typeof titleInput.focus === "function") titleInput.focus();
@@ -7435,6 +7630,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     openTicket = null;
     relationTicketId = "";
     ticketMenuOpen = false;
+    ticketFormKey = "";
     ticketPickers.length = 0;
     if (!ticketForm) return;
     hideElement(ticketForm);
@@ -7572,6 +7768,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (ticketForm) {
       hideElement(ticketForm);
+      ticketFormKey = "";
       if (typeof ticketForm.replaceChildren === "function") ticketForm.replaceChildren();
     }
     const tree = findTicketTree(filesNav());

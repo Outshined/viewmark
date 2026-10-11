@@ -10136,6 +10136,80 @@ test("T-ticket-notice", () => {
   }
 });
 
+test("a focused ticket field keeps unsaved text when another client sets the ticket", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  const previous = Object.getOwnPropertyDescriptor(globalThis.document, "activeElement");
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const alpha = { ...ticketFixture("aaaaaaaa", "Alpha", "new", T0), assignee: "bob" };
+    transport.deliver({ type: "tickets", tickets: [alpha] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 1,
+      text: "Body\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    const assignee = byClass(form, "md-ticket-assignee")[0];
+    const priority = byClass(form, "md-ticket-priority")[0];
+    const heading = byClass(form, "md-ticket-heading")[0];
+    const titleInput = byClass(form, "md-ticket-title-input")[0];
+    assert.equal(assignee.value, "bob");
+    assignee.value = "unsaved";
+    globalThis.document.activeElement = assignee;
+    const notice = (fields) => {
+      transport.deliver({
+        type: "ticket",
+        path: "tickets/aaaaaaaa.md",
+        rev: fields.rev,
+        title: "Alpha",
+        state: "new",
+        ticketType: "task",
+        priority: "medium",
+        assignee: "bob",
+        parent: "",
+        depends: [],
+        reporter: "Ada",
+        created: T0,
+        ...fields,
+      });
+    };
+    notice({ assignee: "carl", priority: "high", rev: 2 });
+    assert.equal(byClass(form, "md-ticket-assignee")[0], assignee, "the assignee field was replaced");
+    assert.equal(byClass(form, "md-ticket-assignee")[0].value, "unsaved");
+    assert.equal(globalThis.document.activeElement, byClass(form, "md-ticket-assignee")[0]);
+    assert.equal(priority, byClass(form, "md-ticket-priority")[0], "the priority field was replaced");
+    assert.equal(priority.value, "high");
+    assignee.listeners.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(assignee.value, "carl");
+    notice({ assignee: "dana", priority: "high", rev: 3 });
+    assert.equal(byClass(form, "md-ticket-assignee")[0], assignee);
+    assert.equal(assignee.value, "dana");
+    globalThis.document.activeElement = null;
+    notice({ assignee: "erin", rev: 4 });
+    assert.equal(assignee.value, "erin");
+    heading.listeners.click();
+    titleInput.value = "Draft title";
+    globalThis.document.activeElement = titleInput;
+    notice({ title: "Remote title", assignee: "erin", rev: 5 });
+    assert.equal(byClass(form, "md-ticket-title-input")[0], titleInput, "the title field was replaced");
+    assert.equal(titleInput.value, "Draft title");
+    assert.equal(titleInput.hidden, false);
+    assert.equal(globalThis.document.activeElement, titleInput);
+    assert.equal(byClass(form, "md-ticket-assignee")[0].value, "erin");
+    view.destroy();
+  } finally {
+    if (previous) Object.defineProperty(globalThis.document, "activeElement", previous);
+    else delete globalThis.document.activeElement;
+    mounted.restore();
+  }
+});
+
 test("T-ticket-gone", () => {
   const mounted = mountTicketPage();
   const transport = holdingTransport();
