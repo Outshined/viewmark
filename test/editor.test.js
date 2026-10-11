@@ -5311,8 +5311,8 @@ test("comment cards edit the thread and line up with the highlight", () => {
     const button = mounted.findAll((node) => node.className === "md-add-comment")[0];
     assert.equal(button.textContent, "Add comment");
     assert.equal(button.hidden, false);
-    assert.equal(button.styleProps.left, "8px");
-    assert.equal(button.styleProps.top, "10px");
+    assert.equal(button.styleProps.left, `${mounted.aside.getBoundingClientRect().left}px`);
+    assert.equal(button.styleProps.top, "40px");
     let prevented = false;
     button.listeners.mousedown({
       button: 1,

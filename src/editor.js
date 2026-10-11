@@ -3569,18 +3569,45 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (sel && sel.rangeCount > 0 && typeof sel.getRangeAt === "function") {
       const range = sel.getRangeAt(0);
       const rects = typeof range.getClientRects === "function" ? range.getClientRects() : [];
-      if (rects && rects.length > 0) rect = rects[rects.length - 1];
-      else if (typeof range.getBoundingClientRect === "function") rect = range.getBoundingClientRect();
+      if (rects && rects.length > 0) {
+        for (let i = 0; i < rects.length; i += 1) {
+          const item = rects[i];
+          if (!item || !Number.isFinite(item.top)) continue;
+          rect = item;
+          if (item.height > 0 || item.bottom > item.top) break;
+        }
+      }
+      if (!rect && typeof range.getBoundingClientRect === "function") rect = range.getBoundingClientRect();
+    }
+    const column = elementRect(commentsAside);
+    // Over the text, this button takes the press that should land in the document.
+    // It stays in the comments column, top aligned with the selection's first line.
+    if (!rect || !column || !Number.isFinite(rect.top) || !Number.isFinite(column.left)) {
+      hideCommentButton();
+      return;
     }
     addCommentButton.hidden = false;
     setStyle(addCommentButton, "position", "fixed");
-    // Above the selection, clear of the characters that follow it.
-    if (rect && Number.isFinite(rect.top) && Number.isFinite(rect.left)) {
-      const height = Number(addCommentButton.offsetHeight);
-      const lift = Number.isFinite(height) ? height : 0;
-      setStyle(addCommentButton, "left", `${rect.left}px`);
-      setStyle(addCommentButton, "top", `${rect.top - lift}px`);
+    let left = column.left;
+    let top = rect.top;
+    const width = Number(addCommentButton.offsetWidth);
+    const height = Number(addCommentButton.offsetHeight);
+    if (Number.isFinite(width) && width > 0 && Number.isFinite(column.right) && left + width > column.right) {
+      left = Math.max(column.left, column.right - width);
     }
+    const textColumn = elementRect(root);
+    if (textColumn && Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+      const hitsText = (x, y) => x < textColumn.right && x + width > textColumn.left && y < textColumn.bottom && y + height > textColumn.top;
+      if (hitsText(left, top) && Number.isFinite(column.top)) {
+        top = column.top;
+        if (hitsText(left, top)) {
+          hideCommentButton();
+          return;
+        }
+      }
+    }
+    setStyle(addCommentButton, "left", `${left}px`);
+    setStyle(addCommentButton, "top", `${top}px`);
   }
 
   function editingCommentIds() {
