@@ -75,8 +75,14 @@ async function scenes(t) {
 
 const words = (title) => title.trim().split(/\s+/).filter(Boolean).length;
 
+function drawnTitles(buttons, token) {
+  return buttons
+    .filter((button) => button.drawn && button.className.split(/\s+/).includes(token))
+    .map((button) => button.title);
+}
+
 test("every glyph button drawn on a document, a comment card, and a ticket has a title of one to six words", async (t) => {
-  const { doc, ticket } = await scenes(t);
+  const { page, doc, ticket } = await scenes(t);
   const drawn = [...doc, ...ticket].filter((button) => button.drawn);
   const wrong = drawn.filter((button) => !button.title || !button.title.trim() || words(button.title) > 6);
   assert.deepEqual(wrong.map((button) => `${button.name}: ${JSON.stringify(button.title)}`), [], "glyph buttons with no title, an empty one, or more than six words");
@@ -86,6 +92,34 @@ test("every glyph button drawn on a document, a comment card, and a ticket has a
   for (const name of ["New file", "Delete file", "New ticket", "Filter", "Raw", "Menu", "Resolve", "Copy link", "Reply", "Delete", "Copy ticket id", "Add", "Remove"]) {
     assert.ok(names.has(name), `no drawn glyph button named ${name}; drawn: ${[...names].join(", ")}`);
   }
+  const same = ["New file", "Delete file", "New ticket", "Filter", "Resolve", "Copy link", "Reply", "Copy ticket id"];
+  const drifted = drawn.filter((button) => same.includes(button.name) && button.title !== button.name);
+  assert.deepEqual(drifted.map((button) => `${button.name}: ${JSON.stringify(button.title)}`), []);
+  assert.deepEqual(drawnTitles(doc, "md-view-toggle"), ["Show raw markdown"]);
+  assert.deepEqual(drawnTitles(doc, "md-doc-menu"), ["Open the document menu"]);
+  assert.deepEqual(doc.filter((button) => button.drawn && button.name === "Delete").map((button) => button.title), ["Delete this comment"]);
+  assert.deepEqual(drawnTitles(ticket, "md-ticket-pane-menu"), ["Open the ticket menu"]);
+  assert.deepEqual(drawnTitles(ticket, "md-ticket-add"), ["Add a dependency"]);
+  assert.deepEqual(drawnTitles(ticket, "md-ticket-remove"), ["Remove a dependency"]);
+  const eye = await page.eval(`(() => {
+    const button = document.querySelector("button.md-view-toggle");
+    if (!button) return null;
+    const formatted = button.getAttribute("title");
+    const before = button.getAttribute("aria-pressed");
+    button.click();
+    const raw = button.getAttribute("title");
+    const pressed = button.getAttribute("aria-pressed");
+    button.click();
+    return { formatted, before, raw, pressed, restored: button.getAttribute("title"), after: button.getAttribute("aria-pressed") };
+  })()`);
+  assert.deepEqual(eye, {
+    formatted: "Show raw markdown",
+    before: "false",
+    raw: "Show raw markdown",
+    pressed: "true",
+    restored: "Show raw markdown",
+    after: "false",
+  });
   t.diagnostic(drawn.map((button) => `${button.name} → ${JSON.stringify(button.title)}`).join("; "));
 });
 

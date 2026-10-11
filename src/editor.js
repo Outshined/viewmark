@@ -3331,12 +3331,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       "icon-btn",
       () => onReply(comment.id),
     ));
-    card.appendChild(makeIconButton(
+    const remove = makeIconButton(
       "Delete",
       ICON_PATHS.delete[0],
       "icon-btn danger",
       () => onDelete(comment.id),
-    ));
+    );
+    if (typeof remove.setAttribute === "function") remove.setAttribute("title", "Delete this comment");
+    card.appendChild(remove);
     if (comment.id !== currentCommentId) setCommentActions(card, false);
     return card;
   }
@@ -4269,7 +4271,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof button.setAttribute === "function") {
       button.setAttribute("type", "button");
       button.setAttribute("aria-label", "Raw");
-      button.setAttribute("title", "Raw");
+      button.setAttribute("title", "Show raw markdown");
       button.setAttribute("contenteditable", "false");
     }
     if (typeof button.addEventListener === "function") {
@@ -4311,6 +4313,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       button.contentEditable = "false";
       if (typeof button.setAttribute === "function") {
         button.setAttribute("aria-label", "Menu");
+        button.setAttribute("title", "Open the document menu");
         button.setAttribute("aria-haspopup", "menu");
         button.setAttribute("aria-expanded", "false");
         button.setAttribute("contenteditable", "false");
@@ -6855,14 +6858,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return button;
   }
 
-  function strokeButton(className, label, d) {
+  function strokeButton(className, label, d, title) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `icon-btn ${className}`;
     if (typeof button.setAttribute === "function") {
       button.setAttribute("type", "button");
       button.setAttribute("aria-label", label);
-      button.setAttribute("title", label);
+      button.setAttribute("title", title || label);
     }
     const svgNS = "http://www.w3.org/2000/svg";
     const svg = typeof document.createElementNS === "function"
@@ -7050,8 +7053,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     input.addEventListener("input", onMatchInput);
     const parts = [input];
     if (buttons) {
-      const add = strokeButton("md-ticket-add", "Add", "M12 5v14M5 12h14");
-      const remove = strokeButton("md-ticket-remove", "Remove", "M5 12h14");
+      const add = strokeButton("md-ticket-add", "Add", "M12 5v14M5 12h14", options.addTitle);
+      const remove = strokeButton("md-ticket-remove", "Remove", "M5 12h14", options.removeTitle);
       add.addEventListener("click", (event) => {
         if (event && typeof event.preventDefault === "function") event.preventDefault();
         const ticket = state.chosen;
@@ -7476,6 +7479,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       sendTicketSet({ depends: (current.depends || []).filter((id) => id !== selected.id) });
     });
     const dependPicker = buildTicketPicker({
+      addTitle: "Add a dependency",
+      removeTitle: "Remove a dependency",
       onAdd: (chosen) => {
         const current = openTicket;
         if (!current) return;
@@ -7501,6 +7506,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       });
     });
     const childPicker = buildTicketPicker({
+      addTitle: "Add a child",
+      removeTitle: "Remove a child",
       onAdd: (chosen) => {
         sendTicketSet({
           path: `tickets/${chosen.id}.md`,
@@ -7561,6 +7568,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       });
     });
     const blockPicker = buildTicketPicker({
+      addTitle: "Add a block",
+      removeTitle: "Remove a block",
       onAdd: (chosen) => {
         const ids = (chosen.depends || []).slice();
         if (!ids.includes(ticket.id)) ids.push(ticket.id);
@@ -7595,7 +7604,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const menuButton = iconButton("menu", "md-ticket-pane-menu");
     if (typeof menuButton.setAttribute === "function") {
       menuButton.setAttribute("aria-label", "Menu");
-      menuButton.setAttribute("title", "Menu");
+      menuButton.setAttribute("title", "Open the ticket menu");
       menuButton.setAttribute("aria-haspopup", "menu");
       menuButton.setAttribute("aria-expanded", ticketMenuOpen ? "true" : "false");
     }

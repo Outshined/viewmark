@@ -6746,6 +6746,7 @@ test("comment actions stay hidden until the card is current", () => {
     assert.equal(reply.getAttribute("aria-label"), "Reply");
     assert.equal(stroke(reply), "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z");
     assert.equal(remove.getAttribute("aria-label"), "Delete");
+    assert.equal(remove.getAttribute("title"), "Delete this comment");
     assert.equal(remove.classList.contains("danger"), true);
     assert.equal(stroke(remove), "M18 6 6 18M6 6l12 12");
     assert.equal(link.classList.contains("md-comment-link"), true);
@@ -9101,6 +9102,7 @@ test("document menu offers Attach image and Delete file", () => {
     assert.equal(button.type, "button");
     assert.equal(button.classList.contains("icon-btn"), true);
     assert.equal(button.getAttribute("aria-label"), "Menu");
+    assert.equal(button.getAttribute("title"), "Open the document menu");
     assert.equal(button.getAttribute("aria-haspopup"), "menu");
     assert.equal(button.getAttribute("aria-expanded"), "false");
     assert.deepEqual(iconPaths(button), ["M4 6h16M4 12h16M4 18h16"]);
@@ -11947,6 +11949,7 @@ test("ticket parent, depends, and children share a completion control", () => {
     const dependAdd = byClass(depends, "md-ticket-add")[0];
     assert.equal(dependAdd.classList.contains("icon-btn"), true);
     assert.equal(dependAdd.getAttribute("aria-label"), "Add");
+    assert.equal(dependAdd.getAttribute("title"), "Add a dependency");
     assert.equal(dependAdd.textContent, "");
     assert.equal(dependAdd.type, "button");
     const dependAddSvg = dependAdd.childNodes.find((node) => node.tagName === "SVG");
@@ -11963,6 +11966,7 @@ test("ticket parent, depends, and children share a completion control", () => {
     assert.equal(dependRemove.classList.contains("icon-btn"), true);
     assert.equal(dependRemove.type, "button");
     assert.equal(dependRemove.getAttribute("aria-label"), "Remove");
+    assert.equal(dependRemove.getAttribute("title"), "Remove a dependency");
     assert.equal(dependRemove.textContent, "");
     const dependRemoveSvg = dependRemove.childNodes.find((node) => node.tagName === "SVG");
     assert.equal(dependRemoveSvg.getAttribute("aria-hidden"), "true");
@@ -11974,10 +11978,14 @@ test("ticket parent, depends, and children share a completion control", () => {
       byClass(depends, "md-ticket-link").map((node) => node.dataset.id),
       ["bbbbbbbb"],
     );
+    assert.equal(byClass(children, "md-ticket-add")[0].getAttribute("title"), "Add a child");
+    assert.equal(byClass(children, "md-ticket-remove")[0].getAttribute("title"), "Remove a child");
     assert.deepEqual(
       byClass(children, "md-ticket-link").map((node) => node.textContent),
       ["Cedar"],
     );
+    assert.equal(byClass(block("md-ticket-blocks"), "md-ticket-add")[0].getAttribute("title"), "Add a block");
+    assert.equal(byClass(block("md-ticket-blocks"), "md-ticket-remove")[0].getAttribute("title"), "Remove a block");
     assert.deepEqual(
       byClass(block("md-ticket-blocks"), "md-ticket-link").map((node) => node.textContent),
       ["Echo"],
@@ -12878,6 +12886,7 @@ test("a ticket pane menu shows relation fields and Blocks writes the other ticke
     assert.equal(button.parentElement, form());
     assert.equal(inEditor(button), false);
     assert.equal(button.getAttribute("aria-label"), "Menu");
+    assert.equal(button.getAttribute("title"), "Open the ticket menu");
     assert.equal(button.getAttribute("aria-haspopup"), "menu");
     assert.equal(button.getAttribute("aria-expanded"), "false");
     const glyph = button.childNodes[0];
@@ -14788,6 +14797,7 @@ test("raw mode is a view and Enter stores one newline", () => {
     assert.equal(button.tagName, "BUTTON");
     assert.equal(button.type, "button");
     assert.equal(button.getAttribute("aria-label"), "Raw");
+    assert.equal(button.getAttribute("title"), "Show raw markdown");
     assert.equal(button.getAttribute("aria-pressed"), "false");
     assert.equal(button.classList.contains("icon-btn"), true);
     assert.notEqual(mounted.root.childNodes[0], button);
@@ -14823,6 +14833,7 @@ test("raw mode is a view and Enter stores one newline", () => {
     assert.equal(view.getState().cursor, 5);
     assert.equal(mounted.root.focused, true);
     assert.equal(button.getAttribute("aria-pressed"), "true");
+    assert.equal(button.getAttribute("title"), "Show raw markdown");
     assert.equal(mounted.root.classList.contains("md-source"), true);
     const slash = slashLine(button);
     assert.equal(slash.getAttribute("x1"), "3");
@@ -15541,12 +15552,12 @@ test("committed composition joins the typing run", () => {
 test("glyph button title is the browser tooltip", () => {
   const mounted = mountTicketPage();
   const page = mounted.root.parentElement;
-  const glyph = (button, label) => {
+  const glyph = (button, label, title = label) => {
     assert.equal(button.tagName, "BUTTON");
     assert.equal(button.classList.contains("icon-btn"), true);
     assert.equal(button.textContent, "");
     assert.equal(button.getAttribute("aria-label"), label);
-    assert.equal(button.getAttribute("title"), label);
+    assert.equal(button.getAttribute("title"), title);
   };
   const words = (button) => {
     assert.equal(button.tagName, "BUTTON");
@@ -15569,7 +15580,8 @@ test("glyph button title is the browser tooltip", () => {
     trash.setAttribute("disabled", "");
 
     const raw = viewToggleOf(mounted.root);
-    glyph(raw, "Raw");
+    glyph(raw, "Raw", "Show raw markdown");
+    glyph(byClass(mounted.root, "md-doc-menu")[0], "Menu", "Open the document menu");
     assert.equal(raw.getAttribute("aria-pressed"), "false");
     assert.equal(slashLine(raw), null);
     raw.disabled = true;
@@ -15580,12 +15592,12 @@ test("glyph button title is the browser tooltip", () => {
     assert.equal(eyed.getAttribute("aria-pressed"), "true");
     assert.ok(slashLine(eyed));
     assert.equal(eyed.getAttribute("aria-label"), "Raw");
-    assert.equal(eyed.getAttribute("title"), "Raw");
+    assert.equal(eyed.getAttribute("title"), "Show raw markdown");
     assert.equal(eyed.getAttribute("disabled"), "");
     assert.equal(eyed.disabled, true);
     pressViewToggle(mounted.root);
     assert.equal(viewToggleOf(mounted.root).getAttribute("aria-pressed"), "false");
-    assert.equal(viewToggleOf(mounted.root).getAttribute("title"), "Raw");
+    assert.equal(viewToggleOf(mounted.root).getAttribute("title"), "Show raw markdown");
     assert.equal(viewToggleOf(mounted.root).getAttribute("aria-label"), "Raw");
     assert.equal(slashLine(viewToggleOf(mounted.root)), null);
 
@@ -15598,14 +15610,14 @@ test("glyph button title is the browser tooltip", () => {
     for (const button of [resolve, reply, remove, link]) assert.equal(button.hidden, true);
     glyph(resolve, "Resolve");
     glyph(reply, "Reply");
-    glyph(remove, "Delete");
+    glyph(remove, "Delete", "Delete this comment");
     glyph(link, "Copy link");
     assert.equal(link.classList.contains("md-comment-link"), true);
     reply.listeners.click({ preventDefault() {} });
     const open = byClass(mounted.aside, "md-comment-card")[0];
     glyph(labeled(open, "Resolve")[0], "Resolve");
     glyph(labeled(open, "Reply")[0], "Reply");
-    glyph(labeled(open, "Delete")[0], "Delete");
+    glyph(labeled(open, "Delete")[0], "Delete", "Delete this comment");
     const links = labeled(open, "Copy link");
     assert.equal(links.length, 2);
     for (const button of links) glyph(button, "Copy link");
@@ -15631,7 +15643,7 @@ test("glyph button title is the browser tooltip", () => {
     words(walkNodes(mounted.nav, (node) => node.tagName === "BUTTON" && node.textContent === "idea.md")[0]);
     assert.equal(trash.getAttribute("title"), "Delete file");
     assert.equal(trash.getAttribute("disabled"), "");
-    assert.equal(viewToggleOf(mounted.root).getAttribute("title"), "Raw");
+    assert.equal(viewToggleOf(mounted.root).getAttribute("title"), "Show raw markdown");
 
     const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0, "", ["bbbbbbbb"]);
     const bravo = ticketFixture("bbbbbbbb", "Bravo", "new", T1);
@@ -15652,9 +15664,9 @@ test("glyph button title is the browser tooltip", () => {
     const removes = byClass(form, "md-ticket-remove");
     assert.ok(adds.length > 0);
     assert.equal(removes.length, adds.length);
-    for (const button of adds) glyph(button, "Add");
-    for (const button of removes) glyph(button, "Remove");
-    glyph(byClass(form, "md-ticket-pane-menu")[0], "Menu");
+    for (const button of adds) glyph(button, "Add", "Add a dependency");
+    for (const button of removes) glyph(button, "Remove", "Remove a dependency");
+    glyph(byClass(form, "md-ticket-pane-menu")[0], "Menu", "Open the ticket menu");
     glyph(byClass(form, "md-ticket-copy-id")[0], "Copy ticket id");
     const panel = byClass(form, "md-ticket-pane-panel")[0];
     words(panel.childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === "Copy link"));
@@ -15662,7 +15674,7 @@ test("glyph button title is the browser tooltip", () => {
     assert.equal(walkNodes(page, (node) => node.getAttribute && node.getAttribute("role") === "tooltip").length, 0);
     assert.equal(trash.getAttribute("title"), "Delete file");
     assert.equal(trash.disabled, true);
-    assert.equal(viewToggleOf(mounted.root).getAttribute("title"), "Raw");
+    assert.equal(viewToggleOf(mounted.root).getAttribute("title"), "Show raw markdown");
     assert.equal(viewToggleOf(mounted.root).getAttribute("aria-label"), "Raw");
     view.destroy();
   } finally {
