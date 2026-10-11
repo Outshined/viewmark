@@ -4259,6 +4259,61 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
+  // The row after a list hard break is not itself a list line, so it has no
+  // gutter. The next letter joins the item and is drawn on the item text. The
+  // line box has to move with the caret: padding would leave this box on the
+  // content edge, and the caret would no longer sit on the box the offset owns.
+  function listBreakIndent(blocks, index) {
+    const block = blocks[index];
+    if (!block || block.type !== "line" || !block.empty) return null;
+    const prev = blocks[index - 1];
+    if (!prev || prev.type !== "line") return null;
+    const classes = prev.classes || [];
+    if (classes.includes("md-quote")) return null;
+    if (!classes.includes("md-li") && !classes.includes("md-ol")) return null;
+    const parts = prev.parts || [];
+    const last = parts[parts.length - 1];
+    if (!last || last.type !== "break" || block.start !== last.end) return null;
+    return Number.isFinite(prev.indent) ? prev.indent : 0;
+  }
+
+  function settleListContinuations(blocks) {
+    const indentAt = new Map();
+    for (let i = 0; i < blocks.length; i += 1) {
+      const indent = listBreakIndent(blocks, i);
+      if (indent == null) continue;
+      indentAt.set(blocks[i].start, indent);
+    }
+    if (indentAt.size === 0) return;
+    for (const line of childArray(root)) {
+      if (!line || !line.classList || !line.classList.contains("md-line") || !line.style) continue;
+      const start = Number(line.dataset && line.dataset.start);
+      if (!indentAt.has(start)) continue;
+      const indent = indentAt.get(start);
+      const computed = readComputedStyle(line);
+      if (!computed) continue;
+      const fontSize = cssPx(computed.fontSize);
+      if (!(fontSize > 0)) continue;
+      let ch = 0;
+      if (indent > 0) {
+        const probe = document.createElement("span");
+        probe.style.display = "inline-block";
+        probe.style.width = "1ch";
+        probe.style.padding = "0";
+        probe.style.border = "0";
+        line.appendChild(probe);
+        if (typeof probe.getBoundingClientRect === "function") {
+          const width = probe.getBoundingClientRect().width;
+          if (width > 0) ch = width;
+        }
+        detachNode(probe);
+      }
+      const gutter = listGutter(fontSize, indent, ch);
+      if (!(gutter > 0)) continue;
+      line.style.marginLeft = `${gutter}px`;
+    }
+  }
+
   function syncSourceClass() {
     if (!root.classList) return;
     if (sourceMode) root.classList.add("md-source");
@@ -4592,6 +4647,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       root.replaceChildren(...nodes);
       settleBlankBreaks();
       settleRawMarkers();
+      settleListContinuations(blocks);
       markEditingHighlights();
       hideResolvedHighlights();
       markCurrentHighlights();

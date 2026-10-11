@@ -5010,6 +5010,80 @@ test("SE.li.1", () => {
   }
 });
 
+test("an empty list continuation takes the list gutter", () => {
+  const mounted = mountEditor();
+  const create = globalThis.document.createElement;
+  globalThis.document.createElement = (tag) => {
+    const el = create(tag);
+    el.getBoundingClientRect = () => ({ width: 8, height: 16, left: 0, top: 0, right: 8, bottom: 16 });
+    return el;
+  };
+  globalThis.window.getComputedStyle = () => ({ fontSize: "16px", font: "16px sans-serif" });
+  const gutterOf = (indent) => 1.3 * 16 + indent * 8;
+  const nearPx = (actual, expected) => Math.abs(actual - expected) < 1e-6;
+  const px = (value) => Number.parseFloat(value || "0");
+  const emptyLine = (doc, cursor) => {
+    const view = createEditor(mounted.root, doc, cursor);
+    const lines = mounted.findAll((node) => (
+      node.classList
+      && node.classList.contains("md-line")
+      && node.dataset.start === node.dataset.end
+      && node.textContent === ""
+    ));
+    view.destroy();
+    return lines;
+  };
+  try {
+    const shifted = emptyLine("- alpha\\\n\n", 9);
+    assert.equal(shifted.length, 1);
+    assert.ok(nearPx(px(shifted[0].style.marginLeft), gutterOf(0)));
+    assert.equal(shifted[0].textContent.includes("\\"), false);
+    assert.equal(mounted.root.textContent.includes("\\"), false);
+
+    const phantom = emptyLine("- alpha\\\n", 9);
+    assert.equal(phantom.length, 1);
+    assert.ok(nearPx(px(phantom[0].style.marginLeft), gutterOf(0)));
+
+    const nested = emptyLine("  - alpha\\\n\n", 11);
+    assert.equal(nested.length, 1);
+    assert.ok(nearPx(px(nested[0].style.marginLeft), gutterOf(2)));
+
+    const ordered = emptyLine("1. alpha\\\n\n", 10);
+    assert.equal(ordered.length, 1);
+    assert.ok(nearPx(px(ordered[0].style.marginLeft), gutterOf(0)));
+
+    const spaces = emptyLine("- alpha  \n\n", 10);
+    assert.equal(spaces.length, 1);
+    assert.ok(nearPx(px(spaces[0].style.marginLeft), gutterOf(0)));
+
+    const continued = emptyLine("- alpha\nbeta\\\n\n", 14);
+    assert.equal(continued.length, 1);
+    assert.ok(nearPx(px(continued[0].style.marginLeft), gutterOf(0)));
+
+    const paired = emptyLine("- alpha\\\r\n\r\n", 10);
+    assert.equal(paired.length, 1);
+    assert.ok(nearPx(px(paired[0].style.marginLeft), gutterOf(0)));
+
+    const blank = emptyLine("- alpha\n\n", 8);
+    assert.equal(blank.length, 1);
+    assert.equal(blank[0].style.marginLeft || "", "");
+
+    const paragraph = emptyLine("hello\\\n\n", 7);
+    assert.equal(paragraph.length, 1);
+    assert.equal(paragraph[0].style.marginLeft || "", "");
+
+    const quote = emptyLine("> alpha\\\n\n", 9);
+    assert.equal(quote.length, 1);
+    assert.equal(quote[0].style.marginLeft || "", "");
+
+    const quotedItem = emptyLine("> - alpha\\\n\n", 11);
+    assert.equal(quotedItem.length, 1);
+    assert.equal(quotedItem[0].style.marginLeft || "", "");
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("SE.q.1", () => {
   const mounted = mountEditor();
   const press = () => {
