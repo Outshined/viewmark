@@ -33,6 +33,7 @@ import {
   skipHidden,
   enterInsert,
   enterBreak,
+  shiftBreak,
   lineCaret,
   wordStop,
 } from "./doc.js";
@@ -5912,8 +5913,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   // Enter on an item inserts the same kind of marker. A paragraph whose next
   // line would join it inserts the blank line that keeps them apart.
-  function emitBreak() {
-    const brk = enterBreak(state.doc, state.anchor, state.cursor);
+  function emitBreakResult(brk) {
     const partial = { op: "insert", text: brk.text };
     if (typeof brk.anchor === "number") {
       partial.anchor = brk.anchor;
@@ -5921,6 +5921,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (typeof brk.caret === "number") partial.caret = brk.caret;
     emitEdit(partial);
+  }
+
+  function emitBreak() {
+    emitBreakResult(enterBreak(state.doc, state.anchor, state.cursor));
+  }
+
+  // Shift+Enter is a hard break. Enter stays emitBreak.
+  function emitLineBreak() {
+    emitBreakResult(shiftBreak(state.doc, state.anchor, state.cursor));
   }
 
   listen("beforeinput", (event) => {
@@ -5953,8 +5962,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     if (type === "insertCompositionText" || type === "insertFromComposition") return;
-    if (type === "insertParagraph" || type === "insertLineBreak") {
+    if (type === "insertParagraph") {
       emitBreak();
+      return;
+    }
+    if (type === "insertLineBreak") {
+      emitLineBreak();
       return;
     }
     if (type === "deleteContentBackward") {

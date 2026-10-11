@@ -324,6 +324,96 @@ export function enterBreak(doc, anchor, cursor) {
   return { ...widened, caret: origFrom + (brk.caret - spliceFrom) };
 }
 
+// A heading, a rule, a fence, and a table row cannot hold a hard break.
+function shiftUsesEnter(text, at) {
+  const line = sourceLine(text, at);
+  const opened = fenceOpen(line.text);
+  if ((opened && opened.lang !== "comment") || fenceBody(text, at) || isFenceClose(line.text) || line.text.startsWith("|")) return true;
+  const mode = classify(line.text);
+  return mode.kind === "h" || mode.kind === "hr";
+}
+
+// A quote line, or a plain line joined onto a quote above it.
+function inQuoteLine(text, line) {
+  const mode = classify(line.text);
+  if (mode.kind === "quote" || mode.quoted) return true;
+  if (mode.kind !== "p" || line.text === "") return false;
+  let start = line.start;
+  while (start > 0 && text[start - 1] === "\n") {
+    const prev = sourceLine(text, start - 1);
+    const kind = classify(prev.text).kind;
+    if (kind === "quote") return true;
+    if (kind !== "p" || prev.text === "") return false;
+    start = prev.start;
+  }
+  return false;
+}
+
+// The next source line is already in this block, so the newline is there.
+function hardNextStays(text, line) {
+  if (!line.newline) return false;
+  const next = nextLineText(text, line.end);
+  if (next === "" || imageLine(next) || fenceOpen(next) || next.startsWith("|")) return false;
+  const nextKind = classify(next).kind;
+  const mode = classify(line.text);
+  if (mode.kind === "quote" || mode.quoted || (mode.kind === "p" && inQuoteLine(text, line))) {
+    return nextKind === "p" || nextKind === "quote";
+  }
+  if (mode.kind === "li" || mode.kind === "ol") return nextKind === "p";
+  if (mode.kind === "p") return nextKind === "p";
+  return false;
+}
+
+// Shift+Enter writes a backslash and a newline. The newline already between
+// two lines of one block stays; only the backslash is added. A new quote line
+// that would otherwise be empty starts with "> ", or the quote would end.
+function shiftInsert(text, at) {
+  // A caret on the LF of a CRLF writes in front of the pair.
+  let point = at;
+  if (point > 0 && text[point] === "\n" && text[point - 1] === "\r") point -= 1;
+  const line = sourceLine(text, point);
+  const onBreak = line.newline && (point === line.end || (text[point] === "\r" && point + 1 === line.end));
+  const moved = point === at ? null : { anchor: point, cursor: point };
+  if (onBreak && hardNextStays(text, line)) {
+    const nlLen = text[point] === "\r" ? 2 : 1;
+    return { text: "\\", caret: point + 1 + nlLen, ...moved };
+  }
+  const contentEnd = line.newline && line.end > line.start && text[line.end - 1] === "\r" ? line.end - 1 : line.end;
+  const prefix = inQuoteLine(text, line) && text.slice(point, contentEnd) === "" ? "> " : "";
+  return { text: `\\\n${prefix}`, ...moved };
+}
+
+// Shift+Enter deletes a selection first. A heading or a fence is Enter.
+export function shiftBreak(doc, anchor, cursor) {
+  const text = typeof doc === "string" ? doc : "";
+  const clamp = (n) => {
+    const value = Number.isFinite(n) ? Math.trunc(n) : 0;
+    return Math.max(0, Math.min(text.length, value));
+  };
+  const from = Math.min(clamp(anchor), clamp(cursor));
+  const to = Math.max(clamp(anchor), clamp(cursor));
+  const deleted = text.slice(0, from) + text.slice(to);
+  if (shiftUsesEnter(deleted, from)) return enterBreak(doc, anchor, cursor);
+  const brk = shiftInsert(deleted, from);
+  const inserted = typeof brk.text === "string" ? brk.text : "";
+  let spliceFrom = from;
+  let spliceTo = from;
+  if (typeof brk.anchor === "number") {
+    spliceFrom = Math.min(brk.anchor, brk.cursor);
+    spliceTo = Math.max(brk.anchor, brk.cursor);
+  }
+  const span = to - from;
+  const mapStart = (off) => (off <= from ? off : off + span);
+  const mapEnd = (off) => (off < from ? off : off === from ? to : off + span);
+  const origFrom = mapStart(spliceFrom);
+  const origTo = mapEnd(spliceTo);
+  const plain = origFrom === origTo && origFrom === from
+    ? { text: inserted }
+    : { text: inserted, anchor: origFrom, cursor: origTo };
+  if (typeof brk.caret !== "number") return plain;
+  return { ...plain, caret: origFrom + (brk.caret - spliceFrom) };
+}
+
 function insertedOrderedMarker(text) {
   return /^(?:[\s\S]*\n)?[ \t>]*\d+[.)][ \t]+$/.test(text);
 }
@@ -2963,7 +3053,10 @@ function joinedLineBreak(doc, cursor, value, nl, paste) {
   // The marker keeps a heading out of the block above. A break written first
   // would push that heading off the caret Delete just left in front of it.
   if (classify(line.text).kind === "h") return false;
-  return joinsDown(sourceLine(doc, line.start - 1).text);
+  const prev = sourceLine(doc, line.start - 1);
+  // The line after a hard break belongs to the block above.
+  if (hardHideCount(prev.text) > 0) return false;
+  return joinsDown(prev.text);
 }
 
 // A paste repeats the marks it copied. An id that is already a comment token

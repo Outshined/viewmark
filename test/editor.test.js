@@ -25,7 +25,7 @@ import {
   parseHash,
   wordSpan,
 } from "../src/editor.js";
-import { splitCommentNote, lockSpans, lockIndexAt, blockSpan, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, moveText } from "../src/doc.js";
+import { splitCommentNote, lockSpans, lockIndexAt, blockSpan, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, shiftBreak, moveText } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
@@ -3995,11 +3995,12 @@ test("enter on a list item continues that item", () => {
     assert.equal(left.doc, "- a\n\n");
     assert.equal(left.cursor, 5);
 
-    for (const inputType of ["insertLineBreak", "insertParagraph"]) {
-      const again = enter("- alpha", 7, inputType);
-      assert.equal(again.doc, "- alpha\n- ");
-      assert.equal(again.cursor, 10);
-    }
+    const again = enter("- alpha", 7, "insertParagraph");
+    assert.equal(again.doc, "- alpha\n- ");
+    assert.equal(again.cursor, 10);
+    const shifted = enter("- alpha", 7, "insertLineBreak");
+    assert.equal(shifted.doc, "- alpha\\\n");
+    assert.equal(shifted.cursor, 9);
   } finally {
     mounted.restore();
   }
@@ -4041,10 +4042,8 @@ test("enter on an empty list item leaves the list", () => {
     ["1. alpha‸", "1. alpha\n2. ‸"],
   ];
   try {
-    for (const inputType of ["insertParagraph", "insertLineBreak"]) {
-      for (const [before, after] of cases) {
-        assert.equal(enter(before, inputType), after, `${inputType} ${JSON.stringify(before)}`);
-      }
+    for (const [before, after] of cases) {
+      assert.equal(enter(before, "insertParagraph"), after, JSON.stringify(before));
     }
     const view = createEditor(mounted.root, "- a", 3);
     press();
@@ -4221,8 +4220,9 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
     press("insertLineBreak");
     const breakEdit = broken.sent.find((message) => message.type === "edit");
     assert.equal(breakEdit.op, "insert");
-    assert.equal(breakEdit.text, "\n\n");
-    assert.equal(breakEdit.cursor, 6);
+    assert.equal(breakEdit.text, "\\");
+    assert.equal(breakEdit.caret, 7);
+    assert.equal(breakEdit.cursor, 5);
     assert.equal(breakEdit.anchor, 5);
     assert.equal(broken.sent.some((message) => message.type === "lock"), false);
     shiftEnter.destroy();
@@ -4272,6 +4272,125 @@ test("enter at the end of a line inserts a blank line below the caret", () => {
     assert.equal(blocked.getState().cursor, 5);
     assert.equal(blocked.getState().anchor, 5);
     blocked.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("SE.p.1", () => {
+  const mounted = mountEditor();
+  const press = () => {
+    mounted.listeners.beforeinput({
+      inputType: "insertLineBreak",
+      preventDefault() {},
+    });
+  };
+  const run = (marked) => {
+    const at = marked.indexOf("‸");
+    const doc = marked.replace("‸", "");
+    const view = createEditor(mounted.root, doc, at);
+    press();
+    const state = view.getState();
+    view.destroy();
+    return state.doc.slice(0, state.cursor) + "‸" + state.doc.slice(state.cursor);
+  };
+  const apply = (doc, anchor, cursor) => {
+    const brk = shiftBreak(doc, anchor, cursor);
+    const nl = doc.includes("\r\n") ? "\r\n" : "\n";
+    const text = brk.text.replace(/\n/g, nl);
+    const from = typeof brk.anchor === "number" ? Math.min(brk.anchor, brk.cursor) : Math.min(anchor, cursor);
+    const to = typeof brk.anchor === "number" ? Math.max(brk.anchor, brk.cursor) : Math.max(anchor, cursor);
+    const next = doc.slice(0, from) + text + doc.slice(to);
+    const caret = typeof brk.caret === "number" ? brk.caret : from + text.length;
+    return next.slice(0, caret) + "‸" + next.slice(caret);
+  };
+  try {
+    assert.equal(run("he‸llo\n"), "he\\\n‸llo\n");
+    assert.equal(run("he‸llo\r\n"), "he\\\r\n‸llo\r\n");
+    assert.equal(run("hello‸\r\nworld\r\n"), "hello\\\r\n‸world\r\n");
+    assert.equal(run("hello\r‸\n"), "hello\\\r\n‸\r\n");
+    assert.equal(apply("hello\n", 1, 3), "h\\\n‸lo\n");
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("SE.li.1", () => {
+  const mounted = mountEditor();
+  const press = () => {
+    mounted.listeners.beforeinput({
+      inputType: "insertLineBreak",
+      preventDefault() {},
+    });
+  };
+  try {
+    const view = createEditor(mounted.root, "- alpha\n", 7);
+    press();
+    const state = view.getState();
+    assert.equal(state.doc.slice(0, state.cursor) + "‸" + state.doc.slice(state.cursor), "- alpha\\\n‸\n");
+    assert.equal(state.anchor, state.cursor);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("SE.q.1", () => {
+  const mounted = mountEditor();
+  const press = () => {
+    mounted.listeners.beforeinput({
+      inputType: "insertLineBreak",
+      preventDefault() {},
+    });
+  };
+  try {
+    const view = createEditor(mounted.root, "> alpha\n", 7);
+    press();
+    const state = view.getState();
+    assert.equal(state.doc.slice(0, state.cursor) + "‸" + state.doc.slice(state.cursor), "> alpha\\\n> ‸\n");
+    assert.equal(state.anchor, state.cursor);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("SE.h.1", () => {
+  const mounted = mountEditor();
+  const press = () => {
+    mounted.listeners.beforeinput({
+      inputType: "insertLineBreak",
+      preventDefault() {},
+    });
+  };
+  try {
+    const view = createEditor(mounted.root, "# Title\n", 7);
+    press();
+    const state = view.getState();
+    assert.equal(state.doc.slice(0, state.cursor) + "‸" + state.doc.slice(state.cursor), "# Title\n‸\n");
+    assert.equal(state.anchor, state.cursor);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("SE.fc.1", () => {
+  const mounted = mountEditor();
+  const press = () => {
+    mounted.listeners.beforeinput({
+      inputType: "insertLineBreak",
+      preventDefault() {},
+    });
+  };
+  try {
+    const doc = "```js\nlet x\n```\n";
+    const view = createEditor(mounted.root, doc, "```js\nlet ".length);
+    press();
+    const state = view.getState();
+    assert.equal(state.doc.slice(0, state.cursor) + "‸" + state.doc.slice(state.cursor), "```js\nlet \n‸x\n```\n");
+    assert.equal(state.anchor, state.cursor);
+    view.destroy();
   } finally {
     mounted.restore();
   }
@@ -4380,9 +4499,10 @@ test("enter before a blank line keeps the caret line from joining", () => {
       const held = createEditor(mounted.root, "hello\n\nworld\n", 0, transport);
       helloEnd();
       press(event.inputType, event.data);
+      const shift = event.inputType === "insertLineBreak";
       const edit = transport.sent.find((message) => message.type === "edit");
       assert.equal(edit.op, "insert");
-      assert.equal(edit.text, "\n\n");
+      assert.equal(edit.text, shift ? "\\\n" : "\n\n");
       assert.equal(edit.cursor, 5);
       assert.equal(edit.anchor, 5);
       assert.equal(transport.sent.some((message) => message.type === "lock"), false);
@@ -4391,7 +4511,7 @@ test("enter before a blank line keeps the caret line from joining", () => {
       const view = createEditor(mounted.root, "hello\n\nworld\n", 0);
       helloEnd();
       press(event.inputType, event.data);
-      assert.equal(view.getState().doc, "hello\n\n\n\nworld\n");
+      assert.equal(view.getState().doc, shift ? "hello\\\n\n\nworld\n" : "hello\n\n\n\nworld\n");
       assert.equal(view.getState().cursor, 7);
       assert.equal(view.getState().anchor, 7);
       view.destroy();

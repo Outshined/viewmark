@@ -146,3 +146,26 @@ test("CB.5 pasting list items on the empty line under a list stays one list", ()
   const under = insert(createState("hello\n\n", 6), "- a", true);
   assert.equal(under.doc, "hello\n- a\n");
 });
+
+test("typing on the line after a hard break stays in that block", () => {
+  const paragraph = insert(createState("hello\\\n\n", 7), "x");
+  assert.equal(paragraph.doc, "hello\\\nx\n");
+  const drawn = plan(paragraph.doc, paragraph.cursor);
+  const prose = drawn.blocks.filter((block) => !block.empty);
+  assert.equal(prose.length, 1);
+  assert.equal(prose[0].text.includes("hello"), true);
+  assert.equal(prose[0].text.includes("x"), true);
+
+  const item = insert(createState("- alpha\\\n\n", 9), "x");
+  assert.equal(item.doc, "- alpha\\\nx\n");
+  const itemDrawn = plan(item.doc, item.cursor).blocks.filter((block) => !block.empty);
+  assert.equal(itemDrawn.length, 1);
+  assert.equal(itemDrawn[0].text.includes("alpha"), true);
+  assert.equal(itemDrawn[0].text.includes("x"), true);
+
+  const spaces = insert(createState("red  \n\n", 6), "x");
+  assert.equal(spaces.doc, "red  \nx\n");
+
+  const paired = insert(createState("hello\\\r\n\r\n", 8), "x");
+  assert.equal(paired.doc, "hello\\\r\nx\r\n");
+});
