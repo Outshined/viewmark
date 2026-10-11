@@ -296,8 +296,8 @@ test("wrapped paragraph maps the joining space and edits at that newline", () =>
     const blue = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "blue")[0];
     caret(blue, 0);
     press("deleteContentBackward");
-    assert.equal(hard.getState().doc, "red  blue\n");
-    assert.equal(hard.getState().cursor, 5);
+    assert.equal(hard.getState().doc, "redblue\n");
+    assert.equal(hard.getState().cursor, 3);
     hard.destroy();
   } finally {
     mounted.restore();
@@ -809,8 +809,8 @@ test("quoted paragraph maps the joining space and keeps the source", () => {
     const blue = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "blue")[0];
     caret(blue, 0);
     press("deleteContentBackward");
-    assert.equal(hard.getState().doc, "> red  blue\n");
-    assert.equal(hard.getState().cursor, 7);
+    assert.equal(hard.getState().doc, "> redblue\n");
+    assert.equal(hard.getState().cursor, 5);
     hard.destroy();
   } finally {
     mounted.restore();
@@ -1250,8 +1250,8 @@ test("list item maps the joining space and keeps the source", () => {
     const blue = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "blue")[0];
     caret(blue, 0);
     press("deleteContentBackward");
-    assert.equal(hard.getState().doc, "- red  blue\n");
-    assert.equal(hard.getState().cursor, 7);
+    assert.equal(hard.getState().doc, "- redblue\n");
+    assert.equal(hard.getState().cursor, 5);
     hard.destroy();
 
     const orderedDoc = "1. Alpha\nBeta\n";
@@ -2160,17 +2160,32 @@ test("BG.bse-p", () => {
   assert.equal(next.cursor, 3);
 });
 
+test("BS.hb.1", () => {
+  const next = backspace(createState("red  \nblue\n", 6));
+  assert.equal(next.doc, "redblue\n");
+  assert.equal(next.cursor, 3);
+  assert.equal(next.anchor, 3);
+});
+
+test("BS.hb.2", () => {
+  const next = backspace(createState("red\\\nblue\n", 5));
+  assert.equal(next.doc, "redblue\n");
+  assert.equal(next.cursor, 3);
+  assert.equal(next.anchor, 3);
+});
+
 test("DL.hb.1", () => {
   const next = deleteForward(createState("red  \nblue\n", 3));
-  assert.equal(next.doc, "red  blue\n");
+  assert.equal(next.doc, "redblue\n");
   assert.equal(next.cursor, 3);
-  assert.equal(next.doc.includes("  "), true);
+  assert.equal(next.anchor, 3);
 });
 
 test("DL.hb.2", () => {
   const next = deleteForward(createState("red\\\nblue\n", 3));
-  assert.equal(next.doc, "red\\blue\n");
+  assert.equal(next.doc, "redblue\n");
   assert.equal(next.cursor, 3);
+  assert.equal(next.anchor, 3);
 });
 
 test("BS.tb.1", () => {

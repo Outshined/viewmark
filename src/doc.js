@@ -2989,6 +2989,64 @@ function markerBackspace(doc, cursor) {
   return { from: line.start, to: cursor, caret: line.start };
 }
 
+// Trailing spaces or a backslash that a hard break hides. A quote or list
+// marker in front of that tail is syntax, so it is not part of the count.
+function contentBreakHide(text) {
+  const mode = classify(text);
+  let prefix = 0;
+  if (mode && (mode.kind === "quote" || mode.kind === "li" || mode.kind === "ol")) {
+    prefix = Math.min(mode.marker || 0, text.length);
+  }
+  return hardHideCount(text.slice(prefix));
+}
+
+// A paragraph hides its break on that line. A quote or item hides it only
+// when another line stays in the same block; a lone marker line shows the tail.
+function hidesBreak(doc, line) {
+  const mode = classify(line.text);
+  if (mode.kind === "p") return !imageLine(line.text) && !line.text.startsWith("|");
+  if (mode.kind !== "quote" && mode.kind !== "li" && mode.kind !== "ol") return false;
+  const lines = lockLines(doc);
+  let index = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].start === line.start) {
+      index = i;
+      break;
+    }
+  }
+  if (index < 0) return false;
+  const last = mode.kind === "li" || mode.kind === "ol" ? listJoin(lines, index) : plainJoin(lines, index);
+  return last > index;
+}
+
+// from is the hidden marker. begin can sit earlier, on a syntax space that
+// shares the trailing run snapBreak treats as the marker start.
+function hiddenBreak(doc, line) {
+  if (!line || !line.newline || bareBreakLine(line, doc)) return null;
+  const hide = contentBreakHide(line.text);
+  if (hide <= 0) return null;
+  if (fenceOpen(line.text) || isFenceClose(line.text) || enclosedByFence(doc, line.start)) return null;
+  if (!hidesBreak(doc, line)) return null;
+  const cr = line.end > line.start && doc[line.end - 1] === "\r" ? 1 : 0;
+  const from = line.end - cr - hide;
+  if (from < line.start) return null;
+  const full = hardHideCount(line.text);
+  const begin = Math.min(from, line.end - cr - full);
+  return { from, to: line.end + 1, caret: from, hide, begin };
+}
+
+// The marker stays hidden when the joined line still ends on it. A blank line
+// does. Text on the next line leaves the spaces or the backslash visible.
+function markerStaysHidden(doc, line, hide) {
+  const after = line.end + 1;
+  let end = after;
+  while (end < doc.length && doc[end] !== "\n") end += 1;
+  if (end >= doc.length || doc[end] !== "\n") return false;
+  let tail = doc.slice(after, end);
+  if (tail.endsWith("\r")) tail = tail.slice(0, -1);
+  return contentBreakHide(line.text + tail) >= tail.length + hide;
+}
+
 export function backspace(state) {
   if (state.anchor !== state.cursor) return deleteSelection(state);
   if (state.cursor <= 0) return state;
@@ -3006,6 +3064,13 @@ export function backspace(state) {
   if (line.text === "" && line.end > line.start) return deleteBareLine(state, line);
   const atom = renderedAtomAt(doc, state.cursor, (item) => state.cursor > item.start && state.cursor <= item.end);
   if (atom) return applySplice(state, atom.start, atom.end, "", atom.start);
+  if (doc[state.cursor - 1] === "\n") {
+    const prev = sourceLine(doc, state.cursor - 1);
+    const brk = hiddenBreak(doc, prev);
+    if (brk && brk.to === state.cursor && !markerStaysHidden(doc, prev, brk.hide)) {
+      return snapBreak(applySplice(state, brk.from, brk.to, "", brk.caret));
+    }
+  }
   const from = state.cursor > 1 && state.doc[state.cursor - 1] === "\n" && state.doc[state.cursor - 2] === "\r" ? state.cursor - 2 : state.cursor - 1;
   return snapBreak(applySplice(state, from, state.cursor, "", from));
 }
@@ -3022,8 +3087,18 @@ export function deleteForward(state) {
   const line = sourceLine(doc, state.cursor);
   if (bareBreakLine(line, doc)) return deleteBareLine(state, line);
   if (/^[ \t]+$/.test(line.text)) return deleteBareLine(state, line);
-  // Only the hard-break tail sits between the caret and the newline, so the
-  // newline goes and the marker characters stay where they are.
+  // Joining onto text would leave the hidden marker visible, so the marker
+  // goes with the newline. A blank line still hides it, and only the newline goes.
+  const brk = hiddenBreak(doc, line);
+  if (brk && state.cursor >= brk.begin && state.cursor < brk.to) {
+    if (!markerStaysHidden(doc, line, brk.hide)) {
+      return snapBreak(applySplice(state, brk.from, brk.to, "", brk.caret));
+    }
+    if (state.cursor < line.end) {
+      return snapBreak(applySplice(state, line.end, line.end + 1, "", state.cursor));
+    }
+  }
+  // A trailing run that is not a hidden break still drops only the newline.
   const hide = line.newline ? hardHideCount(line.text) : 0;
   if (hide > 0 && state.cursor >= line.end - hide && state.cursor < line.end) {
     return snapBreak(applySplice(state, line.end, line.end + 1, "", state.cursor));
