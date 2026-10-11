@@ -2556,6 +2556,13 @@ test("EB.p.7", () => {
   assert.equal(back.anchor, 3);
 });
 
+test("backspace on an empty line before a paragraph keeps the blank", () => {
+  const next = backspace(createState("one\n\n\ntwo\n", 5));
+  assert.equal(next.doc, "one\n\ntwo\n");
+  assert.equal(next.cursor, 3);
+  assert.equal(next.anchor, 3);
+});
+
 test("EF.3", () => {
   const end = enterAt("hello", 5);
   assert.equal(end.doc, "hello\n\n");

@@ -3267,11 +3267,13 @@ function deleteEmptyForward(state, line) {
 }
 
 // Enter at the end of a paragraph writes a blank line and an empty caret line.
-// Backspace on that caret line removes both breaks, including when the line is
-// not the last in the file. A newline on the caret line stays, so a file that
-// already ended with one keeps it. A caret past the last newline does not gain
-// one. The second Enter on an item or a quote leaves this same empty line.
-// A caret inside a paragraph does not.
+// Backspace removes both breaks when the next line does not join that paragraph.
+// A following paragraph would become the same block if the blank went too, so
+// only the empty line goes and the caret rests at the end of the paragraph.
+// A newline on the caret line stays, so a file that already ended with one
+// keeps it. A caret past the last newline does not gain one. The second Enter
+// on an item or a quote leaves this same empty line. A caret inside a
+// paragraph does not.
 function paragraphEnterBackspace(doc, cursor) {
   const line = sourceLine(doc, cursor);
   if (cursor !== line.start || line.text !== "") return null;
@@ -3284,6 +3286,12 @@ function paragraphEnterBackspace(doc, cursor) {
   if (kind !== "p" && kind !== "li" && kind !== "ol" && kind !== "quote") return null;
   const from = para.end > para.start && doc[para.end - 1] === "\r" ? para.end - 1 : para.end;
   if (from >= cursor) return null;
+  if (line.newline) {
+    const next = sourceLine(doc, line.end + 1);
+    if (next.start === line.end + 1 && lineJoins(next.text) && !enclosedByFence(doc, next.start)) {
+      return { from: line.start, to: line.end + 1, caret: from };
+    }
+  }
   return { from, to: cursor, caret: from };
 }
 
