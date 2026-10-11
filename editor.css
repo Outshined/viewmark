@@ -840,6 +840,7 @@ div.md-ticket-pane-panel label {
   padding: 0;
 }
 
+button.md-doc-menu-item,
 button.md-ticket-pane-item,
 button.md-ticket-filter-all,
 .ticket-form button.md-ticket-link,
@@ -850,6 +851,7 @@ button.md-ticket-filter-all,
   text-align: left;
 }
 
+button.md-doc-menu-item:hover,
 button.md-ticket-pane-item:hover,
 button.md-ticket-filter-all:hover,
 .ticket-form button.md-ticket-link:hover,
