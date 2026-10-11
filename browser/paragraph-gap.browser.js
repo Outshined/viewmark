@@ -79,6 +79,45 @@ test("Enter at the end of a paragraph: the caret's line is drawn directly under 
   assert.ok(Math.abs(line.top - hello.bottom) <= 1, `the caret's line starts at y ${line.top.toFixed(1)}, not where hello's line ends, ${hello.bottom.toFixed(1)}; the caret is drawn at y ${y.toFixed(1)}`);
 });
 
+// A ticket's body is stored without a final newline, so Enter at the end of a ticket's text is
+// Enter at the end of a file that does not end in a newline.
+async function enterAtEnd(t, where) {
+  const { hub, page } = await setup(t, { "a.md": "hello" });
+  let rel = "a.md";
+  if (where === "ticket") {
+    const made = await cli(hub.port, ["--user", USER, "--repo", REPO, "ticket", "create", "--title", "T"], "hello");
+    assert.equal(made.code, 0, made.stderr);
+    rel = `tickets/${made.stdout.trim().split("\n")[0]}.md`;
+    await page.session.send("Page.navigate", { url: `http://127.0.0.1:${page.port}/?load=2#${REPO}/ticket/${encodeURIComponent(rel.slice(8, -3))}` });
+    await page.until(() => page.eval(`[...document.querySelectorAll("#editor .md-line")].some((l) => l.textContent === "hello")`), "the ticket's text");
+    await page.quiet();
+    assert.ok(await page.clickOffset(5), "no point for offset 5");
+    await page.quiet();
+  } else {
+    await open(page, "a.md", 5);
+  }
+  await page.key("Enter");
+  await page.quiet();
+  assert.equal(await bytes(hub, rel), "hello\n\n", "Enter at the end writes a blank line and the caret's line (R24)");
+  const { y, line } = await caretAndLine(page);
+  const hello = lineOf(await lines(page), "hello");
+  const extra = between(await lines(page), hello.bottom, line.top);
+  assert.deepEqual(extra.map((l) => ({ text: l.text, top: +l.top.toFixed(1), height: +l.height.toFixed(1) })), [], `${where}: an empty line is drawn between hello and the caret's line`);
+  assert.ok(Math.abs(line.top - hello.bottom) <= 1, `${where}: the caret's line starts at y ${line.top.toFixed(1)}, not where hello's line ends, ${hello.bottom.toFixed(1)}; the caret is drawn at y ${y.toFixed(1)}`);
+  await page.key("w");
+  await page.quiet();
+  const glyph = await page.eval(`window.__qaGlyph(7)`);
+  assert.ok(glyph && Math.abs(middle(glyph) - y) <= 2, `${where}: the w is drawn at y ${glyph ? middle(glyph).toFixed(1) : "?"}, but the caret was drawn at y ${y.toFixed(1)} (R99)`);
+}
+
+test("Enter at the end of a file with no final newline: the caret's line is directly under the paragraph, and a letter stays there", async (t) => {
+  await enterAtEnd(t, "document");
+});
+
+test("Enter at the end of a ticket's text: the caret's line is directly under the paragraph, and a letter stays there", async (t) => {
+  await enterAtEnd(t, "ticket");
+});
+
 test("a letter typed after Enter is drawn where the caret was, and hello does not move", async (t) => {
   const { hub, page } = await setup(t, { "a.md": "hello\n" });
   await open(page, "a.md", 5);
