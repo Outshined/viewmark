@@ -168,9 +168,9 @@ export function parseCell(line) {
   } else if (main.startsWith("on ")) {
     expectKind = "position";
     position = { on: readLiteral(main, 3).value };
-  } else if (/^(later in the block|earlier in the block|later in the file)/.test(main)) {
+  } else if (/^(later in the block|earlier in the block|later in the file|the end of its visual line|the start of its visual line)/.test(main)) {
     expectKind = "position";
-    position = { move: /^(later in the block|earlier in the block|later in the file)/.exec(main)[1] };
+    position = { move: /^(later in the block|earlier in the block|later in the file|the end of its visual line|the start of its visual line)/.exec(main)[1] };
   } else {
     const expect = readPieces(main, 0);
     if (expect) expectText = expect.value;

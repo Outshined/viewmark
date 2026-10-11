@@ -473,8 +473,44 @@ function positionExpect(cell, caret, result, shownText) {
     const from = blank < 0 ? 0 : blank + 2;
     if (at >= start || at <= from) wanted = `before ${start} and after ${from}`;
   }
+  // "the end of its visual line" and "the start of its visual line" are read from the drawn
+  // page, in visualLineEdge.
   if (wanted) result.failed.push(`I2 caret: wanted ${wanted}, got ${range(caret.anchor, caret.focus)} at ${caret.focusPath || "the editor root"}`);
   return { bytes, focus: at, anchor: at };
+}
+
+// End goes after the last character on the visual line it started on, a space included: the
+// first offset whose glyph is drawn on a later line (R74, the owner on ticket pg66fa4a). Home
+// goes to the first character drawn on that line. Either way the caret is drawn on that line.
+async function visualLineEdge(page, source, caret, result, move) {
+  const { bytes, focus: start } = source;
+  const line = await page.eval(`(() => {
+    const text = ${JSON.stringify(bytes)};
+    const first = window.__qaGlyph(${start});
+    if (!first) return null;
+    const middle = (g) => (g.top + g.bottom) / 2;
+    let k = ${start};
+    if (${JSON.stringify(move)} === "the end of its visual line") {
+      for (; k < text.length; k += 1) {
+        const g = window.__qaGlyph(k);
+        // A soft newline is drawn as a space on the line. A newline drawn as nothing ends it.
+        if (g ? middle(g) > first.bottom + 2 : text[k] === "\\n") break;
+      }
+    } else {
+      // A marker drawn as nothing, or a glyph on the line above, is before the line's text.
+      for (; k > 0; k -= 1) {
+        const g = window.__qaGlyph(k - 1);
+        if (!g || middle(g) < first.top - 2) break;
+      }
+    }
+    return { at: k, top: first.top, bottom: first.bottom };
+  })()`);
+  if (!line) return result.failed.push(`I2 caret: offset ${start} has no glyph to find its visual line by`);
+  const which = move === "the end of its visual line" ? "after the last character on" : "at the first character drawn on";
+  if (caret.focus !== line.at || caret.anchor !== line.at) result.failed.push(`I2 caret: wanted ${line.at}, ${which} the visual line holding ${start}, got ${range(caret.anchor, caret.focus)}`);
+  const middle = caret.rect ? (caret.rect.top + caret.rect.bottom) / 2 : null;
+  if (caret.unpainted) result.unchecked.push("I3: where this browser paints the caret is not in its screenshots");
+  else if (middle == null || middle < line.top - 2 || middle > line.bottom + 2) result.failed.push(`I3 drawn: the caret is drawn at y ${middle == null ? "nowhere" : middle.toFixed(1)}, not on the visual line it started on, y ${line.top.toFixed(1)}-${line.bottom.toFixed(1)}`);
 }
 
 // Where a caret is drawn against where its offset belongs; null when they agree.
@@ -686,6 +722,7 @@ export async function runCell(suite, cell, routeName, serial) {
   const shown = sent(page, file);
   result.observed = { ...result.observed, bytes: shown.text, rev: shown.rev - revBefore, caret };
   const expect = cell.expectKind === "position" ? positionExpect(cell, caret, result, shown.text) : cell.expectKind === "same" ? start : want;
+  if (expect && /visual line$/.test(cell.position?.move || "") && !caret.none && caret.inside) await visualLineEdge(page, start, caret, result, cell.position.move);
   if (!expect) {
     result.status = "FAIL";
     return result;
@@ -743,6 +780,8 @@ export async function runCell(suite, cell, routeName, serial) {
   // The glyph before the caret, to tell a word the Q carries onto the next visual line from a
   // caret drawn on the wrong line.
   const leadBefore = beforeProbe.none || !beforeProbe.inside || beforeProbe.focus < 1 ? null : await page.eval(`window.__qaGlyph(${beforeProbe.focus - 1})`);
+  // The glyph after the caret, to tell a caret at the end of a line that wraps.
+  const followBefore = beforeProbe.none || !beforeProbe.inside ? null : await page.eval(`window.__qaGlyph(${beforeProbe.focus})`);
   await page.key("Q");
   await page.quiet();
   const probed = sent(page, file);
@@ -772,7 +811,15 @@ export async function runCell(suite, cell, routeName, serial) {
         const lead = at === beforeProbe.focus && at > 0 && /\S/.test(textBeforeProbe[at - 1]) ? await page.eval(`window.__qaGlyph(${at - 1})`) : null;
         const carried = leadBefore && lead && Math.abs((lead.top + lead.bottom) / 2 - (leadBefore.top + leadBefore.bottom) / 2) > 2
           && Math.abs(glyph.left - lead.right) <= 3 && Math.abs(middle - (lead.top + lead.bottom) / 2) <= 2;
-        if ((!sameLine || Math.abs(glyph.left - caret.x) > 3) && !carried) result.failed.push(`I12 typed: the Q is drawn at x ${glyph.left.toFixed(1)} y ${middle.toFixed(1)}, but the caret was drawn at x ${caret.x.toFixed(1)} y ${((caret.top + caret.bottom) / 2).toFixed(1)}`);
+        // A caret drawn at the end of a visual line, with the next character starting the line
+        // below, is at a wrap. The owner, on ticket pg66fa4a: the letter goes where the caret is
+        // and is subject to normal line wrapping. So the Q may start the line below, right
+        // before the glyph that followed the caret.
+        const atWrap = at === beforeProbe.focus && at > 0 && textBeforeProbe[at - 1] !== "\n" && /\S/.test(textBeforeProbe[at] || "")
+          && followBefore && (followBefore.top + followBefore.bottom) / 2 > caret.bottom + 2;
+        const follow = atWrap ? await page.eval(`window.__qaGlyph(${at + 1})`) : null;
+        const wrapped = follow && middle > caret.bottom && Math.abs(glyph.right - follow.left) <= 3 && Math.abs(middle - (follow.top + follow.bottom) / 2) <= 2;
+        if ((!sameLine || Math.abs(glyph.left - caret.x) > 3) && !carried && !wrapped) result.failed.push(`I12 typed: the Q is drawn at x ${glyph.left.toFixed(1)} y ${middle.toFixed(1)}, but the caret was drawn at x ${caret.x.toFixed(1)} y ${((caret.top + caret.bottom) / 2).toFixed(1)}`);
       }
     }
   }

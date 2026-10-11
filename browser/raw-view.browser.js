@@ -91,7 +91,7 @@ async function visualStarts(page, from, to) {
 }
 
 // The typed letter must be drawn where the caret was drawn just before the key (R99).
-async function typedWhereCaret(page, hub, file, label) {
+async function typedWhereCaret(page, hub, file, label, { wrap = false } = {}) {
   const before = await show(hub, file);
   const caret = await page.caret();
   assert.ok(caret.rect, `${label}: the caret is not drawn`);
@@ -109,8 +109,13 @@ async function typedWhereCaret(page, hub, file, label) {
   // A Q at the end of a word that just fits carries the word onto the next line.
   const lead = at > 0 ? await glyph(page, at - 1) : null;
   const carried = lead && Math.abs(q.left - lead.right) <= 3 && Math.abs(qy - (lead.top + lead.bottom) / 2) <= 2 && Math.abs(qy - cy) > 3;
+  // With `wrap`, the caret was put at the end of a line by End, and the next character starts the
+  // line below. The letter goes in at the caret and wraps as normal text does (the owner, on
+  // ticket pg66fa4a), so it can start the line below, right before that character.
+  const follow = wrap ? await glyph(page, at + 1) : null;
+  const wrapped = follow && before[at - 1] !== "\n" && qy > cy + 3 && Math.abs(q.right - follow.left) <= 3 && Math.abs(qy - (follow.top + follow.bottom) / 2) <= 2;
   // Where the browser cannot show the caret's paint (Firefox), where it is drawn is not checked.
-  if (!caret.unpainted) assert.ok(here || carried, `${label}: the Q is drawn at x ${q.left.toFixed(1)} y ${qy.toFixed(1)}, but the caret was drawn at x ${caret.rect.x.toFixed(1)} y ${cy.toFixed(1)}`);
+  if (!caret.unpainted) assert.ok(here || carried || wrapped, `${label}: the Q is drawn at x ${q.left.toFixed(1)} y ${qy.toFixed(1)}, but the caret was drawn at x ${caret.rect.x.toFixed(1)} y ${cy.toFixed(1)}`);
   await page.key("Backspace");
   await page.quiet();
   return at;
@@ -465,7 +470,7 @@ test("keys: → and ← step through every byte, markers included", async (t) =>
 
 test("keys: Home and End go to the start and end of the visual line (R74)", async (t) => {
   const doc = `alpha beta\n\n${BIG}\n`;
-  const { page } = await setup(t, { "a.md": doc });
+  const { hub, page } = await setup(t, { "a.md": doc });
   await open(page, "a.md");
   await toggle(page);
   await place(page, 3);
@@ -480,10 +485,17 @@ test("keys: Home and End go to the start and end of the visual line (R74)", asyn
   await place(page, mid);
   await press(page, "Home");
   assert.equal((await page.caret()).focus, starts[k], `Home on visual line ${k + 1} of the long line went to ${(await page.caret()).focus}`);
+  // The owner, on ticket pg66fa4a: End goes after the last character on the line, in raw mode
+  // too, whether or not it is a space, and the caret is drawn on that line. A letter typed there
+  // goes where the caret is and wraps as normal text does.
   await place(page, mid);
   await press(page, "End");
-  const end = (await page.caret()).focus;
-  assert.ok(end === starts[k + 1] || end === starts[k + 1] - 1, `End on visual line ${k + 1} went to ${end}, not ${starts[k + 1] - 1} or ${starts[k + 1]}`);
+  const end = await page.caret();
+  assert.equal(end.focus, starts[k + 1], `End on visual line ${k + 1} went to ${end.focus}, not ${starts[k + 1]}, after the line's last character`);
+  const line = await glyph(page, mid);
+  const y = (end.rect.top + end.rect.bottom) / 2;
+  if (!end.unpainted) assert.ok(y >= line.top - 2 && y <= line.bottom + 2, `End's caret is drawn at y ${y.toFixed(1)}, not on visual line ${k + 1}, y ${line.top.toFixed(1)}-${line.bottom.toFixed(1)}`);
+  await typedWhereCaret(page, hub, "a.md", `End on visual line ${k + 1}`, { wrap: true });
 });
 
 test("keys: ↑ and ↓ move to the visual line above or below and keep their goal x (R73)", async (t) => {
