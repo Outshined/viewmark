@@ -202,7 +202,7 @@ test("T-ticket-title", () => {
 });
 
 test("T-ticket-state", () => {
-  assert.deepEqual(TICKET_STATES, ["new", "triaged", "in progress", "closed"]);
+  assert.deepEqual(TICKET_STATES, ["new", "triaged", "in progress", "blocked", "pending review", "closed"]);
   for (const state of TICKET_STATES) {
     const text = SIMPLE.replace("state: new", `state: ${state}`);
     const parsed = parseTicket(ID, text);
@@ -211,7 +211,7 @@ test("T-ticket-state", () => {
     assert.equal(composeTicket(ticket({ state })), text);
   }
 
-  for (const state of ["", "open", "NEW", "In progress", "in-progress", "in  progress"]) {
+  for (const state of ["", "open", "NEW", "In progress", "in-progress", "in  progress", "Blocked", "Pending review", "pending-review"]) {
     assert.equal(parseTicket(ID, SIMPLE.replace("state: new", state === "" ? "state:" : `state: ${state}`)), null);
     assert.equal(composeTicket(ticket({ state })), null);
   }

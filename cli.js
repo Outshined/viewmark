@@ -103,7 +103,7 @@ commit:
 ticket:
   list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY] [--assignee NAME], set <id>, delete <id>, purge.
   --title, --state, --type, --priority, --parent, --depends, --assignee, --closed.
-  --parent none clears. --depends none clears. --state is new, triaged, in progress, or closed.
+  --parent none clears. --depends none clears. --state is new, triaged, in progress, blocked, pending review, or closed.
   --type is bug, enhancement, or task. An omitted type is task.
   --priority is low, medium, or high. An omitted create stores medium.
   reporter is --user. A field write uses the current body. Later field writes win. --rev is rejected.

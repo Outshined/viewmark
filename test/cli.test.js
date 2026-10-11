@@ -84,6 +84,7 @@ const HELP_NEEDLES = [
   "--priority",
   "--parent",
   "low, medium, or high",
+  "--state is new, triaged, in progress, blocked, pending review, or closed.",
   "An omitted create stores medium",
   "--depends",
   "--assignee",
@@ -2447,6 +2448,50 @@ test("T-cli-ticket-set", async () => {
     } finally {
       watcher.ws.close();
     }
+  });
+});
+
+test("T-cli-ticket-blocked-pending", async () => {
+  await withHub(async ({ dir, port }) => {
+    const blocked = await runFast(ticketArgs(port, ["ticket", "create", "--title", "Stuck", "--state", "blocked"]));
+    assert.equal(blocked.code, 0);
+    const blockedId = blocked.stdout.trim();
+    const blockedPath = path.join(dir, "tickets", `${blockedId}.md`);
+    assert.equal(parseTicket(blockedId, await fs.readFile(blockedPath, "utf8")).state, "blocked");
+
+    const pending = await runFast(ticketArgs(port, ["ticket", "create", "--title", "Ready", "--state", "pending review"]));
+    assert.equal(pending.code, 0);
+    const pendingId = pending.stdout.trim();
+    const pendingPath = path.join(dir, "tickets", `${pendingId}.md`);
+    assert.equal(parseTicket(pendingId, await fs.readFile(pendingPath, "utf8")).state, "pending review");
+
+    const row = (stdout, id) => stdout.split("\n").find((line) => line.startsWith(`${id}\t`));
+    const listed = await runFast(ticketArgs(port, ["ticket", "list"]));
+    assert.equal(listed.code, 0);
+    assert.equal(listed.stderr, "");
+    assert.equal(row(listed.stdout, blockedId).split("\t")[2], "blocked");
+    assert.equal(row(listed.stdout, pendingId).split("\t")[2], "pending review");
+
+    const toPending = await runFast(ticketArgs(port, ["ticket", "set", blockedId, "--state", "pending review"]));
+    assert.equal(toPending.code, 0);
+    assert.equal(parseTicket(blockedId, await fs.readFile(blockedPath, "utf8")).state, "pending review");
+    const toBlocked = await runFast(ticketArgs(port, ["ticket", "set", pendingId, "--state", "blocked"]));
+    assert.equal(toBlocked.code, 0);
+    assert.equal(parseTicket(pendingId, await fs.readFile(pendingPath, "utf8")).state, "blocked");
+
+    const again = await runFast(ticketArgs(port, ["ticket", "list"]));
+    assert.equal(again.code, 0);
+    assert.equal(row(again.stdout, blockedId).split("\t")[2], "pending review");
+    assert.equal(row(again.stdout, pendingId).split("\t")[2], "blocked");
+
+    const before = await fs.readFile(blockedPath, "utf8");
+    const unknown = await runFast(ticketArgs(port, ["ticket", "set", blockedId, "--state", "done"]));
+    assert.equal(unknown.code, 2);
+    assert.equal(unknown.stdout, "");
+    assert.equal(await fs.readFile(blockedPath, "utf8"), before);
+    const unknownCreate = await runFast(ticketArgs(port, ["ticket", "create", "--title", "Nope", "--state", "waiting"]));
+    assert.equal(unknownCreate.code, 2);
+    assert.equal(unknownCreate.stdout, "");
   });
 });
 
