@@ -449,6 +449,20 @@ window.__qaFindText = (needle, nth) => {
   }
   return { drawn, from };
 };
+// A press in a band that still belongs to the line drawing a piece of text: 2 px under the top
+// edge of that line, above its glyphs, or 2 px above the bottom of the text's first glyph. A
+// paragraph's line box also holds the gap under it, so its bottom edge is not on the text.
+window.__qaLineEdge = (needle, nth, edge) => {
+  const found = window.__qaFindText(needle, nth);
+  if (!found) return null;
+  if (edge === "bottom") {
+    const r = window.__qaDrawnRect(found.drawn, found.from);
+    return r && r.bottom - 2;
+  }
+  const piece = found.drawn.pieces.findLast((p) => found.from >= p.at && found.from < p.at + p.node.length);
+  const line = piece && piece.node.parentElement.closest(".md-line");
+  return line && line.getBoundingClientRect().top + 2;
+};
 // A press at the boundary marked with ¦ in drawn text.
 window.__qaTextPoint = (marked, nth) => {
   const bar = marked.indexOf("¦");

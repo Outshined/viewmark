@@ -185,9 +185,19 @@ async function dropSelection(page, needle) {
   }
 }
 
+// The same x, moved to the top of the target's line or the bottom of its glyphs.
+async function atEdge(page, at, what, edge, nth) {
+  if (!edge) return at;
+  const needle = quoted(what).replace("¦", "");
+  return { x: at.x, y: await point(page, `window.__qaLineEdge(${JSON.stringify(needle)}, ${nth}, "${edge}")`, what) };
+}
+
 async function pointer(page, action, interval) {
   const ordinal = /\((\d+)(?:st|nd|rd|th)\)/.exec(action);
   const nth = ordinal ? Number(ordinal[1]) : 1;
+  const band = / at the (top of its line|bottom of its glyphs)$/.exec(action);
+  const edge = band && band[1].split(" ")[0];
+  if (band) action = action.slice(0, band.index);
   let match = /^(Shift\+click|middle-click|click) (.*)$/.exec(action);
   if (match) {
     const [, verb, what] = match;
@@ -200,6 +210,7 @@ async function pointer(page, action, interval) {
     else if ((match = /^the (first|second|third) empty line under (`[^`]+`)$/.exec(what))) at = await point(page, `window.__qaTarget("empty line under", { word: ${JSON.stringify(quoted(match[2]))}, nth: ${["first", "second", "third"].indexOf(match[1]) + 1} })`, what);
     else if (what === "the right half of the tab") at = await point(page, `window.__qaTarget("tab")`, what);
     else throw new NotAutomated(action);
+    at = await atEdge(page, at, what, edge, nth);
     await page.click(at.x, at.y, { modifiers: verb === "Shift+click" ? 8 : 0, button: verb === "middle-click" ? "middle" : "left" });
     return;
   }
@@ -211,6 +222,7 @@ async function pointer(page, action, interval) {
     else if (what === "the third of the four spaces") at = await point(page, `window.__qaWordPoint("    ", 1, 2)`, what);
     else if (what === "the empty line") at = await point(page, `window.__qaTarget("empty line under", { word: "one", nth: 1 })`, what);
     else throw new NotAutomated(action);
+    at = await atEdge(page, at, what, edge, nth);
     await page.click(at.x, at.y, { clickCount: verb === "dblclick" ? 2 : 3, interval });
     return;
   }
