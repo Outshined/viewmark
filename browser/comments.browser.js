@@ -565,3 +565,35 @@ for (const [label, doc] of [
     assert.deepEqual(covered, [], covered.join("; "));
   });
 }
+
+// Ticket b9xa86zd: the add-comment button covers no text a person might click. In the comments
+// column it lines up with the selection, so a selection on the line of an existing comment must
+// not put the button over that comment's card.
+test("the add-comment button does not cover a comment card on the selection's line, and a click on the card adds no comment", async (t) => {
+  const doc = "See {c1}this{/c1} now and more words here." + CM("c1");
+  const { hub, page } = await setup(t, { "a.md": doc });
+  await open(page, "a.md");
+  await page.until(() => page.eval(`!!document.querySelector(".md-comment-card")`), "a comment card");
+  await place(page, 0);
+  const word = await page.eval(`window.__qaWordPoint("words", 1)`);
+  await page.click(word.x, word.y, { clickCount: 2 });
+  await page.quiet();
+  await page.until(() => page.eval(`(() => { const b = document.querySelector(".md-add-comment"); return !!b && !b.hidden && b.getClientRects().length > 0; })()`), "the add-comment button");
+  const covered = await page.eval(`(() => {
+    const card = document.querySelector(".md-comment-card").getBoundingClientRect();
+    const out = [];
+    for (let x = card.left + 4; x < card.right - 2; x += 16) {
+      for (let y = card.top + 4; y < card.bottom - 2; y += 6) {
+        const hit = document.elementFromPoint(x, y);
+        if (hit && hit.closest(".md-add-comment")) out.push(Math.round(x) + "," + Math.round(y));
+      }
+    }
+    return out;
+  })()`);
+  assert.deepEqual(covered, [], `the add-comment button covers the card at ${covered.length} points, such as ${covered.slice(0, 3).join("; ")}`);
+  const corner = await page.eval(`(() => { const r = document.querySelector(".md-comment-card").getBoundingClientRect(); return { x: r.left + 30, y: r.top + 10 }; })()`);
+  await page.click(corner.x, corner.y);
+  await page.quiet();
+  await sleep(300);
+  assert.equal((await hub.show("a.md")).text, doc, "a click on the card changed the file");
+});
