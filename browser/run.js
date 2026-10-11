@@ -9,7 +9,7 @@ const NO_EDIT = new Set(["read", "reconnect", "offline", "online", "walk", "Shif
 const POINTER = /^(Shift\+click|middle-click|click|dblclick|tripleclick|drag) /;
 
 // Seven BG cells also run every other route the plan names.
-const WIDE = new Set(["BG.p-p", "BG.li-p", "BG.q-p", "BG.h-p", "BG.tb-p", "BG.p-eof", "BG.fb-fb"]);
+const WIDE = new Set(["BG.h-p", "BG.tb-p", "BG.p-eof", "BG.fb-fb"]);
 const PREFIX = { remote: "zero\n\n", scrolled: FILL };
 const SUFFIX = { "remote-below": "\n\nlast\n" };
 
