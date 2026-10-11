@@ -1,6 +1,6 @@
 ---
 name: qa-rules-are-proposals
-description: a rule or default QA adds to the plan or editing.md is a proposal, marked not approved, until the owner approves it
+description: a rule or default QA adds to the plan or editing.md is a proposal, marked not approved, until the owner approves it; an owner answer is recorded for exactly what it says, never widened by inference
 metadata:
   type: feedback
 ---
@@ -10,3 +10,5 @@ A rule or default that QA writes into `qa/editor-matrix-test-plan.md` or `editin
 **Why:** on 2026-10-10 `editing.md` said every D rule was approved on 2026-10-08, but D25 and D27 were QA's own later additions, and ticket pg66fa4a told the implementer to build End to the unapproved D27. The owner called the claim "written poorly, and obviously incorrect".
 
 **How to apply:** when adding a D rule or changing an expectation, state who decided it and when. Keep the legend in `editing.md` and the contract line in the plan accurate, in sync per [[docs-through-hub-only]].
+
+**Also:** record an owner's answer for exactly what it says. Where the answer leaves a case open, keep the case open in both files and on the ticket, and keep the harness checking the owner's standing rule there. Never relax an invariant on the strength of QA's own reading. On 2026-10-10 the owner said End goes "to the end of the current display line". QA wrote that a letter typed on a full line going to the next line was the owner's decision, and stopped I12 checking it (`1092f59`). A side agent flagged it, and the owner said: "Keep the other agent honest, don't wait for me to tell you to." That covers QA's own work as much as the implementer's: call out an overreach on the ticket as soon as it is seen, whoever made it. Related: [[owner-decisions-stand]].
