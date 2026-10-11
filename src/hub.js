@@ -1184,16 +1184,14 @@ export async function createHub(stateDir, sourceRoot) {
 
   async function commitAuthor(repo, username, paths, message) {
     const docsDir = repo.path;
-    const email = `${username}@viewmark.local`;
     const config = [
       "-c", `user.name=${username}`,
-      "-c", `user.email=${email}`,
       "-c", "commit.gpgsign=false",
       "-c", "core.autocrlf=false",
     ];
     await git(docsDir, [...config, "add", "-A", "--", ...paths], username);
     const subject = message ?? (paths.length === 1 ? `Edit ${paths[0]}` : `Update ${repo.name}`);
-    const args = [...config, "commit", "--author", `${username} <${email}>`, "-m", subject];
+    const args = [...config, "commit", "-m", subject];
     if (paths.length > 1) args.push("-m", paths.join("\n"));
     args.push("--", ...paths);
     try {
