@@ -2667,22 +2667,31 @@ function plainParagraph(block) {
   return true;
 }
 
-// Padding on the paragraph is the break. One blank between two paragraphs is
-// that padding, so the blank takes no height and the caret does not stop on it.
-// The same blank under an item or a quote is what keeps the next paragraph
-// from joining that block. Enter at the end of a paragraph writes that blank
-// and then the caret's line.
+// Padding is the blank before another paragraph, and the blank Enter writes when
+// the next line is the caret's and nothing follows that line. Every other blank
+// under a paragraph is a line the caret can take.
+function gapStop(blocks, index) {
+  const next = blocks[index + 1];
+  if (!next) return true;
+  if (plainParagraph(next)) return false;
+  if (blankBlock(next) && !blocks[index + 2]) return false;
+  return true;
+}
+
+// Padding on the paragraph is the break. The one blank under it takes no height
+// whatever follows, including a heading, a rule, or the end of the file. A
+// second blank in a row stays a line. While the caret stands on a blank it can
+// take, that line keeps its height, so a typed letter stays with the caret.
+// The blank under an item or a quote keeps the next paragraph from joining.
 function markParagraphSpace(blocks, doc) {
   for (const block of blocks) {
     if (plainParagraph(block)) addClassName(block, "md-paragraph");
   }
-  for (let i = 1; i < blocks.length - 1; i += 1) {
+  for (let i = 1; i < blocks.length; i += 1) {
     if (!blankBlock(blocks[i]) || blankBlock(blocks[i - 1])) continue;
-    const next = blocks[i + 1];
     if (plainParagraph(blocks[i - 1])) {
-      if (plainParagraph(next) || (blankBlock(next) && i + 1 === blocks.length - 1)) {
-        addClassName(blocks[i], "md-paragraph-gap");
-      }
+      if (blocks[i].raw && gapStop(blocks, i)) continue;
+      addClassName(blocks[i], "md-paragraph-gap");
       continue;
     }
     if (keepsParagraphApart(doc, sourceLine(doc, blocks[i].start))) addClassName(blocks[i], "md-paragraph-gap");
@@ -2819,6 +2828,60 @@ function paragraphGapBlock(block) {
   return Boolean(block && block.classes && block.classes.includes("md-paragraph-gap"));
 }
 
+function blockHolding(blocks, offset) {
+  let found = -1;
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = blocks[i];
+    if (typeof block.start !== "number" || typeof block.end !== "number") continue;
+    if (offset >= block.start && offset <= block.end) found = i;
+  }
+  return found;
+}
+
+// The collapsed blank has no box, so up and down step over it. The stop is
+// that blank when the move leaves the block above or below it.
+function lineGapStop(doc, from, landed, forward) {
+  const text = typeof doc === "string" ? doc : "";
+  const blocks = plan(text, from).blocks;
+  const index = blockHolding(blocks, from);
+  // The caret line after a final newline is not a block. Up from it stops on
+  // the collapsed blank above when that blank is a line the caret can take.
+  if (index < 0) {
+    if (forward || from !== text.length || landed >= from) return null;
+    const lastIndex = blocks.length - 1;
+    const last = blocks[lastIndex];
+    if (!paragraphGapBlock(last) || !gapStop(blocks, lastIndex)) return null;
+    return last.start;
+  }
+  const gapIndex = index + (forward ? 1 : -1);
+  const gap = blocks[gapIndex];
+  if (!paragraphGapBlock(gap) || !gapStop(blocks, gapIndex)) return null;
+  const at = gap.start;
+  const origin = blocks[index];
+  if (forward) {
+    if (landed > from && landed <= origin.end) return null;
+    if (landed > at) return at;
+    if (landed <= from && from >= origin.end) return at;
+    return null;
+  }
+  if (landed < from && landed >= origin.start) return null;
+  if (landed < at) return at;
+  if (landed >= from && from <= origin.start) return at;
+  return null;
+}
+
+// Offsets of collapsed blanks the caret can take. A click on the blank's edge
+// has no box of its own, so the page uses these to place it.
+export function gapCaretStops(doc, cursor) {
+  const blocks = plan(typeof doc === "string" ? doc : "", Number.isFinite(cursor) ? cursor : 0).blocks;
+  const stops = [];
+  for (let i = 0; i < blocks.length; i += 1) {
+    if (!paragraphGapBlock(blocks[i]) || !gapStop(blocks, i)) continue;
+    stops.push(blocks[i].start);
+  }
+  return stops;
+}
+
 // The blank has no height. A step that lands on it continues to the paragraph
 // on that side. A click, which has no direction, stays with the paragraph above.
 function paragraphGapLeave(doc, offset, direction) {
@@ -2846,6 +2909,10 @@ export function placeMove(doc, cursor, landed, direction, granularity) {
   if (fence) next = forward ? fence.start : fence.end;
   const gap = paragraphGapLeave(doc, next, direction);
   if (gap != null) return gap;
+  if (granularity === "line") {
+    const stop = lineGapStop(doc, cursor, next, forward);
+    if (stop != null) return stop;
+  }
   return next;
 }
 

@@ -25,7 +25,7 @@ import {
   parseHash,
   wordSpan,
 } from "../src/editor.js";
-import { splitCommentNote, lockSpans, lockIndexAt, blockSpan, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, shiftBreak, moveText, endBeforeTail, ruleLineStop } from "../src/doc.js";
+import { splitCommentNote, lockSpans, lockIndexAt, blockSpan, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, shiftBreak, moveText, endBeforeTail, ruleLineStop, gapCaretStops } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
@@ -553,7 +553,8 @@ test("a plain paragraph keeps its mark and a blank stays a line", () => {
   const wide = plan("one\n\n\ntwo\n", 0).blocks;
   const empties = wide.filter((block) => block.empty);
   assert.equal(empties.length, 2);
-  assert.equal(empties.some((block) => block.classes.includes("md-paragraph-gap")), false);
+  assert.ok(wide[1].classes.includes("md-paragraph-gap"));
+  assert.equal(wide[2].classes.includes("md-paragraph-gap"), false);
   assert.equal(empties.some((block) => block.classes.includes("md-paragraph")), false);
   assert.ok(wide[0].classes.includes("md-paragraph"));
   assert.ok(wide[3].classes.includes("md-paragraph"));
@@ -569,9 +570,44 @@ test("a plain paragraph keeps its mark and a blank stays a line", () => {
   const headed = plan("a\n\n# H\n", 0).blocks;
   assert.ok(headed[0].classes.includes("md-paragraph"));
   assert.equal(headed[1].empty, true);
-  assert.equal(headed[1].classes.includes("md-paragraph-gap"), false);
+  assert.ok(headed[1].classes.includes("md-paragraph-gap"));
   assert.equal(headed[1].classes.includes("md-paragraph"), false);
   assert.equal(headed[2].classes.includes("md-paragraph"), false);
+  // The caret's own line keeps its height. Anywhere else the blank is padding.
+  const onHeadBlank = plan("a\n\n# H\n", 2).blocks;
+  assert.equal(onHeadBlank[1].raw, true);
+  assert.equal(onHeadBlank[1].classes.includes("md-paragraph-gap"), false);
+  assert.ok(plan("a\n\n# H\n", 3).blocks[1].classes.includes("md-paragraph-gap"));
+
+  const ruled = plan("a\n\n---\n", 0).blocks;
+  assert.equal(ruled[1].empty, true);
+  assert.ok(ruled[1].classes.includes("md-paragraph-gap"));
+  assert.equal(ruled[2].classes.includes("md-hr"), true);
+  assert.equal(ruled[2].classes.includes("md-paragraph"), false);
+  assert.equal(plan("a\n\n---\n", 2).blocks[1].classes.includes("md-paragraph-gap"), false);
+  assert.ok(plan("a\n\n---\n", 3).blocks[1].classes.includes("md-paragraph-gap"));
+
+  // Enter at the end of a file with no final newline leaves this shape. The
+  // blank is the last planned block; the caret's line is drawn after it. The
+  // blank keeps its height only while the caret stands on it.
+  for (const cursor of [0, 7]) {
+    const tail = plan("hello\n\n", cursor).blocks;
+    assert.equal(tail.length, 2, cursor);
+    assert.ok(tail[0].classes.includes("md-paragraph"));
+    assert.equal(tail[1].empty, true);
+    assert.ok(tail[1].classes.includes("md-paragraph-gap"), cursor);
+  }
+  const onTail = plan("hello\n\n", 6).blocks;
+  assert.equal(onTail[1].raw, true);
+  assert.equal(onTail[1].classes.includes("md-paragraph-gap"), false);
+  const endBlank = plan("one\n\n", 0).blocks;
+  assert.ok(endBlank[1].classes.includes("md-paragraph-gap"));
+  assert.equal(plan("one\n\n", 4).blocks[1].classes.includes("md-paragraph-gap"), false);
+  assert.ok(plan("one\n\n", 5).blocks[1].classes.includes("md-paragraph-gap"));
+  const beforeHeading = plan("hello\n\n\n# Title\n", 7).blocks;
+  assert.ok(beforeHeading[1].classes.includes("md-paragraph-gap"));
+  assert.equal(beforeHeading[2].empty, true);
+  assert.equal(beforeHeading[2].classes.includes("md-paragraph-gap"), false);
 
   for (const doc of ["a\n\n![x](y)\n", "![x](y)\n\nb\n"]) {
     for (const cursor of [0, doc.length]) {
@@ -581,10 +617,12 @@ test("a plain paragraph keeps its mark and a blank stays a line", () => {
       assert.equal(image.classes.includes("md-paragraph"), false, doc);
       const blank = blocks.find((block) => block.empty);
       assert.ok(blank, doc);
-      assert.equal(blank.classes.includes("md-paragraph-gap"), false, doc);
       assert.equal(blank.classes.includes("md-paragraph"), false, doc);
     }
   }
+  assert.ok(plan("a\n\n![x](y)\n", 0).blocks[1].classes.includes("md-paragraph-gap"));
+  assert.equal(plan("a\n\n![x](y)\n", 2).blocks[1].classes.includes("md-paragraph-gap"), false);
+  assert.equal(plan("![x](y)\n\nb\n", 0).blocks.find((block) => block.empty).classes.includes("md-paragraph-gap"), false);
   assert.ok(plan("a\n\n![x](y)\n", 0).blocks[0].classes.includes("md-paragraph"));
   assert.ok(plan("![x](y)\n\nb\n", 0).blocks[2].classes.includes("md-paragraph"));
 
@@ -608,6 +646,36 @@ test("movement skips the blank between paragraphs", () => {
   assert.equal(placeMove("one\n\ntwo\n", 5, 4, "backward", "character"), 3);
   assert.equal(placeMove("hello\n\n\n", 5, 6, "forward", "character"), 7);
   assert.equal(placeMove("hello\n\n\n", 7, 6, "backward", "character"), 5);
+  assert.equal(placeMove("hello\n\n\n", 5, 7, "forward", "line"), 7);
+  assert.equal(placeMove("hello\n\n\n", 7, 5, "backward", "line"), 5);
+  assert.equal(placeMove("a\n\n# H\n", 0, 2, "forward", "character"), 2);
+  assert.equal(placeMove("a\n\n# H\n", 0, 3, "forward", "line"), 2);
+  assert.equal(placeMove("a\n\n# H\n", 1, 1, "forward", "line"), 2);
+  assert.equal(placeMove("a\n\n# H\n", 5, 4, "backward", "line"), 4);
+  assert.equal(placeMove("a\n\n# H\n", 3, 1, "backward", "line"), 2);
+  assert.equal(placeMove("a\n\n# H\n", 0, 3, "forward", "character"), 3);
+  assert.deepEqual(gapCaretStops("a\n\n# H\n", 0), [2]);
+  assert.deepEqual(gapCaretStops("a\n\n# H\n", 2), []);
+  assert.deepEqual(gapCaretStops("one\n\ntwo\n", 0), []);
+  assert.deepEqual(gapCaretStops("hello\n\n", 0), [6]);
+  assert.deepEqual(gapCaretStops("hello\n\n", 6), []);
+  assert.deepEqual(gapCaretStops("hello\n\n", 7), [6]);
+  assert.equal(placeMove("one\n\n", 5, 3, "backward", "line"), 4);
+  assert.equal(placeMove("one\n\n", 3, 5, "forward", "line"), 4);
+  assert.equal(placeMove("one\n\n", 5, 4, "backward", "character"), 4);
+  assert.equal(placeMove("a\n\n---\n", 0, 2, "forward", "character"), 2);
+  assert.equal(placeMove("a\n\n---\n", 0, 3, "forward", "line"), 2);
+  // The first blank of a run is a line when a block still follows the run.
+  // Enter's padding, with nothing after the caret's line, is not.
+  assert.ok(plan("one\n\n\ntwo\n", 0).blocks[1].classes.includes("md-paragraph-gap"));
+  assert.equal(plan("one\n\n\ntwo\n", 4).blocks[1].classes.includes("md-paragraph-gap"), false);
+  assert.equal(placeMove("one\n\n\ntwo\n", 3, 5, "forward", "line"), 4);
+  assert.equal(placeMove("one\n\n\ntwo\n", 5, 3, "backward", "line"), 4);
+  assert.equal(placeMove("one\n\n\ntwo\n", 1, 4, "forward", "character"), 4);
+  assert.ok(plan("one\n\n\n\ntwo\n", 0).blocks[1].classes.includes("md-paragraph-gap"));
+  assert.equal(plan("one\n\n\n\ntwo\n", 4).blocks[1].classes.includes("md-paragraph-gap"), false);
+  assert.equal(plan("one\n\n\n\ntwo\n", 0).blocks[2].classes.includes("md-paragraph-gap"), false);
+  assert.equal(placeMove("hello\n\n\n# Title\n", 5, 6, "forward", "character"), 6);
   assert.equal(skipHidden("one\n\ntwo\n", 4, "forward"), 5);
   assert.equal(skipHidden("one\n\ntwo\n", 4, "backward"), 3);
   assert.equal(skipHidden("one\n\ntwo\n", 4, "nearer"), 3);
@@ -6897,15 +6965,12 @@ test("comment cards mark the thread being acted on", () => {
     assert.equal(texts()[0].textContent, "hi");
     const held = currentCards()[0];
     assert.equal(typeof globalThis.document.caretPositionFromPoint, "undefined");
-    let queries = 0;
-    mounted.root.querySelectorAll = () => {
-      queries += 1;
-      return [];
-    };
+    // The blank under the paragraph is a line the caret can take, so the press
+    // looks for it. An empty result still dismisses the open card.
+    mounted.root.querySelectorAll = () => [];
     const plain = mounted.root.childNodes[0];
     assert.equal(plain.classList.contains("md-comment"), false);
     assert.doesNotThrow(() => clickEditor(plain, null));
-    assert.equal(queries, 0);
     assert.equal(held.classList.contains("md-comment-current"), false);
     assert.equal(currentCards().length, 0);
     known.destroy();

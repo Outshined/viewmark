@@ -38,6 +38,7 @@ import {
   wordStop,
   endBeforeTail,
   ruleLineStop,
+  gapCaretStops,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./ticket.js";
@@ -6275,11 +6276,39 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return start;
   }
 
-  function pointOffset(event) {
+  // The blank has no box, so a press on its edge hits the block under it.
+  // The stop is that blank. A press on the block's text is not the edge.
+  function gapUnderPoint(event) {
+    if (sourceMode || !event || !Number.isFinite(event.clientY)) return null;
+    if (!root || typeof root.querySelectorAll !== "function") return null;
+    const stops = gapCaretStops(state.doc, state.cursor);
+    if (stops.length === 0) return null;
+    for (const el of root.querySelectorAll(".md-paragraph-gap")) {
+      const start = Number(el.dataset && el.dataset.start);
+      if (!stops.includes(start)) continue;
+      if (typeof el.getBoundingClientRect !== "function") continue;
+      const rect = el.getBoundingClientRect();
+      if (!rect || !Number.isFinite(rect.top)) continue;
+      const mid = (rect.top + rect.bottom) / 2;
+      if (Math.abs(event.clientY - mid) > 2) continue;
+      const right = rect.right > rect.left ? rect.right : rect.left;
+      if (Number.isFinite(event.clientX) && (event.clientX < rect.left - 4 || event.clientX > right + 4)) continue;
+      return start;
+    }
+    return null;
+  }
+
+  function pressOffset(event) {
+    const gap = gapUnderPoint(event);
+    if (gap != null) return gap;
     const mapped = pointMapped(event);
     if (mapped == null) return null;
     if (sourceMode) return mapped;
     return blankLinePress(event, skipHidden(state.doc, mapped, "nearer"));
+  }
+
+  function pointOffset(event) {
+    return pressOffset(event);
   }
 
   listen("mousedown", (event) => {
@@ -6301,8 +6330,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // unsnapped offset is what says this press is a drag of the selection.
     // Source mode draws the marker, so the caret stays on the byte that was hit.
     const raw = pointMapped(event);
-    const skipped = sourceMode || raw == null ? raw : skipHidden(state.doc, raw, "nearer");
-    gestureOffset = skipped == null || sourceMode ? skipped : blankLinePress(event, skipped);
+    gestureOffset = pressOffset(event);
     gestureArmed = true;
     const from = Math.min(state.anchor, state.cursor);
     const to = Math.max(state.anchor, state.cursor);
@@ -6485,6 +6513,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (atom && root.contains(atom)) {
       event.preventDefault();
       if (!keepCurrent) currentCommentId = null;
+      // A press on the collapsed blank's edge hits the picture drawn under it.
+      // The stored offset is that blank.
+      if (stored != null && gapCaretStops(state.doc, state.cursor).includes(stored)) {
+        if (detail === 1) gestureHold = true;
+        state = { ...state, anchor: stored, cursor: stored };
+        if (!claimLines(stored, stored)) {
+          if (detail === 1) gestureHold = false;
+          return;
+        }
+        render();
+        return;
+      }
       if (hasClass(atom, "md-image")) {
         const line = wholeImageLine(state.doc, Number(atom.dataset.start));
         if (line) {
