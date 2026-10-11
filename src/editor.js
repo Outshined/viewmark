@@ -3791,6 +3791,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const id = handle.dataset && handle.dataset.comment;
     const edge = handle.dataset && handle.dataset.edge;
     if (!id || (edge !== "start" && edge !== "end")) return false;
+    // The second press of a double-click can land on a handle the first press
+    // just showed. That press selects the word under the first press.
+    if (event.detail === 2) {
+      if (typeof root.focus === "function") root.focus();
+      return false;
+    }
     if (typeof event.preventDefault === "function") event.preventDefault();
     if (typeof root.focus === "function") root.focus();
     commentFocus = null;

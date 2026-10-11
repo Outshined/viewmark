@@ -10827,6 +10827,93 @@ test("a double-click selects the word under the first press", () => {
   }
 });
 
+// DC.cm.1. The first press lands on the word. Rendering it draws handles, and
+// the second press lands on one. The word from the first press is the selection.
+test("DC.cm.1 a double-click on a comment word selects it when the second press hits a handle", () => {
+  const mounted = mountEditor();
+  const rect = { left: 8, right: 48, top: 8, bottom: 28, width: 40, height: 20 };
+  const create = globalThis.document.createElement;
+  globalThis.document.createElement = (tag) => {
+    const el = create(tag);
+    el.getClientRects = () => [rect];
+    return el;
+  };
+  const prose = "x\n\nSee {c1}this{/c1} now.";
+  const doc = `${prose}\n\n\`\`\`comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nNote.\n\`\`\`\n`;
+  const press = (target, detail) => {
+    const event = {
+      target,
+      clientX: 20,
+      clientY: 18,
+      detail,
+      button: 0,
+      preventDefault() {},
+    };
+    mounted.listeners.mousedown(event);
+    mounted.listeners.mouseup(event);
+    mounted.listeners.click(event);
+  };
+  try {
+    assert.equal(prose.slice(11, 15), "this");
+    const view = createEditor(mounted.root, doc, 0);
+    const word = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "this" && node.parentElement && node.parentElement.classList.contains("md-comment"))[0];
+    assert.ok(word);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: word, offset: 1 });
+    mounted.listeners.mousemove({ target: word, clientX: 20, clientY: 18, button: 0 });
+    press(word, 1);
+    assert.equal(view.getState().anchor, view.getState().cursor);
+    assert.equal(view.getState().cursor, prose.indexOf("this") + 1);
+    const handle = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-handle"))[0];
+    assert.ok(handle, "the first press did not show a handle");
+    press(handle, 2);
+    assert.equal(view.getState().anchor, 11);
+    assert.equal(view.getState().cursor, 15);
+    assert.equal(selectedSlice(view.getState()), "this");
+    assert.equal(view.getState().doc, doc);
+    view.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
+    mounted.restore();
+  }
+});
+
+test("a press that stays on a comment handle places the caret", () => {
+  const mounted = mountEditor();
+  const prose = "x\n\nSee {c1}this{/c1} now.";
+  const doc = `${prose}\n\n\`\`\`comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nNote.\n\`\`\`\n`;
+  const press = (target, detail) => {
+    const event = {
+      target,
+      clientX: 20,
+      clientY: 18,
+      detail,
+      button: 0,
+      preventDefault() {},
+    };
+    mounted.listeners.mousedown(event);
+    mounted.listeners.mouseup(event);
+    mounted.listeners.click(event);
+  };
+  try {
+    const view = createEditor(mounted.root, doc, 0);
+    const word = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "this" && node.parentElement && node.parentElement.classList.contains("md-comment"))[0];
+    assert.ok(word);
+    word.parentElement.getClientRects = () => [{ left: 8, right: 48, top: 8, bottom: 28, width: 40, height: 20 }];
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: word, offset: 1 });
+    mounted.listeners.mousemove({ target: word, clientX: 20, clientY: 18, button: 0 });
+    const handle = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-handle"))[0];
+    assert.ok(handle);
+    press(handle, 1);
+    assert.equal(view.getState().anchor, prose.indexOf("this") + 1);
+    assert.equal(view.getState().cursor, prose.indexOf("this") + 1);
+    assert.equal(view.getState().doc, doc);
+    view.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
+    mounted.restore();
+  }
+});
+
 test("a same-line render does not scroll the caret", () => {
   const mounted = mountEditor();
   globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
