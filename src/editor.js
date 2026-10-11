@@ -258,7 +258,9 @@ function ensureNavButton(nav, className, text) {
   if (icon) {
     button.className = `icon-btn ${className}`;
     if (typeof button.setAttribute === "function") {
-      button.setAttribute("aria-label", className === "md-new-file" ? "New file" : "New ticket");
+      const label = className === "md-new-file" ? "New file" : "New ticket";
+      button.setAttribute("aria-label", label);
+      button.setAttribute("title", label);
     }
     // textContent replaces the svg, and "+" is not the button label.
     if (button.textContent !== "" || !iconMatches(button, "plus")) {
@@ -282,6 +284,7 @@ function ensureFilterButton(nav) {
   if (typeof button.setAttribute === "function") {
     button.setAttribute("type", "button");
     button.setAttribute("aria-label", "Filter");
+    button.setAttribute("title", "Filter");
   }
   if (button.textContent !== "" || !iconMatches(button, "filter")) {
     for (const child of childArray(button).slice()) detachNode(child);
@@ -681,6 +684,7 @@ function iconButton(action, className) {
   if (typeof button.setAttribute === "function") {
     button.setAttribute("type", "button");
     button.setAttribute("aria-label", action);
+    button.setAttribute("title", action);
   }
   const svg = iconSvg(action);
   if (svg) button.appendChild(svg);
@@ -3062,6 +3066,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof button.setAttribute === "function") {
       button.setAttribute("type", "button");
       button.setAttribute("aria-label", label);
+      button.setAttribute("title", label);
     }
     const icon = strokeIcon(d);
     if (icon) button.appendChild(icon);
@@ -3229,6 +3234,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof link.setAttribute === "function") {
       link.setAttribute("type", "button");
       link.setAttribute("aria-label", "Copy link");
+      link.setAttribute("title", "Copy link");
     }
     link.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
@@ -4229,6 +4235,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof button.setAttribute === "function") {
       button.setAttribute("type", "button");
       button.setAttribute("aria-label", "Raw");
+      button.setAttribute("title", "Raw");
       button.setAttribute("contenteditable", "false");
     }
     if (typeof button.addEventListener === "function") {
@@ -6630,6 +6637,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof button.setAttribute === "function") {
       button.setAttribute("type", "button");
       button.setAttribute("aria-label", label);
+      button.setAttribute("title", label);
     }
     const svgNS = "http://www.w3.org/2000/svg";
     const svg = typeof document.createElementNS === "function"
@@ -7119,6 +7127,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (typeof copy.setAttribute === "function") {
         copy.setAttribute("type", "button");
         copy.setAttribute("aria-label", "Copy ticket id");
+        copy.setAttribute("title", "Copy ticket id");
       }
       const glyph = copyGlyph();
       if (glyph) copy.appendChild(glyph);
@@ -7178,6 +7187,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const menuButton = iconButton("menu", "md-ticket-pane-menu");
     if (typeof menuButton.setAttribute === "function") {
       menuButton.setAttribute("aria-label", "Menu");
+      menuButton.setAttribute("title", "Menu");
       menuButton.setAttribute("aria-haspopup", "menu");
       menuButton.setAttribute("aria-expanded", ticketMenuOpen ? "true" : "false");
     }
@@ -7602,6 +7612,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (typeof remove.setAttribute === "function") {
         remove.setAttribute("type", "button");
         remove.setAttribute("aria-label", "Delete file");
+        remove.setAttribute("title", "Delete file");
       }
       const icon = strokeIcon(ICON_PATHS.delete[0]);
       if (icon) remove.appendChild(icon);

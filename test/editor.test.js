@@ -14828,3 +14828,135 @@ test("committed composition joins the typing run", () => {
     mounted.restore();
   }
 });
+
+test("glyph button title is the browser tooltip", () => {
+  const mounted = mountTicketPage();
+  const page = mounted.root.parentElement;
+  const glyph = (button, label) => {
+    assert.equal(button.tagName, "BUTTON");
+    assert.equal(button.classList.contains("icon-btn"), true);
+    assert.equal(button.textContent, "");
+    assert.equal(button.getAttribute("aria-label"), label);
+    assert.equal(button.getAttribute("title"), label);
+  };
+  const words = (button) => {
+    assert.equal(button.tagName, "BUTTON");
+    assert.notEqual(button.textContent, "");
+    assert.equal(button.getAttribute("title"), null);
+  };
+  const labeled = (root, label) => walkNodes(root, (node) => (
+    node.tagName === "BUTTON" && typeof node.getAttribute === "function" && node.getAttribute("aria-label") === label
+  ));
+  try {
+    const transport = holdingTransport();
+    const doc = "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n```\n";
+    const view = createEditor(mounted.root, doc, 0, transport);
+    glyph(byClass(mounted.nav, "md-new-file")[0], "New file");
+    glyph(byClass(mounted.nav, "md-new-ticket")[0], "New ticket");
+    glyph(byClass(mounted.nav, "md-ticket-filter")[0], "Filter");
+    const trash = byClass(mounted.nav, "md-file-delete")[0];
+    glyph(trash, "Delete file");
+    trash.disabled = true;
+    trash.setAttribute("disabled", "");
+
+    const raw = viewToggleOf(mounted.root);
+    glyph(raw, "Raw");
+    assert.equal(raw.getAttribute("aria-pressed"), "false");
+    assert.equal(slashLine(raw), null);
+    raw.disabled = true;
+    raw.setAttribute("disabled", "");
+    pressViewToggle(mounted.root);
+    const eyed = viewToggleOf(mounted.root);
+    assert.equal(eyed, raw);
+    assert.equal(eyed.getAttribute("aria-pressed"), "true");
+    assert.ok(slashLine(eyed));
+    assert.equal(eyed.getAttribute("aria-label"), "Raw");
+    assert.equal(eyed.getAttribute("title"), "Raw");
+    assert.equal(eyed.getAttribute("disabled"), "");
+    assert.equal(eyed.disabled, true);
+    pressViewToggle(mounted.root);
+    assert.equal(viewToggleOf(mounted.root).getAttribute("aria-pressed"), "false");
+    assert.equal(viewToggleOf(mounted.root).getAttribute("title"), "Raw");
+    assert.equal(viewToggleOf(mounted.root).getAttribute("aria-label"), "Raw");
+    assert.equal(slashLine(viewToggleOf(mounted.root)), null);
+
+    const card = byClass(mounted.aside, "md-comment-card")[0];
+    const resolve = labeled(card, "Resolve")[0];
+    const reply = labeled(card, "Reply")[0];
+    const remove = labeled(card, "Delete")[0];
+    const link = labeled(card, "Copy link")[0];
+    assert.equal(resolve.hidden, true);
+    for (const button of [resolve, reply, remove, link]) assert.equal(button.hidden, true);
+    glyph(resolve, "Resolve");
+    glyph(reply, "Reply");
+    glyph(remove, "Delete");
+    glyph(link, "Copy link");
+    assert.equal(link.classList.contains("md-comment-link"), true);
+    reply.listeners.click({ preventDefault() {} });
+    const open = byClass(mounted.aside, "md-comment-card")[0];
+    glyph(labeled(open, "Resolve")[0], "Resolve");
+    glyph(labeled(open, "Reply")[0], "Reply");
+    glyph(labeled(open, "Delete")[0], "Delete");
+    const links = labeled(open, "Copy link");
+    assert.equal(links.length, 2);
+    for (const button of links) glyph(button, "Copy link");
+    const saves = walkNodes(page, (node) => node.tagName === "BUTTON" && node.textContent === "Save");
+    const cancels = walkNodes(page, (node) => node.tagName === "BUTTON" && node.textContent === "Cancel");
+    assert.equal(saves.length, 1);
+    assert.equal(cancels.length, 1);
+    words(saves[0]);
+    words(cancels[0]);
+
+    const columns = byClass(mounted.nav, "md-ticket-columns")[0];
+    for (const label of ["ID", "Title", "Priority", "Assignee", "State", "Type"]) {
+      const button = columns.childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === label);
+      words(button);
+      assert.equal(button.getAttribute("aria-label"), `Sort by ${label}`);
+    }
+    words(byClass(mounted.nav, "md-ticket-filter-all")[0]);
+
+    transport.deliver({ type: "docs", files: ["notes/idea.md"] });
+    const notes = walkNodes(mounted.nav, (node) => node.tagName === "BUTTON" && node.textContent === "notes")[0];
+    words(notes);
+    notes.listeners.click({ preventDefault() {} });
+    words(walkNodes(mounted.nav, (node) => node.tagName === "BUTTON" && node.textContent === "idea.md")[0]);
+    assert.equal(trash.getAttribute("title"), "Delete file");
+    assert.equal(trash.getAttribute("disabled"), "");
+    assert.equal(viewToggleOf(mounted.root).getAttribute("title"), "Raw");
+
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0, "", ["bbbbbbbb"]);
+    const bravo = ticketFixture("bbbbbbbb", "Bravo", "new", T1);
+    transport.deliver({ type: "tickets", tickets: [alpha, bravo] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 1,
+      text: "hello\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    assert.equal(byClass(mounted.aside, "md-comment-card").length, 0);
+    const form = byClass(page, "ticket-form")[0];
+    const adds = byClass(form, "md-ticket-add");
+    const removes = byClass(form, "md-ticket-remove");
+    assert.ok(adds.length > 0);
+    assert.equal(removes.length, adds.length);
+    for (const button of adds) glyph(button, "Add");
+    for (const button of removes) glyph(button, "Remove");
+    glyph(byClass(form, "md-ticket-pane-menu")[0], "Menu");
+    glyph(byClass(form, "md-ticket-copy-id")[0], "Copy ticket id");
+    const panel = byClass(form, "md-ticket-pane-panel")[0];
+    words(panel.childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === "Copy link"));
+    words(panel.childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === "Delete ticket"));
+    assert.equal(walkNodes(page, (node) => node.getAttribute && node.getAttribute("role") === "tooltip").length, 0);
+    assert.equal(trash.getAttribute("title"), "Delete file");
+    assert.equal(trash.disabled, true);
+    assert.equal(viewToggleOf(mounted.root).getAttribute("title"), "Raw");
+    assert.equal(viewToggleOf(mounted.root).getAttribute("aria-label"), "Raw");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
