@@ -3579,7 +3579,11 @@ function mountEditor(options = {}) {
     Object.defineProperty(el, "textContent", {
       get() {
         const list = nodeList ? el._kids : el.childNodes;
-        return list.map((child) => (child.textContent == null ? "" : child.textContent)).join("");
+        // The menu is pinned on the editor. Its labels are not the document.
+        return list.map((child) => {
+          if (child.classList && child.classList.contains("md-doc-menu-panel")) return "";
+          return child.textContent == null ? "" : child.textContent;
+        }).join("");
       },
       set(value) {
         const text = value == null ? "" : String(value);
@@ -5227,8 +5231,7 @@ function docMenuOf(aside) {
   const row = (aside.childNodes || []).find((node) => node.classList && node.classList.contains("md-show-resolved"));
   const checkbox = row && (row.childNodes || []).find((node) => node.tagName === "INPUT" && node.type === "checkbox");
   const label = row && (row.childNodes || []).find((node) => node.tagName === "LABEL");
-  const commit = (aside.childNodes || []).find((node) => node.classList && node.classList.contains("md-doc-commit"));
-  return { row, checkbox, label, commit };
+  return { row, checkbox, label };
 }
 
 test("comment cards edit the thread and line up with the highlight", () => {
@@ -5268,8 +5271,8 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.equal(/@media \(max-width:\s*800px\)\s*\{[^]*button\.md-doc-menu/.test(css), false);
     assert.match(css, /@media \(max-width:\s*800px\)\s*\{[^]*\.sheet\s*\{[^}]*display:\s*block;/);
     assert.match(css, /aside\.comments\s*\{[^}]*position:\s*relative;/);
-    assert.equal(/button\.md-doc-menu\s*\{/.test(css), false);
-    assert.equal(/div\.md-doc-menu-panel/.test(css), false);
+    assert.match(css, /button\.md-doc-menu\s*\{/);
+    assert.match(css, /div\.md-doc-menu-panel/);
     assert.equal(/button\.md-doc-link/.test(css), false);
     const resolvedRule = css.match(/\.md-show-resolved\s*\{[^}]*\}/);
     assert.ok(resolvedRule);
@@ -5423,20 +5426,15 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.equal(cards[0].styleProps.top, "12px");
     assert.ok(tops[1] >= tops[0] + 30);
     const menu = docMenuOf(mounted.aside);
-    assert.equal(mounted.aside.childNodes[0], menu.commit);
-    assert.equal(mounted.aside.childNodes[1].textContent, "Attach image");
-    assert.equal(mounted.aside.childNodes[1].classList.contains("md-attach"), true);
-    assert.equal(mounted.aside.childNodes[2].classList.contains("md-attach-input"), true);
-    assert.equal(mounted.aside.childNodes[3], menu.row);
+    assert.equal(mounted.aside.childNodes[0].classList.contains("md-attach-input"), true);
+    assert.equal(mounted.aside.childNodes[0].hidden, true);
+    assert.equal(mounted.aside.childNodes[1], menu.row);
     assert.equal(menu.row.hidden, true);
     assert.equal(menu.row.hasAttribute("hidden"), true);
-    assert.equal(cards[0], mounted.aside.childNodes[4]);
-    assert.equal(menu.commit.tagName, "BUTTON");
-    assert.equal(menu.commit.type, "button");
-    assert.equal(menu.commit.textContent, "Commit repo");
-    assert.equal(menu.commit.hidden, true);
-    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-doc-menu")).length, 0);
-    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-doc-menu-panel")).length, 0);
+    assert.equal(cards[0], mounted.aside.childNodes[2]);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-doc-commit")).length, 0);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-attach")).length, 0);
+    assert.equal(mounted.findAll((node) => node.tagName === "BUTTON" && node.textContent === "Commit repo").length, 0);
     assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-doc-link")).length, 0);
     assert.equal(menu.checkbox.type, "checkbox");
     assert.equal(menu.checkbox.id, "show-resolved");
@@ -5448,11 +5446,11 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.equal(menu.label.tagName, "LABEL");
     assert.equal(menu.label.textContent, "show resolved");
     assert.equal(menu.label.parentElement, menu.row);
-    const keptCommit = menu.commit;
+    const keptInput = mounted.aside.childNodes[0];
     menu.checkbox.checked = true;
     menu.checkbox.listeners.change();
     const rerendered = docMenuOf(mounted.aside);
-    assert.equal(rerendered.commit, keptCommit);
+    assert.equal(mounted.aside.childNodes[0], keptInput);
     assert.equal(rerendered.checkbox.checked, true);
     assert.equal(rerendered.checkbox.parentElement, rerendered.row);
     assert.equal(rerendered.row.classList.contains("md-show-resolved"), true);
@@ -5469,8 +5467,8 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.deepEqual(stacked.map((card) => card.dataset.comment), ["c1", "c2"]);
     assert.ok(stacked.every((card) => card.styleProps.position === "static"));
     const narrowMenu = docMenuOf(mounted.aside);
-    assert.equal(mounted.aside.childNodes[0], narrowMenu.commit);
-    assert.equal(narrowMenu.commit.textContent, "Commit repo");
+    assert.equal(mounted.aside.childNodes[0].classList.contains("md-attach-input"), true);
+    assert.equal(mounted.aside.childNodes[1], narrowMenu.row);
     assert.equal(narrowMenu.checkbox.type, "checkbox");
     assert.equal(narrowMenu.checkbox.parentElement, narrowMenu.row);
     assert.equal(narrowMenu.row.hidden, true);
@@ -5550,7 +5548,7 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(label.tagName, "LABEL");
     assert.equal(label.textContent, "show resolved");
     assert.equal(label.parentElement, openedMenu.row);
-    assert.equal(openedMenu.commit.textContent, "Commit repo");
+    assert.equal(mounted.aside.childNodes[0].classList.contains("md-attach-input"), true);
     chooseFox();
     const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
     add.listeners.mousedown({ button: 0, preventDefault() {} });
@@ -5737,9 +5735,8 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(showMenu.row.classList.contains("md-show-resolved"), true);
     assert.equal(showMenu.row.hidden, false);
     assert.equal(showMenu.row.hasAttribute("hidden"), false);
-    assert.equal(mounted.aside.childNodes[0], showMenu.commit);
-    assert.equal(mounted.aside.childNodes[1].classList.contains("md-attach"), true);
-    assert.equal(mounted.aside.childNodes[3], showMenu.row);
+    assert.equal(mounted.aside.childNodes[0].classList.contains("md-attach-input"), true);
+    assert.equal(mounted.aside.childNodes[1], showMenu.row);
     assert.notEqual(mounted.aside.childNodes[0], show);
     assert.equal(showMenu.label.textContent, "show resolved");
     assert.equal(showMenu.label.parentElement, showMenu.row);
@@ -5838,15 +5835,12 @@ test("comment cards start below the shown comment controls", () => {
     globalThis.window.matchMedia = () => ({ matches: false });
     const view = createEditor(mounted.root, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n```\n", 0);
     const card = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"))[0];
-    const commit = docMenuOf(mounted.aside).commit;
-    const attach = mounted.aside.childNodes[1];
-    const input = mounted.aside.childNodes[2];
+    const input = mounted.aside.childNodes[0];
     const row = docMenuOf(mounted.aside).row;
+    assert.equal(input.classList.contains("md-attach-input"), true);
     assert.equal(card().styleProps.top, "12px");
     const asideTop = 100;
     mounted.aside.getBoundingClientRect = () => box(asideTop, 500, 0, 320);
-    commit.getBoundingClientRect = () => box(asideTop, 80);
-    attach.getBoundingClientRect = () => box(asideTop + 40, 40);
     input.getBoundingClientRect = () => box(asideTop + 200, 30);
     onResize();
     assert.equal(card().styleProps.top, "12px");
@@ -5854,17 +5848,13 @@ test("comment cards start below the shown comment controls", () => {
       el.hidden = false;
       el.removeAttribute("hidden");
     };
-    show(commit);
-    show(attach);
-    onResize();
-    assert.equal(card().styleProps.top, "80px");
     show(input);
     onResize();
     assert.equal(card().styleProps.top, "230px");
     input.hidden = true;
     input.setAttribute("hidden", "");
     onResize();
-    assert.equal(card().styleProps.top, "80px");
+    assert.equal(card().styleProps.top, "12px");
     show(row);
     row.getBoundingClientRect = () => box(asideTop + 80, 36);
     onResize();
@@ -8608,27 +8598,22 @@ test("NodeList childNodes places the file block as the next sibling of the repo 
   }
 });
 
-test("commit button checkpoints the active repo", () => {
+test("document menu offers Attach image and Delete file", () => {
   const mounted = mountEditor();
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
-  const rule = css.match(/button\.md-doc-commit\s*\{[^}]*\}/);
+  const rule = css.match(/button\.md-doc-menu\s*\{[^}]*\}/);
   assert.ok(rule);
-  assert.match(rule[0], /font:\s*inherit/);
-  assert.match(rule[0], /color:\s*inherit/);
-  assert.match(css, /button\.md-doc-commit[^{]*\{[^}]*background:\s*#1c1b19/);
-  assert.match(css, /button\.md-doc-commit[^{]*\{[^}]*border:\s*1px solid #c4b8a4/);
-  assert.match(rule[0], /box-sizing:\s*border-box/);
-  assert.match(rule[0], /display:\s*block/);
-  assert.match(rule[0], /width:\s*auto/);
-  assert.equal(/button\.md-doc-commit[^{]*\{[^}]*width:\s*100%/.test(css), false);
-  assert.match(rule[0], /margin:\s*0/);
-  assert.match(rule[0], /padding:\s*0\.35rem 0\.7rem/);
-  assert.match(rule[0], /border-radius:\s*0\.25rem/);
-  assert.match(css, /button\.md-doc-commit[^{]*\{[^}]*text-align:\s*left/);
-  assert.match(rule[0], /cursor:\s*pointer/);
-  assert.match(css, /button\.md-doc-commit:hover[^{]*\{[^}]*background:\s*#2c3440/);
+  assert.match(rule[0], /position:\s*absolute/);
+  assert.match(rule[0], /top:\s*0\.35rem/);
+  assert.match(rule[0], /right:\s*calc\(0\.35rem \+ 1\.75rem \+ 4px\)/);
+  assert.match(rule[0], /z-index:\s*2/);
+  assert.match(rule[0], /background:\s*#1c1b19/);
+  assert.match(css, /div\.md-doc-menu-panel\s*\{[^}]*position:\s*absolute/);
+  assert.match(css, /div\.md-doc-menu-panel\[hidden\]\s*\{[^}]*display:\s*none/);
+  assert.match(css, /button\.md-doc-menu-item\s*\{[^}]*text-align:\s*left/);
+  assert.match(css, /button\.icon-btn\.md-view-toggle[^{]*\{[^}]*right:\s*0\.35rem/);
+  assert.equal(/button\.md-doc-commit/.test(css), false);
   assert.equal(/button\.md-doc-link/.test(css), false);
-  assert.match(css, /button\.md-doc-commit\[hidden\]\s*\{[^}]*display:\s*none/);
   assert.equal(/button\.md-commit\s*\{/.test(css), false);
   const nav = document.createElement("nav");
   nav.className = "files";
@@ -8636,118 +8621,90 @@ test("commit button checkpoints the active repo", () => {
   aside.className = "comments";
   const sheet = document.createElement("div");
   sheet.append(nav, mounted.root, aside);
-  const storage = {
-    data: {},
-    getItem(key) {
-      return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
-    },
-    setItem(key, value) {
-      this.data[key] = String(value);
-    },
-    removeItem(key) {
-      delete this.data[key];
-    },
-  };
   const transport = holdingTransport();
+  const click = (node) => node.listeners.click({ preventDefault() {}, stopPropagation() {} });
+  const pointer = (target) => {
+    for (const fn of mounted.documentListeners.get("pointerdown") || []) fn({ target });
+  };
+  const confirm = () => walkNodes(sheet, (node) => node.tagName === "DIALOG" && node.classList && node.classList.contains("md-confirm"))[0];
   try {
-    const view = createEditor(mounted.root, "ab\n\ncd\n", 0, transport, storage);
-    const commits = () => walkNodes(aside, (node) => node.classList && node.classList.contains("md-doc-commit"));
-    const plus = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"))[0];
-    const tree = walkNodes(nav, (node) => node.classList && node.classList.contains("file-tree"))[0];
-    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-commit")).length, 0);
-    assert.equal(commits().length, 1);
-    const menu = docMenuOf(aside);
-    assert.equal(walkNodes(aside, (node) => node.classList && node.classList.contains("md-doc-menu")).length, 0);
-    assert.equal(walkNodes(aside, (node) => node.classList && node.classList.contains("md-doc-link")).length, 0);
-    assert.equal(menu.commit, commits()[0]);
-    const button = commits()[0];
+    const view = createEditor(mounted.root, "ab\n\ncd\n", 0, transport);
+    assert.equal(sheet.textContent.includes("Commit repo"), false);
+    assert.equal(walkNodes(sheet, (node) => node.classList && node.classList.contains("md-doc-commit")).length, 0);
+    assert.equal(walkNodes(sheet, (node) => node.classList && node.classList.contains("md-attach")).length, 0);
+    assert.equal(walkNodes(aside, (node) => node.tagName === "BUTTON" && node.textContent === "Attach image").length, 0);
+    const input = walkNodes(aside, (node) => node.classList && node.classList.contains("md-attach-input"))[0];
+    assert.equal(aside.childNodes[0], input);
+    assert.equal(input.hidden, true);
+    assert.equal(input.getAttribute("type"), "file");
+    assert.equal(input.getAttribute("accept"), "image/png,image/jpeg,image/gif,image/webp");
+    const button = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-doc-menu"))[0];
+    const panel = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-doc-menu-panel"))[0];
+    const toggle = viewToggleOf(mounted.root);
     assert.equal(button.tagName, "BUTTON");
     assert.equal(button.type, "button");
-    assert.equal(button.textContent, "Commit repo");
-    assert.equal(button.hidden, true);
-    assert.equal(button.hasAttribute("hidden"), true);
-    assert.equal(nav.childNodes[0].classList.contains("md-repo-row"), true);
-    assert.equal(nav.childNodes[0].childNodes[0].textContent, "Repo");
-    assert.equal(nav.childNodes[1].classList.contains("file-block"), true);
-    assert.equal(plus.parentElement.classList.contains("md-pane-head"), true);
-    assert.equal(tree.parentElement.classList.contains("md-file-drawer"), true);
-    assert.equal(tree.parentElement.parentElement, nav.childNodes[1]);
-    const select = nav.childNodes[0].childNodes[1];
-    transport.deliver({
-      type: "repos",
-      repos: [
-        { name: "alpha", description: "Alpha notes", path: "/a" },
-        { name: "beta", description: "Beta notes", path: "/b" },
-      ],
-    });
-    assert.equal(button.hidden, true);
-    assert.equal(transport.sent.length, 0);
-    select.value = "alpha";
-    select.listeners.change();
-    assert.equal(button.hidden, false);
-    assert.equal(button.hasAttribute("hidden"), false);
-    transport.deliver({ type: "file", rev: 1, text: "ab\n\ncd\n", path: "a.md", cursor: 0, anchor: 0 });
-    const before = transport.sent.length;
-    button.listeners.click({ preventDefault() {} });
-    assert.equal(transport.sent.length, before + 1);
-    const frame = transport.sent.at(-1);
-    assert.deepEqual(frame, { type: "commit", username: "" });
-    assert.equal(frame.rev, undefined);
-    assert.equal(frame.message, undefined);
-    const field = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name"))[0];
-    plus.listeners.click({ preventDefault() {} });
-    field.value = "notes/idea";
-    field.listeners.keydown({ key: "Enter", preventDefault() {} });
-    assert.equal(transport.sent.at(-1).type, "create");
-    const text = walkNodes(mounted.root, (node) => node.nodeType === 3 && node.textContent === "cd")[0];
-    assert.equal(text.textContent, "cd");
-    document.caretPositionFromPoint = () => ({ offsetNode: text, offset: 0 });
-    mounted.listeners.click({ target: text, clientX: 1, clientY: 1, preventDefault() {} });
-    assert.equal(view.getState().cursor, 4);
-    assert.equal(view.getState().anchor, 4);
-    transport.deliver({ type: "error", status: 409 });
-    assert.equal(view.getState().cursor, 4);
-    assert.equal(view.getState().anchor, 4);
-    transport.deliver({ type: "error", status: 409 });
-    assert.equal(view.getState().cursor, 0);
-    assert.equal(view.getState().anchor, 0);
-    select.value = "beta";
-    select.listeners.change();
-    assert.equal(button.hidden, false);
-    transport.deliver({ type: "repos", repos: [{ name: "alpha", description: "Alpha notes", path: "/a" }] });
-    assert.equal(button.hidden, true);
-    assert.equal(button.hasAttribute("hidden"), true);
-    const quiet = transport.sent.length;
-    button.listeners.click({ preventDefault() {} });
-    assert.equal(transport.sent.length, quiet);
-    view.destroy();
-    assert.equal(button.listeners.click, undefined);
-    assert.equal(commits().length, 1);
+    assert.equal(button.classList.contains("icon-btn"), true);
+    assert.equal(button.getAttribute("aria-label"), "Menu");
+    assert.equal(button.getAttribute("aria-haspopup"), "menu");
+    assert.equal(button.getAttribute("aria-expanded"), "false");
+    assert.deepEqual(iconPaths(button), ["M4 6h16M4 12h16M4 18h16"]);
+    assert.equal(panel.getAttribute("role"), "menu");
+    assert.equal(panel.hidden, true);
+    assert.deepEqual(panel.childNodes.map((node) => node.textContent), ["Attach image", "Delete file"]);
+    assert.equal(mounted.root.childNodes.at(-1), toggle);
+    assert.ok(mounted.root.childNodes.indexOf(button) < mounted.root.childNodes.indexOf(toggle));
+    assert.equal(mounted.root.childNodes.indexOf(panel), mounted.root.childNodes.indexOf(button) + 1);
+    assert.notEqual(mounted.root.childNodes[0], button);
 
-    storage.data["viewmark.repo"] = "alpha";
-    const storedTransport = holdingTransport();
-    const again = createEditor(mounted.root, "stale", 0, storedTransport, storage);
-    const storedButton = commits()[0];
-    assert.equal(commits().length, 1);
-    assert.equal(storedButton.hidden, true);
-    assert.equal(storedButton.textContent, "Commit repo");
-    storedTransport.deliver({
-      type: "repos",
-      repos: [
-        { name: "beta", description: "Beta notes", path: "/b" },
-        { name: "alpha", description: "Alpha notes", path: "/a" },
-      ],
-    });
-    assert.equal(storedButton.hidden, false);
-    assert.equal(storedButton.hasAttribute("hidden"), false);
-    const marked = storedTransport.sent.length;
-    storedButton.listeners.click({ preventDefault() {} });
-    assert.equal(storedTransport.sent.length, marked + 1);
-    assert.deepEqual(storedTransport.sent[marked], { type: "commit", username: "" });
-    assert.equal(storedTransport.sent[marked].rev, undefined);
-    assert.equal(storedTransport.sent[marked].message, undefined);
-    again.destroy();
-    assert.equal(storedButton.listeners.click, undefined);
+    click(button);
+    assert.equal(panel.hidden, false);
+    assert.equal(button.getAttribute("aria-expanded"), "true");
+    pointer(button);
+    pointer(panel.childNodes[0]);
+    assert.equal(panel.hidden, false);
+    pointer(mounted.root.childNodes[0]);
+    assert.equal(panel.hidden, true);
+    assert.equal(button.getAttribute("aria-expanded"), "false");
+    click(button);
+    click(button);
+    assert.equal(panel.hidden, true);
+
+    let clicks = 0;
+    input.click = () => {
+      clicks += 1;
+    };
+    click(button);
+    click(panel.childNodes[0]);
+    assert.equal(clicks, 1);
+    assert.equal(panel.hidden, true);
+    click(button);
+    click(panel.childNodes[1]);
+    assert.equal(panel.hidden, true);
+    assert.equal(confirm(), undefined);
+    assert.equal(transport.sent.some((message) => message.type === "delete"), false);
+
+    transport.deliver({ type: "file", rev: 1, text: "ab\n\ncd\n", path: "notes/a.md", cursor: 0, anchor: 0, locks: [] });
+    click(button);
+    click(panel.childNodes[1]);
+    const dialog = confirm();
+    assert.equal(panel.hidden, true);
+    assert.equal(dialog.open, true);
+    assert.equal(walkNodes(dialog, (node) => node.classList && node.classList.contains("md-confirm-text"))[0].textContent, "Delete a.md?");
+    const before = transport.sent.length;
+    walkNodes(dialog, (node) => node.tagName === "BUTTON" && node.textContent === "Delete")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(transport.sent[before], { type: "delete", path: "notes/a.md", username: "" });
+    assert.equal(dialog.open, false);
+
+    transport.deliver({ type: "file", rev: 1, text: "ticket\n", path: "tickets/aaaaaaaa.md", cursor: 0, anchor: 0, locks: [] });
+    const quiet = transport.sent.length;
+    click(button);
+    click(panel.childNodes[1]);
+    assert.equal(panel.hidden, true);
+    assert.equal(confirm().open, false);
+    assert.equal(transport.sent.length, quiet);
+    assert.equal(transport.sent.some((message) => message.type === "commit"), false);
+    assert.equal(sheet.textContent.includes("Commit repo"), false);
+    view.destroy();
   } finally {
     mounted.restore();
   }
@@ -11691,7 +11648,7 @@ test("T-deep-link", () => {
   assert.match(css, /\.md-comment-author-row\s*\{[^}]*display:\s*flex/);
   assert.match(css, /\.md-comment-author-row\s*\{[^}]*justify-content:\s*space-between/);
   assert.equal(/button\.md-doc-link/.test(css), false);
-  assert.equal(/\.md-doc-menu/.test(css), false);
+  assert.match(css, /button\.md-doc-menu\s*\{/);
   const mounted = mountTicketPage();
   const create = document.createElement;
   document.createElement = (tag) => {
@@ -11762,7 +11719,7 @@ test("T-deep-link", () => {
   try {
     const view = createEditor(mounted.root, "", 0, transport, storage);
     assert.equal(docLinks().length, 0);
-    assert.equal(docMenuOf(mounted.aside).commit.hidden, true);
+    assert.equal(walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-doc-commit")).length, 0);
     assert.equal(transport.sent.length, 0);
     transport.deliver({
       type: "repos",
@@ -11779,23 +11736,20 @@ test("T-deep-link", () => {
     assert.equal(opens()[0].path, "docs/a.md");
     assert.equal(urls.length, 0);
     assert.equal(docLinks().length, 0);
-    const menu = docMenuOf(mounted.aside);
-    assert.equal(menu.commit.hidden, false);
-    assert.equal(menu.commit.textContent, "Commit repo");
-    const attach = walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-attach"));
-    assert.equal(attach.length, 1);
-    assert.equal(attach[0].tagName, "BUTTON");
-    assert.equal(attach[0].textContent, "Attach image");
-    assert.equal(attach[0].hidden, false);
-    assert.equal(attach[0].parentElement, mounted.aside);
-    assert.equal(mounted.aside.childNodes[0], menu.commit);
-    assert.equal(mounted.aside.childNodes[1], attach[0]);
+    assert.equal(walkNodes(mounted.root.parentElement, (node) => node.tagName === "BUTTON" && node.textContent === "Commit repo").length, 0);
+    assert.equal(walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-attach")).length, 0);
     const fileInput = walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-attach-input"));
     assert.equal(fileInput.length, 1);
     assert.equal(fileInput[0].hidden, true);
     assert.equal(fileInput[0].getAttribute("type"), "file");
-    assert.equal(walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-doc-menu")).length, 0);
-    assert.equal(walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-doc-menu-panel")).length, 0);
+    assert.equal(mounted.aside.childNodes[0], fileInput[0]);
+    const docMenu = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-doc-menu"));
+    const docPanel = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-doc-menu-panel"));
+    assert.equal(docMenu.length, 1);
+    assert.equal(docMenu[0].getAttribute("aria-label"), "Menu");
+    assert.equal(docPanel.length, 1);
+    assert.equal(docPanel[0].getAttribute("role"), "menu");
+    assert.deepEqual(docPanel[0].childNodes.map((node) => node.textContent), ["Attach image", "Delete file"]);
     fireHash();
     assert.equal(opens().length, 1);
     const commentDoc = "See {c1}fox{/c1}.\n\n```comment c1 resolved\nhi\n```\n";
@@ -11864,7 +11818,7 @@ test("T-deep-link", () => {
     select.value = "viewmark";
     select.listeners.change();
     assert.equal(docLinks().length, 0);
-    assert.equal(docMenuOf(mounted.aside).commit.textContent, "Commit repo");
+    assert.equal(walkNodes(mounted.root.parentElement, (node) => node.tagName === "BUTTON" && node.textContent === "Commit repo").length, 0);
     assert.equal(opens().length, afterSwitch);
     view.destroy();
 
@@ -12169,7 +12123,7 @@ test("a ticket pane menu shows relation fields and Blocks writes the other ticke
   assert.match(css, /button\.md-ticket-pane-menu\s*\{[^}]*right:\s*8px;/);
   assert.match(css, /button\.icon-btn:not\(\.md-file\):not\(\.md-dir-toggle\)\s*\{[^}]*width:\s*1\.75rem/);
   assert.match(css, /button\.icon-btn:not\(\.md-file\):not\(\.md-dir-toggle\)\s*\{[^}]*height:\s*1\.75rem/);
-  assert.equal(/\.md-doc-menu/.test(css), false);
+  assert.match(css, /button\.md-doc-menu\s*\{/);
   assert.equal(/\.md-ticket-delete/.test(css), false);
   try {
     const view = createEditor(mounted.root, "hello\n", 0, transport, storage);
@@ -12195,7 +12149,7 @@ test("a ticket pane menu shows relation fields and Blocks writes the other ticke
       return false;
     };
     assert.equal(byClass(mounted.root.parentElement, "md-ticket-pane-menu").length, 0);
-    assert.equal(byClass(mounted.root.parentElement, "md-doc-menu").length, 0);
+    assert.equal(byClass(mounted.root, "md-doc-menu").length, 1);
     transport.deliver({
       type: "repos",
       repos: [{ name: "viewmark", description: "Viewmark" }],

@@ -121,29 +121,6 @@ select.md-repo {
   margin: 0;
 }
 
-button.md-doc-commit {
-  box-sizing: border-box;
-  display: block;
-  width: auto;
-  margin: 0;
-  padding: 0.35rem 0.7rem;
-  border: 1px solid #c4b8a4;
-  border-radius: 0.25rem;
-  background: #1c1b19;
-  font: inherit;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-button.md-doc-commit:hover {
-  background: #2c3440;
-}
-
-button.md-doc-commit[hidden] {
-  display: none;
-}
-
 dialog.md-login {
   background: #242320;
   color: #e7e2d8;
@@ -637,6 +614,48 @@ button.icon-btn.md-view-toggle:not(.md-file):not(.md-dir-toggle) {
   background: #1c1b19;
   color: inherit;
   user-select: none;
+}
+
+button.md-doc-menu {
+  position: absolute;
+  top: 0.35rem;
+  right: calc(0.35rem + 1.75rem + 4px);
+  z-index: 2;
+  margin: 0;
+  background: #1c1b19;
+  color: inherit;
+  user-select: none;
+}
+
+div.md-doc-menu-panel {
+  position: absolute;
+  top: calc(0.35rem + 1.75rem + 4px);
+  right: calc(0.35rem + 1.75rem + 4px);
+  z-index: 3;
+  box-sizing: border-box;
+  min-width: 10rem;
+  padding: 0.25rem;
+  background: #242320;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
+}
+
+div.md-doc-menu-panel[hidden] {
+  display: none;
+}
+
+button.md-doc-menu-item {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.35rem 0.7rem;
+  border-radius: 0.25rem;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .ticket-form {

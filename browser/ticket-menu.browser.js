@@ -619,23 +619,40 @@ test("Id row: a click puts exactly the 8-character id on the clipboard, and the 
   assert.equal(await fileBytes(hub, id), before);
 });
 
-test("the global menu is gone with a document open and with a ticket open", async (t) => {
+test("the document menu lists Attach image and Delete file, and Commit repo is absent", async (t) => {
   const { hub, page } = await setup(t);
   await hub.create("a.md", "alpha\n");
   const id = await makeTicket(hub, "Alpha");
+  const read = () => page.eval(`(() => {
+    const button = document.querySelector("button.md-doc-menu");
+    const panel = document.querySelector(".md-doc-menu-panel");
+    const toggle = document.querySelector("#editor button.md-view-toggle");
+    const commit = [...document.querySelectorAll("button, [role=menuitem]")].some((el) => /commit repo/i.test((el.textContent || "") + " " + (el.getAttribute("aria-label") || "")));
+    const menu = button && button.getBoundingClientRect();
+    const raw = toggle && toggle.getBoundingClientRect();
+    return {
+      label: button && button.getAttribute("aria-label"),
+      role: panel && panel.getAttribute("role"),
+      items: panel ? [...panel.querySelectorAll("button")].map((el) => el.textContent.trim()) : null,
+      commit,
+      attach: document.querySelectorAll("button.md-attach").length,
+      menu: menu && { left: menu.left, right: menu.right, top: menu.top, bottom: menu.bottom },
+      raw: raw && { left: raw.left, right: raw.right, top: raw.top, bottom: raw.bottom },
+    };
+  })()`);
   await page.open("a.md");
-  assert.equal(await page.eval(`document.querySelectorAll(".md-doc-menu, .md-doc-menu-panel").length`), 0, "the global menu is on a document's page");
+  const doc = await read();
+  assert.equal(doc.label, "Menu");
+  assert.equal(doc.role, "menu");
+  assert.deepEqual(doc.items, ["Attach image", "Delete file"]);
+  assert.equal(doc.commit, false);
+  assert.equal(doc.attach, 0);
+  assert.ok(doc.menu.right <= doc.raw.left + 1, "the menu covers the raw toggle");
+  assert.ok(doc.menu.top < doc.raw.bottom && doc.raw.top < doc.menu.bottom, "the menu is not beside the raw toggle");
   await openTicket(page, id);
-  assert.equal(await page.eval(`document.querySelectorAll(".md-doc-menu, .md-doc-menu-panel").length`), 0, "the global menu is on a ticket's page");
-});
-
-test("the global menu (default): Commit repo stays reachable on the page", async (t) => {
-  const { hub, page } = await setup(t);
-  await hub.create("a.md", "alpha\n");
-  const id = await makeTicket(hub, "Alpha");
-  await page.open("a.md");
-  const reachable = () => page.eval(`[...document.querySelectorAll("button, [role=menuitem]")].some((b) => /commit/i.test(b.textContent + " " + (b.getAttribute("aria-label") || "")) && b.getClientRects().length > 0)`);
-  assert.equal(await reachable(), true, "no Commit repo control on a document's page");
-  await openTicket(page, id);
-  assert.equal(await reachable(), true, "no Commit repo control on a ticket's page");
+  const ticket = await read();
+  assert.deepEqual(ticket.items, ["Attach image", "Delete file"]);
+  assert.equal(ticket.commit, false);
+  assert.equal(ticket.label, "Menu");
+  assert.ok(ticket.menu.right <= ticket.raw.left + 1, "the menu covers the raw toggle on a ticket");
 });

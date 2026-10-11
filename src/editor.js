@@ -694,10 +694,7 @@ function iconButton(action, className) {
 const newFileBindings = new WeakMap();
 const ticketBindings = new WeakMap();
 const repoBindings = new WeakMap();
-const docMenuBindings = new WeakMap();
-const docCommitBindings = new WeakMap();
 const docLinkBindings = new WeakMap();
-const docAttachBindings = new WeakMap();
 const REPO_KEY = "viewmark.repo";
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const EYE_OUTLINE = "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z";
@@ -2175,14 +2172,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let repoOnChange = null;
   let docMenuButton = null;
   let docMenuPanel = null;
-  let repoCommitButton = null;
   let docLinkButton = null;
-  let docAttachButton = null;
   let docAttachInput = null;
-  let docMenuOnClick = null;
-  let repoCommitOnClick = null;
   let docLinkOnClick = null;
-  let docAttachOnClick = null;
   let docAttachOnChange = null;
   let docMenuBound = false;
   let repoNames = new Set();
@@ -3375,7 +3367,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const stale = [];
     for (const child of commentsAside.childNodes || []) stale.push(child);
     for (const child of stale) {
-      if (child === repoCommitButton || child === docAttachButton || child === docAttachInput) continue;
+      if (child === docAttachInput) continue;
       detachNode(child);
     }
     commentsAside.appendChild(row);
@@ -3449,8 +3441,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const rowBottom = shownBottom(resolvedRow);
       if (rowBottom > 0) floor = Math.max(floor, rowBottom + COMMENT_CARD_GAP);
     }
-    // Absolute cards paint over these. A hidden control still reports a box, so only a shown one counts.
-    for (const control of [repoCommitButton, docAttachButton, docAttachInput]) {
+    // Absolute cards paint over a shown control. A hidden one still reports a box, so it does not count.
+    for (const control of [docAttachInput]) {
       const bottom = shownBottom(control);
       if (bottom > floor) floor = bottom;
     }
@@ -4262,9 +4254,110 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof button.appendChild === "function") button.appendChild(icon);
   }
 
+  function appendEditorChrome(node) {
+    if (!node || !root || typeof root.appendChild !== "function") return;
+    const children = root.childNodes || [];
+    if (typeof children.indexOf === "function" && children.indexOf(node) >= 0) return;
+    root.appendChild(node);
+  }
+
+  // Beside the raw toggle, after the lines, so a line's child index stays the block it paints.
+  function mountDocMenu() {
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return;
+    if (!docMenuButton) {
+      const button = iconButton("menu", "md-doc-menu");
+      button.contentEditable = "false";
+      if (typeof button.setAttribute === "function") {
+        button.setAttribute("aria-label", "Menu");
+        button.setAttribute("aria-haspopup", "menu");
+        button.setAttribute("aria-expanded", "false");
+        button.setAttribute("contenteditable", "false");
+      }
+      if (typeof button.addEventListener === "function") {
+        button.addEventListener("mousedown", stopViewEvent, { signal: ac.signal });
+        button.addEventListener("pointerdown", stopViewEvent, { signal: ac.signal });
+        button.addEventListener("click", (event) => {
+          stopViewEvent(event);
+          if (docMenuPanel && !docMenuPanel.hidden) closeDocMenu();
+          else openDocMenu();
+        }, { signal: ac.signal });
+      }
+      docMenuButton = button;
+    }
+    if (!docMenuPanel) {
+      const panel = document.createElement("div");
+      panel.className = "md-doc-menu-panel";
+      panel.contentEditable = "false";
+      if (typeof panel.setAttribute === "function") {
+        panel.setAttribute("role", "menu");
+        panel.setAttribute("contenteditable", "false");
+      }
+      hideElement(panel);
+      if (typeof panel.addEventListener === "function") {
+        panel.addEventListener("mousedown", stopViewEvent, { signal: ac.signal });
+        panel.addEventListener("pointerdown", stopViewEvent, { signal: ac.signal });
+      }
+      const attach = plainButton("md-doc-menu-item", "Attach image");
+      const remove = plainButton("md-doc-menu-item", "Delete file");
+      // A host with no listeners still has to build the items. The click is the only binding.
+      const onItem = (button, run) => {
+        if (typeof button.addEventListener !== "function") return;
+        button.addEventListener("click", (event) => {
+          stopViewEvent(event);
+          closeDocMenu();
+          run();
+        }, { signal: ac.signal });
+      };
+      onItem(attach, () => {
+        if (docAttachInput && typeof docAttachInput.click === "function") docAttachInput.click();
+      });
+      onItem(remove, () => {
+        if (!openPath || openPath.startsWith("tickets/")) return;
+        const path = openPath;
+        showConfirm(pathBase(path), () => emit({ type: "delete", path }));
+      });
+      if (typeof panel.appendChild === "function") {
+        panel.appendChild(attach);
+        panel.appendChild(remove);
+      }
+      docMenuPanel = panel;
+    }
+    appendEditorChrome(docMenuButton);
+    appendEditorChrome(docMenuPanel);
+  }
+
+  function openDocMenu() {
+    if (!docMenuPanel) return;
+    showElement(docMenuPanel);
+    if (docMenuButton && typeof docMenuButton.setAttribute === "function") docMenuButton.setAttribute("aria-expanded", "true");
+    pinViewToggle();
+  }
+
+  function closeDocMenu() {
+    if (docMenuPanel) hideElement(docMenuPanel);
+    if (docMenuButton && typeof docMenuButton.setAttribute === "function") docMenuButton.setAttribute("aria-expanded", "false");
+  }
+
+  // The toggle owns the visible corner. The menu is one button-width to its left, same top.
+  function pinDocMenu(top, edge) {
+    const menu = docMenuButton;
+    if (!menu) return;
+    setStyle(menu, "position", "fixed");
+    setStyle(menu, "top", `${top}px`);
+    setStyle(menu, "right", `calc(${edge}px + 1.75rem + 4px)`);
+    setStyle(menu, "left", "auto");
+    const panel = docMenuPanel;
+    if (!panel || panel.hidden) return;
+    setStyle(panel, "position", "fixed");
+    setStyle(panel, "top", `calc(${top}px + 1.75rem + 4px)`);
+    setStyle(panel, "right", `calc(${edge}px + 1.75rem + 4px)`);
+    setStyle(panel, "left", "auto");
+  }
+
   // Last, so a line's child index stays the block it paints. Fixed, once the
   // pane has a box, so the control stays in the visible corner while text scrolls.
   function mountViewToggle() {
+    mountDocMenu();
     const button = ensureViewToggle();
     if (typeof button.setAttribute === "function") button.setAttribute("aria-pressed", sourceMode ? "true" : "false");
     replaceButtonIcon(button);
@@ -4304,10 +4397,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const inset = 6;
     const visibleTop = top < 0 ? 0 : top;
     const visibleRight = right > viewWidth ? viewWidth : right;
+    const edge = viewWidth - visibleRight + inset;
     setStyle(button, "position", "fixed");
     setStyle(button, "top", `${visibleTop + inset}px`);
-    setStyle(button, "right", `${viewWidth - visibleRight + inset}px`);
+    setStyle(button, "right", `${edge}px`);
     setStyle(button, "left", "auto");
+    pinDocMenu(visibleTop + inset, edge);
   }
 
   function dropRaw() {
@@ -6727,9 +6822,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     closePopupOutside(chrome && chrome.filterMenu, chrome && chrome.filterButton, target);
     const panel = ticketForm && findClassChild(ticketForm, "md-ticket-pane-panel");
     const button = ticketForm && findClassChild(ticketForm, "md-ticket-pane-menu");
-    if (!panel || panel.hidden) return;
-    if (nodeWithin(panel, target) || nodeWithin(button, target)) return;
-    closeTicketMenu();
+    if (panel && !panel.hidden && !nodeWithin(panel, target) && !nodeWithin(button, target)) closeTicketMenu();
+    if (docMenuPanel && !docMenuPanel.hidden && !nodeWithin(docMenuPanel, target) && !nodeWithin(docMenuButton, target)) closeDocMenu();
   }
 
   function bindTicketPointer() {
@@ -8059,10 +8153,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function syncRepoCommit() {
-    if (repoCommitButton) {
-      if (activeRepo) showElement(repoCommitButton);
-      else hideElement(repoCommitButton);
-    }
     syncEntryLink();
   }
 
@@ -8072,27 +8162,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (open) showElement(docLinkButton);
       else hideElement(docLinkButton);
     }
-    if (docAttachButton) {
-      if (open) showElement(docAttachButton);
-      else hideElement(docAttachButton);
-    }
   }
 
   function unbindDocMenu() {
-    if (docMenuButton && docMenuOnClick) {
-      const binding = docMenuBindings.get(docMenuButton);
-      if (binding === docMenuOnClick && typeof docMenuButton.removeEventListener === "function") {
-        docMenuButton.removeEventListener("click", docMenuOnClick);
-      }
-      if (binding === docMenuOnClick) docMenuBindings.delete(docMenuButton);
-    }
-    if (repoCommitButton && repoCommitOnClick) {
-      const binding = docCommitBindings.get(repoCommitButton);
-      if (binding === repoCommitOnClick && typeof repoCommitButton.removeEventListener === "function") {
-        repoCommitButton.removeEventListener("click", repoCommitOnClick);
-      }
-      if (binding === repoCommitOnClick) docCommitBindings.delete(repoCommitButton);
-    }
     if (docLinkButton && docLinkOnClick) {
       const binding = docLinkBindings.get(docLinkButton);
       if (binding === docLinkOnClick && typeof docLinkButton.removeEventListener === "function") {
@@ -8100,52 +8172,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       if (binding === docLinkOnClick) docLinkBindings.delete(docLinkButton);
     }
-    if (docAttachButton && docAttachOnClick) {
-      const binding = docAttachBindings.get(docAttachButton);
-      if (binding === docAttachOnClick && typeof docAttachButton.removeEventListener === "function") {
-        docAttachButton.removeEventListener("click", docAttachOnClick);
-      }
-      if (binding === docAttachOnClick) docAttachBindings.delete(docAttachButton);
-    }
     if (docAttachInput && docAttachOnChange && typeof docAttachInput.removeEventListener === "function") {
       docAttachInput.removeEventListener("change", docAttachOnChange);
     }
-    docMenuOnClick = null;
-    repoCommitOnClick = null;
     docLinkOnClick = null;
-    docAttachOnClick = null;
     docAttachOnChange = null;
     docMenuBound = false;
   }
 
   function ensureDocMenu() {
     if (!commentsAside || typeof document === "undefined" || typeof document.createElement !== "function") return;
-    if (!repoCommitButton || repoCommitButton.parentElement !== commentsAside) {
-      repoCommitButton = findClassChild(commentsAside, "md-doc-commit");
-    }
-    if (!repoCommitButton) {
-      const commit = document.createElement("button");
-      commit.type = "button";
-      commit.className = "md-doc-commit";
-      commit.textContent = "Commit repo";
-      if (typeof commit.setAttribute === "function") commit.setAttribute("type", "button");
-      hideElement(commit);
-      commentsAside.appendChild(commit);
-      repoCommitButton = commit;
-    }
-    if (!docAttachButton || docAttachButton.parentElement !== commentsAside) {
-      docAttachButton = findClassChild(commentsAside, "md-attach");
-    }
-    if (!docAttachButton) {
-      const attach = document.createElement("button");
-      attach.type = "button";
-      attach.className = "md-attach";
-      attach.textContent = "Attach image";
-      if (typeof attach.setAttribute === "function") attach.setAttribute("type", "button");
-      hideElement(attach);
-      placeAfter(commentsAside, repoCommitButton, attach);
-      docAttachButton = attach;
-    }
     if (!docAttachInput || docAttachInput.parentElement !== commentsAside) {
       docAttachInput = findClassChild(commentsAside, "md-attach-input");
     }
@@ -8157,34 +8193,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         input.setAttribute("accept", "image/png,image/jpeg,image/gif,image/webp");
       }
       hideElement(input);
-      placeAfter(commentsAside, docAttachButton, input);
+      commentsAside.appendChild(input);
       docAttachInput = input;
     }
     if (!docMenuBound) {
-      const previousCommit = docCommitBindings.get(repoCommitButton);
-      if (previousCommit && typeof repoCommitButton.removeEventListener === "function") {
-        repoCommitButton.removeEventListener("click", previousCommit);
-      }
-      repoCommitOnClick = (event) => {
-        if (event && typeof event.preventDefault === "function") event.preventDefault();
-        if (!activeRepo) return;
-        // A checkpoint is not a conflict waiter and carries no rev.
-        emit({ type: "commit" });
-      };
-      if (typeof repoCommitButton.addEventListener === "function") repoCommitButton.addEventListener("click", repoCommitOnClick);
-      docCommitBindings.set(repoCommitButton, repoCommitOnClick);
-      const previousAttach = docAttachBindings.get(docAttachButton);
-      if (previousAttach && docAttachButton && typeof docAttachButton.removeEventListener === "function") {
-        docAttachButton.removeEventListener("click", previousAttach);
-      }
-      docAttachOnClick = (event) => {
-        if (event && typeof event.preventDefault === "function") event.preventDefault();
-        if (docAttachInput && typeof docAttachInput.click === "function") docAttachInput.click();
-      };
-      if (docAttachButton && typeof docAttachButton.addEventListener === "function") {
-        docAttachButton.addEventListener("click", docAttachOnClick);
-      }
-      if (docAttachButton) docAttachBindings.set(docAttachButton, docAttachOnClick);
       docAttachOnChange = () => {
         const input = docAttachInput;
         const file = input && input.files && input.files[0];

@@ -232,7 +232,7 @@ test("nothing rendered: a table, a diagram, an image, headings, emphasis, links,
   await toggle(page);
   const found = await page.eval(`(() => {
     const e = document.getElementById("editor");
-    const outside = (el) => !el.closest("button.md-view-toggle");
+    const outside = (el) => !el.closest("button.md-view-toggle") && !el.closest("button.md-doc-menu") && !el.closest(".md-doc-menu-panel");
     return {
       tables: [...e.querySelectorAll("table, td, th")].filter(outside).length,
       svgs: [...e.querySelectorAll("svg")].filter(outside).length,
