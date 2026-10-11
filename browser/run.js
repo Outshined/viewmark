@@ -606,7 +606,7 @@ export async function runCell(suite, cell, routeName, serial) {
   const { hub, page } = suite;
   const [route, wait] = routeName.split("@");
   const interval = wait ? Number(wait) : 30;
-  const result = { id: cell.id, route: routeName, status: "PASS", failed: [], observed: {} };
+  const result = { id: cell.id, route: routeName, status: "PASS", failed: [], unchecked: [], observed: {} };
   const file = `${cell.id}--${routeName}--${serial}.md`.replace(/[^A-Za-z0-9.-]/g, "_");
   const context = { ...suite, file };
   const bytes = cell.source.bytes;
@@ -684,6 +684,7 @@ export async function runCell(suite, cell, routeName, serial) {
   else if (caret.focus !== expect.focus || caret.anchor !== expect.anchor) result.failed.push(`I2 caret: wanted ${range(expect.anchor, expect.focus)}, got ${range(caret.anchor, caret.focus)} at ${caret.focusPath || "the editor root"}`);
   if (collapsed) {
     if (!boundary) result.failed.push(`I3 drawn: offset ${expect.focus} has no drawn boundary`);
+    else if (caret.unpainted) result.unchecked.push("I3: where this browser paints the caret is not in its screenshots");
     else if (caret.rect) {
       const middle = (caret.rect.top + caret.rect.bottom) / 2;
       const on = (spot) => Math.abs(caret.rect.x - spot.x) <= 2 && middle >= spot.top && middle <= spot.bottom;
@@ -734,7 +735,8 @@ export async function runCell(suite, cell, routeName, serial) {
   // I12: the typed character is drawn where the caret was drawn when the key was pressed (R99).
   // On an empty line the caret sits on the line's br, and the line's own box is where it is drawn.
   const drawnCaret = beforeProbe.rect && (!beforeProbe.fallback || beforeProbe.emptyLine || beforeProbe.painted || /> br:\d+$/.test(beforeProbe.focusPath || ""));
-  if (!beforeProbe.none && beforeProbe.inside && beforeProbe.anchor === beforeProbe.focus && drawnCaret) {
+  if (beforeProbe.unpainted) result.unchecked.push("I12: where this browser paints the caret is not in its screenshots");
+  else if (!beforeProbe.none && beforeProbe.inside && beforeProbe.anchor === beforeProbe.focus && drawnCaret) {
     let at = 0;
     while (at < textBeforeProbe.length && textBeforeProbe[at] === probed.text[at]) at += 1;
     // R11 can write a newline before the Q, so the Q is the first one at or past the change.

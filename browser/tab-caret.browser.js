@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import zlib from "node:zlib";
-import { launchBrowser, Page, startHub, startProxy } from "./harness.js";
+import { launchBrowser, Page, startHub, startProxy, supports } from "./harness.js";
 
 const DOC = "one\n\n\t\n\ntwo\n";
 
@@ -80,7 +80,7 @@ async function paintedCaret(page, newline) {
   assert.fail("the caret is not painted");
 }
 
-test("a tab on a blank line draws the caret on the letter's line", async () => {
+test("a tab on a blank line draws the caret on the letter's line", { skip: supports("paint") ? false : "Firefox screenshots leave out the caret" }, async () => {
   let hub = null;
   let proxy = null;
   let browser = null;

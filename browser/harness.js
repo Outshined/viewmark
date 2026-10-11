@@ -62,10 +62,11 @@ export function onPath(command) {
 }
 
 // What the browser under test can do. Firefox is driven over WebDriver BiDi, which has no
-// drag-and-drop interception, no input method composition, and no platform font report.
+// drag-and-drop interception, no input method composition, and no platform font report, and
+// its screenshots leave out the caret, so where the caret is painted cannot be read ("paint").
 export function supports(feature) {
   if (BROWSER === "chromium") return true;
-  return !["drag", "ime", "fonts"].includes(feature);
+  return !["drag", "ime", "fonts", "paint"].includes(feature);
 }
 
 // Close the pipe and wait for the group to end; kill the group after 5 s if it has not.
@@ -604,6 +605,15 @@ window.__qaCaret = async () => {
     })(),
     fallback,
     emptyLine,
+    // A caret where a line wraps belongs to two visual lines at once; which one shows it is a
+    // matter of its paint.
+    wrap: (() => {
+      if (!range.collapsed || !inside) return false;
+      const at = editor.mapOffset(sel.focusNode, sel.focusOffset);
+      const before = at > 0 ? window.__qaGlyph(at - 1) : null;
+      const after = window.__qaGlyph(at);
+      return !!before && !!after && Math.abs(after.top - before.top) >= 2;
+    })(),
     focused: document.hasFocus() && (document.activeElement === root || root.contains(document.activeElement)),
     raw: [...root.querySelectorAll(".md-raw")].map((el) => el.dataset.start == null ? "?" : el.dataset.start + "-" + el.dataset.end),
   };
@@ -841,6 +851,12 @@ export class Page {
 
   async caret() {
     const caret = await this.eval("window.__qaCaret()");
+    // Where the browser cannot show the caret's paint, a caret that needs it is marked, and the
+    // checks that need it are not made.
+    if (!supports("paint") && caret && ((caret.rects && caret.rects.length > 1) || caret.wrap || ((caret.hanging || caret.between) && caret.rect))) {
+      caret.unpainted = true;
+      return caret;
+    }
     if (caret && caret.rects && caret.rects.length > 1) {
       const which = await this.paintedRect(caret.rects, caret.scroll);
       if (which != null) caret.rect = caret.rects[which];

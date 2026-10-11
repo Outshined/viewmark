@@ -129,6 +129,43 @@ export class FirefoxSession {
     this.listeners = new Map();
     this.modifiers = 0;
     this.nodes = new Map();
+    // Firefox counts the presses of a double or triple click only within one performActions
+    // call, so mouse events wait here, with their real gaps as pauses, until the next call that
+    // is not a mouse event, or until 400 ms pass with none.
+    this.mouseQueue = [];
+    this.mouseAt = 0;
+    this.mouseTimer = null;
+    this.mouseFlight = Promise.resolve();
+    this.pointerAt = null;
+  }
+
+  queueMouse(actions) {
+    const now = Date.now();
+    if (this.mouseQueue.length && now > this.mouseAt) this.mouseQueue.push({ type: "pause", duration: now - this.mouseAt });
+    this.mouseQueue.push(...actions);
+    this.mouseAt = now;
+    clearTimeout(this.mouseTimer);
+    this.mouseTimer = setTimeout(() => this.flushMouse().catch(() => {}), 400);
+  }
+
+  flushMouse() {
+    clearTimeout(this.mouseTimer);
+    this.mouseTimer = null;
+    if (this.mouseQueue.length) {
+      const actions = this.mouseQueue;
+      this.mouseQueue = [];
+      this.mouseFlight = this.mouseFlight.then(() => this.pointer(actions));
+    }
+    return this.mouseFlight;
+  }
+
+  // A move, even to where the pointer already is, ends a run of clicks. It is left out where a
+  // run goes on, and kept before the first press of a click, so two single clicks on one spot
+  // stay two single clicks.
+  moveTo(x, y, always = false) {
+    if (!always && this.pointerAt && this.pointerAt.x === x && this.pointerAt.y === y) return [];
+    this.pointerAt = { x, y };
+    return [{ type: "pointerMove", x, y }];
   }
 
   on(method, fn) {
@@ -191,6 +228,7 @@ export class FirefoxSession {
   }
 
   async send(method, params = {}) {
+    if (method !== "Input.dispatchMouseEvent") await this.flushMouse();
     // Keys and the mouse go to the tab in front, as a person brings a tab forward to use it.
     if (method.startsWith("Input.") && this.bringForward) await this.bringForward();
     switch (method) {
@@ -243,11 +281,22 @@ export class FirefoxSession {
         await this.keys([...this.modifierActions(0), ...[...params.text].flatMap((ch) => [{ type: "keyDown", value: ch }, { type: "keyUp", value: ch }])]);
         return {};
       case "Input.dispatchMouseEvent": {
-        await this.keys(this.modifierActions(params.modifiers || 0));
-        if (params.type === "mouseMoved") await this.pointer([{ type: "pointerMove", x: params.x, y: params.y }]);
-        else if (params.type === "mousePressed") await this.pointer([{ type: "pointerMove", x: params.x, y: params.y }, { type: "pointerDown", button: BUTTONS[params.button] ?? 0 }]);
-        else if (params.type === "mouseReleased") await this.pointer([{ type: "pointerMove", x: params.x, y: params.y }, { type: "pointerUp", button: BUTTONS[params.button] ?? 0 }]);
+        const held = this.modifierActions(params.modifiers || 0);
+        if (held.length) {
+          await this.flushMouse();
+          await this.keys(held);
+        }
+        if (params.type === "mouseMoved") this.queueMouse(this.moveTo(params.x, params.y));
+        else if (params.type === "mousePressed") {
+          // The first press of a click starts a new call, so Firefox does not count it as the
+          // second press of an earlier click. The harness names each press's place in its run.
+          const first = (params.clickCount || 1) <= 1;
+          if (first) await this.flushMouse();
+          this.queueMouse([...this.moveTo(params.x, params.y, first), { type: "pointerDown", button: BUTTONS[params.button] ?? 0 }]);
+        }
+        else if (params.type === "mouseReleased") this.queueMouse([...this.moveTo(params.x, params.y), { type: "pointerUp", button: BUTTONS[params.button] ?? 0 }]);
         else if (params.type === "mouseWheel") {
+          await this.flushMouse();
           await this.bidi.send("input.performActions", { context: this.context, actions: [{ type: "wheel", id: "wheel", actions: [{ type: "scroll", x: Math.round(params.x), y: Math.round(params.y), deltaX: Math.round(params.deltaX || 0), deltaY: Math.round(params.deltaY || 0) }] }] });
         } else throw unsupported(`Input.dispatchMouseEvent ${params.type}`);
         return {};
@@ -394,6 +443,9 @@ export async function launchFirefox() {
     // A right-click at a point in a tab, then the context menu item with this id, as a person
     // chooses Copy Image.
     async contextMenu(session, x, y, item) {
+      await session.flushMouse();
+      await session.bringForward();
+      session.pointerAt = { x, y };
       await session.pointer([{ type: "pointerMove", x, y }, { type: "pointerDown", button: 2 }, { type: "pointerUp", button: 2 }]);
       for (let i = 0; i < 50; i += 1) {
         if (await chrome(`document.getElementById("contentAreaContextMenu").state === "open"`)) break;

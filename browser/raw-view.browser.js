@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
-import { AGENT, OTHER, REPO, USER, cli, launchBrowser, Page, startHub } from "./harness.js";
+import { AGENT, OTHER, REPO, USER, cli, launchBrowser, Page, startHub, supports } from "./harness.js";
 
 // Acceptance for ticket awtyv87s, the raw view, from the Acceptance section of its body.
 // Each test names the part it checks. A title that names R107 checks a point the owner
@@ -109,7 +109,8 @@ async function typedWhereCaret(page, hub, file, label) {
   // A Q at the end of a word that just fits carries the word onto the next line.
   const lead = at > 0 ? await glyph(page, at - 1) : null;
   const carried = lead && Math.abs(q.left - lead.right) <= 3 && Math.abs(qy - (lead.top + lead.bottom) / 2) <= 2 && Math.abs(qy - cy) > 3;
-  assert.ok(here || carried, `${label}: the Q is drawn at x ${q.left.toFixed(1)} y ${qy.toFixed(1)}, but the caret was drawn at x ${caret.rect.x.toFixed(1)} y ${cy.toFixed(1)}`);
+  // Where the browser cannot show the caret's paint (Firefox), where it is drawn is not checked.
+  if (!caret.unpainted) assert.ok(here || carried, `${label}: the Q is drawn at x ${q.left.toFixed(1)} y ${qy.toFixed(1)}, but the caret was drawn at x ${caret.rect.x.toFixed(1)} y ${cy.toFixed(1)}`);
   await page.key("Backspace");
   await page.quiet();
   return at;
@@ -779,7 +780,7 @@ async function widths(page) {
   return page.eval(`[...document.querySelectorAll("#editor .md-line")].slice(0, 5).filter((l) => l.textContent.length === 10).map((l) => { const r = document.createRange(); r.selectNodeContents(l); return r.getBoundingClientRect().width; })`);
 }
 
-test("font: raw text uses one monospace family that is not Courier, and ten i, ten M, and ten . measure the same", async (t) => {
+test("font: raw text uses one monospace family that is not Courier, and ten i, ten M, and ten . measure the same", { skip: supports("fonts") ? false : "Firefox over BiDi has no platform font report" }, async (t) => {
   const { page } = await setup(t, { "a.md": "iiiiiiiiii\n\nMMMMMMMMMM\n\n..........\n" });
   await open(page, "a.md");
   await toggle(page);

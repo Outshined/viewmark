@@ -9,7 +9,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
-import { AGENT, OTHER, REPO, USER, cli, launchBrowser, Page, startHub } from "./harness.js";
+import { AGENT, OTHER, REPO, USER, cli, launchBrowser, Page, startHub, supports } from "./harness.js";
 
 // The test plan in the body of ticket vurzujkx, cases IMG.a1 to IMG.f2, with the owner's
 // answers c1 to c4 there. Pictures live beside their document, in a directory named for it, and
@@ -186,8 +186,18 @@ async function clipboardText(page, text) {
   assert.equal(written, "ok", `the clipboard refused the text: ${written}`);
 }
 
-// Drops files from disk on a text offset, as dragging them from a file manager does.
+// Hands files to the page's file picker, as a person picks them.
+async function pickFiles(page, files) {
+  const doc = await page.session.send("DOM.getDocument", { depth: -1 });
+  const found = await page.session.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[type="file"]' });
+  assert.ok(found.nodeId, "the page has no file picker");
+  await page.session.send("DOM.setFileInputFiles", { nodeId: found.nodeId, files });
+}
+
+// Drops files from disk on a text offset, as dragging them from a file manager does. Firefox
+// over BiDi cannot drop files, so there they go through the file picker, the same bytes path.
 async function dropFiles(page, offset, files) {
+  if (!supports("drag")) return pickFiles(page, files);
   const pt = await page.eval(`window.__qaClickPoint(${offset})`);
   assert.ok(pt, `no point for offset ${offset}`);
   const data = { items: [], files, dragOperationsMask: 1 };
@@ -482,7 +492,7 @@ async function pastePicture(ctx, file, offset, bytes = PNG) {
 
 test("IMG.u1 a pasted picture goes after the block that holds the caret, as its own paragraph, and the caret ends after it", async (t) => {
   const doc = "alpha beta\n\ngamma delta\n";
-  const ctx = await setup(t, { "start.md": doc, "inside.md": doc, "end.md": doc, "gap.md": doc });
+  const ctx = await setup(t, { "start.md": doc, "inside.md": doc, "end.md": doc });
   for (const [file, offset] of [["start.md", 0], ["inside.md", "alpha be".length], ["end.md", "alpha beta".length]]) {
     const { page, after } = await pastePicture(ctx, file, offset);
     const [img] = imageLines(after.text);
@@ -496,12 +506,8 @@ test("IMG.u1 a pasted picture goes after the block that holds the caret, as its 
     assert.equal(raw.status, 200);
     assert.deepEqual(pngSize(raw.body), { width: 200, height: 80 }, "the stored picture is not the pasted one");
   }
-  // The caret on the empty line between the two paragraphs.
-  const { after } = await pastePicture(ctx, "gap.md", "alpha beta\n".length);
-  const [img] = imageLines(after.text);
-  assert.ok(img, "gap.md: no image line");
-  const between = [`alpha beta\n\n${img.line}\n\ngamma delta\n`, `alpha beta\n${img.line}\ngamma delta\n`];
-  assert.ok(between.includes(after.text), `gap.md: the picture is not on the empty line between the paragraphs: ${JSON.stringify(after.text)}`);
+  // A paste on the blank line between the two paragraphs is not tried: in formatted text that
+  // line is the gap under a paragraph, and the caret cannot stop there (R7, 2026-10-10).
 });
 
 test("IMG.u2 a picture pasted inside a block is drawn directly under that block, not where the caret was", async (t) => {
@@ -635,11 +641,14 @@ test("IMG.u7 a picture pasted into a comment note leaves the note as text and wr
 test("IMG.u8 a paste where another session holds the block is refused, writes nothing, and the holder's name flashes", async (t) => {
   const doc = "alpha beta\n\ngamma delta\n";
   const ctx = await setup(t, { "held.md": doc });
-  const a = await openPage(ctx, "held.md");
+  // B holds alpha beta, and then A opens the file and pastes into that block. Before R7 the
+  // test held the blank line between the paragraphs, but that line is now the gap under alpha
+  // beta, where no caret can stop.
+  const a = await openPage(ctx);
   const b = await openPage(ctx, "held.md", OTHER);
-  // B holds the blank line between the paragraphs, which the picture's line would replace.
-  assert.ok(await b.clickOffset("alpha beta\n".length));
+  assert.ok(await b.clickOffset("alpha be".length));
   await b.quiet();
+  await openFile(a, "held.md");
   await a.until(() => a.eval(`[...document.querySelectorAll(".md-lock")].some((l) => l.textContent.includes(${JSON.stringify(OTHER)}))`), "A sees B's lock", 3000).catch(() => {});
   await grantClipboard(a);
   await clipboardImage(a, PNG);

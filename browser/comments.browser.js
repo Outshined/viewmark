@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
-import { OTHER, REPO, cli, launchBrowser, Page, startHub } from "./harness.js";
+import { OTHER, REPO, cli, launchBrowser, Page, startHub, supports } from "./harness.js";
 
 // Comments in the page: deleting a thread, and moving or cutting text that holds comment
 // markers. Every action is a real key or mouse event. After each one the bytes must keep every
@@ -231,7 +231,7 @@ test("typing at a marker's edge goes inside after the opening marker and outside
   assert.equal(split(await bytes(hub, "a.md")).prose, "See {c1}Xthis{/c1}Y now.");
 });
 
-test("dragging a selection that holds a whole comment moves the comment", async (t) => {
+test("dragging a selection that holds a whole comment moves the comment", { skip: supports("drag") ? false : "Firefox over BiDi cannot drag a selection" }, async (t) => {
   const { hub, page } = await setup(t, { "a.md": P + CM("c1") });
   await open(page, "a.md");
   await place(page, "See ".length);
@@ -260,7 +260,7 @@ test("cutting and pasting a whole comment never leaves its markers twice", async
   assert.equal(split(pasted).prose.split("this").length - 1, 1, `"this" appears more than once: ${JSON.stringify(pasted)}`);
 });
 
-test("dragging or cutting one marker never leaves it twice", async (t) => {
+test("dragging or cutting one marker never leaves it twice", { skip: supports("drag") ? false : "Firefox over BiDi cannot drag a selection" }, async (t) => {
   const { hub, page } = await setup(t, { "d.md": P + CM("c1"), "x.md": P + CM("c1") });
   await open(page, "d.md");
   await place(page, P.indexOf("{/c1}"));
