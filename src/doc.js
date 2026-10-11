@@ -2667,9 +2667,16 @@ function plainParagraph(block) {
   return true;
 }
 
+// An item, an ordered item, or a quote. A task item is a list item; the checkbox is not a class.
+function apartBlock(block) {
+  if (!block || block.type !== "line" || block.empty) return false;
+  const classes = block.classes || [];
+  return classes.includes("md-li") || classes.includes("md-ol") || classes.includes("md-quote");
+}
+
 // Padding is the blank before another paragraph, and the blank Enter writes when
 // the next line is the caret's and nothing follows that line. Every other blank
-// under a paragraph is a line the caret can take.
+// under a paragraph, an item, or a quote is a line the caret can take.
 function gapStop(blocks, index) {
   const next = blocks[index + 1];
   if (!next) return true;
@@ -2678,23 +2685,21 @@ function gapStop(blocks, index) {
   return true;
 }
 
-// Padding on the paragraph is the break. The one blank under it takes no height
-// whatever follows, including a heading, a rule, or the end of the file. A
-// second blank in a row stays a line. While the caret stands on a blank it can
-// take, that line keeps its height, so a typed letter stays with the caret.
-// The blank under an item or a quote keeps the next paragraph from joining.
-function markParagraphSpace(blocks, doc) {
+// The one blank under a paragraph, an item, or a quote takes no height whatever
+// follows, including the caret line Enter just wrote and a file that does not
+// end in a newline. A second blank stays a line. While the caret stands on a
+// blank it can take, that line keeps its height, so a typed letter stays with
+// the caret. A blank that carries the quote bar is that bar's line, not padding.
+function markParagraphSpace(blocks) {
   for (const block of blocks) {
     if (plainParagraph(block)) addClassName(block, "md-paragraph");
   }
   for (let i = 1; i < blocks.length; i += 1) {
     if (!blankBlock(blocks[i]) || blankBlock(blocks[i - 1])) continue;
-    if (plainParagraph(blocks[i - 1])) {
-      if (blocks[i].raw && gapStop(blocks, i)) continue;
-      addClassName(blocks[i], "md-paragraph-gap");
-      continue;
-    }
-    if (keepsParagraphApart(doc, sourceLine(doc, blocks[i].start))) addClassName(blocks[i], "md-paragraph-gap");
+    if (blocks[i].classes && blocks[i].classes.includes("md-quote")) continue;
+    if (!plainParagraph(blocks[i - 1]) && !apartBlock(blocks[i - 1])) continue;
+    if (blocks[i].raw && gapStop(blocks, i)) continue;
+    addClassName(blocks[i], "md-paragraph-gap");
   }
 }
 
@@ -2743,7 +2748,7 @@ export function plan(doc, cursor) {
   }
   // A blank run between two quoted blocks keeps the bar. The blanks stay blocks.
   continueQuoteBars(blocks);
-  markParagraphSpace(blocks, text);
+  markParagraphSpace(blocks);
   const lines = blocks.filter((block) => block.type === "line");
   const atoms = [];
   for (const block of blocks) {

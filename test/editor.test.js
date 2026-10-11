@@ -561,7 +561,8 @@ test("a plain paragraph keeps its mark and a blank stays a line", () => {
 
   const list = plan("- a\n\n- b\n", 0).blocks;
   assert.equal(list.some((block) => block.classes.includes("md-paragraph")), false);
-  assert.equal(list.some((block) => block.classes.includes("md-paragraph-gap")), false);
+  assert.ok(list[1].classes.includes("md-paragraph-gap"));
+  assert.equal(plan("- a\n\n- b\n", 4).blocks[1].classes.includes("md-paragraph-gap"), false);
 
   const quoted = plan("> a\n\n> b\n", 0).blocks;
   assert.equal(quoted.some((block) => block.classes.includes("md-paragraph")), false);
@@ -683,7 +684,7 @@ test("movement skips the blank between paragraphs", () => {
 });
 
 test("a blank under an item or a quote is a gap and Delete leaves the paragraph", () => {
-  for (const doc of ["- a\n\nnext\n", "> a\n\nnext\n", "1. a\n\nnext\n", "> - a\n\nnext\n", "- a\nmore\n\nnext\n", "* a\n\nnext\n"]) {
+  for (const doc of ["- a\n\nnext\n", "> a\n\nnext\n", "1. a\n\nnext\n", "> - a\n\nnext\n", "- a\nmore\n\nnext\n", "* a\n\nnext\n", "- [ ] a\n\nnext\n", "+ a\n\nnext\n"]) {
     const blocks = plan(doc, 0).blocks;
     const gap = blocks.find((block) => block.empty);
     assert.ok(gap, doc);
@@ -714,18 +715,50 @@ test("a blank under an item or a quote is a gap and Delete leaves the paragraph"
   assert.equal(quoted[0].classes.includes("md-quote"), true);
 
   const wide = "- a\n\n\nnext\n";
-  assert.equal(plan(wide, 0).blocks.some((block) => block.classes.includes("md-paragraph-gap")), false);
+  const wideBlocks = plan(wide, 0).blocks;
+  assert.ok(wideBlocks[1].classes.includes("md-paragraph-gap"));
+  assert.equal(wideBlocks[2].classes.includes("md-paragraph-gap"), false);
+  assert.equal(plan(wide, 4).blocks[1].classes.includes("md-paragraph-gap"), false);
   const pulled = deleteForward(createState(wide, 4));
   assert.equal(pulled.doc, "- a\n\nnext\n");
   assert.equal(pulled.cursor, 4);
   assert.equal(plan(pulled.doc, pulled.cursor).blocks.some((block) => block.empty && block.classes.includes("md-paragraph-gap")), true);
 
   const headed = plan("- a\n\n# Next\n", 0).blocks;
-  assert.equal(headed.some((block) => block.classes.includes("md-paragraph-gap")), false);
+  assert.ok(headed[1].classes.includes("md-paragraph-gap"));
+  assert.equal(plan("- a\n\n# Next\n", 4).blocks[1].classes.includes("md-paragraph-gap"), false);
+  assert.equal(deleteForward(createState("- a\n\n# Next\n", 4)).doc, "- a\n# Next\n");
   const beforeList = plan("# Title\n\n- a\n", 0).blocks;
   assert.equal(beforeList.some((block) => block.classes.includes("md-paragraph-gap")), false);
   const items = plan("- a\n\n- b\n", 0).blocks;
-  assert.equal(items.some((block) => block.classes.includes("md-paragraph-gap")), false);
+  assert.ok(items[1].classes.includes("md-paragraph-gap"));
+  assert.equal(plan("- a\n\n- b\n", 4).blocks[1].classes.includes("md-paragraph-gap"), false);
+  assert.equal(deleteForward(createState("# Title\n\n- a\n", 8)).doc, "# Title\n- a\n");
+
+  // Enter on an empty item or quote leaves this blank, then the caret's line.
+  // The blank is already padding, so a letter typed there does not jump up.
+  for (const [doc, caret] of [
+    ["- alpha\n\n\n", 9],
+    ["1. alpha\n\n\n", 10],
+    ["- [ ] alpha\n\n\n", 13],
+    ["> alpha\n\n\n", 9],
+    ["- alpha\n\n\n- gamma\n", 9],
+  ]) {
+    const blocks = plan(doc, caret).blocks;
+    assert.equal(blocks[1].empty, true, doc);
+    assert.ok(blocks[1].classes.includes("md-paragraph-gap"), doc);
+    assert.equal(blocks[2].empty, true, doc);
+    assert.equal(blocks[2].classes.includes("md-paragraph-gap"), false, doc);
+    assert.equal(blocks[2].classes.includes("md-li") || blocks[2].classes.includes("md-ol") || blocks[2].classes.includes("md-quote"), false, doc);
+  }
+  for (const doc of ["- a\n\n", "> a\n\n", "1. a\n\n", "- [ ] a\n\n"]) {
+    const end = doc.length;
+    assert.ok(plan(doc, end).blocks[1].classes.includes("md-paragraph-gap"), doc);
+    assert.ok(plan(doc, 0).blocks[1].classes.includes("md-paragraph-gap"), doc);
+    assert.equal(plan(doc, end - 1).blocks[1].classes.includes("md-paragraph-gap"), false, doc);
+    assert.equal(plan(doc, end).blocks[1].classes.includes("md-quote"), false, doc);
+  }
+  assert.equal(plan("> a\n\n> b\n", 0).blocks.some((block) => block.classes.includes("md-paragraph-gap")), false);
 
   const back = backspace(createState("- a\n\nnext\n", 4));
   assert.equal(back.doc, "- a\nnext\n");
