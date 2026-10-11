@@ -4336,7 +4336,7 @@ test("delete on an empty line removes that line", () => {
     caret(emptyBr("6"), 0);
     press();
     const edit = transport.sent.find((message) => message.type === "edit");
-    assert.equal(edit.op, "backspace");
+    assert.equal(edit.op, "delete");
     assert.equal(edit.cursor, 6);
     assert.equal(edit.anchor, 6);
     const locks = transport.sent.filter((message) => message.type === "lock");
@@ -4350,9 +4350,34 @@ test("delete on an empty line removes that line", () => {
     caret(emptyBr("6"), 0);
     press();
     assert.equal(view.getState().doc, "hello\nworld");
-    assert.equal(view.getState().cursor, 5);
-    assert.equal(view.getState().anchor, 5);
+    assert.equal(view.getState().cursor, 6);
+    assert.equal(view.getState().anchor, 6);
+    assert.equal(view.getState().doc[view.getState().cursor], "w");
     view.destroy();
+
+    const joined = createEditor(mounted.root, "one\n\ntwo\n", 0);
+    caret(emptyBr("4"), 0);
+    press();
+    assert.equal(joined.getState().doc, "one\ntwo\n");
+    assert.equal(joined.getState().cursor, 4);
+    assert.equal(joined.getState().doc[joined.getState().cursor], "t");
+    joined.destroy();
+
+    const heading = createEditor(mounted.root, "# Title\n\n- a\n", 0);
+    caret(emptyBr("8"), 0);
+    press();
+    assert.equal(heading.getState().doc, "# Title\n- a\n");
+    assert.equal(heading.getState().cursor, 8);
+    assert.equal(heading.getState().doc[heading.getState().cursor], "-");
+    heading.destroy();
+
+    const item = createEditor(mounted.root, "- a\n\n# Next\n", 0);
+    caret(emptyBr("4"), 0);
+    press();
+    assert.equal(item.getState().doc, "- a\n# Next\n");
+    assert.equal(item.getState().cursor, 4);
+    assert.equal(item.getState().doc[item.getState().cursor], "#");
+    item.destroy();
 
     const trailingDoc = "hello\n";
     const trailingView = createEditor(mounted.root, trailingDoc, 0);

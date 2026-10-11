@@ -21,6 +21,28 @@ test("typing at the start of a rule stays off the paragraph above", () => {
   assert.equal(next.doc, "hello\n\nx---\n");
 });
 
+test("typing before a heading marker stays on that line", () => {
+  const next = insert(createState("- a\n# Next\n", 4), "Q");
+  assert.equal(next.doc, "- a\nQ# Next\n");
+  assert.equal(next.cursor, 5);
+  const drawn = plan(next.doc, next.cursor);
+  const prose = drawn.blocks.filter((block) => !block.empty);
+  assert.equal(prose.length, 2);
+  assert.equal(prose[0].text.includes("Q"), false);
+  assert.equal(prose[1].text.startsWith("Q# Next"), true);
+
+  const word = plan("- a\nHello# Next\n", 0);
+  const wordBlocks = word.blocks.filter((block) => !block.empty);
+  assert.equal(wordBlocks.length, 2);
+  assert.equal(wordBlocks[0].text.includes("Hello"), false);
+  assert.equal(wordBlocks[1].text.includes("Hello# Next"), true);
+
+  const under = plan("one\nQ# Next\n", 0);
+  const underBlocks = under.blocks.filter((block) => !block.empty);
+  assert.equal(underBlocks.length, 2);
+  assert.equal(underBlocks[0].text.includes("Q"), false);
+});
+
 test("typing at the start of a continuation stays in that block", () => {
   const next = insert(createState("alpha\nbeta\n", 6), "x");
   assert.equal(next.doc, "alpha\nxbeta\n");

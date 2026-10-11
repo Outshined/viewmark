@@ -1442,13 +1442,20 @@ function lockLines(doc) {
   return lines;
 }
 
+// A word typed in front of a heading marker. The line stays its own block:
+// joining it would draw that word on the block above, off the caret.
+function keepsHeadingLine(text) {
+  const match = /^(\S+)(#{1,6} .*)$/.exec(text);
+  return match !== null && classify(match[2]).kind === "h";
+}
+
 // Quote markers are written once. The next block, including a child item, is its own span.
 function plainJoin(lines, index) {
   let last = index;
   for (let next = index + 1; next < lines.length; next += 1) {
     const text = lines[next].text;
     if (lineBlank(text) || imageLine(text) || fenceOpen(text) || isTableStart(lines, next)) break;
-    if (classify(text).kind !== "p") break;
+    if (classify(text).kind !== "p" || keepsHeadingLine(text)) break;
     last = next;
   }
   return last;
@@ -1462,7 +1469,7 @@ function listJoin(lines, index) {
     if (lineBlank(text) || imageLine(text) || fenceOpen(text) || isTableStart(lines, next)) break;
     const mode = classify(text);
     if (mode.kind === "h" || mode.kind === "hr" || mode.kind === "quote") break;
-    if (mode.kind === "li" || mode.kind === "ol") break;
+    if (mode.kind === "li" || mode.kind === "ol" || keepsHeadingLine(text)) break;
     last = next;
   }
   return last;
@@ -2953,6 +2960,9 @@ function joinedLineBreak(doc, cursor, value, nl, paste) {
   // The row lineSpans adds at length is not a block.
   if (cursor !== line.start || line.start === 0 || line.start === doc.length) return false;
   if (enclosedByFence(doc, cursor) || caretLineJoins(line.text)) return false;
+  // The marker keeps a heading out of the block above. A break written first
+  // would push that heading off the caret Delete just left in front of it.
+  if (classify(line.text).kind === "h") return false;
   return joinsDown(sourceLine(doc, line.start - 1).text);
 }
 
@@ -3072,6 +3082,17 @@ function deleteSelection(state) {
 function deleteBareLine(state, line) {
   const caret = line.start === 0 ? 0 : visualEnd(state.doc, line.start - 1);
   return snapBreak(applySplice(state, line.start, line.end + 1, "", caret));
+}
+
+// Delete removes this line's break, so the next line moves up. The caret stays
+// on that line's first byte, before a marker. A trailing empty line has no
+// next text; the caret stays on the break that remains, not past it.
+// A line of spaces is not this: Backspace and Delete both rest on the line above.
+function deleteEmptyForward(state, line) {
+  const from = line.start;
+  const to = line.end + 1;
+  const caret = to === state.doc.length && from > 0 ? visualEnd(state.doc, from - 1) : from;
+  return snapBreak(applySplice(state, from, to, "", caret));
 }
 
 // Enter at the end of a paragraph writes a blank line and an empty caret line.
@@ -3222,6 +3243,7 @@ export function deleteForward(state) {
     return snapBreak(applySplice(state, cutting.end, cutting.end + 1, "", cutting.start));
   }
   const line = sourceLine(doc, state.cursor);
+  if (line.text === "" && line.newline) return deleteEmptyForward(state, line);
   if (bareBreakLine(line, doc)) return deleteBareLine(state, line);
   if (/^[ \t]+$/.test(line.text)) return deleteBareLine(state, line);
   // Joining onto text would leave the hidden marker visible, so the marker
@@ -3243,18 +3265,12 @@ export function deleteForward(state) {
   const atom = renderedAtomAt(doc, state.cursor, (item) => state.cursor >= item.start && state.cursor < item.end);
   if (atom) return applySplice(state, atom.start, atom.end, "", atom.start);
   const at = state.cursor;
-  // The last byte of a trailing empty line is a newline. Leaving the caret at
-  // the new length sits past that remaining newline, where no block is drawn.
-  let cursor = at;
-  if (at === state.doc.length - 1 && doc[at] === "\n" && at > 0 && doc[at - 1] === "\n") {
-    cursor = at - 1;
-  }
   // The CR of a CRLF is the break. Deleting only that CR leaves a bare LF.
   if (doc[at] === "\r" && doc[at + 1] === "\n") {
     return snapBreak(applySplice(state, at, at + 2, "", at));
   }
   const from = doc[at] === "\n" && doc[at - 1] === "\r" ? at - 1 : at;
-  return snapBreak(applySplice(state, from, at + 1, "", from < at ? from : cursor));
+  return snapBreak(applySplice(state, from, at + 1, "", from));
 }
 
 export function undo(state) {

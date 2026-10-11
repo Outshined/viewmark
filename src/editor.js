@@ -5963,17 +5963,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     if (type === "deleteContentForward") {
-      if (state.anchor === state.cursor) {
-        const [start, end] = lineSpan(state.doc, state.cursor);
-        if (start === end && state.cursor > 0 && state.cursor < state.doc.length) {
-          // Delete on an empty line is the backspace of the preceding break,
-          // which is the caret the page already sends. A leading empty line
-          // still deletes forward. The line after the final newline is not a
-          // character, so Delete there changes nothing.
-          emitEdit({ op: "backspace" });
-          return;
-        }
-      }
+      // An empty line is a forward delete. Backspace would leave the caret
+      // on the line above; the next line moves up instead, marker and all.
       emitEdit({ op: "delete" });
       return;
     }
