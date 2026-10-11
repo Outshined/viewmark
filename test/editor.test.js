@@ -12808,6 +12808,73 @@ test("a same-text file keeps the caret a same-span click did not lock", () => {
   }
 });
 
+test("a renamed file keeps the caret offset", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  const text = "# Em\n\nmove me\n";
+  try {
+    const view = createEditor(mounted.root, "", 0, transport);
+    transport.deliver({ type: "file", path: "m.md", rev: 1, text, cursor: 8, anchor: 8, locks: [] });
+    assert.equal(view.getState().cursor, 8);
+    assert.equal(view.getState().anchor, 8);
+    transport.sent.length = 0;
+    transport.deliver({ type: "file", path: "keep/m.md", rev: 1, text, locks: [] });
+    assert.equal(view.getState().doc, text);
+    assert.equal(view.getState().cursor, 8);
+    assert.equal(view.getState().anchor, 8);
+    const lock = transport.sent.filter((message) => message.type === "lock").at(-1);
+    assert.equal(lock.path, "keep/m.md");
+    assert.equal(lock.cursor, 8);
+    assert.equal(lock.anchor, 8);
+    transport.deliver({ type: "file", path: "keep/m.md", rev: 1, text, cursor: 6, anchor: 10, locks: [] });
+    transport.deliver({ type: "file", path: "else/m.md", rev: 1, text, locks: [] });
+    assert.equal(view.getState().cursor, 6);
+    assert.equal(view.getState().anchor, 10);
+    transport.deliver({ type: "file", path: "other/m.md", rev: 1, text, cursor: 1, anchor: 1, locks: [] });
+    assert.equal(view.getState().cursor, 1);
+    assert.equal(view.getState().anchor, 1);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a rename's doc is not the next edit and the reopen keeps the caret", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  const text = "# Em\n\nmove me\n";
+  try {
+    const view = createEditor(mounted.root, "", 0, transport);
+    transport.deliver({ type: "file", path: "m.md", rev: 1, text, cursor: 8, anchor: 3, locks: [] });
+    transport.deliver({ type: "file", path: "keep/m.md", rev: 1, text, locks: [] });
+    assert.equal(view.getState().cursor, 8);
+    assert.equal(view.getState().anchor, 3);
+    transport.sent.length = 0;
+    transport.deliver({ type: "doc", path: "keep/m.md", rev: 1, text });
+    assert.equal(view.getState().doc, text);
+    assert.equal(view.getState().cursor, 8);
+    assert.equal(transport.sent.some((message) => message.type === "open" && message.path === "keep/m.md"), true);
+    transport.deliver({ type: "file", path: "keep/m.md", rev: 1, text, cursor: 0, anchor: 0, locks: [] });
+    assert.equal(view.getState().doc, text);
+    assert.equal(view.getState().cursor, 8);
+    assert.equal(view.getState().anchor, 3);
+    transport.deliver({ type: "file", path: "keep/m.md", rev: 2, text: "x# Em\n\nmove me\n", cursor: 1, anchor: 1, locks: [] });
+    assert.equal(view.getState().cursor, 1);
+    view.destroy();
+
+    const plain = holdingTransport();
+    const again = createEditor(mounted.root, "ab", 1, plain);
+    plain.deliver({ type: "doc", rev: 4, text: "ab", actor: "other" });
+    assert.equal(plain.sent.some((message) => message.type === "open"), true);
+    plain.deliver({ type: "file", rev: 4, text: "ab", cursor: 0, anchor: 0, path: "a.md" });
+    assert.equal(again.getState().cursor, 0);
+    assert.equal(again.getState().anchor, 0);
+    again.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("reconnect keeps the open document and sends no edit", () => {
   const mounted = mountEditor();
   const nav = document.createElement("nav");

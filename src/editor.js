@@ -2300,6 +2300,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // insert collapses at the end of its replacement. This is the selection that
   // still covers the same characters after a list indent.
   let keptCaret = null;
+  // A rename's offset. hold means the reopen's file must not replace it.
+  let followCaret = null;
+  let followPath = false;
   // The anchor can sit on a marker the cursor line does not open.
   let rawSelectionLines = false;
 
@@ -2402,6 +2405,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       conflictWaiters.splice(index, 1);
       resumeAfterFile = true;
       waitingForFile = true;
+      followCaret = null;
+      followPath = false;
       emit({ type: "open", path: openPath });
     }, 2000);
   }
@@ -5035,9 +5040,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const kept = keptCaret;
     if (message.type === "doc" && kept && ownActor(message) && message.text === kept.text) {
       keptCaret = null;
+      followCaret = null;
+      followPath = false;
       if (kept.anchor !== kept.cursor) rawSelectionLines = true;
       return { cursor: clampCaret(kept.cursor, length), anchor: clampCaret(kept.anchor, length) };
     }
+    if (message.type === "file" && followCaret) {
+      const saved = followCaret;
+      const sameText = typeof message.text === "string" && message.text === saved.text;
+      followCaret = null;
+      // The rename frame has no caret. The reopen after it carries one, and that
+      // one is not a place in the text either when the bytes are unchanged.
+      if (!Number.isFinite(message.cursor) || (saved.hold && sameText)) {
+        followPath = !Number.isFinite(message.cursor);
+        keptCaret = null;
+        return { cursor: clampCaret(saved.cursor, length), anchor: clampCaret(saved.anchor, length) };
+      }
+    }
+    if (message.type === "file") followPath = false;
     if (message.type === "doc" || message.type === "file") keptCaret = null;
     if (message.type === "file" || ownActor(message)) {
       const cursor = Number.isFinite(message.cursor) ? message.cursor : (message.type === "file" ? 0 : state.cursor);
@@ -5117,6 +5137,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (activeRepo) sendRepoFrames(activeRepo);
       if (openPath) {
         waitingForFile = true;
+        followCaret = null;
+        followPath = false;
         emit({ type: "open", path: openPath });
       }
       return;
@@ -5202,6 +5224,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       clearEditTimer();
       keptCaret = null;
+      followCaret = null;
+      followPath = false;
       rawSelectionLines = false;
       // A rejected delete left the file in place. It is not a lost caret grant.
       if (conflictWaiters[0] === "delete") {
@@ -5252,6 +5276,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       // Both lists mark openPath. Assign it before this render, or the previous
       // document stays marked beside the ticket this file message just opened.
       if (typeof message.path === "string" && message.path) {
+        // A new name is not a place in the text. The offset stays.
+        if (openPath && message.path !== openPath && live && !waitingForFile && !Number.isFinite(message.cursor)) {
+          followCaret = { anchor: state.anchor, cursor: state.cursor, text: state.doc, hold: false };
+          followPath = true;
+        }
         openPath = message.path;
         seedOpen(message.path);
         renderFileTree(fileList, false);
@@ -5267,6 +5296,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       const nextRev = Number(message.rev);
       if (!Number.isFinite(nextRev) || nextRev !== rev + 1) {
+        // The rename's doc is not this session's next edit. Same bytes reopen
+        // at the offset the path change kept, not at 0.
+        if (followPath && typeof message.text === "string" && message.text === state.doc) {
+          followCaret = { anchor: state.anchor, cursor: state.cursor, text: state.doc, hold: true };
+        } else {
+          followCaret = null;
+        }
+        followPath = false;
         keptCaret = null;
         rawSelectionLines = false;
         waitingForFile = true;
@@ -5276,6 +5313,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         emit({ type: "open", path: openPath });
         return;
       }
+      followCaret = null;
+      followPath = false;
       if (ownActor(message)) {
         pendingAttach = false;
         const index = conflictWaiters.indexOf("edit");
@@ -7959,6 +7998,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       syncEntryLink();
       return;
     }
+    followCaret = null;
+    followPath = false;
     openPath = path;
     if (ticket) {
       const id = ticketIdFromPath(path);
@@ -8484,8 +8525,9 @@ export function startPage(env = {}) {
       location: env.location || globalThis.location,
     });
     // A move inside a held span sends no lock, so the hub still has the caret from
-    // the span claim. The same text on the same path keeps this page's caret. Another
-    // path, or text that changed while the socket was down, takes the caret the hub sent.
+    // the span claim. The same text on the same path keeps this page's caret. Text
+    // that changed while the socket was down takes the caret the hub sent. A new
+    // path with no caret is an offset in the text, kept by the editor.
     let editor = null;
     let shownPath = "";
     const send = transport.send.bind(transport);
