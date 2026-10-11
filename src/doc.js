@@ -2825,9 +2825,12 @@ function enclosedByFence(doc, offset) {
 
 // A line that does not join is drawn under the block above until the insert
 // makes it join. An insert that does not start with a break writes one first.
-// A continuation is already in that block, so it stays there.
-function joinedLineBreak(doc, cursor, value, nl) {
+// A continuation is already in that block, so it stays there. A pasted line
+// that opens with "- " is already a new item, so that break would split it
+// from the list above.
+function joinedLineBreak(doc, cursor, value, nl, paste) {
   if (value === "" || value.startsWith(nl)) return false;
+  if (paste === true && value.startsWith("- ")) return false;
   const line = sourceLine(doc, cursor);
   // The row lineSpans adds at length is not a block.
   if (cursor !== line.start || line.start === 0 || line.start === doc.length) return false;
@@ -2862,13 +2865,13 @@ function omitCopiedMarkers(doc, text, from, to) {
   });
 }
 
-export function insert(state, text) {
+export function insert(state, text, paste) {
   const nl = fileNewline(state.doc);
   let value = (typeof text === "string" ? text : "").replace(/\r\n|\n|\r/g, nl);
   const from = Math.min(state.anchor, state.cursor);
   const to = Math.max(state.anchor, state.cursor);
   value = omitCopiedMarkers(state.doc, value, from, to);
-  if (from === to && joinedLineBreak(state.doc, from, value, nl)) value = nl + value;
+  if (from === to && joinedLineBreak(state.doc, from, value, nl, paste === true)) value = nl + value;
   if (value === "" && from === to) return state;
   return applySplice(state, from, to, value, from + value.length);
 }

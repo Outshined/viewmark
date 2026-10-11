@@ -5172,7 +5172,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       sendImage(decoded);
       return;
     }
-    emitEdit({ op: "insert", text: raw });
+    emitEdit({ op: "insert", text: raw, paste: true });
   }
 
   function moveCaret(direction, granularity, extend) {

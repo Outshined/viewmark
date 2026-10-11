@@ -100,3 +100,27 @@ test("a paste on a list continuation stays in that block", () => {
   assert.equal(prose[0].text.includes("item"), true);
   assert.equal(prose[0].text.includes("a"), true);
 });
+
+test("CB.5 pasting list items on the empty line under a list stays one list", () => {
+  const doc = "- a\n- b\n\n";
+  const caret = doc.length - 1;
+  const pasted = insert(createState(doc, caret), "- a\n- b", true);
+  assert.equal(pasted.doc, "- a\n- b\n- a\n- b\n");
+  assert.equal(pasted.cursor, "- a\n- b\n- a\n- b".length);
+
+  const crlf = "- a\r\n- b\r\n\r\n";
+  const paired = insert(createState(crlf, crlf.length - 2), "- a\r\n- b", true);
+  assert.equal(paired.doc, "- a\r\n- b\r\n- a\r\n- b\r\n");
+
+  const typed = insert(createState(doc, caret), "x");
+  assert.equal(typed.doc, "- a\n- b\n\nx\n");
+
+  const notPaste = insert(createState(doc, caret), "- a\n- b");
+  assert.equal(notPaste.doc, "- a\n- b\n\n- a\n- b\n");
+
+  const prose = insert(createState(doc, caret), "a\nb", true);
+  assert.equal(prose.doc, "- a\n- b\n\na\nb\n");
+
+  const under = insert(createState("hello\n\n", 6), "- a", true);
+  assert.equal(under.doc, "hello\n- a\n");
+});

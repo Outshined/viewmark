@@ -4575,6 +4575,33 @@ test("an image line has a caret mark at its start and through its newline", () =
   }
 });
 
+test("CB.5 pasting list items on the empty line under a list stays one list", () => {
+  const mounted = mountEditor();
+  const doc = "- a\n- b\n\n";
+  const at = doc.length - 1;
+  try {
+    const view = createEditor(mounted.root, doc, at);
+    mounted.listeners.paste({
+      preventDefault() {},
+      clipboardData: { getData: () => "- a\n- b" },
+    });
+    assert.equal(view.getState().doc, "- a\n- b\n- a\n- b\n");
+    assert.equal(view.getState().cursor, "- a\n- b\n- a\n- b".length);
+    view.destroy();
+
+    const typed = createEditor(mounted.root, doc, at);
+    mounted.listeners.beforeinput({
+      inputType: "insertText",
+      data: "x",
+      preventDefault() {},
+    });
+    assert.equal(typed.getState().doc, "- a\n- b\n\nx\n");
+    typed.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("a paste inside a paragraph sends the picture at that caret", async () => {
   const mounted = mountEditor();
   const parent = {
