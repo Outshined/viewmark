@@ -1187,6 +1187,74 @@ test("list item hard break hides its marker", () => {
   assert.equal(proseBlocks(numberOnly, numberOnly.length)[0].marker, "1. ");
 });
 
+test("a quote or item hard break is not drawn when the next line does not join", () => {
+  const shown = (doc, cursor) => proseBlocks(doc, cursor).map((block) => shownText(block));
+
+  const quote = "> alpha\\\n> beta\n";
+  assert.equal(quote[7], "\\");
+  assert.equal(quote[8], "\n");
+  assert.deepEqual(shown(quote, 0), ["> alpha", "beta"]);
+  assert.deepEqual(shown(quote, quote.indexOf("beta")), ["alpha", "> beta"]);
+  assert.deepEqual(shown(quote, quote.length), ["alpha", "beta"]);
+  assert.equal(proseBlocks(quote, quote.length)[0].parts.find((part) => part.type === "break").start, 8);
+  assert.ok(proseBlocks(quote, quote.length).every((block) => block.classes.includes("md-quote")));
+  assert.equal(quote, "> alpha\\\n> beta\n");
+
+  const item = "- alpha\\\n";
+  assert.equal(item[7], "\\");
+  assert.deepEqual(shown(item, 0), ["- alpha"]);
+  assert.deepEqual(shown(item, item.length), ["alpha"]);
+  assert.equal(proseBlocks(item, item.length)[0].parts.find((part) => part.type === "break").start, 8);
+  assert.ok(proseBlocks(item, item.length)[0].classes.includes("md-li"));
+  assert.equal(item, "- alpha\\\n");
+
+  const empty = "> alpha\\\n> \n";
+  assert.equal(empty[7], "\\");
+  assert.equal(empty.slice(9, 11), "> ");
+  assert.deepEqual(shown(empty, 0), ["> alpha", ""]);
+  assert.deepEqual(shown(empty, 9), ["alpha", "> "]);
+  assert.deepEqual(shown(empty, empty.length), ["alpha", ""]);
+  assert.ok(proseBlocks(empty, empty.length).every((block) => block.classes.includes("md-quote")));
+  assert.equal(empty, "> alpha\\\n> \n");
+
+  const ordered = "1. alpha\\\n";
+  assert.deepEqual(shown(ordered, 0), ["1. alpha"]);
+  assert.deepEqual(shown(ordered, ordered.length), ["alpha"]);
+  assert.equal(ordered, "1. alpha\\\n");
+
+  assert.equal(shown("> alpha\\", 0)[0].includes("\\"), true);
+  assert.equal(proseBlocks("> alpha\\", 0)[0].parts.some((part) => part.type === "break"), false);
+  assert.equal(shown("- alpha\\", 0)[0].includes("\\"), true);
+  const kept = "> alpha\\ \n";
+  assert.equal(shown(kept, kept.length)[0].includes("\\"), true);
+  assert.equal(proseBlocks(kept, kept.length)[0].parts.some((part) => part.type === "break"), false);
+  assert.equal(kept, "> alpha\\ \n");
+
+  const mark = ">  \n";
+  assert.equal(proseBlocks(mark, mark.length)[0].parts.some((part) => part.type === "break"), false);
+  assert.equal(shown(mark, mark.length)[0], " ");
+  const spaces = "> alpha  \n";
+  assert.equal(shown(spaces, spaces.length)[0], "alpha");
+  assert.equal(proseBlocks(spaces, spaces.length)[0].parts.some((part) => part.type === "break"), true);
+  assert.equal(spaces, "> alpha  \n");
+
+  const mounted = mountEditor();
+  try {
+    for (const doc of [quote, item, empty, ordered]) {
+      for (const cursor of [0, doc.length]) {
+        const view = createEditor(mounted.root, doc, cursor);
+        const lines = mounted.findAll((node) => node.classList && node.classList.contains("md-line"));
+        const text = lines.map((line) => line.textContent).join("\n");
+        assert.equal(text.includes("\\"), false, JSON.stringify(text));
+        assert.equal(view.getState().doc, doc);
+        view.destroy();
+      }
+    }
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("list item maps the joining space and keeps the source", () => {
   const mounted = mountEditor();
   globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };

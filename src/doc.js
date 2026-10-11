@@ -2310,12 +2310,14 @@ function linePieces(slot, spans, raw) {
   return source.map(clonePart);
 }
 
-function hardenBreak(block, line, doc) {
+function hardenBreak(block, line, doc, hideCount) {
   if (!block || block.type !== "line" || block.hr || block.empty || block.collapsed) return;
   if (!line || line.end >= doc.length || doc[line.end] !== "\n") return;
-  let hide = hardHideCount(line.text);
-  if (/^[ \t]+$/.test(line.text) && hide !== line.text.length) hide = line.text.length;
-  if (hide === 0) return;
+  let hide = typeof hideCount === "number" ? hideCount : hardHideCount(line.text);
+  // A passed count is the content tail, after a quote or list marker. The
+  // spaces-only slot is a whole line of spaces, and that marker is not one.
+  if (typeof hideCount !== "number" && /^[ \t]+$/.test(line.text) && hide !== line.text.length) hide = line.text.length;
+  if (hide <= 0) return;
   const parts = trimTail((block.parts || []).map(clonePart), hide);
   parts.push(breakPart(line.end));
   block.parts = parts;
@@ -2584,6 +2586,9 @@ function pushLine(blocks, slot, text, cursor, spans) {
   const onLine = cursor >= line.start && cursor <= line.end;
   const block = onLine ? rawBlock(line, mode, parsed, spans) : renderedBlock(line, mode, parsed, spans);
   if (mode.kind === "p" && !imageLine(line.text)) hardenBreak(block, line, text);
+  // plainJoin stops at the next quote, and a lone item has no next line, so
+  // this line is not wrapped. The tail is still syntax. The count stops at the marker.
+  else if (hidesBreak(text, line)) hardenBreak(block, line, text, contentBreakHide(line.text));
   blocks.push(block);
 }
 
@@ -3333,23 +3338,13 @@ function contentBreakHide(text) {
   return hardHideCount(text.slice(prefix));
 }
 
-// A paragraph hides its break on that line. A quote or item hides it only
-// when another line stays in the same block; a lone marker line shows the tail.
+// A hard break's tail is syntax on that line. A following quote does not join,
+// and a lone item has nothing after it, but the tail is still not text.
 function hidesBreak(doc, line) {
+  if (typeof doc !== "string") return false;
   const mode = classify(line.text);
   if (mode.kind === "p") return !imageLine(line.text) && !line.text.startsWith("|");
-  if (mode.kind !== "quote" && mode.kind !== "li" && mode.kind !== "ol") return false;
-  const lines = lockLines(doc);
-  let index = -1;
-  for (let i = 0; i < lines.length; i += 1) {
-    if (lines[i].start === line.start) {
-      index = i;
-      break;
-    }
-  }
-  if (index < 0) return false;
-  const last = mode.kind === "li" || mode.kind === "ol" ? listJoin(lines, index) : plainJoin(lines, index);
-  return last > index;
+  return mode.kind === "quote" || mode.kind === "li" || mode.kind === "ol";
 }
 
 // from is the hidden marker. begin can sit earlier, on a syntax space that
