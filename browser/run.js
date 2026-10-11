@@ -375,7 +375,9 @@ async function place(page, cell, route, interval, context, target) {
     await page.quiet();
     await page.key("Backspace");
   } else if (route === "cleared") {
-    await pointer(page, "tripleclick `xyz`", interval);
+    // A double-click selects xyz alone. A triple-click selects the whole block (R85), and xyz
+    // often soft-joins the line above or below, so it would take their text too.
+    await pointer(page, "dblclick `xyz`", interval);
     await page.quiet();
     await page.key("Backspace");
   } else if (route === "undone") {
