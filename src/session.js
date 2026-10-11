@@ -134,7 +134,7 @@ export function createMemoryTransport(doc, cursor = 0) {
       let inserted = "";
       if (message.op === "insert") {
         inserted = typeof message.text === "string" ? message.text : "";
-        next = insert(base, inserted, message.paste === true);
+        next = insert(base, inserted, message.paste === true, message.raw === true);
         if (next == null && message.raw === true) next = insertLiteral(base, inserted);
         if (next && next !== base && Array.isArray(next.changes) && next.changes.length === 1
           && typeof message.caret === "number" && Number.isFinite(message.caret)) {

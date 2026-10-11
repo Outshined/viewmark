@@ -3156,14 +3156,18 @@ function enclosedByFence(doc, offset) {
 // makes it join. An insert that does not start with a break writes one first.
 // A continuation is already in that block, so it stays there. A pasted line
 // that opens with "- " is already a new item, so that break would split it
-// from the list above.
+// from the list above. The empty row after a final newline is that line.
 function joinedLineBreak(doc, cursor, value, nl, paste) {
   if (value === "" || value.startsWith(nl)) return false;
   if (paste === true && value.startsWith("- ")) return false;
   const line = sourceLine(doc, cursor);
-  // The row lineSpans adds at length is not a block.
-  if (cursor !== line.start || line.start === 0 || line.start === doc.length) return false;
-  if (enclosedByFence(doc, cursor) || caretLineJoins(line.text)) return false;
+  // The caret on the row at the file length sits under the last line. Leaving
+  // that row out stores the letter on the line above, and the paragraph joins.
+  if (cursor !== line.start || line.start === 0) return false;
+  // An unclosed fence ends at the file length, so the caret there is still inside it.
+  const inFence = enclosedByFence(doc, cursor)
+    || (line.start === doc.length && enclosedByFence(doc, line.start - 1));
+  if (inFence || caretLineJoins(line.text)) return false;
   // The marker keeps a heading out of the block above. A break written first
   // would push that heading off the caret Delete just left in front of it.
   if (classify(line.text).kind === "h") return false;
@@ -3200,13 +3204,15 @@ function omitCopiedMarkers(doc, text, from, to) {
   });
 }
 
-export function insert(state, text, paste) {
+export function insert(state, text, paste, raw) {
   const nl = fileNewline(state.doc);
   let value = (typeof text === "string" ? text : "").replace(/\r\n|\n|\r/g, nl);
   const from = Math.min(state.anchor, state.cursor);
   const to = Math.max(state.anchor, state.cursor);
   value = omitCopiedMarkers(state.doc, value, from, to);
-  if (from === to && joinedLineBreak(state.doc, from, value, nl, paste === true)) value = nl + value;
+  // A raw insert is the source line. The leading break is for the formatted
+  // line, which would otherwise draw the letter on the block above.
+  if (from === to && raw !== true && joinedLineBreak(state.doc, from, value, nl, paste === true)) value = nl + value;
   if (value === "" && from === to) return state;
   return applySplice(state, from, to, value, from + value.length);
 }

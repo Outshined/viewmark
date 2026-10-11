@@ -546,7 +546,7 @@ function runOp(text, cursor, anchor, msg) {
     let next = state;
     if (msg.op === "insert") {
       const typed = typeof msg.text === "string" ? msg.text : "";
-      next = insert(state, typed, msg.paste === true);
+      next = insert(state, typed, msg.paste === true, msg.raw === true);
       if (next === null && msg.raw === true) next = insertLiteral(state, typed);
       if (next && next !== state && Array.isArray(next.changes) && next.changes.length === 1
         && typeof msg.caret === "number" && Number.isFinite(msg.caret)) {

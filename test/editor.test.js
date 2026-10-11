@@ -2684,6 +2684,105 @@ test("EF.9", () => {
   assert.equal(orderedBack.cursor, 9);
 });
 
+test("EF.7", () => {
+  const doc = "hello\n";
+  const next = insert(createState(doc, 6), "Q");
+  assert.equal(next.doc, "hello\n\nQ");
+  assert.equal(next.cursor, 8);
+  assert.equal(next.anchor, 8);
+  const prose = plan(next.doc, next.cursor).blocks.filter((block) => !block.empty);
+  assert.equal(prose.length, 2);
+  assert.equal(prose[0].text.includes("hello"), true);
+  assert.equal(prose[0].text.includes("Q"), false);
+  assert.equal(prose[1].text, "Q");
+  const back = backspace(next);
+  assert.equal(back.doc, "hello\n\n");
+  assert.equal(back.cursor, 7);
+  assert.equal(back.anchor, 7);
+
+  const paired = insert(createState("hello\r\n", 7), "Q");
+  assert.equal(paired.doc, "hello\r\n\r\nQ");
+  assert.equal(paired.cursor, 10);
+  assert.equal(paired.anchor, 10);
+
+  const item = insert(createState("- a\n", 4), "Q");
+  assert.equal(item.doc, "- a\n\nQ");
+  const itemProse = plan(item.doc, item.cursor).blocks.filter((block) => !block.empty);
+  assert.equal(itemProse.length, 2);
+  assert.equal(itemProse[0].text.includes("Q"), false);
+  assert.equal(itemProse[1].text, "Q");
+
+  const numbered = insert(createState("1. a\n", 5), "Q");
+  assert.equal(numbered.doc, "1. a\n\nQ");
+
+  const quote = insert(createState("> a\n", 4), "Q");
+  assert.equal(quote.doc, "> a\n\nQ");
+  const quoteProse = plan(quote.doc, quote.cursor).blocks.filter((block) => !block.empty);
+  assert.equal(quoteProse.length, 2);
+  assert.equal(quoteProse[0].text.includes("Q"), false);
+  assert.equal(quoteProse[1].text, "Q");
+
+  const continued = insert(createState("> said\nmore\n", 12), "Q");
+  assert.equal(continued.doc, "> said\nmore\n\nQ");
+  const continuedProse = plan(continued.doc, continued.cursor).blocks.filter((block) => !block.empty);
+  assert.equal(continuedProse[0].text.includes("said"), true);
+  assert.equal(continuedProse[0].text.includes("more"), true);
+  assert.equal(continuedProse[0].text.includes("Q"), false);
+  assert.equal(continuedProse[continuedProse.length - 1].text, "Q");
+
+  const paragraph = insert(createState("alpha\nbeta\n", 11), "Q");
+  assert.equal(paragraph.doc, "alpha\nbeta\n\nQ");
+  const paragraphProse = plan(paragraph.doc, paragraph.cursor).blocks.filter((block) => !block.empty);
+  assert.equal(paragraphProse[0].text, "alpha beta");
+  assert.equal(paragraphProse[paragraphProse.length - 1].text, "Q");
+
+  const pasted = insert(createState(doc, 6), "a\nb", true);
+  assert.equal(pasted.doc, "hello\n\na\nb");
+  const underBlank = insert(createState("hello\n\n", 7), "Q");
+  assert.equal(underBlank.doc, "hello\n\nQ");
+  assert.equal(insert(createState(doc, 6), "Q", false, true).doc, "hello\nQ");
+});
+
+test("EF.17", () => {
+  const doc = "one\n";
+  const state = createState(doc, doc.length);
+  const kept = deleteForward(state);
+  assert.equal(kept.doc, doc);
+  assert.equal(kept.cursor, doc.length);
+  assert.equal(kept.anchor, doc.length);
+  const next = insert(kept, "Q");
+  assert.equal(next.doc, "one\n\nQ");
+  assert.equal(next.cursor, 6);
+  assert.equal(next.anchor, 6);
+  const prose = plan(next.doc, next.cursor).blocks.filter((block) => !block.empty);
+  assert.equal(prose.length, 2);
+  assert.equal(prose[0].text.includes("one"), true);
+  assert.equal(prose[0].text.includes("Q"), false);
+  assert.equal(prose[1].text, "Q");
+  const back = backspace(next);
+  assert.equal(back.doc, "one\n\n");
+  assert.equal(back.cursor, 5);
+  assert.equal(back.anchor, 5);
+});
+
+test("a letter at the end of the file stays where the line above does not join", () => {
+  assert.equal(insert(createState("# Title\n", 8), "Q").doc, "# Title\nQ");
+  assert.equal(insert(createState("```\ncode\n", 9), "Q").doc, "```\ncode\nQ");
+  assert.equal(insert(createState("```\r\ncode\r\n", 11), "Q").doc, "```\r\ncode\r\nQ");
+  assert.equal(insert(createState("```\ncode\n```\n", 13), "Q").doc, "```\ncode\n```\nQ");
+  const hard = insert(createState("hello\\\n", 7), "Q");
+  assert.equal(hard.doc, "hello\\\nQ");
+  const hardProse = plan(hard.doc, hard.cursor).blocks.filter((block) => !block.empty);
+  assert.equal(hardProse.length, 1);
+  assert.equal(hardProse[0].text.includes("hello"), true);
+  assert.equal(hardProse[0].text.includes("Q"), true);
+  assert.equal(insert(createState("red  \n", 6), "Q").doc, "red  \nQ");
+  assert.equal(insert(createState("", 0), "Q").doc, "Q");
+  assert.equal(insert(createState("hello\n", 6), "- a", true).doc, "hello\n- a");
+  assert.equal(insert(createState("- a\n", 4), "- b", true).doc, "- a\n- b");
+  assert.equal(insert(createState("hello\n", 6), "- a").doc, "hello\n\n- a");
+});
+
 test("EB.qc.1", () => {
   const end = enterAt("> alpha\nbeta\n", 12);
   assert.equal(end.doc, "> alpha\nbeta\n> \n");
