@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import net from "node:net";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -10,6 +10,8 @@ import zlib from "node:zlib";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = path.join(ROOT, "cli.js");
 const CHROMIUM = process.env.VIEWMARK_CHROMIUM || "/usr/bin/chromium";
+// The browser the tests drive: chromium, or firefox (browser/firefox.js).
+export const BROWSER = process.env.VIEWMARK_BROWSER === "firefox" ? "firefox" : "chromium";
 const LIVE_PORT = Number(process.env.VIEWMARK_PORT || 8765);
 export const USER = "qa-bot";
 export const OTHER = "qa-two";
@@ -42,12 +44,32 @@ export function cli(port, args, input = "") {
 // /dev/null, as for any background job in sh.
 const TIE = '"$@" & read _; trap "" TERM; kill -TERM 0; wait; for d in $TIE_RM; do case "$d" in */viewmark-qa-*) rm -rf "$d" ;; esac; done';
 
-function spawnTied(command, args, stdout, stderr, cleanup = []) {
-  return spawn("/bin/sh", ["-c", TIE, "sh", command, ...args], { detached: true, stdio: ["pipe", stdout, stderr], env: { ...process.env, TIE_RM: cleanup.join(" ") } });
+export function spawnTied(command, args, stdout, stderr, cleanup = [], env = {}) {
+  return spawn("/bin/sh", ["-c", TIE, "sh", command, ...args], { detached: true, stdio: ["pipe", stdout, stderr], env: { ...process.env, ...env, TIE_RM: cleanup.join(" ") } });
+}
+
+// Whether a command is on PATH, or is a path to an executable file.
+export function onPath(command) {
+  const dirs = command.includes("/") ? [""] : (process.env.PATH || "").split(":");
+  return dirs.some((dir) => {
+    try {
+      accessSync(path.join(dir, command), constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+// What the browser under test can do. Firefox is driven over WebDriver BiDi, which has no
+// drag-and-drop interception, no input method composition, and no platform font report.
+export function supports(feature) {
+  if (BROWSER === "chromium") return true;
+  return !["drag", "ime", "fonts"].includes(feature);
 }
 
 // Close the pipe and wait for the group to end; kill the group after 5 s if it has not.
-async function stopProcess(proc) {
+export async function stopProcess(proc) {
   if (proc.exitCode != null || proc.signalCode != null) return;
   const exited = new Promise((resolve) => proc.once("exit", resolve));
   proc.stdin.end();
@@ -183,6 +205,7 @@ class Session {
 }
 
 export async function launchBrowser() {
+  if (BROWSER === "firefox") return (await import("./firefox.js")).launchFirefox();
   const profile = mkdtempSync(path.join(tmpdir(), "viewmark-qa-profile-"));
   const args = [
     ...(process.env.VIEWMARK_HEADED === "1" ? [] : ["--headless=new"]),
@@ -212,6 +235,7 @@ export async function launchBrowser() {
   const base = `http://127.0.0.1:${devtools}`;
   const sockets = [ws];
   return {
+    name: "chromium",
     session: new Session(ws),
     targetId: target.id,
     async newSession() {

@@ -206,6 +206,8 @@ test("page: a value set by the CLI or another tab shows without a reload, except
   await setTicket(hub, id, "--assignee", "carl");
   await sleep(600);
   assert.equal(await fieldValue(page), "unsaved", "a remote value replaced unsaved text in the focused field");
+  // Ticket 72mpt9d6: the person is still typing there, so the focus stays in the field.
+  assert.equal(await page.eval(`document.activeElement === document.querySelector(${JSON.stringify(FIELD)})`), true, "a remote value took the focus out of the field");
 });
 
 test("page: an empty field means unassigned", async (t) => {

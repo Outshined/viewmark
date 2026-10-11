@@ -628,7 +628,7 @@ export async function runCell(suite, cell, routeName, serial) {
   try {
     await place(page, cell, route, interval, context, target);
   } catch (err) {
-    if (err instanceof NotAutomated) return { ...result, status: "BLOCKED", failed: [`not automated: ${err.message}`] };
+    if (err instanceof NotAutomated || err?.unsupported) return { ...result, status: "BLOCKED", failed: [`not automated: ${err.message}`] };
     if (err instanceof NotApplicable) return { ...result, status: "BLOCKED", failed: [`not applicable: ${err.message}`] };
     return { ...result, status: "BLOCKED", routeFailed: true, failed: [`placement: ${err.message}`] };
   }
@@ -665,7 +665,7 @@ export async function runCell(suite, cell, routeName, serial) {
       if (suite.hasOther()) await (await suite.other()).quiet();
     }
   } catch (err) {
-    if (err instanceof NotAutomated) return { ...result, status: "BLOCKED", failed: [`not automated: ${err.message}`] };
+    if (err instanceof NotAutomated || err?.unsupported) return { ...result, status: "BLOCKED", failed: [`not automated: ${err.message}`] };
     return { ...result, status: "FAIL", failed: [`keys: ${err.message}`] };
   }
   const caret = await page.caret();
