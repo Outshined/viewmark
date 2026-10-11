@@ -240,7 +240,11 @@ export function enterInsert(doc, cursor) {
   const line = sourceLine(text, at);
   if (line.newline && at + 1 === line.end && text[at] === "\r") {
     const moved = enterInsert(text, line.end);
-    if (typeof moved.anchor === "number") return { ...moved, cursor: Math.max(moved.cursor, line.end + 1) };
+    if (typeof moved.anchor === "number") {
+      // The splice sits on the CR and leaves the existing break after it.
+      if (moved.anchor === at && moved.cursor === at) return moved;
+      return { ...moved, cursor: Math.max(moved.cursor, line.end + 1) };
+    }
     return { ...moved, anchor: line.end + 1, cursor: line.end + 1 };
   }
   const opened = fenceOpen(line.text);
@@ -277,7 +281,14 @@ export function enterInsert(doc, cursor) {
   if (continued) return continued;
   if (mode.kind === "p" && line.text !== "" && !imageLine(line.text)) {
     const onBreak = line.newline && at === line.end && text[at] === "\n";
-    if (onBreak && text[at - 1] === "\r") return { text: "\n\n", anchor: at - 1, cursor: at + 1 };
+    if (onBreak && text[at - 1] === "\r") {
+      // A following line that does not join keeps the break already there.
+      // Replacing that CRLF would drop a trailing newline the file had.
+      let next = nextLineText(text, at);
+      if (next.endsWith("\r")) next = next.slice(0, -1);
+      if (!lineJoins(next)) return { text: "\n\n", anchor: at - 1, cursor: at - 1 };
+      return { text: "\n\n", anchor: at - 1, cursor: at + 1 };
+    }
     if (onBreak && !lineJoins(nextLineText(text, at))) return { text: "\n\n" };
     if (onBreak) return { text: "\n\n", anchor: at, cursor: at + 1 };
     // Column 0 pushes the block down with one newline. A double newline there
@@ -3222,9 +3233,10 @@ function deleteEmptyForward(state, line) {
 
 // Enter at the end of a paragraph writes a blank line and an empty caret line.
 // Backspace on that caret line removes both breaks, including when the line is
-// not the last in the file and when the file has no newline after it. The caret
-// rests on the paragraph's newline. An item, a quote, and a caret inside a
-// paragraph do not.
+// not the last in the file. A newline on the caret line stays, so a file that
+// already ended with one keeps it. A caret past the last newline does not gain
+// one. The second Enter on an item or a quote leaves this same empty line.
+// A caret inside a paragraph does not.
 function paragraphEnterBackspace(doc, cursor) {
   const line = sourceLine(doc, cursor);
   if (cursor !== line.start || line.text !== "") return null;
@@ -3232,17 +3244,12 @@ function paragraphEnterBackspace(doc, cursor) {
   const prev = sourceLine(doc, line.start - 1);
   if (prev.text !== "" || prev.start === 0 || doc[prev.start - 1] !== "\n") return null;
   const para = sourceLine(doc, prev.start - 1);
-  if (para.text === "" || imageLine(para.text) || classify(para.text).kind !== "p") return null;
-  let to = cursor;
-  // A caret line past the last newline has no break of its own. Keep one break
-  // so the caret still rests on the paragraph's newline.
-  if (!line.newline && to > 0 && doc[to - 1] === "\n") {
-    to -= 1;
-    if (to > 0 && doc[to - 1] === "\r") to -= 1;
-  }
+  const kind = classify(para.text).kind;
+  if (para.text === "" || imageLine(para.text)) return null;
+  if (kind !== "p" && kind !== "li" && kind !== "ol" && kind !== "quote") return null;
   const from = para.end > para.start && doc[para.end - 1] === "\r" ? para.end - 1 : para.end;
-  if (from >= to) return null;
-  return { from, to, caret: from };
+  if (from >= cursor) return null;
+  return { from, to: cursor, caret: from };
 }
 
 // A prose paragraph. A line that is only a hard-break marker has no text to join.
@@ -3294,6 +3301,37 @@ function paragraphPadDelete(doc, cursor) {
   return { from, to: next.start, caret: from };
 }
 
+// The caret is at the end of the marker line, on its break or past the text.
+function atMarkerLineEnd(doc, line, cursor) {
+  if (cursor === line.end) return true;
+  return cursor + 1 === line.end && doc[cursor] === "\r";
+}
+
+// Enter on a paragraph joined to a quote writes the break and the marker
+// together. At the end of that marker line, Backspace removes both, and the
+// newline the paragraph already had stays. A marker under the quote line
+// itself, or under a paragraph that is not in the quote, drops only the marker.
+function quoteContinuationBreak(doc, line, cursor) {
+  if (!atMarkerLineEnd(doc, line, cursor)) return null;
+  if (line.start === 0 || doc[line.start - 1] !== "\n") return null;
+  const prev = sourceLine(doc, line.start - 1);
+  if (prev.text === "" || classify(prev.text).kind !== "p") return null;
+  let start = prev.start;
+  let quoted = false;
+  while (start > 0 && doc[start - 1] === "\n") {
+    const above = sourceLine(doc, start - 1);
+    const kind = classify(above.text).kind;
+    if (kind === "quote") {
+      quoted = true;
+      break;
+    }
+    if (kind !== "p" || above.text === "") return null;
+    start = above.start;
+  }
+  if (!quoted) return null;
+  return prev.end > prev.start && doc[prev.end - 1] === "\r" ? prev.end - 1 : prev.end;
+}
+
 // Directly after a marker, Backspace removes that marker. A nested item outdents.
 function markerBackspace(doc, cursor) {
   if (fenceBody(doc, cursor)) return null;
@@ -3310,7 +3348,11 @@ function markerBackspace(doc, cursor) {
     }
   }
   if (at !== (mode.marker || 0) || at === 0) return null;
-  if (kind === "quote") return { from: line.start, to: cursor, caret: line.start };
+  if (kind === "quote") {
+    const from = quoteContinuationBreak(doc, line, cursor);
+    const start = from == null ? line.start : from;
+    return { from: start, to: cursor, caret: start };
+  }
   if (mode.quoted) {
     const quote = mode.quote || 0;
     if (quote <= 0 || quote >= at) return null;
@@ -3389,6 +3431,11 @@ export function backspace(state) {
   const line = sourceLine(doc, state.cursor);
   if (bareBreakLine(line, doc)) return deleteBareLine(state, line);
   if (/^[ \t]+$/.test(line.text)) return deleteBareLine(state, line);
+  // An empty CRLF line has a CR before its LF, so it is not a zero-width row.
+  // The enter pair under a paragraph still removes both breaks before that
+  // one-line delete.
+  const undone = paragraphEnterBackspace(doc, state.cursor);
+  if (undone) return snapBreak(applySplice(state, undone.from, undone.to, "", undone.caret));
   if (line.text === "" && line.end > line.start) return deleteBareLine(state, line);
   const atom = renderedAtomAt(doc, state.cursor, (item) => state.cursor > item.start && state.cursor <= item.end);
   if (atom) return applySplice(state, atom.start, atom.end, "", atom.start);
@@ -3399,8 +3446,6 @@ export function backspace(state) {
       return snapBreak(applySplice(state, brk.from, brk.to, "", brk.caret));
     }
   }
-  const undone = paragraphEnterBackspace(doc, state.cursor);
-  if (undone) return snapBreak(applySplice(state, undone.from, undone.to, "", undone.caret));
   const pad = paragraphPadBackspace(doc, state.cursor);
   if (pad) return snapBreak(applySplice(state, pad.from, pad.to, "", pad.caret));
   const from = state.cursor > 1 && state.doc[state.cursor - 1] === "\n" && state.doc[state.cursor - 2] === "\r" ? state.cursor - 2 : state.cursor - 1;

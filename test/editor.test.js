@@ -2382,48 +2382,193 @@ test("DL.pad.2", () => {
   assert.equal(kept.anchor, 4);
 });
 
-test("EB.p.3", () => {
-  const enter = (doc, cursor) => {
-    const base = createState(doc, cursor);
-    const brk = enterInsert(base.doc, base.cursor);
-    return typeof brk.anchor === "number"
-      ? insert({ ...base, anchor: brk.anchor, cursor: brk.cursor }, brk.text)
-      : insert(base, brk.text);
-  };
-  const end = enter("hello\n", 5);
+function enterAt(doc, cursor) {
+  const base = createState(doc, cursor);
+  const brk = enterInsert(base.doc, base.cursor);
+  const next = typeof brk.anchor === "number"
+    ? insert({ ...base, anchor: brk.anchor, cursor: brk.cursor }, brk.text)
+    : insert(base, brk.text);
+  if (typeof brk.caret === "number") return { ...next, cursor: brk.caret, anchor: brk.caret };
+  return next;
+}
+
+test("deleteEmptyForward", () => {
+  const next = deleteForward(createState("one\n\ntwo", 4));
+  assert.equal(next.doc, "one\ntwo");
+  assert.equal(next.cursor, 4);
+  assert.equal(next.anchor, 4);
+  const viaBack = backspace(createState("one\n\ntwo", 4));
+  assert.equal(viaBack.doc, "one\ntwo");
+  assert.equal(viaBack.cursor, 3);
+  assert.equal(viaBack.anchor, 3);
+});
+
+test("EB.p.1", () => {
+  const end = enterAt("hello\n", 5);
   assert.equal(end.doc, "hello\n\n\n");
   assert.equal(end.cursor, 7);
   const back = backspace(end);
   assert.equal(back.doc, "hello\n");
   assert.equal(back.cursor, 5);
   assert.equal(back.anchor, 5);
-  const bare = enter("hello", 5);
-  assert.equal(bare.doc, "hello\n\n");
-  assert.equal(bare.cursor, 7);
-  const bareBack = backspace(bare);
-  assert.equal(bareBack.doc, "hello\n");
-  assert.equal(bareBack.cursor, 5);
-  assert.equal(bareBack.anchor, 5);
-  const gap = enter("hello\n\nworld\n", 5);
+  const returned = backspace(createState(end.doc, end.cursor));
+  assert.equal(returned.doc, "hello\n");
+  assert.equal(returned.cursor, 5);
+  const gap = enterAt("hello\n\nworld\n", 5);
   assert.equal(gap.doc, "hello\n\n\n\nworld\n");
   assert.equal(gap.cursor, 7);
   const gapBack = backspace(gap);
   assert.equal(gapBack.doc, "hello\n\nworld\n");
   assert.equal(gapBack.cursor, 5);
   assert.equal(gapBack.anchor, 5);
-  const returned = backspace(createState(gap.doc, gap.cursor));
-  assert.equal(returned.doc, "hello\n\nworld\n");
+  const crlf = enterAt("hello\r\n", 5);
+  assert.equal(crlf.doc, "hello\r\n\r\n\r\n");
+  assert.equal(crlf.cursor, 9);
+  const crlfBack = backspace(crlf);
+  assert.equal(crlfBack.doc, "hello\r\n");
+  assert.equal(crlfBack.cursor, 5);
+  assert.equal(crlfBack.anchor, 5);
+});
+
+test("EB.p.2", () => {
+  const back = backspace(backspace(enterAt("hello\n", 5)));
+  assert.equal(back.doc, "hell\n");
+  assert.equal(back.cursor, 4);
+  assert.equal(back.anchor, 4);
+});
+
+test("EB.p.3", () => {
+  const end = enterAt("hello\n", 2);
+  assert.equal(end.doc, "he\n\nllo\n");
+  assert.equal(end.cursor, 4);
+  const back = backspace(end);
+  assert.equal(back.doc, "hello\n");
+  assert.equal(back.cursor, 2);
+  assert.equal(back.anchor, 2);
+  const returned = backspace(createState(end.doc, end.cursor));
+  assert.equal(returned.doc, "hello\n");
+  assert.equal(returned.cursor, 2);
+});
+
+test("EB.p.4", () => {
+  const back = backspace(backspace(enterAt("hello\n", 2)));
+  assert.equal(back.doc, "hllo\n");
+  assert.equal(back.cursor, 1);
+  assert.equal(back.anchor, 1);
+});
+
+test("EB.p.5", () => {
+  const end = enterAt("hello\n", 5);
+  const back = backspace(createState(end.doc, end.cursor));
+  assert.equal(back.doc, "hello\n");
+  assert.equal(back.cursor, 5);
+  assert.equal(back.anchor, 5);
+});
+
+test("EB.p.6", () => {
+  const typed = insert(enterAt("hello\n", 5), "x");
+  assert.equal(typed.doc, "hello\n\nx\n");
+  assert.equal(typed.cursor, 8);
+  const back = backspace(backspace(typed));
+  assert.equal(back.doc, "hello\n");
+  assert.equal(back.cursor, 5);
+  assert.equal(back.anchor, 5);
+});
+
+test("EB.p.7", () => {
+  const back = backspace(createState("one\n\n\n", 5));
+  assert.equal(back.doc, "one\n");
+  assert.equal(back.cursor, 3);
+  assert.equal(back.anchor, 3);
+});
+
+test("EF.3", () => {
+  const end = enterAt("hello", 5);
+  assert.equal(end.doc, "hello\n\n");
+  assert.equal(end.cursor, 7);
+  const back = backspace(end);
+  assert.equal(back.doc, "hello");
+  assert.equal(back.cursor, 5);
+  assert.equal(back.anchor, 5);
+  const returned = backspace(createState(end.doc, end.cursor));
+  assert.equal(returned.doc, "hello");
   assert.equal(returned.cursor, 5);
-  const item = enter("- item\n", 6);
+});
+
+test("EF.4", () => {
+  const back = backspace(backspace(enterAt("hello", 5)));
+  assert.equal(back.doc, "hell");
+  assert.equal(back.cursor, 4);
+  assert.equal(back.anchor, 4);
+});
+
+test("EF.9", () => {
+  const once = enterAt("- a", 3);
+  assert.equal(once.doc, "- a\n- ");
+  assert.equal(once.cursor, 6);
+  const twice = enterAt(once.doc, once.cursor);
+  assert.equal(twice.doc, "- a\n\n");
+  assert.equal(twice.cursor, 5);
+  const back = backspace(twice);
+  assert.equal(back.doc, "- a");
+  assert.equal(back.cursor, 3);
+  assert.equal(back.anchor, 3);
+  const returned = backspace(createState(twice.doc, twice.cursor));
+  assert.equal(returned.doc, "- a");
+  assert.equal(returned.cursor, 3);
+  const opened = enterAt("- a\n", 3);
+  const trailed = enterAt(opened.doc, opened.cursor);
+  assert.equal(trailed.doc, "- a\n\n\n");
+  const trailedBack = backspace(trailed);
+  assert.equal(trailedBack.doc, "- a\n");
+  assert.equal(trailedBack.cursor, 3);
+  assert.equal(trailedBack.anchor, 3);
+  const item = enterAt("- item\n", 6);
   assert.equal(item.doc, "- item\n- \n");
   const itemBack = backspace(item);
   assert.equal(itemBack.doc, "- item\n\n");
   assert.equal(itemBack.cursor, 7);
-  const quote = enter("> quote\n", 7);
+  assert.equal(itemBack.anchor, 7);
+  const ordered = enterAt("1. alpha\n", 8);
+  const orderedBack = backspace(ordered);
+  assert.equal(orderedBack.doc, "1. alpha\n\n");
+  assert.equal(orderedBack.cursor, 9);
+});
+
+test("EB.qc.1", () => {
+  const end = enterAt("> alpha\nbeta\n", 12);
+  assert.equal(end.doc, "> alpha\nbeta\n> \n");
+  assert.equal(end.cursor, 15);
+  const back = backspace(end);
+  assert.equal(back.doc, "> alpha\nbeta\n");
+  assert.equal(back.cursor, 12);
+  assert.equal(back.anchor, 12);
+  const returned = backspace(createState(end.doc, end.cursor));
+  assert.equal(returned.doc, "> alpha\nbeta\n");
+  assert.equal(returned.cursor, 12);
+  const bare = enterAt("> alpha\nbeta", 12);
+  assert.equal(bare.doc, "> alpha\nbeta\n> ");
+  assert.equal(bare.cursor, 15);
+  const bareBack = backspace(bare);
+  assert.equal(bareBack.doc, "> alpha\nbeta");
+  assert.equal(bareBack.cursor, 12);
+  assert.equal(bareBack.anchor, 12);
+  const quote = enterAt("> quote\n", 7);
   assert.equal(quote.doc, "> quote\n> \n");
   const quoteBack = backspace(quote);
   assert.equal(quoteBack.doc, "> quote\n\n");
   assert.equal(quoteBack.cursor, 8);
+  assert.equal(quoteBack.anchor, 8);
+  const plain = backspace(createState("hello\n> ", 8));
+  assert.equal(plain.doc, "hello\n");
+  assert.equal(plain.cursor, 6);
+  assert.equal(plain.anchor, 6);
+  const continued = enterAt("- a\ncont\n", 8);
+  assert.equal(continued.doc, "- a\ncont\n- \n");
+  const continuedBack = backspace(continued);
+  assert.equal(continuedBack.doc, "- a\ncont\n\n");
+  assert.equal(continuedBack.cursor, 9);
+  assert.equal(continuedBack.anchor, 9);
 });
 
 test("BS.tb.1", () => {
@@ -4299,7 +4444,6 @@ test("enter on an empty list item leaves the list", () => {
     press();
     press();
     assert.equal(show(view.getState()), "- a\n\n‸");
-    press("deleteContentBackward");
     press("deleteContentBackward");
     assert.equal(show(view.getState()), "- a‸");
     view.destroy();
