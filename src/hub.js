@@ -390,11 +390,23 @@ function shiftCaret(entry, from, to, insertedLen) {
   entry.anchorAfter = shiftOffset(entry.anchorAfter, from, to, insertedLen);
 }
 
+// Pieces of a typed run are pure inserts in current-document coordinates, so a
+// foreign insert can sit between them without poisoning the entry.
+function pureInsertEntry(entry) {
+  if (!entry || !Array.isArray(entry.changes) || entry.changes.length === 0) return false;
+  for (const change of entry.changes) {
+    if (!change || change.from !== change.to || change.removed !== "" || typeof change.inserted !== "string") return false;
+  }
+  return true;
+}
+
 // An insertion that ends at a change's from is before that change, not an overlap.
 function rebaseUndoChanges(entry, ext) {
   let eFrom = ext.from;
   let eTo = ext.to;
   const eLen = ext.inserted.length;
+  // A pure insert strictly inside this session's inserted text stays after undo.
+  const splittable = pureInsertEntry(entry) && eFrom === eTo && (ext.removed || "") === "";
   for (let i = entry.changes.length - 1; i >= 0; i -= 1) {
     const change = entry.changes[i];
     const regionEnd = change.from + change.inserted.length;
@@ -410,9 +422,34 @@ function rebaseUndoChanges(entry, ext) {
       eTo += delta;
       continue;
     }
+    if (splittable && eFrom > change.from && eFrom < regionEnd) {
+      const at = eFrom - change.from;
+      const tail = change.inserted.slice(at);
+      change.inserted = change.inserted.slice(0, at);
+      entry.changes.splice(i + 1, 0, {
+        from: eFrom + eLen,
+        to: eFrom + eLen,
+        inserted: tail,
+        removed: "",
+      });
+      continue;
+    }
     return false;
   }
   return true;
+}
+
+// The next key of a run appends at the caret this entry already leaves behind.
+function canFoldTyping(entry, changes) {
+  if (!entry || entry.poison || !Array.isArray(entry.changes) || entry.changes.length !== 1) return false;
+  if (!Array.isArray(changes) || changes.length !== 1) return false;
+  const next = changes[0];
+  const prev = entry.changes[0];
+  if (!next || !prev || typeof prev.inserted !== "string") return false;
+  if (typeof next.inserted !== "string" || next.inserted === "") return false;
+  if (next.removed !== "" || next.from !== next.to) return false;
+  const at = prev.from + prev.inserted.length;
+  return next.from === at && next.to === at;
 }
 
 function rebaseRedoChanges(entry, ext) {
@@ -2310,6 +2347,11 @@ export async function createHub(stateDir, sourceRoot) {
     const mode = msg.op === "comment.save" || msg.op === "comment.resolve" || msg.op === "comment.delete"
       ? "comment"
       : "edit";
+    // group folds after publish. The caret this entry restores stays where the run began.
+    const prior = session.undo.length > 0 ? session.undo[session.undo.length - 1] : null;
+    const folding = msg.group === true && msg.op === "insert" && canFoldTyping(prior, changes);
+    const keptCursor = prior ? prior.cursor : 0;
+    const keptAnchor = prior ? prior.anchor : 0;
     const wrote = await publish(
       socket,
       file,
@@ -2325,7 +2367,15 @@ export async function createHub(stateDir, sourceRoot) {
       return failHeld(socket, wrote);
     }
     session.redo = [];
-    pushCap(session.undo, entry);
+    if (folding && prior && !prior.poison) {
+      prior.changes[0].inserted += changes[0].inserted;
+      prior.cursor = keptCursor;
+      prior.anchor = keptAnchor;
+      prior.cursorAfter = produced.cursor;
+      prior.anchorAfter = produced.anchor;
+    } else {
+      pushCap(session.undo, entry);
+    }
   }
 
   async function onHistory(socket, msg, direction) {

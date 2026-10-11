@@ -2205,6 +2205,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // the rev, so the next op goes at once. Silence reopens; the file brings
   // the caret and only then does the queue move.
   const pendingEdits = [];
+  // This page's typing run. The hub still publishes each key; only undo groups.
+  let typingRun = null;
   let editTimer = null;
   let refusalTimer = null;
   // The refused edit stays marked for one second. render builds new nodes, so the mark is applied there.
@@ -2383,6 +2385,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     pendingEdits.length = 0;
     resumeAfterFile = false;
     clearEditTimer();
+    typingRun = null;
   }
 
   function clearEditTimer() {
@@ -2422,15 +2425,88 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
+  // An end marker stays behind keys already queued, so those keys still join the run.
+  function endTypingRunLater() {
+    if (editHeld() || pendingEdits.length > 0) pendingEdits.push({ endRun: true });
+    else typingRun = null;
+  }
+
+  function drainEndRuns() {
+    while (!editHeld() && pendingEdits.length > 0 && pendingEdits[0].endRun) {
+      pendingEdits.shift();
+      typingRun = null;
+    }
+  }
+
+  function typedText(data) {
+    return typeof data === "string" && data.length > 0 && !/[\n\r\t]/.test(data);
+  }
+
+  function emitTyping(partial) {
+    emitEdit({ ...partial, typing: true, typedAt: Date.now() });
+  }
+
+  // Shift alone is not the end of a run. A letter typed with Shift still belongs to it.
+  function keyEndsRun(event) {
+    if (!event || composing || event.isComposing) return false;
+    const key = event.key;
+    if (typeof key !== "string") return false;
+    if (key === "Dead" || key === "Process" || key === "Unidentified") return false;
+    if (key === "Control" || key === "Meta" || key === "Alt" || key === "Shift") return false;
+    if (event.ctrlKey || event.metaKey || event.altKey) return true;
+    if (key.length === 1) return false;
+    return true;
+  }
+
+  // Another session's edit in one of these blocks ends the run. Own docs do not.
+  function changeHits(doc, message, blocks) {
+    const set = new Set(blocks);
+    const list = Array.isArray(message.changes) && message.changes.length > 0
+      ? message.changes
+      : (Number.isFinite(message.from) && Number.isFinite(message.to)
+        ? [{ from: message.from, to: message.to, inserted: message.inserted }]
+        : null);
+    if (!list) return true;
+    let text = typeof doc === "string" ? doc : "";
+    for (const change of list) {
+      const from = Number(change.from);
+      const to = Number(change.to);
+      if (!Number.isFinite(from) || !Number.isFinite(to)) return true;
+      const lo = Math.max(0, Math.min(from, to, text.length));
+      const hi = Math.max(0, Math.min(Math.max(from, to), text.length));
+      const start = lockIndexAt(text, lo);
+      const end = lockIndexAt(text, hi);
+      for (let i = Math.min(start, end); i <= Math.max(start, end); i += 1) {
+        if (set.has(i)) return true;
+      }
+      const inserted = typeof change.inserted === "string" ? change.inserted : "";
+      if (from >= 0 && to >= from && to <= text.length) text = text.slice(0, from) + inserted + text.slice(to);
+    }
+    return false;
+  }
+
   function sendEdit(partial) {
-    if (partial.op === "comment.add" || partial.op === "comment.delete" || partial.op === "comment.resolve") {
+    const body = { ...partial };
+    const typing = body.typing === true;
+    const typedAt = body.typedAt;
+    delete body.typing;
+    delete body.typedAt;
+    if (typing) {
+      const join = !!(typingRun && Number.isFinite(typedAt) && typedAt - typingRun.at <= 1000);
+      if (join) body.group = true;
+      typingRun = {
+        at: Number.isFinite(typedAt) ? typedAt : Date.now(),
+        blocks: lineSet(state.anchor, state.cursor),
+      };
+    }
+    if (body.op === "comment.add" || body.op === "comment.delete" || body.op === "comment.resolve") {
       lockThroughEnd();
     }
     const message = {
       type: "edit",
       anchor: state.anchor,
       cursor: state.cursor,
-      ...partial,
+      ...body,
     };
     // The hub's insert refuses a splice that cuts a comment mark. Raw mode
     // draws that mark, so the key is stored as typed.
@@ -2439,10 +2515,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function emitEdit(partial) {
+    if (!partial || partial.typing !== true) endTypingRunLater();
     if (boundaryNoop(partial)) return;
     goalX = null;
     rawColumn = null;
     if (!live) return;
+    if (!editHeld()) drainEndRuns();
     if (editHeld()) {
       pendingEdits.push({ edit: partial });
       return;
@@ -2451,8 +2529,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function emitHistory(type) {
+    endTypingRunLater();
     if (!live) return;
-    if (editHeld()) {
+    if (!editHeld()) drainEndRuns();
+    if (editHeld() || pendingEdits.length > 0) {
       pendingEdits.push({ history: type });
       return;
     }
@@ -2460,10 +2540,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function flushPendingEdit() {
+    if (editHeld()) return;
+    drainEndRuns();
     if (editHeld() || pendingEdits.length === 0) return;
     const next = pendingEdits.shift();
     if (next.history) emit({ type: next.history });
-    else sendEdit(next.edit);
+    else if (next.edit) sendEdit(next.edit);
   }
 
   function restoreGrantedCaret() {
@@ -3017,6 +3099,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onSave(box) {
+    endTypingRunLater();
     const id = box.dataset.comment;
     const thread = threadById(id);
     if (!thread) return;
@@ -3038,6 +3121,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onCancel(box) {
+    endTypingRunLater();
     const id = box.dataset.comment;
     const index = Number(box.dataset.note);
     if (box.dataset.fresh === "true") {
@@ -3064,6 +3148,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onReply(id) {
+    endTypingRunLater();
     if (!replyDrafts.has(id)) replyDrafts.set(id, "");
     const thread = threadById(id);
     const noteId = thread ? nextNoteId(parseCommentNotes(thread.body)) : 0;
@@ -3073,6 +3158,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onDelete(id) {
+    endTypingRunLater();
     unsavedThreads.delete(id);
     replyDrafts.delete(id);
     if (currentCommentId === id) currentCommentId = null;
@@ -3083,6 +3169,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onResolve(id) {
+    endTypingRunLater();
     const thread = threadById(id);
     if (!thread) return;
     currentCommentId = id;
@@ -4232,6 +4319,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function toggleSourceMode() {
+    endTypingRunLater();
     sourceMode = !sourceMode;
     rawColumn = null;
     goalX = null;
@@ -5072,6 +5160,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       clearEditTimer();
       if (waitingForFile) {
         keptCaret = null;
+        typingRun = null;
         return;
       }
       const nextRev = Number(message.rev);
@@ -5094,7 +5183,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         }
       }
     }
+    if (message.type === "file") typingRun = null;
+    else if (message.type === "doc" && typingRun && !ownActor(message) && changeHits(state.doc, message, typingRun.blocks)) {
+      typingRun = null;
+    }
     if (message.type === "doc" || message.type === "file") applySnapshot(message);
+    if (message.type === "doc" && typingRun) typingRun.blocks = lineSet(state.anchor, state.cursor);
     if (message.type === "file") syncFileTicket(message);
     if (message.type === "file" && resumeAfterFile) {
       resumeAfterFile = false;
@@ -5140,6 +5234,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function consumePaste(text, data) {
+    endTypingRunLater();
     if (pasteSeen) return;
     const files = fileListOf(data);
     if (files.length > 0) {
@@ -5391,7 +5486,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         emitEdit({ op: "insert", text: fileBreak(state.doc) });
         return true;
       }
-      if (event.data && event.data !== composed) emitEdit({ op: "insert", text: event.data });
+      if (event.data && event.data !== composed) {
+        if (typedText(event.data)) emitTyping({ op: "insert", text: event.data });
+        else emitEdit({ op: "insert", text: event.data });
+      }
       return true;
     }
     if (type === "insertParagraph" || type === "insertLineBreak") {
@@ -5653,7 +5751,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         emitBreak();
         return;
       }
-      if (event.data && event.data !== composed) emitEdit({ op: "insert", text: event.data });
+      if (event.data && event.data !== composed) {
+        if (typedText(event.data)) emitTyping({ op: "insert", text: event.data });
+        else emitEdit({ op: "insert", text: event.data });
+      }
       return;
     }
     if (type === "insertCompositionText" || type === "insertFromComposition") return;
@@ -5743,6 +5844,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   });
 
   listen("cut", (event) => {
+    endTypingRunLater();
     event.preventDefault();
     if (!adoptDomSelection()) return;
     const text = selectedSlice(state);
@@ -5765,13 +5867,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     composing = false;
     composed = event.data || "";
     if (origin) state = { ...state, anchor: origin.anchor, cursor: origin.cursor };
-    if (composed && claimLines(state.anchor, state.cursor)) emitEdit({ op: "insert", text: composed });
+    if (composed && claimLines(state.anchor, state.cursor)) {
+      if (typedText(composed)) emitTyping({ op: "insert", text: composed });
+      else emitEdit({ op: "insert", text: composed });
+    }
     queueMicrotask(() => {
       composed = "";
     });
   });
 
   listen("keydown", (event) => {
+    if (keyEndsRun(event)) endTypingRunLater();
     gestureHold = false;
     commentFocus = null;
     if (sourceMode && event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.metaKey) {
@@ -5904,6 +6010,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   listen("mousedown", (event) => {
+    endTypingRunLater();
     if (beginHandleDrag(event)) return;
     didDrag = false;
     goalX = null;

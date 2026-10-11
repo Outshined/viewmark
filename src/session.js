@@ -72,6 +72,16 @@ export function createMemoryTransport(doc, cursor = 0) {
     return typeof transport.username === "string" ? transport.username : "";
   }
 
+  // group is one undo step for a run. The snapshot insert just pushed is the key, so it goes.
+  function continuesTyping(before, after) {
+    if (!after || after === before) return false;
+    if (before.anchor !== before.cursor || after.anchor !== after.cursor) return false;
+    if (after.cursor < before.cursor) return false;
+    const inserted = after.doc.slice(before.cursor, after.cursor);
+    if (inserted === "") return false;
+    return before.doc.slice(0, before.cursor) + inserted + before.doc.slice(before.cursor) === after.doc;
+  }
+
   function writeComment(message) {
     if (typeof message.text !== "string" || typeof message.id !== "string") return;
     const thread = commentThreads(state.doc).find((item) => item.id === message.id);
@@ -158,6 +168,9 @@ export function createMemoryTransport(doc, cursor = 0) {
       if (next === base) {
         deliverNoop(message);
         return;
+      }
+      if (message.op === "insert" && message.group === true && continuesTyping(base, next)) {
+        next = { ...next, undo: base.undo, redo: [] };
       }
       const oldLength = base.doc.length;
       state = next;

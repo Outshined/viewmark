@@ -4713,6 +4713,269 @@ test("picture: deleting the document or the ticket removes the directory", async
   });
 });
 
+test("UR.1", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), "alpha\n");
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    try {
+      let rev = (await openDoc(a, "A", "a.md")).rev;
+      await openDoc(b, "B", "a.md");
+      await syncLock(a, [b], "A", "a.md", 5, rev);
+      a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "x", anchor: 5, cursor: 5 });
+      let doc = await takeDoc(a);
+      let seen = await takeDoc(b);
+      rev = doc.rev;
+      assert.equal(doc.text, "alphax\n");
+      assert.equal(seen.text, "alphax\n");
+      a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "y", anchor: 6, cursor: 6, group: true });
+      doc = await takeDoc(a);
+      seen = await takeDoc(b);
+      rev = doc.rev;
+      assert.equal(doc.text, "alphaxy\n");
+      assert.equal(seen.text, "alphaxy\n");
+      assert.equal(doc.cursor, 7);
+      a.send({ type: "undo", username: "A", path: "a.md", rev });
+      doc = await takeDoc(a);
+      seen = await takeDoc(b);
+      rev = doc.rev;
+      assert.equal(doc.text, "alpha\n");
+      assert.equal(doc.cursor, 5);
+      assert.equal(doc.anchor, 5);
+      assert.equal(seen.text, "alpha\n");
+      a.send({ type: "undo", username: "A", path: "a.md", rev });
+      assert.equal((await a.next((msg) => msg.type === "noop" || msg.type === "error" || msg.type === "doc")).type, "noop");
+      assert.equal(await readDoc(dir, "a.md"), "alpha\n");
+    } finally {
+      a.ws.close();
+      b.ws.close();
+    }
+  });
+});
+
+test("UR.g.1", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), "alpha\n");
+    const a = await hello(port, "A");
+    try {
+      let rev = (await openDoc(a, "A", "a.md")).rev;
+      await syncLock(a, [], "A", "a.md", 5, rev);
+      for (const text of ["x", "y", "z"]) {
+        const cursor = "alpha".length + (text === "x" ? 0 : text === "y" ? 1 : 2);
+        a.send({
+          type: "edit",
+          username: "A",
+          path: "a.md",
+          rev,
+          op: "insert",
+          text,
+          anchor: cursor,
+          cursor,
+          ...(text === "x" ? {} : { group: true }),
+        });
+        const doc = await takeDoc(a);
+        rev = doc.rev;
+      }
+      a.send({ type: "undo", username: "A", path: "a.md", rev });
+      const doc = await takeDoc(a);
+      assert.equal(doc.text, "alpha\n");
+      assert.equal(doc.cursor, 5);
+      assert.equal(doc.anchor, 5);
+      assert.equal(await readDoc(dir, "a.md"), "alpha\n");
+    } finally {
+      a.ws.close();
+    }
+  });
+});
+
+test("UR.g.4", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), "alpha\n");
+    const a = await hello(port, "A");
+    try {
+      let rev = (await openDoc(a, "A", "a.md")).rev;
+      await syncLock(a, [], "A", "a.md", 5, rev);
+      for (const text of ["x", "y", "z"]) {
+        const cursor = 5 + (text === "x" ? 0 : text === "y" ? 1 : 2);
+        a.send({
+          type: "edit",
+          username: "A",
+          path: "a.md",
+          rev,
+          op: "insert",
+          text,
+          anchor: cursor,
+          cursor,
+          ...(text === "x" ? {} : { group: true }),
+        });
+        rev = (await takeDoc(a)).rev;
+      }
+      a.send({ type: "undo", username: "A", path: "a.md", rev });
+      let doc = await takeDoc(a);
+      rev = doc.rev;
+      assert.equal(doc.text, "alpha\n");
+      a.send({ type: "redo", username: "A", path: "a.md", rev });
+      doc = await takeDoc(a);
+      assert.equal(doc.text, "alphaxyz\n");
+      assert.equal(doc.cursor, 8);
+      assert.equal(doc.anchor, 8);
+      assert.equal(await readDoc(dir, "a.md"), "alphaxyz\n");
+    } finally {
+      a.ws.close();
+    }
+  });
+});
+
+test("UR.g.5", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), "alpha\n");
+    const a = await hello(port, "A");
+    try {
+      let rev = (await openDoc(a, "A", "a.md")).rev;
+      await syncLock(a, [], "A", "a.md", 2, rev, 4);
+      a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "x", anchor: 2, cursor: 4 });
+      let doc = await takeDoc(a);
+      rev = doc.rev;
+      assert.equal(doc.text, "alxa\n");
+      a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "y", anchor: 3, cursor: 3, group: true });
+      doc = await takeDoc(a);
+      rev = doc.rev;
+      assert.equal(doc.text, "alxya\n");
+      assert.equal(doc.cursor, 4);
+      a.send({ type: "undo", username: "A", path: "a.md", rev });
+      doc = await takeDoc(a);
+      rev = doc.rev;
+      assert.equal(doc.text, "alpha\n");
+      assert.equal(doc.anchor, 2);
+      assert.equal(doc.cursor, 4);
+      a.send({ type: "redo", username: "A", path: "a.md", rev });
+      doc = await takeDoc(a);
+      assert.equal(doc.text, "alxya\n");
+      assert.equal(doc.cursor, 4);
+      assert.equal(doc.anchor, 4);
+      assert.equal(await readDoc(dir, "a.md"), "alxya\n");
+    } finally {
+      a.ws.close();
+    }
+  });
+});
+
+test("UR.g a grouped insert that is not an append stays its own step", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), "alpha\n");
+    const a = await hello(port, "A");
+    try {
+      let rev = (await openDoc(a, "A", "a.md")).rev;
+      await syncLock(a, [], "A", "a.md", 5, rev);
+      a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "x", anchor: 5, cursor: 5 });
+      let doc = await takeDoc(a);
+      rev = doc.rev;
+      a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "y", anchor: 0, cursor: 0, group: true });
+      doc = await takeDoc(a);
+      rev = doc.rev;
+      assert.equal(doc.text, "yalphax\n");
+      a.send({ type: "undo", username: "A", path: "a.md", rev });
+      doc = await takeDoc(a);
+      rev = doc.rev;
+      assert.equal(doc.text, "alphax\n");
+      a.send({ type: "undo", username: "A", path: "a.md", rev });
+      doc = await takeDoc(a);
+      assert.equal(doc.text, "alpha\n");
+      assert.equal(await readDoc(dir, "a.md"), "alpha\n");
+    } finally {
+      a.ws.close();
+    }
+  });
+});
+
+test("UR.g text another session wrote inside the run stays", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), "alpha\n\nbeta\n");
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    try {
+      let rev = (await openDoc(a, "A", "a.md")).rev;
+      await openDoc(b, "B", "a.md");
+      await syncLock(a, [b], "A", "a.md", 5, rev);
+      a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "x", anchor: 5, cursor: 5 });
+      let doc = await takeDoc(a);
+      await takeDoc(b);
+      rev = doc.rev;
+      a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "y", anchor: 6, cursor: 6, group: true });
+      doc = await takeDoc(a);
+      await takeDoc(b);
+      rev = doc.rev;
+      assert.equal(doc.text, "alphaxy\n\nbeta\n");
+      const gap = doc.text.indexOf("\n\n") + 1;
+      await syncLock(a, [b], "A", "a.md", gap, rev);
+      await syncLock(b, [a], "B", "a.md", 0, rev);
+      b.send({ type: "edit", username: "B", path: "a.md", rev, op: "insert", text: "Z", anchor: 0, cursor: 0 });
+      doc = await takeDoc(b);
+      await takeDoc(a);
+      rev = doc.rev;
+      assert.equal(doc.text, "Zalphaxy\n\nbeta\n");
+      await syncLock(b, [a], "B", "a.md", doc.text.indexOf("beta"), rev);
+      a.send({ type: "undo", username: "A", path: "a.md", rev });
+      doc = await takeDoc(a);
+      await takeDoc(b);
+      assert.equal(doc.text, "Zalpha\n\nbeta\n");
+      assert.equal(doc.cursor, 6);
+      assert.equal(doc.anchor, 6);
+      assert.equal(await readDoc(dir, "a.md"), doc.text);
+    } finally {
+      a.ws.close();
+      b.ws.close();
+    }
+  });
+});
+
+test("UR.g text another session inserted between typed characters stays", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), "alpha\n\nbeta\n");
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    try {
+      let rev = (await openDoc(a, "A", "a.md")).rev;
+      await openDoc(b, "B", "a.md");
+      await syncLock(a, [b], "A", "a.md", 5, rev);
+      a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "x", anchor: 5, cursor: 5 });
+      let doc = await takeDoc(a);
+      await takeDoc(b);
+      rev = doc.rev;
+      a.send({ type: "edit", username: "A", path: "a.md", rev, op: "insert", text: "y", anchor: 6, cursor: 6, group: true });
+      doc = await takeDoc(a);
+      await takeDoc(b);
+      rev = doc.rev;
+      const gap = doc.text.indexOf("\n\n") + 1;
+      await syncLock(a, [b], "A", "a.md", gap, rev);
+      await syncLock(b, [a], "B", "a.md", 6, rev);
+      b.send({ type: "edit", username: "B", path: "a.md", rev, op: "insert", text: "Z", anchor: 6, cursor: 6 });
+      doc = await takeDoc(b);
+      await takeDoc(a);
+      rev = doc.rev;
+      assert.equal(doc.text, "alphaxZy\n\nbeta\n");
+      await syncLock(b, [a], "B", "a.md", doc.text.indexOf("beta"), rev);
+      a.send({ type: "undo", username: "A", path: "a.md", rev });
+      doc = await takeDoc(a);
+      await takeDoc(b);
+      rev = doc.rev;
+      assert.equal(doc.text, "alphaZ\n\nbeta\n");
+      assert.equal(doc.cursor, 5);
+      assert.equal(doc.anchor, 5);
+      a.send({ type: "redo", username: "A", path: "a.md", rev });
+      doc = await takeDoc(a);
+      await takeDoc(b);
+      assert.equal(doc.text, "alphaxZy\n\nbeta\n");
+      assert.equal(doc.cursor, 8);
+      assert.equal(doc.anchor, 8);
+      assert.equal(await readDoc(dir, "a.md"), doc.text);
+    } finally {
+      a.ws.close();
+      b.ws.close();
+    }
+  });
+});
+
 test("picture: a comment note stays text", async () => {
   await withDocs(async ({ port, dir }) => {
     const note = "Hello\n\n```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nA note.\n```\n";

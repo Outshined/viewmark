@@ -14451,3 +14451,337 @@ test("raw mode keeps a caret inside a comment marker", () => {
     mounted.restore();
   }
 });
+
+function undoKey(mounted, shift = false) {
+  keyDown(mounted, "z", { ctrlKey: true, shiftKey: shift });
+}
+
+test("UR.1", () => {
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, "alpha\n", 5);
+    input(mounted, "insertText", "x");
+    input(mounted, "insertText", "y");
+    assert.equal(view.getState().doc, "alphaxy\n");
+    assert.equal(view.getState().cursor, 7);
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alpha\n");
+    assert.equal(view.getState().cursor, 5);
+    assert.equal(view.getState().anchor, 5);
+    input(mounted, "insertText", " ");
+    input(mounted, "insertText", "q");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alpha\n");
+    assert.equal(view.getState().cursor, 5);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("UR.g.1", () => {
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, "alpha\n", 5);
+    input(mounted, "insertText", "x");
+    input(mounted, "insertText", "y");
+    input(mounted, "insertText", "z");
+    assert.equal(view.getState().doc, "alphaxyz\n");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alpha\n");
+    assert.equal(view.getState().cursor, 5);
+    assert.equal(view.getState().anchor, 5);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("UR.g.2", () => {
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, "alpha\n", 2);
+    input(mounted, "insertText", "x");
+    input(mounted, "insertText", "y");
+    const afterRun = view.getState().doc;
+    keyDown(mounted, "ArrowLeft");
+    const caret = view.getState().cursor;
+    const anchor = view.getState().anchor;
+    input(mounted, "insertText", "z");
+    assert.notEqual(view.getState().doc, afterRun);
+    undoKey(mounted);
+    assert.equal(view.getState().doc, afterRun);
+    assert.equal(view.getState().cursor, caret);
+    assert.equal(view.getState().anchor, anchor);
+    assert.equal(afterRun, "alxypha\n");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("UR.g.3", () => {
+  const mounted = mountEditor();
+  const now = Date.now;
+  let clock = 1_000_000;
+  Date.now = () => clock;
+  try {
+    const view = createEditor(mounted.root, "alpha\n", 5);
+    input(mounted, "insertText", "x");
+    clock += 1500;
+    input(mounted, "insertText", "y");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alphax\n");
+    assert.equal(view.getState().cursor, 6);
+    assert.equal(view.getState().anchor, 6);
+    clock += 1000;
+    input(mounted, "insertText", "y");
+    clock += 1000;
+    input(mounted, "insertText", "z");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alphax\n");
+    assert.equal(view.getState().cursor, 6);
+    view.destroy();
+  } finally {
+    Date.now = now;
+    mounted.restore();
+  }
+});
+
+test("UR.g.4", () => {
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, "alpha\n", 5);
+    input(mounted, "insertText", "x");
+    input(mounted, "insertText", "y");
+    input(mounted, "insertText", "z");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alpha\n");
+    undoKey(mounted, true);
+    assert.equal(view.getState().doc, "alphaxyz\n");
+    assert.equal(view.getState().cursor, 8);
+    assert.equal(view.getState().anchor, 8);
+    undoKey(mounted);
+    keyDown(mounted, "y", { ctrlKey: true });
+    assert.equal(view.getState().doc, "alphaxyz\n");
+    assert.equal(view.getState().cursor, 8);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("UR.g.5", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  try {
+    const view = createEditor(mounted.root, "alpha\n", 0);
+    const node = mounted.findAll((item) => item.nodeType === 3 && item.textContent === "alpha")[0];
+    assert.ok(node);
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: node,
+      anchorOffset: 2,
+      focusNode: node,
+      focusOffset: 4,
+      getRangeAt() {
+        return {
+          startContainer: node,
+          startOffset: 2,
+          endContainer: node,
+          endOffset: 4,
+          collapsed: false,
+          commonAncestorContainer: node.parentElement,
+        };
+      },
+    });
+    input(mounted, "insertText", "x");
+    input(mounted, "insertText", "y");
+    assert.equal(view.getState().doc, "alxya\n");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alpha\n");
+    assert.equal(view.getState().anchor, 2);
+    assert.equal(view.getState().cursor, 4);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("UR.g.6", () => {
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, "alpha\n", 5);
+    input(mounted, "insertText", "x");
+    input(mounted, "insertText", "y");
+    keyDown(mounted, "Backspace");
+    input(mounted, "deleteContentBackward");
+    const after = {
+      doc: view.getState().doc,
+      cursor: view.getState().cursor,
+      anchor: view.getState().anchor,
+    };
+    input(mounted, "insertText", "z");
+    assert.notEqual(view.getState().doc, after.doc);
+    undoKey(mounted);
+    assert.equal(view.getState().doc, after.doc);
+    assert.equal(view.getState().cursor, after.cursor);
+    assert.equal(view.getState().anchor, after.anchor);
+    assert.equal(after.doc, "alphax\n");
+    assert.equal(after.cursor, 6);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a click, a pause boundary, and Ctrl+Z end a typing run", () => {
+  const mounted = mountEditor();
+  const now = Date.now;
+  let clock = 5_000;
+  Date.now = () => clock;
+  try {
+    const view = createEditor(mounted.root, "alpha\n", 5);
+    input(mounted, "insertText", "x");
+    mounted.listeners.mousedown({ clientX: 1, clientY: 1, button: 0, detail: 1 });
+    input(mounted, "insertText", "y");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alphax\n");
+    assert.equal(view.getState().cursor, 6);
+    input(mounted, "insertText", "y");
+    keyDown(mounted, "Shift");
+    input(mounted, "insertText", "z");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alphax\n");
+    input(mounted, "insertText", "a");
+    input(mounted, "insertText", "b");
+    keyDown(mounted, "ArrowLeft");
+    input(mounted, "insertText", "x");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alphaxab\n");
+    input(mounted, "insertText", "z");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alphaxab\n");
+    clock += 1000;
+    input(mounted, "insertText", "q");
+    clock += 1000;
+    input(mounted, "insertText", "r");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alphaxab\n");
+    view.destroy();
+  } finally {
+    Date.now = now;
+    mounted.restore();
+  }
+});
+
+test("a queued character still joins the run the next key ends", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "alpha\n", 5, transport);
+    input(mounted, "insertText", "x");
+    input(mounted, "insertText", "y");
+    keyDown(mounted, "Backspace");
+    input(mounted, "deleteContentBackward");
+    const edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].text, "x");
+    assert.equal(edits[0].group, undefined);
+    assert.equal(edits[0].typing, undefined);
+    assert.equal(edits[0].typedAt, undefined);
+    transport.deliver(docMessage(1, "alphax\n", 6, "x"));
+    const next = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(next.length, 2);
+    assert.equal(next[1].text, "y");
+    assert.equal(next[1].group, true);
+    assert.equal(next[1].cursor, 6);
+    assert.equal(next[1].typing, undefined);
+    assert.equal(transport.sent.some((message) => message.type === "undo" || message.op === "backspace"), false);
+    transport.deliver(docMessage(2, "alphaxy\n", 7, "y"));
+    const after = transport.sent.filter((message) => message.op === "backspace");
+    assert.equal(after.length, 1);
+    assert.equal(view.getState().doc, "alphaxy\n");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("another session's edit in the run's block ends it", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "alpha\n\nbeta\n", 5, transport);
+    input(mounted, "insertText", "x");
+    transport.deliver({
+      type: "doc",
+      rev: 1,
+      text: "alphax\n\nbeta\n",
+      from: 5,
+      to: 5,
+      inserted: "x",
+      actor: "",
+      cursor: 6,
+      anchor: 6,
+    });
+    const beta = view.getState().doc.indexOf("beta");
+    transport.deliver({
+      type: "doc",
+      rev: 2,
+      text: "alphax\n\nQbeta\n",
+      changes: [{ from: beta, to: beta, inserted: "Q" }],
+      actor: "other",
+      cursor: beta + 1,
+      anchor: beta + 1,
+    });
+    input(mounted, "insertText", "y");
+    const joined = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(joined.at(-1).text, "y");
+    assert.equal(joined.at(-1).group, true);
+    transport.deliver({
+      type: "doc",
+      rev: 3,
+      text: "alphaxy\n\nQbeta\n",
+      from: 6,
+      to: 6,
+      inserted: "y",
+      actor: "",
+      cursor: 7,
+      anchor: 7,
+    });
+    transport.deliver({
+      type: "doc",
+      rev: 4,
+      text: "Qalphaxy\n\nQbeta\n",
+      changes: [{ from: 0, to: 0, inserted: "Q" }],
+      actor: "other",
+      cursor: 1,
+      anchor: 1,
+    });
+    input(mounted, "insertText", "z");
+    const split = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(split.at(-1).text, "z");
+    assert.equal(split.at(-1).group, undefined);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("committed composition joins the typing run", () => {
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, "alpha\n", 5);
+    input(mounted, "insertText", "x");
+    mounted.listeners.compositionstart();
+    mounted.listeners.compositionend({ data: "é" });
+    assert.equal(view.getState().doc, "alphaxé\n");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alpha\n");
+    assert.equal(view.getState().cursor, 5);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
