@@ -619,6 +619,33 @@ test("Id row: a click puts exactly the 8-character id on the clipboard, and the 
   assert.equal(await fileBytes(hub, id), before);
 });
 
+// The menu button sits at the top right of the pane, and the copy button follows the id, so a
+// wide id pushes the copy button toward it. Ids are drawn in a proportional font, so the check is
+// also made with the row's id put to eight of the widest letter an id can hold.
+test("Id row: no other control covers the copy button, at its centre or its four corners, for any id", async (t) => {
+  const { hub, page } = await setup(t);
+  const id = await makeTicket(hub, "Alpha");
+  await openTicket(page, id);
+  const covered = (text) => page.eval(`(() => {
+    const row = document.querySelector(".ticket-form .md-ticket-fact-id");
+    if (${JSON.stringify(text)}) row.firstChild.data = ${JSON.stringify(text)};
+    const copy = row.querySelector("button");
+    const r = copy.getBoundingClientRect();
+    const points = { centre: [(r.left + r.right) / 2, (r.top + r.bottom) / 2], "top left": [r.left + 2, r.top + 2], "top right": [r.right - 2, r.top + 2], "bottom left": [r.left + 2, r.bottom - 2], "bottom right": [r.right - 2, r.bottom - 2] };
+    const out = {};
+    for (const [name, [x, y]] of Object.entries(points)) {
+      const el = document.elementFromPoint(x, y);
+      if (copy.contains(el)) continue;
+      const hit = (el && el.closest && el.closest("button")) || el;
+      out[name] = !hit ? "nothing" : typeof hit.className === "string" && hit.className ? hit.className : hit.tagName;
+    }
+    return out;
+  })()`);
+  assert.deepEqual(await covered(""), {}, `with the id ${id}, another control covers the copy button`);
+  assert.deepEqual(await covered("mmmmmmmm"), {}, "with the id mmmmmmmm, another control covers the copy button");
+  assert.deepEqual(await covered("wwwwwwww"), {}, "with the id wwwwwwww, another control covers the copy button");
+});
+
 async function openDocMenu(page) {
   await page.until(() => page.eval(SHOWN("button.md-doc-menu")), "document menu button");
   const shown = `(() => { const el = document.querySelector(".md-doc-menu-panel"); return !!el && !el.hidden && el.getClientRects().length > 0; })()`;
