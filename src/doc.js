@@ -3096,20 +3096,77 @@ function deleteEmptyForward(state, line) {
 }
 
 // Enter at the end of a paragraph writes a blank line and an empty caret line.
-// Backspace on that caret line removes both breaks. The caret rests on the
-// paragraph's newline. An item, a quote, and a caret inside a paragraph do not.
+// Backspace on that caret line removes both breaks, including when the line is
+// not the last in the file and when the file has no newline after it. The caret
+// rests on the paragraph's newline. An item, a quote, and a caret inside a
+// paragraph do not.
 function paragraphEnterBackspace(doc, cursor) {
   const line = sourceLine(doc, cursor);
   if (cursor !== line.start || line.text !== "") return null;
-  if (!line.newline || line.end + 1 !== doc.length) return null;
   if (line.start === 0 || doc[line.start - 1] !== "\n") return null;
   const prev = sourceLine(doc, line.start - 1);
   if (prev.text !== "" || prev.start === 0 || doc[prev.start - 1] !== "\n") return null;
   const para = sourceLine(doc, prev.start - 1);
   if (para.text === "" || imageLine(para.text) || classify(para.text).kind !== "p") return null;
+  let to = cursor;
+  // A caret line past the last newline has no break of its own. Keep one break
+  // so the caret still rests on the paragraph's newline.
+  if (!line.newline && to > 0 && doc[to - 1] === "\n") {
+    to -= 1;
+    if (to > 0 && doc[to - 1] === "\r") to -= 1;
+  }
   const from = para.end > para.start && doc[para.end - 1] === "\r" ? para.end - 1 : para.end;
-  if (from >= cursor) return null;
+  if (from >= to) return null;
+  return { from, to, caret: from };
+}
+
+// A prose paragraph. A line that is only a hard-break marker has no text to join.
+function proseParagraph(text) {
+  if (text === "" || imageLine(text) || text.startsWith("|")) return false;
+  if (fenceOpen(text) || isFenceClose(text)) return false;
+  if (classify(text).kind !== "p") return false;
+  const hide = hardHideCount(text);
+  return hide < text.length;
+}
+
+// The paragraph above the blank line that holds offset, or null.
+function paragraphBeforeBlank(doc, offset) {
+  const blank = sourceLine(doc, offset);
+  if (blank.text !== "" || blank.start === 0 || doc[blank.start - 1] !== "\n") return null;
+  const para = sourceLine(doc, blank.start - 1);
+  if (!proseParagraph(para.text) || enclosedByFence(doc, para.start)) return null;
+  return para;
+}
+
+// Where the paragraph's visible text ends. A hidden hard break is not text.
+function joinFrom(doc, para) {
+  const cr = para.end > para.start && doc[para.end - 1] === "\r" ? 1 : 0;
+  return para.end - cr - hardHideCount(para.text);
+}
+
+// One blank line is padding between two paragraphs. Backspace at the start of
+// the next one joins the text, and so does Delete at the end of the first.
+function paragraphPadBackspace(doc, cursor) {
+  const line = sourceLine(doc, cursor);
+  if (cursor !== line.start || !proseParagraph(line.text) || enclosedByFence(doc, cursor)) return null;
+  if (line.start === 0 || doc[line.start - 1] !== "\n") return null;
+  const para = paragraphBeforeBlank(doc, line.start - 1);
+  if (!para) return null;
+  const from = joinFrom(doc, para);
+  if (from < para.start || from >= cursor) return null;
   return { from, to: cursor, caret: from };
+}
+
+function paragraphPadDelete(doc, cursor) {
+  const line = sourceLine(doc, cursor);
+  if (!line.newline || !proseParagraph(line.text) || enclosedByFence(doc, line.start)) return null;
+  const from = joinFrom(doc, line);
+  if (cursor < from || cursor > line.end) return null;
+  const blank = sourceLine(doc, line.end + 1);
+  if (blank.start !== line.end + 1 || blank.text !== "" || !blank.newline) return null;
+  const next = sourceLine(doc, blank.end + 1);
+  if (next.start !== blank.end + 1 || !proseParagraph(next.text) || enclosedByFence(doc, next.start)) return null;
+  return { from, to: next.start, caret: from };
 }
 
 // Directly after a marker, Backspace removes that marker. A nested item outdents.
@@ -3229,6 +3286,8 @@ export function backspace(state) {
   }
   const undone = paragraphEnterBackspace(doc, state.cursor);
   if (undone) return snapBreak(applySplice(state, undone.from, undone.to, "", undone.caret));
+  const pad = paragraphPadBackspace(doc, state.cursor);
+  if (pad) return snapBreak(applySplice(state, pad.from, pad.to, "", pad.caret));
   const from = state.cursor > 1 && state.doc[state.cursor - 1] === "\n" && state.doc[state.cursor - 2] === "\r" ? state.cursor - 2 : state.cursor - 1;
   return snapBreak(applySplice(state, from, state.cursor, "", from));
 }
@@ -3246,6 +3305,10 @@ export function deleteForward(state) {
   if (line.text === "" && line.newline) return deleteEmptyForward(state, line);
   if (bareBreakLine(line, doc)) return deleteBareLine(state, line);
   if (/^[ \t]+$/.test(line.text)) return deleteBareLine(state, line);
+  // A blank under this paragraph is padding. Delete at the paragraph's end
+  // joins the next paragraph, hidden tail included, the same as Backspace there.
+  const pad = paragraphPadDelete(doc, state.cursor);
+  if (pad) return snapBreak(applySplice(state, pad.from, pad.to, "", pad.caret));
   // Joining onto text would leave the hidden marker visible, so the marker
   // goes with the newline. A blank line still hides it, and only the newline goes.
   const brk = hiddenBreak(doc, line);

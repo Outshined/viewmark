@@ -1878,8 +1878,8 @@ test("backspace on the empty line Enter leaves under a paragraph restores it", (
   const split = "hello\n\n world\n";
   assert.equal(split[7], " ");
   const inside = backspace(createState(split, 7));
-  assert.equal(inside.doc, "hello\n world\n");
-  assert.equal(inside.cursor, 6);
+  assert.equal(inside.doc, "hello world\n");
+  assert.equal(inside.cursor, 5);
 });
 
 test("collapsed caret removes a blank line and keeps a joining newline", () => {
@@ -2227,6 +2227,135 @@ test("DL.hb.2", () => {
   assert.equal(next.doc, "redblue\n");
   assert.equal(next.cursor, 3);
   assert.equal(next.anchor, 3);
+});
+
+test("BS.pad.1", () => {
+  const he = backspace(createState("he\n\nllo", 4));
+  assert.equal(he.doc, "hello");
+  assert.equal(he.cursor, 2);
+  assert.equal(he.anchor, 2);
+  const one = backspace(createState("one\n\ntwo", 5));
+  assert.equal(one.doc, "onetwo");
+  assert.equal(one.cursor, 3);
+  assert.equal(one.anchor, 3);
+  const trailed = backspace(createState("one\n\ntwo\n", 5));
+  assert.equal(trailed.doc, "onetwo\n");
+  assert.equal(trailed.cursor, 3);
+  assert.equal(trailed.anchor, 3);
+  const crlf = backspace(createState("one\r\n\r\ntwo\r\n", 7));
+  assert.equal(crlf.doc, "onetwo\r\n");
+  assert.equal(crlf.cursor, 3);
+  assert.equal(crlf.anchor, 3);
+  const wide = backspace(createState("one\n\n\ntwo\n", 6));
+  assert.equal(wide.doc, "one\n\ntwo\n");
+  assert.equal(wide.cursor, 5);
+  const gap = backspace(createState("one\n\ntwo\n", 4));
+  assert.equal(gap.doc, "one\ntwo\n");
+  assert.equal(gap.cursor, 3);
+});
+
+test("BS.pad.2", () => {
+  const next = backspace(createState("red  \n\nblue", 7));
+  assert.equal(next.doc, "redblue");
+  assert.equal(next.cursor, 3);
+  assert.equal(next.anchor, 3);
+  const trailed = backspace(createState("red  \n\nblue\n", 7));
+  assert.equal(trailed.doc, "redblue\n");
+  assert.equal(trailed.cursor, 3);
+  assert.equal(trailed.anchor, 3);
+  const slash = backspace(createState("red\\\n\nblue\n", 6));
+  assert.equal(slash.doc, "redblue\n");
+  assert.equal(slash.cursor, 3);
+  assert.equal(slash.anchor, 3);
+  const kept = backspace(createState("red \n\nblue\n", 6));
+  assert.equal(kept.doc, "red blue\n");
+  assert.equal(kept.cursor, 4);
+  assert.equal(kept.anchor, 4);
+  const onBlank = backspace(createState("red  \n\ntwo\n", 6));
+  assert.equal(onBlank.doc, "red  \ntwo\n");
+  assert.equal(onBlank.cursor, 3);
+});
+
+test("DL.pad.1", () => {
+  const he = deleteForward(createState("he\n\nllo", 2));
+  assert.equal(he.doc, "hello");
+  assert.equal(he.cursor, 2);
+  assert.equal(he.anchor, 2);
+  const one = deleteForward(createState("one\n\ntwo\n", 3));
+  assert.equal(one.doc, "onetwo\n");
+  assert.equal(one.cursor, 3);
+  assert.equal(one.anchor, 3);
+  const crlf = deleteForward(createState("one\r\n\r\ntwo\r\n", 3));
+  assert.equal(crlf.doc, "onetwo\r\n");
+  assert.equal(crlf.cursor, 3);
+  assert.equal(crlf.anchor, 3);
+  const onBlank = deleteForward(createState("one\n\ntwo\n", 4));
+  assert.equal(onBlank.doc, "one\ntwo\n");
+  assert.equal(onBlank.cursor, 4);
+  assert.equal(onBlank.anchor, 4);
+});
+
+test("DL.pad.2", () => {
+  const next = deleteForward(createState("red  \n\nblue", 3));
+  assert.equal(next.doc, "redblue");
+  assert.equal(next.cursor, 3);
+  assert.equal(next.anchor, 3);
+  const atBreak = deleteForward(createState("red  \n\nblue\n", 5));
+  assert.equal(atBreak.doc, "redblue\n");
+  assert.equal(atBreak.cursor, 3);
+  assert.equal(atBreak.anchor, 3);
+  const slash = deleteForward(createState("red\\\n\nblue\n", 3));
+  assert.equal(slash.doc, "redblue\n");
+  assert.equal(slash.cursor, 3);
+  assert.equal(slash.anchor, 3);
+  const kept = deleteForward(createState("red \n\nblue\n", 4));
+  assert.equal(kept.doc, "red blue\n");
+  assert.equal(kept.cursor, 4);
+  assert.equal(kept.anchor, 4);
+});
+
+test("EB.p.3", () => {
+  const enter = (doc, cursor) => {
+    const base = createState(doc, cursor);
+    const brk = enterInsert(base.doc, base.cursor);
+    return typeof brk.anchor === "number"
+      ? insert({ ...base, anchor: brk.anchor, cursor: brk.cursor }, brk.text)
+      : insert(base, brk.text);
+  };
+  const end = enter("hello\n", 5);
+  assert.equal(end.doc, "hello\n\n\n");
+  assert.equal(end.cursor, 7);
+  const back = backspace(end);
+  assert.equal(back.doc, "hello\n");
+  assert.equal(back.cursor, 5);
+  assert.equal(back.anchor, 5);
+  const bare = enter("hello", 5);
+  assert.equal(bare.doc, "hello\n\n");
+  assert.equal(bare.cursor, 7);
+  const bareBack = backspace(bare);
+  assert.equal(bareBack.doc, "hello\n");
+  assert.equal(bareBack.cursor, 5);
+  assert.equal(bareBack.anchor, 5);
+  const gap = enter("hello\n\nworld\n", 5);
+  assert.equal(gap.doc, "hello\n\n\n\nworld\n");
+  assert.equal(gap.cursor, 7);
+  const gapBack = backspace(gap);
+  assert.equal(gapBack.doc, "hello\n\nworld\n");
+  assert.equal(gapBack.cursor, 5);
+  assert.equal(gapBack.anchor, 5);
+  const returned = backspace(createState(gap.doc, gap.cursor));
+  assert.equal(returned.doc, "hello\n\nworld\n");
+  assert.equal(returned.cursor, 5);
+  const item = enter("- item\n", 6);
+  assert.equal(item.doc, "- item\n- \n");
+  const itemBack = backspace(item);
+  assert.equal(itemBack.doc, "- item\n\n");
+  assert.equal(itemBack.cursor, 7);
+  const quote = enter("> quote\n", 7);
+  assert.equal(quote.doc, "> quote\n> \n");
+  const quoteBack = backspace(quote);
+  assert.equal(quoteBack.doc, "> quote\n\n");
+  assert.equal(quoteBack.cursor, 8);
 });
 
 test("BS.tb.1", () => {
@@ -14188,7 +14317,7 @@ test("uwtqazmt crlf newlines", () => {
   assert.equal(cr5.doc, "onetwo\r\n");
   assert.equal(cr5.cursor, 3);
   const cr6 = deleteForward(createState("one\r\n\r\ntwo\r\n", 3));
-  assert.equal(cr6.doc, "one\r\ntwo\r\n");
+  assert.equal(cr6.doc, "onetwo\r\n");
   assert.equal(cr6.cursor, 3);
 });
 
