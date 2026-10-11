@@ -88,17 +88,12 @@ test("picture: a paste inside alpha beta leaves that paragraph and draws the ima
   assert.equal(raw.type, "image/png");
   assert.ok(raw.body.equals(PNG));
 
-  const selected = await page.eval(`(() => {
-    const editor = document.getElementById("editor");
-    editor.focus();
-    const image = editor.querySelector(".md-image");
-    image.dispatchEvent(new MouseEvent("click", {
-      bubbles: true,
-      cancelable: true,
-      detail: 1,
-    }));
-    return !!editor.querySelector(".md-image.md-atom-selected");
-  })()`);
+  // A click on the picture, as a person makes it. A focus() and a synthetic click with the key
+  // right after let the focus's own selection change land after the click and collapse it.
+  const at = await page.eval(`window.__qaTarget("image")`);
+  await page.click(at.x, at.y);
+  await page.quiet();
+  const selected = await page.eval(`!!document.querySelector("#editor .md-image.md-atom-selected")`);
   assert.equal(selected, true);
   await page.key("Backspace");
   await page.quiet();
