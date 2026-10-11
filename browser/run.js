@@ -208,7 +208,7 @@ async function pointer(page, action, interval) {
     else if (["rule", "image", "diagram", "below", "bullet", "bar", "table edge"].includes(what)) at = await point(page, `window.__qaTarget(${JSON.stringify(what)})`, what);
     else if ((match = /^the (left|right) half of the joining space$/.exec(what))) at = await point(page, `window.__qaTarget("joining space", "${match[1]}")`, what);
     else if ((match = /^the (first|second|third) empty line under (`[^`]+`)$/.exec(what))) at = await point(page, `window.__qaTarget("empty line under", { word: ${JSON.stringify(quoted(match[2]))}, nth: ${["first", "second", "third"].indexOf(match[1]) + 1} })`, what);
-    else if (what === "the right half of the tab") at = await point(page, `window.__qaTarget("tab")`, what);
+    else if ((match = /^the (left|right) half of the tab$/.exec(what))) at = await point(page, `window.__qaTarget("tab", "${match[1]}")`, what);
     else throw new NotAutomated(action);
     at = await atEdge(page, at, what, edge, nth);
     await page.click(at.x, at.y, { modifiers: verb === "Shift+click" ? 8 : 0, button: verb === "middle-click" ? "middle" : "left" });

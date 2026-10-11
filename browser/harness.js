@@ -548,7 +548,7 @@ window.__qaTarget = (name, arg) => {
   if (name === "tab") {
     const found = window.__qaFindText("\t", 1);
     const r = found && window.__qaDrawnRect(found.drawn, found.from);
-    return r && { x: r.right - 1, y: (r.top + r.bottom) / 2 };
+    return r && { x: arg === "left" ? r.left + 1 : r.right - 1, y: (r.top + r.bottom) / 2 };
   }
   return null;
 };
