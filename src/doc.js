@@ -2235,6 +2235,40 @@ function bareBreakLine(line, doc) {
   return hide > 0 && hide === line.text.length;
 }
 
+// Spaces separate words, the way a person reads them, so a marker or a comma
+// stays on the word it touches. The same offsets hold in raw and rendered text.
+// Forward lands on the next word, or at the end of the last one when none follows.
+// Backward lands on this word's start, or on the word before when already there.
+export function wordStop(doc, offset, direction) {
+  const text = typeof doc === "string" ? doc : "";
+  const at = Math.max(0, Math.min(text.length, Number.isFinite(offset) ? Math.trunc(offset) : 0));
+  const space = (ch) => /\s/.test(ch);
+  const words = [];
+  let index = 0;
+  while (index < text.length) {
+    if (space(text[index])) {
+      index += 1;
+      continue;
+    }
+    const start = index;
+    while (index < text.length && !space(text[index])) index += 1;
+    words.push({ start, end: index });
+  }
+  if (direction < 0) {
+    const containing = words.find((word) => word.start < at && at <= word.end);
+    if (containing) return containing.start;
+    for (let n = words.length - 1; n >= 0; n -= 1) {
+      if (words[n].end <= at) return words[n].start;
+    }
+    return at;
+  }
+  const next = words.find((word) => word.start > at);
+  if (next) return next.start;
+  const inside = words.find((word) => word.start <= at && at < word.end);
+  if (inside) return inside.end;
+  return at;
+}
+
 // A line of only spaces or tabs is drawn empty. Up, down, and a click on it
 // rest on its start. A hard break that still shows text keeps that break's newline.
 export function lineCaret(doc, offset) {

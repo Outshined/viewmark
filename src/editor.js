@@ -34,6 +34,7 @@ import {
   enterInsert,
   enterBreak,
   lineCaret,
+  wordStop,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./ticket.js";
@@ -5821,6 +5822,26 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return best ? best.offset : state.cursor;
   }
 
+  // Ctrl+arrow. Alt stays one character, and Meta is not this chord.
+  function wordArrow(event) {
+    if (!event || event.altKey === true || event.metaKey === true || event.ctrlKey !== true) return false;
+    return event.key === "ArrowLeft" || event.key === "ArrowRight";
+  }
+
+  function moveByWord(forward, extend) {
+    goalX = null;
+    rawColumn = null;
+    const beforeCursor = state.cursor;
+    const beforeAnchor = state.anchor;
+    const before = lineIndexAt(state.doc, beforeCursor);
+    const next = wordStop(state.doc, beforeCursor, forward ? 1 : -1);
+    const anchor = extend ? beforeAnchor : next;
+    state = { ...state, cursor: next, anchor };
+    if (!claimLines(anchor, next)) return;
+    if (before !== lineIndexAt(state.doc, state.cursor)) render();
+    else placeCaret();
+  }
+
   function moveRawCaret(key, extend, jump) {
     const vertical = key === "ArrowUp" || key === "ArrowDown";
     if (!vertical) {
@@ -6070,12 +6091,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (sourceMode && rawMoveKey(event.key)) {
       event.preventDefault();
+      if (wordArrow(event)) {
+        moveByWord(event.key === "ArrowRight", event.shiftKey === true);
+        return;
+      }
       const extend = event.shiftKey === true && !event.ctrlKey && !event.altKey && !event.metaKey;
       moveRawCaret(event.key, extend, event.ctrlKey === true || event.metaKey === true);
       return;
     }
     if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
       event.preventDefault();
+      if (wordArrow(event)) {
+        moveByWord(event.key === "ArrowRight", event.shiftKey === true);
+        return;
+      }
       const extend = event.shiftKey === true && !event.ctrlKey && !event.altKey && !event.metaKey;
       const horizontal = event.key === "ArrowLeft" || event.key === "ArrowRight";
       const forward = event.key === "ArrowRight" || event.key === "ArrowDown";

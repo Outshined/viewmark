@@ -10453,14 +10453,14 @@ test("shift-arrow keeps the anchor and an unshifted arrow collapses", () => {
     assert.equal(view.getState().anchor, 2);
     assert.equal(view.getState().cursor, 2);
     press("ArrowRight", { shiftKey: true, ctrlKey: true });
-    assert.equal(view.getState().anchor, 3);
-    assert.equal(view.getState().cursor, 3);
+    assert.equal(view.getState().anchor, 2);
+    assert.equal(view.getState().cursor, 6);
     press("ArrowRight", { shiftKey: true, altKey: true });
-    assert.equal(view.getState().anchor, 4);
-    assert.equal(view.getState().cursor, 4);
+    assert.equal(view.getState().anchor, 7);
+    assert.equal(view.getState().cursor, 7);
     press("ArrowRight", { shiftKey: true, metaKey: true });
-    assert.equal(view.getState().anchor, 5);
-    assert.equal(view.getState().cursor, 5);
+    assert.equal(view.getState().anchor, 8);
+    assert.equal(view.getState().cursor, 8);
     view.destroy();
     globalThis.document.createTreeWalker = yieldNone;
 
@@ -10507,6 +10507,101 @@ test("shift-arrow keeps the anchor and an unshifted arrow collapses", () => {
     assert.equal(down.getState().anchor, 10);
     assert.equal(down.getState().cursor, 10);
     down.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+function pressWord(mounted, doc, cursor, key, extra, raw) {
+  const view = createEditor(mounted.root, doc, cursor);
+  if (raw) pressViewToggle(mounted.root);
+  keyDown(mounted, key, extra);
+  const state = view.getState();
+  const out = { doc: state.doc, anchor: state.anchor, cursor: state.cursor };
+  view.destroy();
+  return out;
+}
+
+function assertWord(mounted, doc, cursor, key, extra, anchor, focus) {
+  for (const raw of [false, true]) {
+    const state = pressWord(mounted, doc, cursor, key, extra, raw);
+    const where = raw ? "raw" : "rendered";
+    assert.equal(state.doc, doc, where);
+    assert.equal(state.anchor, anchor, where);
+    assert.equal(state.cursor, focus, where);
+  }
+}
+
+test("MV.sh.4", () => {
+  const mounted = mountEditor();
+  try {
+    assertWord(mounted, "hello fox\n", 0, "ArrowRight", { ctrlKey: true }, 6, 6);
+    assertWord(mounted, "hello fox\n", 3, "ArrowRight", { ctrlKey: true }, 6, 6);
+    assertWord(mounted, "hello fox\n", 0, "ArrowRight", { ctrlKey: true, shiftKey: true }, 0, 6);
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("MV.cw.1", () => {
+  const mounted = mountEditor();
+  try {
+    assertWord(mounted, "hello fox\n", 9, "ArrowLeft", { ctrlKey: true }, 6, 6);
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("MV.cw.2", () => {
+  const mounted = mountEditor();
+  try {
+    assertWord(mounted, "hello fox\n", 5, "ArrowRight", { ctrlKey: true }, 6, 6);
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("MV.cw.3", () => {
+  const mounted = mountEditor();
+  try {
+    assertWord(mounted, "x **bold** y\n", 6, "ArrowRight", { ctrlKey: true }, 11, 11);
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("MV.cw.4", () => {
+  const mounted = mountEditor();
+  try {
+    assertWord(mounted, "alpha\nbeta\n", 6, "ArrowLeft", { ctrlKey: true }, 0, 0);
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("MV.cw.5", () => {
+  const mounted = mountEditor();
+  try {
+    assertWord(mounted, "hello fox\n", 6, "ArrowRight", { ctrlKey: true }, 9, 9);
+    assertWord(mounted, "hello fox\n", 9, "ArrowRight", { ctrlKey: true }, 9, 9);
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("MV.cw.6", () => {
+  const mounted = mountEditor();
+  try {
+    assertWord(mounted, "don't stop\n", 0, "ArrowRight", { ctrlKey: true }, 6, 6);
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("MV.cw.7", () => {
+  const mounted = mountEditor();
+  try {
+    assertWord(mounted, "x **bold** y\n", 11, "ArrowLeft", { ctrlKey: true }, 2, 2);
   } finally {
     mounted.restore();
   }
