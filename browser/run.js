@@ -728,8 +728,6 @@ export async function runCell(suite, cell, routeName, serial) {
   // The glyph before the caret, to tell a word the Q carries onto the next visual line from a
   // caret drawn on the wrong line.
   const leadBefore = beforeProbe.none || !beforeProbe.inside || beforeProbe.focus < 1 ? null : await page.eval(`window.__qaGlyph(${beforeProbe.focus - 1})`);
-  // The glyph after the caret, to tell a line that breaks inside a word, as a long URL does.
-  const trailBefore = beforeProbe.none || !beforeProbe.inside || beforeProbe.focus >= textBeforeProbe.length ? null : await page.eval(`window.__qaGlyph(${beforeProbe.focus})`);
   await page.key("Q");
   await page.quiet();
   const probed = sent(page, file);
@@ -758,15 +756,7 @@ export async function runCell(suite, cell, routeName, serial) {
         const lead = at === beforeProbe.focus && at > 0 && /\S/.test(textBeforeProbe[at - 1]) ? await page.eval(`window.__qaGlyph(${at - 1})`) : null;
         const carried = leadBefore && lead && Math.abs((lead.top + lead.bottom) / 2 - (leadBefore.top + leadBefore.bottom) / 2) > 2
           && Math.abs(glyph.left - lead.right) <= 3 && Math.abs(middle - (lead.top + lead.bottom) / 2) <= 2;
-        // R74: End goes to the end of the display line. Where a line breaks inside a word, the caret
-        // is drawn at the end of that full line, and a letter typed there goes to the start of the
-        // next one, where the glyph after the caret was. I12 does not check that one case.
-        const mid = (box) => (box.top + box.bottom) / 2;
-        const brokenWord = at === beforeProbe.focus && leadBefore && trailBefore
-          && /\S/.test(textBeforeProbe[at - 1] || "") && /\S/.test(textBeforeProbe[at] || "")
-          && Math.abs(mid(leadBefore) - mid(trailBefore)) > 2
-          && Math.abs(glyph.left - trailBefore.left) <= 3 && Math.abs(middle - mid(trailBefore)) <= 2;
-        if ((!sameLine || Math.abs(glyph.left - caret.x) > 3) && !carried && !brokenWord) result.failed.push(`I12 typed: the Q is drawn at x ${glyph.left.toFixed(1)} y ${middle.toFixed(1)}, but the caret was drawn at x ${caret.x.toFixed(1)} y ${((caret.top + caret.bottom) / 2).toFixed(1)}`);
+        if ((!sameLine || Math.abs(glyph.left - caret.x) > 3) && !carried) result.failed.push(`I12 typed: the Q is drawn at x ${glyph.left.toFixed(1)} y ${middle.toFixed(1)}, but the caret was drawn at x ${caret.x.toFixed(1)} y ${((caret.top + caret.bottom) / 2).toFixed(1)}`);
       }
     }
   }
