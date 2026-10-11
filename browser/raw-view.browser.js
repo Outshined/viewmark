@@ -485,9 +485,9 @@ test("keys: Home and End go to the start and end of the visual line (R74)", asyn
   await place(page, mid);
   await press(page, "Home");
   assert.equal((await page.caret()).focus, starts[k], `Home on visual line ${k + 1} of the long line went to ${(await page.caret()).focus}`);
-  // The owner, on ticket pg66fa4a: End goes after the last character on the line, in raw mode
-  // too, whether or not it is a space, and the caret is drawn on that line. A letter typed there
-  // goes where the caret is and wraps as normal text does.
+  // Under the owner's rule on ticket pg66fa4a, End puts the caret after the line's last
+  // character, a space included, in raw text too, and the caret is drawn on that line. A letter
+  // typed there goes in at the caret and wraps as normal text does.
   await place(page, mid);
   await press(page, "End");
   const end = await page.caret();

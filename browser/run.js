@@ -812,8 +812,8 @@ export async function runCell(suite, cell, routeName, serial) {
         const carried = leadBefore && lead && Math.abs((lead.top + lead.bottom) / 2 - (leadBefore.top + leadBefore.bottom) / 2) > 2
           && Math.abs(glyph.left - lead.right) <= 3 && Math.abs(middle - (lead.top + lead.bottom) / 2) <= 2;
         // A caret drawn at the end of a visual line, with the next character starting the line
-        // below, is at a wrap. The owner, on ticket pg66fa4a: the letter goes where the caret is
-        // and is subject to normal line wrapping. So the Q may start the line below, right
+        // below, is at a wrap. Under the owner's rule on ticket pg66fa4a, a letter typed there goes
+        // in at the caret and wraps as normal text does, so the Q may start the line below, right
         // before the glyph that followed the caret.
         const atWrap = at === beforeProbe.focus && at > 0 && textBeforeProbe[at - 1] !== "\n" && /\S/.test(textBeforeProbe[at] || "")
           && followBefore && (followBefore.top + followBefore.bottom) / 2 > caret.bottom + 2;
