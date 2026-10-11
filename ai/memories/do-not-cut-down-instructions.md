@@ -5,8 +5,8 @@ metadata:
   type: feedback
 ---
 
-When the owner says what to do, or hands over text to use, apply all of it. Do not narrow it to the part that seems to fit, and do not shorten text that is moved or quoted. Moved text goes word for word, and a check confirms nothing was dropped.
+When the owner says what to do, or hands over text to use, apply all of it. Do not narrow it to the part that seems to fit, and do not shorten text that is moved. QA's own text moves word for word. The owner's words are never quoted ([[no-operator-quotes]]), so every point in them is carried over in QA's words. A check against the source confirms nothing was dropped.
 
-**Why:** on 2026-10-10 the owner answered "use the same targeting as comments" for the image `attach` command, and QA wrote only `--start LINE:OFFSET` into the test plan, dropping `--end` and the `--expect` safety check. The owner said: "Do not 'cut down' text that you are given. That is a failure."
+**Why:** on 2026-10-10 the owner answered that the image `attach` command should use the same targeting as comments, and QA wrote only `--start LINE:OFFSET` into the test plan, dropping `--end` and the `--expect` safety check. The owner said that cutting down text QA is given is a failure.
 
-**How to apply:** when an answer says "the same as X", copy X's whole form, including its checks and refusals. When text moves from comments to a body, or between documents, compare every piece against the source afterwards. Where a part does not seem to fit, keep it and say why it might not, rather than dropping it. Related: [[qa-rules-are-proposals]].
+**How to apply:** when an answer says to do it the same as X, copy X's whole form, including its checks and refusals. When text moves from comments to a body, or between documents, compare every piece against the source afterwards. Where a part does not seem to fit, keep it and say why it might not, rather than dropping it. Related: [[qa-rules-are-proposals]].

@@ -7,7 +7,7 @@ metadata:
 
 When reviewing a document in the hub, give each point its own thread. Anchor it with `comment add --start --end --expect` on the sentence or line it is about, such as a step's rule or its Tickets or Proof line. Reply in the requester's thread only with a short verdict that names the anchored thread ids.
 
-**Why:** on 2026-10-09 a review of a six-step strategy went into one long reply in the thread that asked for it. The user said: "Instead of one giant comment, please anchor detailed comments on the area they're most relevant to."
+**Why:** on 2026-10-09 a review of a six-step strategy went into one long reply in the thread that asked for it. The user asked for detailed comments anchored on the area each is most relevant to, instead of one giant comment.
 
 **How to apply:**
 - Anchor on prose, not inside a fence. Comments cannot sit in a fence ([[literal-text-in-viewmark-docs]]).

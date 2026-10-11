@@ -12,7 +12,7 @@ The dialect (checked 2026-10-08):
 - A code span ends at the next backtick, so it cannot hold one, and a double-backtick delimiter is not supported.
 - A fence protects everything inside it.
 
-**Why:** the editor-matrix plan first used bare double-quoted strings holding ``` and code spans holding comment markers. Both rendered as garbage or as live comments. When the user asked, "If you need to put characters in a markdown doc that you don't want markdown to interpret, what do you normally do? Why are you not doing that here?", that was the expected answer. I had also warned the user about the problem instead of testing it.
+**Why:** the editor-matrix plan first used bare double-quoted strings holding ``` and code spans holding comment markers. Both rendered as garbage or as live comments. The user asked what I normally do with characters that markdown must not interpret, and why I was not doing it here; that was the expected answer. I had also warned the user about the problem instead of testing it.
 
 **Generated reports.** Inside a text fence, any line that starts with three backticks ends the fence early. Tool output often spans several lines and holds a document's own fence lines, such as a hub refusal that echoes the file. Flatten every message to one line before it goes into a fence. Run the fence-balance check, and do not publish when the check fails. On 2026-10-08 a report went to the hub with a failed check, and was broken from its middle on until it was republished.
 
