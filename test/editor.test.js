@@ -5936,6 +5936,122 @@ test("comment cards edit the thread and line up with the highlight", () => {
   }
 });
 
+test("the add-comment button sits below a card that shares the selection line", () => {
+  const mounted = mountSheet();
+  const doc = "See {c1}this{/c1} now and more words here.\n\n```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nNote.\n```\n";
+  const box = (top, left, width, height) => ({ top, left, right: left + width, bottom: top + height, width, height });
+  const create = globalThis.document.createElement;
+  globalThis.document.createElement = (tag) => {
+    const el = create(tag);
+    Object.defineProperty(el, "offsetWidth", {
+      configurable: true,
+      get() {
+        return el.classList && el.classList.contains("md-add-comment") ? 115 : undefined;
+      },
+    });
+    return el;
+  };
+  const overlaps = (top, left, width, height, rect) => (
+    left < rect.right && left + width > rect.left && top < rect.bottom && top + height > rect.top
+  );
+  try {
+    mounted.root.getBoundingClientRect = () => box(0, 0, 800, 400);
+    mounted.aside.getBoundingClientRect = () => box(0, 880, 320, 800);
+    const view = createEditor(mounted.root, doc, 0);
+    const card = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"))[0];
+    const word = mounted.findAll((node) => {
+      if (node.nodeType !== 3 || !String(node.textContent).includes("words")) return false;
+      let parent = node.parentElement;
+      while (parent) {
+        if (parent === mounted.root) return true;
+        parent = parent.parentElement;
+      }
+      return false;
+    })[0];
+    assert.ok(card);
+    assert.ok(word);
+    const at = word.textContent.indexOf("words");
+    const press = (top) => {
+      mounted.setSelection({
+        rangeCount: 1,
+        anchorNode: word,
+        anchorOffset: at,
+        focusNode: word,
+        focusOffset: at + "words".length,
+        getRangeAt() {
+          return {
+            collapsed: false,
+            commonAncestorContainer: word,
+            getClientRects() {
+              return [box(top, 400, 50, 18)];
+            },
+          };
+        },
+      });
+      mounted.listeners.mousedown({ clientX: 0, clientY: 0 });
+      mounted.listeners.mouseup({ clientX: 40, clientY: top });
+    };
+    let cardRect = box(28, 880, 320, 102);
+    card.getBoundingClientRect = () => cardRect;
+    press(28);
+    const button = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    assert.ok(button);
+    assert.equal(button.hidden, false);
+    assert.equal(button.styleProps.position, "fixed");
+    const placed = () => ({
+      left: Number.parseFloat(button.styleProps.left),
+      top: Number.parseFloat(button.styleProps.top),
+    });
+    let spot = placed();
+    assert.equal(spot.left, 880);
+    assert.equal(spot.top, cardRect.bottom);
+    assert.equal(overlaps(spot.top, spot.left, 115, 30, cardRect), false);
+    assert.equal(overlaps(spot.top, spot.left, 115, 30, mounted.root.getBoundingClientRect()), false);
+    assert.equal(view.getState().doc, doc);
+    let prevented = false;
+    button.listeners.mousedown({
+      button: 1,
+      preventDefault() {
+        prevented = true;
+      },
+    });
+    assert.equal(prevented, false);
+    assert.equal(view.getState().doc, doc);
+
+    cardRect = box(400, 880, 320, 80);
+    press(28);
+    spot = placed();
+    assert.equal(button.hidden, false);
+    assert.equal(spot.top, 28);
+    assert.equal(overlaps(spot.top, spot.left, 115, 30, cardRect), false);
+
+    cardRect = box(28, 880, 320, 102);
+    const extra = globalThis.document.createElement("div");
+    extra.className = "md-comment-card";
+    const extraRect = box(142, 880, 320, 80);
+    extra.getBoundingClientRect = () => extraRect;
+    mounted.aside.appendChild(extra);
+    press(28);
+    spot = placed();
+    assert.equal(button.hidden, false);
+    assert.equal(spot.left, 880);
+    assert.equal(spot.top, extraRect.bottom);
+    assert.equal(overlaps(spot.top, spot.left, 115, 30, cardRect), false);
+    assert.equal(overlaps(spot.top, spot.left, 115, 30, extraRect), false);
+    assert.equal(overlaps(spot.top, spot.left, 115, 30, mounted.root.getBoundingClientRect()), false);
+
+    mounted.root.getBoundingClientRect = () => box(0, 0, 1200, 300);
+    mounted.aside.getBoundingClientRect = () => box(0, 0, 400, 800);
+    cardRect = box(40, 0, 400, 80);
+    press(40);
+    assert.equal(button.hidden, true);
+    assert.equal(view.getState().doc, doc);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("comment cards save, reply, resolve, and discard without writing keystrokes", () => {
   const mounted = mountSheet();
   const matchesLabel = (node, label) => node && node.tagName === "BUTTON" && (

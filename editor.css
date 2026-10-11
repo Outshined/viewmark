@@ -1235,6 +1235,7 @@ a.md-link {
 .md-add-comment {
   z-index: 4;
   box-sizing: border-box;
+  margin: 0;
   width: max-content;
   max-width: 20rem;
   white-space: nowrap;

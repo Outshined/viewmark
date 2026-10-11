@@ -3535,6 +3535,35 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (addCommentButton) addCommentButton.hidden = true;
   }
 
+  // The button's box starts on the selection line. A card there would take the
+  // press meant for the card, so the box moves under every card it would cover.
+  function topBelowCards(left, top, width, height) {
+    if (!commentsAside || !Number.isFinite(top)) return top;
+    const boxW = width > 0 ? width : 1;
+    const boxH = height > 0 ? height : 1;
+    const cards = [];
+    for (const child of commentsAside.childNodes || []) {
+      if (!child || child.hidden || !child.classList || !child.classList.contains("md-comment-card")) continue;
+      const rect = elementRect(child);
+      if (!rect || !(rect.right > rect.left) || !(rect.bottom > rect.top)) continue;
+      if (!Number.isFinite(rect.left) || !Number.isFinite(rect.bottom)) continue;
+      cards.push(rect);
+    }
+    let placed = top;
+    for (let guard = cards.length; guard > 0; guard -= 1) {
+      const right = left + boxW;
+      const bottom = placed + boxH;
+      let next = placed;
+      for (const card of cards) {
+        const overlaps = left < card.right && right > card.left && placed < card.bottom && bottom > card.top;
+        if (overlaps && card.bottom > next) next = card.bottom;
+      }
+      if (next === placed) break;
+      placed = next;
+    }
+    return placed;
+  }
+
   function updateCommentButton() {
     if (state.anchor === state.cursor) {
       hideCommentButton();
@@ -3587,6 +3616,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const column = elementRect(commentsAside);
     // Over the text, this button takes the press that should land in the document.
     // It stays in the comments column, top aligned with the selection's first line.
+    // A card on that line keeps the press, so the button sits under the card.
     if (!rect || !column || !Number.isFinite(rect.top) || !Number.isFinite(column.left)) {
       hideCommentButton();
       return;
@@ -3594,25 +3624,33 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     addCommentButton.hidden = false;
     setStyle(addCommentButton, "position", "fixed");
     let left = column.left;
-    let top = rect.top;
     const width = Number(addCommentButton.offsetWidth);
     const height = Number(addCommentButton.offsetHeight);
     if (Number.isFinite(width) && width > 0 && Number.isFinite(column.right) && left + width > column.right) {
       left = Math.max(column.left, column.right - width);
     }
+    const boxW = Number.isFinite(width) && width > 0 ? width : 0;
+    const boxH = Number.isFinite(height) && height > 0 ? height : 0;
     const textColumn = elementRect(root);
-    if (textColumn && Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
-      const hitsText = (x, y) => x < textColumn.right && x + width > textColumn.left && y < textColumn.bottom && y + height > textColumn.top;
-      if (hitsText(left, top) && Number.isFinite(column.top)) {
-        top = column.top;
-        if (hitsText(left, top)) {
-          hideCommentButton();
-          return;
-        }
-      }
+    const hitsText = (y) => boxW > 0 && boxH > 0 && !!textColumn
+      && Number.isFinite(textColumn.left) && Number.isFinite(textColumn.top)
+      && left < textColumn.right && left + boxW > textColumn.left
+      && y < textColumn.bottom && y + boxH > textColumn.top;
+    const settle = (y) => {
+      const placed = topBelowCards(left, y, boxW, boxH);
+      return { top: placed, blocked: hitsText(placed) };
+    };
+    let choice = settle(rect.top);
+    if (choice.blocked && Number.isFinite(column.top)) {
+      const alt = settle(column.top);
+      if (!alt.blocked) choice = alt;
+    }
+    if (choice.blocked) {
+      hideCommentButton();
+      return;
     }
     setStyle(addCommentButton, "left", `${left}px`);
-    setStyle(addCommentButton, "top", `${top}px`);
+    setStyle(addCommentButton, "top", `${choice.top}px`);
   }
 
   function editingCommentIds() {
