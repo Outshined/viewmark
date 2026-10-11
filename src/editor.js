@@ -29,6 +29,7 @@ import {
   lineIndexAt,
   lockIndexAt,
   lockSpans,
+  blockSpan,
   skipHidden,
   enterInsert,
   enterBreak,
@@ -6343,7 +6344,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (offset == null) return;
       if (detail === 3) gestureOffset = null;
       if (!keepCurrent) clearCurrentComment();
-      const span = detail === 2 ? wordSpan(state.doc, offset) : lineSpan(state.doc, offset);
+      const span = detail === 2 ? wordSpan(state.doc, offset) : blockSpan(state.doc, offset);
       state = { ...state, anchor: span[0], cursor: span[1] };
       if (!claimLines(span[0], span[1])) return;
       render();

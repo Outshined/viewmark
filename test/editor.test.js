@@ -25,7 +25,7 @@ import {
   parseHash,
   wordSpan,
 } from "../src/editor.js";
-import { splitCommentNote, lockSpans, lockIndexAt, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, moveText } from "../src/doc.js";
+import { splitCommentNote, lockSpans, lockIndexAt, blockSpan, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, moveText } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
@@ -10722,7 +10722,70 @@ test("wordSpan trims markers and keeps the host of a url", () => {
   assert.equal(punct.slice(...wordSpan(punct, beta + 1)), "beta");
 });
 
-test("detail 2 selects the word and detail 3 selects the line", () => {
+// T3.p.1 T3.sp.1 T3.h.1 T3.li.1 T3.li.2 T3.q.1 T3.fc.1. The range starts after
+// the first line's marker and stops before the block's closing newline.
+test("blockSpan selects the block after its marker", () => {
+  const taken = (doc, needle) => {
+    const at = doc.indexOf(needle);
+    const [start, end] = blockSpan(doc, at);
+    return doc.slice(start, end);
+  };
+  const paragraph = "x\n\nhello fox two\nnext\n";
+  assert.equal(taken(paragraph, "fox"), "hello fox two\nnext");
+  const wrapped = "x\n\nalpha\nbeta\n";
+  assert.equal(taken(wrapped, "beta"), "alpha\nbeta");
+  const heading = "x\n\n# Title\n";
+  assert.equal(taken(heading, "Title"), "Title");
+  assert.equal(taken(heading, "#"), "Title");
+  assert.equal(taken("x\n\n## Title\n", "#"), "Title");
+  const item = "x\n\n- alpha\n";
+  assert.equal(taken(item, "alpha"), "alpha");
+  assert.equal(taken(item, "-"), "alpha");
+  const items = "x\n\n- one\n- two\n";
+  assert.equal(taken(items, "one"), "one");
+  assert.equal(taken(items, "two"), "two");
+  const quote = "x\n\n> alpha\n";
+  assert.equal(taken(quote, "alpha"), "alpha");
+  assert.equal(taken(quote, ">"), "alpha");
+  const fence = "x\n\n```js\nlet y\nlet z\n```\n";
+  assert.equal(taken(fence, "z"), "let y\nlet z");
+  assert.equal(taken(fence, "```"), "let y\nlet z");
+  assert.deepEqual(blockSpan(fence, fence.lastIndexOf("```")), blockSpan(fence, fence.indexOf("z")));
+
+  assert.equal(taken("- [ ] buy milk\n", "-"), "buy milk");
+  assert.equal(taken("- [x] buy milk\n", "-"), "buy milk");
+  assert.equal(taken("- [X] buy milk\n", "buy"), "buy milk");
+  assert.equal(taken("> - [ ] buy\n", ">"), "buy");
+  assert.equal(taken("* alpha\n", "*"), "alpha");
+  assert.equal(taken("+ alpha\n", "+"), "alpha");
+  assert.equal(taken("12. twelve\n", "1"), "twelve");
+  assert.equal(taken("1) one\n", "1"), "one");
+  assert.equal(taken("> - alpha\n", ">"), "alpha");
+  assert.equal(taken("> one\ntwo\nthree\n", "three"), "one\ntwo\nthree");
+  assert.equal(taken("- one\n  two\n", "two"), "one\n  two");
+  const nested = "- one\n  - two\n";
+  assert.equal(taken(nested, "one"), "one");
+  assert.equal(taken(nested, "two"), "two");
+
+  const diagram = "```mermaid\nA-->B\n```\n";
+  assert.equal(taken(diagram, "A"), "A-->B");
+  assert.deepEqual(blockSpan(diagram, 0), blockSpan(diagram, diagram.indexOf("A")));
+  const emptyFence = "```\n```\n";
+  assert.deepEqual(blockSpan(emptyFence, 0), [4, 4]);
+  const unclosed = "```js\nlet y\n";
+  assert.equal(unclosed.slice(...blockSpan(unclosed, 0)), "let y");
+  const after = "```js\nlet y\n```\n\nnext\n";
+  assert.equal(taken(after, "let"), "let y");
+  assert.equal(taken(after, "next"), "next");
+
+  const table = "| a | b |\n| --- | --- |\n| 1 | 2 |\n";
+  assert.equal(taken(table, "1"), "| 1 | 2 |");
+  assert.equal(taken(table, "a"), "| a | b |\n| --- | --- |");
+  assert.deepEqual(blockSpan("hello\n", "hello\n".length), [6, 6]);
+  assert.deepEqual(blockSpan("", 0), [0, 0]);
+});
+
+test("detail 2 selects the word and detail 3 selects the block", () => {
   const mounted = mountSheet();
   globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
   const textOf = (value) => mounted.findAll((node) => node.nodeType === 3 && node.textContent === value)[0];
@@ -10771,8 +10834,8 @@ test("detail 2 selects the word and detail 3 selects the line", () => {
     globalThis.document.caretPositionFromPoint = () => ({ offsetNode: lineText, offset: 7 });
     click(lineText, 3);
     assert.equal(lined.getState().anchor, 0);
-    assert.equal(lined.getState().cursor, 13);
-    assert.equal(selectedSlice(lined.getState()), "hello fox two");
+    assert.equal(lined.getState().cursor, 18);
+    assert.equal(selectedSlice(lined.getState()), "hello fox two\nnext");
     lined.destroy();
 
     const blank = createEditor(mounted.root, "hello\n\nfox\n", 0);
@@ -10834,7 +10897,7 @@ test("a double-click selects the word under the first press", () => {
     const opener = mounted.findAll((node) => node.nodeType === 3 && node.textContent.includes("```"))[0];
     globalThis.document.caretPositionFromPoint = () => ({ offsetNode: opener || zed, offset: 0 });
     press(opener || zed, 3);
-    assert.equal(selectedSlice(triple.getState()), "let z");
+    assert.equal(selectedSlice(triple.getState()), "let y\nlet z");
     triple.destroy();
   } finally {
     delete globalThis.document.caretPositionFromPoint;

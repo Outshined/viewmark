@@ -1538,6 +1538,56 @@ export function lockIndexAt(doc, cursor) {
   return Math.max(0, spans.length - 1);
 }
 
+// classify stops at the list marker. A task checkbox is the next marker.
+function blockCut(text) {
+  const mode = classify(text);
+  const cut = mode.marker || 0;
+  if (mode.kind !== "li" && mode.kind !== "ol") return cut;
+  const box = /^\[( |x|X)\][ \t]+/.exec(text.slice(cut));
+  return box ? cut + box[0].length : cut;
+}
+
+// The opener and the closer are the fence, not the text. A comment fence is one
+// note per lock, so those lines stay with lockSpans.
+function fenceBodySpan(doc, offset) {
+  const lines = lockLines(doc);
+  let index = 0;
+  while (index < lines.length) {
+    const opened = fenceOpen(lines[index].text);
+    if (!opened) {
+      index += 1;
+      continue;
+    }
+    const fence = fenceEnd(lines, index);
+    const start = lines[index].start;
+    const end = lines[fence.last].end;
+    if (offset < start || offset > end || opened.lang === "comment") {
+      index = fence.last + 1;
+      continue;
+    }
+    const open = lines[index];
+    const bodyStart = open.end < doc.length && doc[open.end] === "\n" ? open.end + 1 : open.end;
+    const lastBody = fence.closed ? fence.last - 1 : fence.last;
+    if (lastBody <= index) return [bodyStart, bodyStart];
+    return [bodyStart, lines[lastBody].end];
+  }
+  return null;
+}
+
+// A triple-click takes the block. The first line's marker stays outside, and so
+// does the newline that ends the block.
+export function blockSpan(doc, offset) {
+  const text = typeof doc === "string" ? doc : "";
+  const at = Math.max(0, Math.min(text.length, Number.isFinite(offset) ? Math.trunc(offset) : 0));
+  const body = fenceBodySpan(text, at);
+  if (body) return body;
+  const span = lockSpans(text).find((item) => at >= item.start && at <= item.end);
+  if (!span) return [at, at];
+  const line = sourceLine(text, span.start);
+  const start = Math.min(span.end, line.start + blockCut(line.text));
+  return [start, span.end];
+}
+
 function paintCell(cell, doc) {
   const parsed = parseInlines(cell.text, cell.start, "md-p");
   return { ...cell, parts: paintParts(parsed.parts, findSpans(doc)) };
