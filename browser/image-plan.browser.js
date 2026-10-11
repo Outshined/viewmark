@@ -679,6 +679,30 @@ test("IMG.u9 a second session sees the picture without a reload, and the frames 
   assert.ok(biggest < 16 * 1024, `a frame to the second session was ${biggest} bytes`);
 });
 
+// Ticket hup4797q: a pasted picture showed at first and was gone after a forced reload.
+const drawnPicture = (page) => page.eval(`(() => { const el = document.querySelector("#editor .md-image img"); return !!el && el.complete && el.naturalWidth > 0; })()`);
+
+test("IMG.u10 a pasted picture is stored: after a forced reload the line is there, /raw serves it, and the page draws it", async (t) => {
+  for (const [file, body] of [["kept.md", "alpha beta\n\ngamma delta\n"], ["solo.md", "alpha\n"]]) {
+    const ctx = await setup(t, { [file]: body });
+    const { page, after } = await pastePicture(ctx, file, 3);
+    const [img] = imageLines(after.text);
+    assert.ok(img, `${file}: no image line after the paste`);
+    await waitFor(() => drawnPicture(page), `${file}: the picture drawn after the paste`);
+    // A forced reload, as Ctrl+Shift+R: the cache is skipped and the page's session closes.
+    await page.session.send("Page.reload", { ignoreCache: true });
+    await page.until(() => page.eval(`document.readyState === "complete" && !!document.querySelector("#editor")`), `${file}: the page back after the reload`);
+    await openFile(page, file);
+    await sleep(1500);
+    const now = await showDoc(ctx.hub, file);
+    assert.ok(now.text.includes(img.line), `${file}: the image line is gone after the reload: ${JSON.stringify(now.text)}`);
+    const raw = await getRaw(ctx.hub.port, img.address);
+    assert.equal(raw.status, 200, `${file}: /raw ${img.address} is ${raw.status} after the reload`);
+    assert.deepEqual(pngSize(raw.body), { width: 200, height: 80 }, `${file}: the stored picture is not the pasted one`);
+    await waitFor(() => drawnPicture(page), `${file}: the picture drawn after the reload`);
+  }
+});
+
 // ---- D. Select and delete ----------------------------------------------------------------------
 
 // The second picture is the 1 by 1 GIF. A click on a picture that small must still select it.
