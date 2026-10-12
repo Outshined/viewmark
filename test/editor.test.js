@@ -6528,8 +6528,10 @@ test("comment cards edit the thread and line up with the highlight", () => {
     const button = mounted.findAll((node) => node.className === "md-add-comment")[0];
     assert.equal(button.textContent, "Add comment");
     assert.equal(button.hidden, false);
-    assert.equal(button.styleProps.left, `${mounted.aside.getBoundingClientRect().left}px`);
-    assert.equal(button.styleProps.top, "40px");
+    // No measured glyph and no button width: the left edge is the last character, one pixel in from the highlight.
+    const line = 18 * 1.2;
+    assert.equal(button.styleProps.left, `${72 - 1}px`);
+    assert.equal(button.styleProps.top, `${58 + line / 2}px`);
     let prevented = false;
     button.listeners.mousedown({
       button: 1,
@@ -6697,7 +6699,7 @@ test("comment cards edit the thread and line up with the highlight", () => {
   }
 });
 
-test("the add-comment button sits below a card that shares the selection line", () => {
+test("the add-comment button sits half a line under the highlight and clear of comment cards", () => {
   const mounted = mountSheet();
   const doc = "See {c1}this{/c1} now and more words here.\n\n```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nNote.\n```\n";
   const box = (top, left, width, height) => ({ top, left, right: left + width, bottom: top + height, width, height });
@@ -6715,6 +6717,9 @@ test("the add-comment button sits below a card that shares the selection line", 
   const overlaps = (top, left, width, height, rect) => (
     left < rect.right && left + width > rect.left && top < rect.bottom && top + height > rect.top
   );
+  const pitch = 18 * 1.2;
+  const buttonW = 115;
+  const buttonH = 30;
   try {
     mounted.root.getBoundingClientRect = () => box(0, 0, 800, 400);
     mounted.aside.getBoundingClientRect = () => box(0, 880, 320, 800);
@@ -6763,11 +6768,13 @@ test("the add-comment button sits below a card that shares the selection line", 
       left: Number.parseFloat(button.styleProps.left),
       top: Number.parseFloat(button.styleProps.top),
     });
+    const middle = 400 + 50 - 1;
+    const under = (top) => top + 18 + pitch / 2;
     let spot = placed();
-    assert.equal(spot.left, 880);
-    assert.equal(spot.top, cardRect.bottom);
-    assert.equal(overlaps(spot.top, spot.left, 115, 30, cardRect), false);
-    assert.equal(overlaps(spot.top, spot.left, 115, 30, mounted.root.getBoundingClientRect()), false);
+    assert.equal(spot.top, under(28));
+    assert.equal(spot.left, middle - buttonW / 2);
+    assert.ok(spot.left <= middle && middle <= spot.left + buttonW);
+    assert.equal(overlaps(spot.top, spot.left, buttonW, buttonH, cardRect), false);
     assert.equal(view.getState().doc, doc);
     let prevented = false;
     button.listeners.mousedown({
@@ -6783,31 +6790,133 @@ test("the add-comment button sits below a card that shares the selection line", 
     press(28);
     spot = placed();
     assert.equal(button.hidden, false);
-    assert.equal(spot.top, 28);
-    assert.equal(overlaps(spot.top, spot.left, 115, 30, cardRect), false);
+    assert.equal(spot.top, under(28));
+    assert.equal(spot.left, middle - buttonW / 2);
+    assert.equal(overlaps(spot.top, spot.left, buttonW, buttonH, cardRect), false);
 
     cardRect = box(28, 880, 320, 102);
     const extra = globalThis.document.createElement("div");
     extra.className = "md-comment-card";
-    const extraRect = box(142, 880, 320, 80);
+    let extraRect = box(142, 880, 320, 80);
     extra.getBoundingClientRect = () => extraRect;
     mounted.aside.appendChild(extra);
     press(28);
     spot = placed();
     assert.equal(button.hidden, false);
-    assert.equal(spot.left, 880);
-    assert.equal(spot.top, extraRect.bottom);
-    assert.equal(overlaps(spot.top, spot.left, 115, 30, cardRect), false);
-    assert.equal(overlaps(spot.top, spot.left, 115, 30, extraRect), false);
-    assert.equal(overlaps(spot.top, spot.left, 115, 30, mounted.root.getBoundingClientRect()), false);
+    assert.equal(spot.top, under(28));
+    assert.equal(spot.left, middle - buttonW / 2);
+    assert.equal(overlaps(spot.top, spot.left, buttonW, buttonH, cardRect), false);
+    assert.equal(overlaps(spot.top, spot.left, buttonW, buttonH, extraRect), false);
+
+    extraRect = box(50, 480, 200, 80);
+    press(28);
+    spot = placed();
+    assert.equal(button.hidden, false);
+    assert.equal(spot.top, under(28));
+    assert.equal(spot.left, extraRect.left - buttonW);
+    assert.ok(spot.left <= middle && middle <= spot.left + buttonW);
+    assert.equal(overlaps(spot.top, spot.left, buttonW, buttonH, extraRect), false);
+    assert.equal(overlaps(spot.top, spot.left, buttonW, buttonH, cardRect), false);
+
+    extraRect = box(400, 880, 320, 80);
+    globalThis.window.innerWidth = 500;
+    press(28);
+    spot = placed();
+    assert.equal(button.hidden, false);
+    assert.equal(spot.top, under(28));
+    assert.equal(spot.left, 500 - buttonW);
+    assert.ok(spot.left <= middle && middle <= spot.left + buttonW);
+    assert.ok(spot.left >= 0 && spot.left + buttonW <= 500);
+    delete globalThis.window.innerWidth;
 
     mounted.root.getBoundingClientRect = () => box(0, 0, 1200, 300);
     mounted.aside.getBoundingClientRect = () => box(0, 0, 400, 800);
     cardRect = box(40, 0, 400, 80);
     press(40);
-    assert.equal(button.hidden, true);
+    spot = placed();
+    assert.equal(button.hidden, false);
+    assert.equal(spot.top, under(40));
+    assert.equal(spot.left, cardRect.right);
+    assert.ok(spot.left <= middle && middle <= spot.left + buttonW);
+    assert.equal(overlaps(spot.top, spot.left, buttonW, buttonH, cardRect), false);
     assert.equal(view.getState().doc, doc);
     view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("the add-comment button appears under the highlight's last line when the selection changes without a drag", () => {
+  const mounted = mountSheet();
+  const create = globalThis.document.createElement;
+  globalThis.document.createElement = (tag) => {
+    const el = create(tag);
+    Object.defineProperty(el, "offsetWidth", {
+      configurable: true,
+      get() {
+        return el.classList && el.classList.contains("md-add-comment") ? 80 : undefined;
+      },
+    });
+    return el;
+  };
+  try {
+    const view = createEditor(mounted.root, "hello fox two deer\n", 0);
+    const text = mounted.root.childNodes[0].childNodes[0].childNodes[0];
+    const glyph = { top: 40, left: 48, right: 56, bottom: 58, width: 8, height: 18 };
+    globalThis.document.createRange = () => ({
+      setStart() {},
+      setEnd() {},
+      collapse() {},
+      selectNode() {},
+      setStartAfter() {},
+      setStartBefore() {},
+      getClientRects() {
+        return [glyph];
+      },
+    });
+    const show = (rects) => {
+      mounted.setSelection({
+        rangeCount: 1,
+        anchorNode: text,
+        anchorOffset: 6,
+        focusNode: text,
+        focusOffset: 9,
+        getRangeAt() {
+          return {
+            collapsed: false,
+            startContainer: text,
+            endContainer: text,
+            startOffset: 6,
+            endOffset: 9,
+            commonAncestorContainer: text,
+            getClientRects() {
+              return rects;
+            },
+          };
+        },
+      });
+      mounted.listeners.selectionchange();
+    };
+    const rect = { top: 40, left: 8, right: 200, bottom: 58, width: 192, height: 18 };
+    show([rect]);
+    const button = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    assert.equal(button.hidden, false);
+    assert.equal(button.styleProps.position, "fixed");
+    const pitch = rect.height * 1.2;
+    const middle = (glyph.left + glyph.right) / 2;
+    assert.equal(button.styleProps.top, `${rect.bottom + pitch / 2}px`);
+    assert.equal(button.styleProps.left, `${middle - 40}px`);
+    assert.equal(view.getState().anchor, 6);
+    assert.equal(view.getState().cursor, 9);
+
+    const first = { top: 10, left: 8, right: 200, bottom: 28, width: 192, height: 18 };
+    const last = { top: 30, left: 8, right: 40, bottom: 48, width: 32, height: 18 };
+    show([first, last]);
+    assert.equal(button.hidden, false);
+    assert.equal(button.styleProps.top, `${last.bottom + pitch / 2}px`);
+    assert.equal(button.styleProps.left, `${middle - 40}px`);
+    view.destroy();
+    mounted.setSelection(null);
   } finally {
     mounted.restore();
   }

@@ -2763,13 +2763,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     } finally {
       placingCaret = false;
     }
-    if (!node) return;
-    if (priorTop !== undefined) {
-      const after = caretRect();
-      if (after && caretInView(after)) return;
-      if (priorTop != null && after && Number.isFinite(after.top) && Math.abs(after.top - priorTop) <= 3) return;
+    try {
+      if (!node) return;
+      if (priorTop !== undefined) {
+        const after = caretRect();
+        if (after && caretInView(after)) return;
+        if (priorTop != null && after && Number.isFinite(after.top) && Math.abs(after.top - priorTop) <= 3) return;
+      }
+      scrollCaret(node);
+    } finally {
+      // selectionchange does not run while the caret is placed. An arrow-key
+      // selection still has to move the button under the highlight it just drew.
+      updateCommentButton();
     }
-    scrollCaret(node);
   }
 
   function scrollCaret(node) {
@@ -2968,6 +2974,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (sourceMode || (next.anchor === state.anchor && next.cursor === state.cursor)) goalX = keptX;
     state = { ...state, anchor: next.anchor, cursor: next.cursor };
     if (snapped.anchor !== mapped.anchor || snapped.cursor !== mapped.cursor) placeCaret();
+    // A shift-click changes the selection with no drag mouseup. Arrow keys place
+    // the caret while this listener is ignored, so they place the button there.
+    updateCommentButton();
   }
 
   function findCommentBox(id, note) {
@@ -3556,37 +3565,127 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (addCommentButton) addCommentButton.hidden = true;
   }
 
-  // The button's box starts on the selection line. A card there would take the
-  // press meant for the card, so the box moves under every card it would cover.
-  function topBelowCards(left, top, width, height) {
-    if (!commentsAside || !Number.isFinite(top)) return top;
-    const boxW = width > 0 ? width : 1;
-    const boxH = height > 0 ? height : 1;
+  function listedRects(raw, wideOnly) {
+    const rects = [];
+    const count = raw && typeof raw.length === "number" ? raw.length : 0;
+    for (let i = 0; i < count; i += 1) {
+      const item = raw[i];
+      if (!item || !(item.width > 0)) continue;
+      if (!wideOnly && !(item.height > 0)) continue;
+      rects.push(item);
+    }
+    return rects;
+  }
+
+  // The same measurement the placement test reads: the last line of the highlight,
+  // the middle of its last character in text order, and that line's height.
+  function highlightPlace(range) {
+    if (!range || typeof range.getClientRects !== "function") return null;
+    const rects = listedRects(range.getClientRects(), false);
+    if (rects.length === 0) return null;
+    let bottom = rects[0].bottom;
+    for (const item of rects) if (item.bottom > bottom) bottom = item.bottom;
+    let lastRect = null;
+    for (const item of rects) {
+      if (Math.abs(item.bottom - bottom) < 1) lastRect = item;
+    }
+    if (!lastRect || !Number.isFinite(lastRect.right) || !Number.isFinite(bottom)) return null;
+    let glyph = null;
+    const node = range.endContainer;
+    const offset = range.endOffset;
+    if (node && node.nodeType === 3 && offset > 0 && typeof document !== "undefined" && typeof document.createRange === "function") {
+      try {
+        const one = document.createRange();
+        if (one && typeof one.setStart === "function" && typeof one.setEnd === "function" && typeof one.getClientRects === "function") {
+          one.setStart(node, offset - 1);
+          one.setEnd(node, offset);
+          const found = listedRects(one.getClientRects(), true);
+          if (found.length > 0) glyph = found[0];
+        }
+      } catch {
+        glyph = null;
+      }
+    }
+    const sample = glyph || lastRect;
+    const middle = glyph && Number.isFinite(glyph.left) && Number.isFinite(glyph.right)
+      ? (glyph.left + glyph.right) / 2
+      : lastRect.right - 1;
+    if (!Number.isFinite(middle)) return null;
+    const holder = node && node.nodeType === 3 ? node.parentElement : node;
+    const view = typeof window !== "undefined" ? window : null;
+    let pitch = NaN;
+    if (holder && view && typeof view.getComputedStyle === "function") {
+      try {
+        const style = view.getComputedStyle(holder);
+        if (style) pitch = Number.parseFloat(style.lineHeight);
+      } catch {
+        pitch = NaN;
+      }
+    }
+    if (!Number.isFinite(pitch) || pitch <= 0) {
+      const h = sample && sample.height;
+      pitch = Number.isFinite(h) ? h * 1.2 : 0;
+    }
+    return { bottom, middle, pitch };
+  }
+
+  function commentCardRects() {
+    if (!commentsAside) return [];
     const cards = [];
     for (const child of commentsAside.childNodes || []) {
       if (!child || child.hidden || !child.classList || !child.classList.contains("md-comment-card")) continue;
       const rect = elementRect(child);
       if (!rect || !(rect.right > rect.left) || !(rect.bottom > rect.top)) continue;
-      if (!Number.isFinite(rect.left) || !Number.isFinite(rect.bottom)) continue;
+      if (!Number.isFinite(rect.left) || !Number.isFinite(rect.top)) continue;
       cards.push(rect);
     }
-    let placed = top;
-    for (let guard = cards.length; guard > 0; guard -= 1) {
-      const right = left + boxW;
-      const bottom = placed + boxH;
-      let next = placed;
-      for (const card of cards) {
-        const overlaps = left < card.right && right > card.left && placed < card.bottom && bottom > card.top;
-        if (overlaps && card.bottom > next) next = card.bottom;
-      }
-      if (next === placed) break;
-      placed = next;
+    return cards;
+  }
+
+  function boxesOverlap(left, top, width, height, rect) {
+    return left < rect.right && left + width > rect.left && top < rect.bottom && top + height > rect.top;
+  }
+
+  // Keep the last character inside the button. Slide into the window when that
+  // character is on screen and the button can fit, then sideways off any card.
+  function buttonLeft(middle, width, top, height) {
+    const view = typeof window !== "undefined" ? window : null;
+    const viewW = view && Number.isFinite(view.innerWidth) && view.innerWidth > 0 ? view.innerWidth : null;
+    let left = middle - (width > 0 ? width / 2 : 0);
+    if (width > 0 && viewW != null) {
+      const minLeft = Math.max(0, middle - width);
+      const maxLeft = Math.min(middle, viewW - width);
+      if (minLeft <= maxLeft) left = Math.min(maxLeft, Math.max(minLeft, left));
     }
-    return placed;
+    if (!(width > 0) || !(height > 0)) return left;
+    const cards = commentCardRects();
+    const seen = new Set();
+    for (let guard = cards.length + 1; guard > 0; guard -= 1) {
+      if (seen.has(left)) return left;
+      seen.add(left);
+      const hit = cards.filter((card) => boxesOverlap(left, top, width, height, card));
+      if (hit.length === 0) return left;
+      let best = null;
+      let bestDist = Infinity;
+      for (const card of hit) {
+        for (const candidate of [card.left - width, card.right]) {
+          if (!(candidate <= middle && middle <= candidate + width)) continue;
+          if (viewW != null && !(candidate >= 0 && candidate + width <= viewW)) continue;
+          const dist = Math.abs(candidate - left);
+          if (dist < bestDist) {
+            best = candidate;
+            bestDist = dist;
+          }
+        }
+      }
+      if (best == null) return left;
+      left = best;
+    }
+    return left;
   }
 
   function updateCommentButton() {
-    if (state.anchor === state.cursor) {
+    if (closed || state.anchor === state.cursor) {
       hideCommentButton();
       return;
     }
@@ -3620,58 +3719,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }, { signal: ac.signal });
     }
     const sel = typeof window !== "undefined" && window.getSelection ? window.getSelection() : null;
-    let rect = null;
-    if (sel && sel.rangeCount > 0 && typeof sel.getRangeAt === "function") {
-      const range = sel.getRangeAt(0);
-      const rects = typeof range.getClientRects === "function" ? range.getClientRects() : [];
-      if (rects && rects.length > 0) {
-        for (let i = 0; i < rects.length; i += 1) {
-          const item = rects[i];
-          if (!item || !Number.isFinite(item.top)) continue;
-          rect = item;
-          if (item.height > 0 || item.bottom > item.top) break;
-        }
-      }
-      if (!rect && typeof range.getBoundingClientRect === "function") rect = range.getBoundingClientRect();
-    }
-    const column = elementRect(commentsAside);
-    // Over the text, this button takes the press that should land in the document.
-    // It stays in the comments column, top aligned with the selection's first line.
-    // A card on that line keeps the press, so the button sits under the card.
-    if (!rect || !column || !Number.isFinite(rect.top) || !Number.isFinite(column.left)) {
+    const range = sel && sel.rangeCount > 0 && typeof sel.getRangeAt === "function" ? sel.getRangeAt(0) : null;
+    const place = highlightPlace(range);
+    if (!place) {
       hideCommentButton();
       return;
     }
     addCommentButton.hidden = false;
     setStyle(addCommentButton, "position", "fixed");
-    let left = column.left;
     const width = Number(addCommentButton.offsetWidth);
     const height = Number(addCommentButton.offsetHeight);
-    if (Number.isFinite(width) && width > 0 && Number.isFinite(column.right) && left + width > column.right) {
-      left = Math.max(column.left, column.right - width);
-    }
     const boxW = Number.isFinite(width) && width > 0 ? width : 0;
     const boxH = Number.isFinite(height) && height > 0 ? height : 0;
-    const textColumn = elementRect(root);
-    const hitsText = (y) => boxW > 0 && boxH > 0 && !!textColumn
-      && Number.isFinite(textColumn.left) && Number.isFinite(textColumn.top)
-      && left < textColumn.right && left + boxW > textColumn.left
-      && y < textColumn.bottom && y + boxH > textColumn.top;
-    const settle = (y) => {
-      const placed = topBelowCards(left, y, boxW, boxH);
-      return { top: placed, blocked: hitsText(placed) };
-    };
-    let choice = settle(rect.top);
-    if (choice.blocked && Number.isFinite(column.top)) {
-      const alt = settle(column.top);
-      if (!alt.blocked) choice = alt;
-    }
-    if (choice.blocked) {
-      hideCommentButton();
-      return;
-    }
+    // Half a line under the highlight, so the selection line and the line above
+    // still take a press. The text under the last character is the button's.
+    const top = place.bottom + place.pitch / 2;
+    const left = buttonLeft(place.middle, boxW, top, boxH);
     setStyle(addCommentButton, "left", `${left}px`);
-    setStyle(addCommentButton, "top", `${choice.top}px`);
+    setStyle(addCommentButton, "top", `${top}px`);
   }
 
   function editingCommentIds() {
@@ -6586,6 +6651,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (event.shiftKey && detail === 1) {
       gestureHold = false;
       adoptDomSelection();
+      // gestureHold kept selectionchange from placing the button for this click.
+      updateCommentButton();
       return;
     }
     if (belowLastBlock(event)) {

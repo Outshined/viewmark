@@ -1239,7 +1239,7 @@ a.md-link {
 }
 
 .md-add-comment {
-  z-index: 4;
+  z-index: 7;
   box-sizing: border-box;
   margin: 0;
   width: max-content;
