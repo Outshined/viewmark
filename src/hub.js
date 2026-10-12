@@ -52,13 +52,6 @@ function gitEnv(docsDir, username) {
   env.GIT_WORK_TREE = docsDir;
   env.GIT_TERMINAL_PROMPT = "0";
   env.GIT_EDITOR = "true";
-  if (username) {
-    const email = `${username}@viewmark.local`;
-    env.GIT_AUTHOR_NAME = username;
-    env.GIT_AUTHOR_EMAIL = email;
-    env.GIT_COMMITTER_NAME = username;
-    env.GIT_COMMITTER_EMAIL = email;
-  }
   return env;
 }
 
@@ -1202,8 +1195,6 @@ export async function createHub(stateDir, sourceRoot) {
   async function commitAuthor(repo, username, paths, message) {
     const docsDir = repo.path;
     const config = [
-      "-c", `user.name=${username}`,
-      "-c", "commit.gpgsign=false",
       "-c", "core.autocrlf=false",
     ];
     await git(docsDir, [...config, "add", "-A", "--", ...paths], username);
