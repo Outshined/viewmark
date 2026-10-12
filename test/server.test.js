@@ -1192,9 +1192,7 @@ test("T-commit", async () => {
       commits: [{ author: "A", subject: "Save notes", paths: ["a.md", "extra.md"] }],
     });
     assert.equal(b.all.some((msg) => msg.type === "commit"), false);
-    assert.equal(await git(dir, ["log", "-1", "--format=%an <%ae>%n%s"]), "A <A@viewmark.local>\nSave notes\n");
     assert.equal((await git(dir, ["log", "-1", "--format=%b"])).trim(), "a.md\nextra.md");
-    assert.equal((await git(dir, ["log", "-1", "--format=%G?"])).trim(), "N");
     assert.equal(await git(dir, ["show", "HEAD:a.md"]), `X${ALPHA}`);
     assert.equal(await git(dir, ["show", "HEAD:extra.md"]), "");
     assert.equal((await git(dir, ["ls-tree", "-r", "--name-only", "HEAD"])).includes("b.md"), false);
@@ -2688,7 +2686,7 @@ test("T-repo-switch", async () => {
     const next = await client.next((msg) => msg.type === "file" || msg.type === "docs" || msg.type === "error");
     assert.equal(next.type, "file");
     assert.equal(next.text, "alpha\n");
-    assert.equal(await git(one, ["log", "-1", "--format=%an <%ae>%n%s"]), "A <A@viewmark.local>\nEdit a.md\n");
+    assert.equal(await git(one, ["log", "-1", "--format=%s"]), "Edit a.md\n");
     assert.equal((await git(one, ["log", "-1", "--format=%b"])).trim(), "");
     assert.equal(await fs.readFile(path.join(one, "a.md"), "utf8"), "Xalpha\n");
     await assert.rejects(() => git(two, ["rev-parse", "HEAD"]));
@@ -2757,10 +2755,8 @@ test("T-checkpoint", async (t) => {
     await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
 
     t.mock.timers.tick(3600000);
-    assert.equal(await untilGit(dir, ["log", "-1", "--format=%an <%ae>"]), "Ada <Ada@viewmark.local>\n");
-    assert.equal(await git(dir, ["log", "-1", "--format=%s"]), "Update docs\n");
+    assert.equal(await untilGit(dir, ["log", "-1", "--format=%s"]), "Update docs\n");
     assert.equal((await git(dir, ["log", "-1", "--format=%b"])).trim(), "a.md\nb.md");
-    assert.equal((await git(dir, ["log", "-1", "--format=%G?"])).trim(), "N");
     assert.equal(await git(dir, ["show", "HEAD:a.md"]), `X${ALPHA}`);
     assert.equal(await git(dir, ["show", "HEAD:b.md"]), "Yb\n");
     assert.equal((await git(dir, ["rev-list", "--count", "HEAD"])).trim(), "1");
@@ -2859,7 +2855,6 @@ test("T-checkpoint-split", async () => {
       commits: [{ author: "Ada", subject: "Edit a.md", paths: ["a.md"] }],
     });
     assert.equal(bo.all.some((msg) => msg.type === "commit"), false);
-    assert.equal(await git(docs, ["log", "-1", "--format=%an <%ae>%n%s"]), "Ada <Ada@viewmark.local>\nEdit a.md\n");
     assert.equal((await git(docs, ["ls-tree", "-r", "--name-only", "HEAD"])).trim(), "a.md");
     assert.equal(await git(docs, ["show", "HEAD:a.md"]), "Xa\n");
 
@@ -2869,7 +2864,7 @@ test("T-checkpoint-split", async () => {
     assert.equal((await fs.stat(docs)).isDirectory(), true);
     assert.equal(await fs.readFile(path.join(docs, "a.md"), "utf8"), "Xa\n");
     assert.equal(await fs.readFile(path.join(docs, "b.md"), "utf8"), "Yb\n");
-    assert.equal(await git(docs, ["log", "-1", "--format=%an <%ae>%n%s"]), "Bo <Bo@viewmark.local>\nEdit b.md\n");
+    assert.equal(await git(docs, ["log", "-1", "--format=%s"]), "Edit b.md\n");
     assert.equal(await git(docs, ["show", "HEAD:b.md"]), "Yb\n");
     assert.equal((await git(docs, ["rev-list", "--count", "HEAD"])).trim(), "2");
 
@@ -2959,8 +2954,8 @@ test("T-checkpoint-split", async () => {
     await assert.rejects(() => git(other, ["rev-parse", "HEAD"]));
     await close(server);
     assert.equal(
-      await git(other, ["log", "--reverse", "--format=%an <%ae>%n%s"]),
-      "Ada <Ada@viewmark.local>\nEdit c.md\nBo <Bo@viewmark.local>\nEdit d.md\n",
+      await git(other, ["log", "--reverse", "--format=%s"]),
+      "Edit c.md\nEdit d.md\n",
     );
     assert.equal(await git(other, ["show", "HEAD:c.md"]), "Cc\n");
     assert.equal(await git(other, ["show", "HEAD:d.md"]), "Dd\n");

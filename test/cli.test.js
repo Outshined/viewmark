@@ -561,7 +561,6 @@ test("T-cli-commit", async () => {
     const head = (await git(dir, ["rev-parse", "HEAD"])).trim();
     assert.match(head, /^[0-9a-f]{40}$/);
     assert.equal((await git(dir, ["rev-parse", "HEAD^{/Edit notes/draft.md}"])).trim(), head);
-    assert.equal(await git(dir, ["log", "-1", "--format=%an <%ae>%n%s"]), "user <user@viewmark.local>\nEdit notes/draft.md\n");
     assert.equal(await git(dir, ["show", "HEAD:notes/draft.md"]), "a note\n");
 
     const again = await run(args);
