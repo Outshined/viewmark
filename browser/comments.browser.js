@@ -690,3 +690,24 @@ for (const [name, how] of PLACEMENTS) {
     assertPlaced(at, name);
   });
 }
+
+// The highlight moves when the page scrolls, and the button has to move with it. Left behind, it
+// sits over text away from the highlight and takes the press meant for that text.
+test("the add-comment button: after the page scrolls under the pointer, is half a line below the highlight, across its last character (ticket mar9nkqb)", async (t) => {
+  const filler = Array.from({ length: 40 }, (_, i) => `Filler paragraph number ${i + 1} sits here.`).join("\n\n");
+  const doc = "First {c1}paragraph{/c1} has a comment.\n\n" + filler + NOTE("c1", 2);
+  const { page } = await setup(t, { "a.md": doc });
+  await open(page, "a.md");
+  await page.until(() => page.eval(`document.querySelectorAll(".md-comment-card").length === 1`), "a comment card");
+  const word = await page.eval(`window.__qaWordPoint("number", 6)`);
+  await page.click(word.x, word.y, { clickCount: 2 });
+  await page.quiet();
+  await sleep(150);
+  assertPlaced(await buttonPlace(page), "before the scroll");
+  const highlight = async () => page.eval(`Math.max(...[...getSelection().getRangeAt(0).getClientRects()].filter((r) => r.width > 0).map((r) => r.bottom))`);
+  const before = await highlight();
+  await page.session.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: word.x, y: word.y, deltaX: 0, deltaY: 120 });
+  await page.until(async () => (await highlight()) < before - 60, "the page scrolled", 3000);
+  await sleep(300);
+  assertPlaced(await buttonPlace(page), `after a 120 px scroll, with the highlight's bottom gone from y ${Math.round(before)} to y ${Math.round(await highlight())}`);
+});
