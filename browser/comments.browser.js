@@ -597,3 +597,96 @@ test("the add-comment button does not cover a comment card on the selection's li
   await sleep(300);
   assert.equal((await hub.show("a.md")).text, doc, "a click on the card changed the file");
 });
+
+// Ticket mar9nkqb: the add-comment button is drawn half a line below the bottom of the
+// highlighted area, across the last highlighted character, in front of everything else, and in
+// the window. The tolerances are QA's reading of the ticket: the top within a quarter line of
+// that place, and the middle of the last highlighted character, in text order, inside the
+// button's left and right edges.
+const NOTE = (id, lines) => `\n\n\`\`\`comment ${id}\n:: 0\n@2026-10-05T16:00:00.000Z Ada\n${Array.from({ length: lines }, (_, i) => `Note ${id} line ${i + 1} with some more words to wrap the card.`).join("\n")}\n\`\`\`\n`;
+const PLACED = [
+  "First {c1}paragraph{/c1} has a comment and apple.",
+  "Second {c2}paragraph{/c2} has a comment and banana.",
+  "Third {c3}paragraph{/c3} has a comment and cherry.",
+  "Fourth paragraph has no comment and damson.",
+  "Fifth paragraph has no comment and elder.",
+  "A long paragraph that runs on and on so that it wraps across several lines in the editor column, with the word fig near its very end, then grape.",
+].join("\n\n") + NOTE("c1", 4) + NOTE("c2", 4) + NOTE("c3", 4);
+
+// Where the button is, and where the ticket puts it, read from the page's own layout.
+function buttonPlace(page) {
+  return page.eval(`(() => {
+    const b = document.querySelector(".md-add-comment");
+    const sel = getSelection();
+    if (!sel.rangeCount) return { error: "no selection" };
+    const range = sel.getRangeAt(0);
+    const rects = [...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0);
+    if (rects.length === 0) return { error: "the selection draws nothing" };
+    const bottom = Math.max(...rects.map((r) => r.bottom));
+    let glyph = null;
+    let node = range.endContainer, offset = range.endOffset;
+    if (node.nodeType === 3 && offset > 0) {
+      const one = document.createRange();
+      one.setStart(node, offset - 1);
+      one.setEnd(node, offset);
+      glyph = [...one.getClientRects()].find((r) => r.width > 0) || null;
+    }
+    const lastRect = rects.filter((r) => Math.abs(r.bottom - bottom) < 1).pop();
+    const middle = glyph ? (glyph.left + glyph.right) / 2 : lastRect.right - 1;
+    const holder = node.nodeType === 3 ? node.parentElement : node;
+    let pitch = parseFloat(getComputedStyle(holder).lineHeight);
+    if (!Number.isFinite(pitch)) pitch = (glyph || lastRect).height * 1.2;
+    const out = { selected: String(sel), bottom, middle, pitch, drawn: !!b && !b.hidden && b.getClientRects().length > 0 };
+    if (!out.drawn) return out;
+    const r = b.getBoundingClientRect();
+    out.button = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    const points = [[r.left + 2, r.top + 2], [r.right - 2, r.top + 2], [(r.left + r.right) / 2, (r.top + r.bottom) / 2], [r.left + 2, r.bottom - 2], [r.right - 2, r.bottom - 2]];
+    out.covered = points.map(([x, y]) => { const hit = document.elementFromPoint(x, y); return hit && hit.closest(".md-add-comment") ? null : Math.round(x) + "," + Math.round(y) + " " + (hit ? hit.tagName + "." + String(hit.className).split(" ")[0] : "nothing"); }).filter(Boolean);
+    out.window = { width: innerWidth, height: innerHeight };
+    return out;
+  })()`);
+}
+
+function assertPlaced(at, what) {
+  assert.ok(!at.error, `${what}: ${at.error}`);
+  assert.ok(at.drawn, `${what}: no add-comment button after selecting ${JSON.stringify(at.selected)}`);
+  const want = at.bottom + at.pitch / 2;
+  const b = at.button;
+  const where = `${what}: the button is at x ${Math.round(b.left)} to ${Math.round(b.right)}, y ${Math.round(b.top)} to ${Math.round(b.bottom)}`;
+  assert.ok(Math.abs(b.top - want) <= at.pitch / 4, `${where}. Its top should be half a line, ${(at.pitch / 2).toFixed(1)} px, below the highlight's bottom at y ${Math.round(at.bottom)}, so near y ${Math.round(want)}`);
+  assert.ok(b.left <= at.middle && at.middle <= b.right, `${where}. It should span x ${Math.round(at.middle)}, the middle of the last highlighted character`);
+  assert.deepEqual(at.covered, [], `${where}. Something else is drawn over it`);
+  assert.ok(b.left >= 0 && b.top >= 0 && b.right <= at.window.width && b.bottom <= at.window.height, `${where}, outside the ${at.window.width} by ${at.window.height} window`);
+}
+
+const PLACEMENTS = [
+  ["a word double-clicked on a line that has a comment card", { word: "apple" }],
+  ["a word double-clicked on a line with no card", { word: "damson" }],
+  ["the last word of a wrapped paragraph, double-clicked", { word: "grape" }],
+  ["a Shift+click selection across lines of a wrapped paragraph", { from: "runs", to: "fig" }],
+  ["a selection made backwards with Shift+←", { back: "elder" }],
+];
+
+for (const [name, how] of PLACEMENTS) {
+  test(`the add-comment button: ${name}, is half a line below the highlight, across its last character (ticket mar9nkqb)`, async (t) => {
+    const { page } = await setup(t, { "a.md": PLACED });
+    await open(page, "a.md");
+    await page.until(() => page.eval(`document.querySelectorAll(".md-comment-card").length === 3`), "three comment cards");
+    await place(page, 0);
+    if (how.word) {
+      const word = await page.eval(`window.__qaWordPoint(${JSON.stringify(how.word)}, 1)`);
+      await page.click(word.x, word.y, { clickCount: 2 });
+    } else if (how.from) {
+      await place(page, PLACED.indexOf(how.from));
+      const end = await page.eval(`window.__qaClickPoint(${PLACED.indexOf(how.to) + how.to.length})`);
+      await page.click(end.x, end.y, { modifiers: 8 });
+    } else {
+      await place(page, PLACED.indexOf(how.back) + how.back.length);
+      for (let i = 0; i < how.back.length; i += 1) await page.key("←", ["Shift"]);
+    }
+    await page.quiet();
+    await sleep(150);
+    const at = await buttonPlace(page);
+    assertPlaced(at, name);
+  });
+}
