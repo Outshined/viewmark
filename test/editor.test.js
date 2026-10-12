@@ -16563,3 +16563,204 @@ test("glyph button title is the browser tooltip", () => {
     mounted.restore();
   }
 });
+
+test("T-ticket-inbound", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  const previousHistory = globalThis.history;
+  const previousLocation = globalThis.location;
+  const storage = {
+    data: { "viewmark.repo": "docs" },
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
+    },
+    setItem(key, value) {
+      this.data[key] = String(value);
+    },
+    removeItem(key) {
+      delete this.data[key];
+    },
+  };
+  globalThis.history = { replaceState() {} };
+  globalThis.location = { pathname: "/app", search: "", hash: "" };
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport, storage);
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0, "other:k2n4p7qa", ["docs:bbbbbbbb", "other:mmmmmmmm"]);
+    const bravo = ticketFixture("bbbbbbbb", "Bravo", "new", T1);
+    const cedar = { ...ticketFixture("cccccccc", "Cedar", "new", T2, "aaaaaaaa"), rev: 2 };
+    const delta = { ...ticketFixture("dddddddd", "Delta", "new", T3, "docs:aaaaaaaa"), rev: 4 };
+    const echo = { ...ticketFixture("eeeeeeee", "Echo", "new", "2026-10-06T00:00:00.000Z", "", ["aaaaaaaa"]), rev: 1 };
+    transport.deliver({
+      type: "repos",
+      repos: [{ name: "docs", description: "Docs" }],
+    });
+    transport.deliver({
+      type: "tickets",
+      tickets: [alpha, bravo, cedar, delta, echo],
+      inbound: [
+        { repo: "other", id: "bbbbbbbb", title: "Foreign Bravo", parent: "docs:aaaaaaaa", depends: [] },
+        { repo: "other", id: "k2n4p7qa", title: "Secret", parent: "docs:aaaaaaaa", depends: [] },
+        { repo: "other", id: "pppppppp", title: "Later", parent: "docs:aaaaaaaa", depends: [] },
+        { repo: "other", id: "mmmmmmmm", title: "Blocker", parent: "", depends: ["docs:aaaaaaaa"] },
+        { repo: "other", id: "nnnnnnnn", title: "Ignored", parent: "aaaaaaaa", depends: ["aaaaaaaa"] },
+      ],
+    });
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      text: "hello\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    const sets = () => transport.sent.filter((message) => message.type === "ticket.set");
+    const block = (className) => byClass(form, className)[0];
+    const parent = block("md-ticket-parent");
+    const depends = block("md-ticket-depends");
+    const children = block("md-ticket-children");
+    const blocks = block("md-ticket-blocks");
+    assert.equal(byClass(parent, "md-ticket-match")[0].value, "other:k2n4p7qa");
+    assert.equal(byClass(parent, "md-ticket-match")[0].value.includes("Secret"), false);
+    const dependRows = byClass(depends, "md-ticket-link");
+    assert.deepEqual(dependRows.map((node) => node.dataset.id), ["docs:bbbbbbbb", "other:mmmmmmmm"]);
+    assert.deepEqual(dependRows.map((node) => node.textContent), ["Bravo", "other:mmmmmmmm"]);
+    assert.equal(dependRows.every((node) => node.tagName === "BUTTON"), true);
+    const childRows = byClass(children, "md-ticket-link");
+    assert.deepEqual(childRows.map((node) => node.textContent), ["Cedar", "Delta", "Foreign Bravo", "Secret", "Later"]);
+    assert.equal(childRows[0].tagName, "BUTTON");
+    assert.equal(childRows[1].tagName, "BUTTON");
+    for (const row of childRows.slice(2)) {
+      assert.equal(row.tagName, "DIV");
+      assert.equal(row.dataset.inbound, "true");
+      assert.equal(row.dataset.repo, "other");
+      assert.equal(row.listeners.click, undefined);
+    }
+    assert.equal(childRows[2].dataset.id, "bbbbbbbb");
+    assert.equal(childRows[2].textContent, "Foreign Bravo");
+    const blockRows = byClass(blocks, "md-ticket-link");
+    assert.deepEqual(blockRows.map((node) => node.textContent), ["Echo", "Blocker"]);
+    assert.equal(blockRows[0].tagName, "BUTTON");
+    assert.equal(blockRows[1].tagName, "DIV");
+    assert.equal(blockRows[1].dataset.inbound, "true");
+    assert.equal(blockRows[1].dataset.id, "mmmmmmmm");
+    assert.equal(blockRows.some((node) => node.textContent === "Ignored"), false);
+    assert.equal(childRows.some((node) => node.textContent === "Ignored"), false);
+
+    const dependMatch = byClass(depends, "md-ticket-match")[0];
+    dependMatch.value = "Bra";
+    dependMatch.listeners.input();
+    assert.equal(dependMatch.value, "Bravo");
+    assert.equal(byClass(depends, "md-ticket-menu")[0].hidden, false);
+    byClass(depends, "md-ticket-add")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      depends: ["docs:bbbbbbbb", "other:mmmmmmmm", "bbbbbbbb"],
+      username: "",
+    });
+    assert.equal(dependMatch.value, "");
+
+    dependMatch.value = "my_repo-2:k2n4p7qa";
+    dependMatch.listeners.input();
+    assert.equal(byClass(depends, "md-ticket-menu")[0].hidden, true);
+    const beforeTyped = sets().length;
+    byClass(depends, "md-ticket-add")[0].listeners.click({ preventDefault() {} });
+    assert.equal(sets().length, beforeTyped + 1);
+    assert.equal(dependMatch.value, "");
+    assert.deepEqual(sets().at(-1).depends, ["docs:bbbbbbbb", "other:mmmmmmmm", "my_repo-2:k2n4p7qa"]);
+    assert.equal(sets().at(-1).path, "tickets/aaaaaaaa.md");
+
+    byClass(depends, "md-ticket-link")[0].listeners.click({ preventDefault() {} });
+    byClass(depends, "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      depends: ["other:mmmmmmmm"],
+      username: "",
+    });
+    assert.equal(sets().some((message) => message.path === "tickets/bbbbbbbb.md"), false);
+
+    const parentMatch = byClass(parent, "md-ticket-match")[0];
+    parentMatch.value = "Del";
+    parentMatch.listeners.input();
+    assert.equal(parentMatch.value, "Delta");
+    assert.equal(byClass(parent, "md-ticket-menu")[0].hidden, false);
+    parentMatch.listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      parent: "dddddddd",
+      username: "",
+    });
+
+    parentMatch.value = "other:zzzzzzzz";
+    parentMatch.listeners.input();
+    assert.equal(byClass(parent, "md-ticket-menu")[0].hidden, true);
+    parentMatch.listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.equal(parentMatch.value, "");
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/aaaaaaaa.md",
+      rev: 6,
+      parent: "other:zzzzzzzz",
+      username: "",
+    });
+
+    const beforeSelf = sets().length;
+    for (const typed of ["aaaaaaaa", "docs:aaaaaaaa", "other:k2n4p7q"]) {
+      parentMatch.value = typed;
+      parentMatch.listeners.input();
+      parentMatch.listeners.keydown({ key: "Enter", preventDefault() {} });
+      byClass(depends, "md-ticket-match")[0].value = typed;
+      byClass(depends, "md-ticket-match")[0].listeners.input();
+      byClass(depends, "md-ticket-add")[0].listeners.click({ preventDefault() {} });
+    }
+    assert.equal(sets().length, beforeSelf);
+
+    const beforeChild = sets().length;
+    byClass(children, "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    assert.equal(sets().length, beforeChild);
+    const childMatch = byClass(children, "md-ticket-match")[0];
+    childMatch.value = "other:k2n4p7qa";
+    childMatch.listeners.input();
+    byClass(children, "md-ticket-add")[0].listeners.click({ preventDefault() {} });
+    assert.equal(sets().length, beforeChild);
+    assert.equal(sets().some((message) => message.path === "tickets/k2n4p7qa.md"), false);
+    childRows[0].listeners.click({ preventDefault() {} });
+    byClass(children, "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/cccccccc.md",
+      rev: 2,
+      parent: "",
+      username: "",
+    });
+
+    const beforeBlock = sets().length;
+    byClass(blocks, "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    assert.equal(sets().length, beforeBlock);
+    assert.equal(sets().some((message) => message.path === "tickets/mmmmmmmm.md"), false);
+    blockRows[0].listeners.click({ preventDefault() {} });
+    byClass(blocks, "md-ticket-remove")[0].listeners.click({ preventDefault() {} });
+    assert.deepEqual(sets().at(-1), {
+      type: "ticket.set",
+      path: "tickets/eeeeeeee.md",
+      rev: 1,
+      depends: [],
+      username: "",
+    });
+    view.destroy();
+  } finally {
+    if (previousHistory === undefined) delete globalThis.history;
+    else globalThis.history = previousHistory;
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
+    mounted.restore();
+  }
+});

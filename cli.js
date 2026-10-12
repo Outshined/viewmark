@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { start } from "./server.js";
 import { parseUnifiedDiff } from "./src/doc.js";
-import { TICKET_ALPHABET, TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./src/ticket.js";
+import { TICKET_ALPHABET, TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES, isTicketToken } from "./src/ticket.js";
 import { MAX_PAYLOAD } from "./src/ws.js";
 
 const HELP = `viewmark talks to the document hub, one command, then exit.
@@ -32,7 +32,7 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket list [--closed]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket show <id>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY] [--assignee NAME]
-  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket set <id> [--title TEXT] [--state STATE] [--type TYPE] [--priority PRIORITY] [--parent ID] [--depends IDS] [--assignee NAME]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket set <id> [--title TEXT] [--state STATE] [--type TYPE] [--priority PRIORITY] [--parent repo:id] [--depends repo:id] [--assignee NAME]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket delete <id>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket purge
   viewmark [--port PORT] [--user NAME] [--json] repo list
@@ -103,7 +103,7 @@ commit:
 ticket:
   list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY] [--assignee NAME], set <id>, delete <id>, purge.
   --title, --state, --type, --priority, --parent, --depends, --assignee, --closed.
-  --parent none clears. --depends none clears. --state is new, triaged, in progress, blocked, pending review, or closed.
+  --parent and --depends take an id or repo:id. --parent none clears. --depends none clears. --state is new, triaged, in progress, blocked, pending review, or closed.
   --type is bug, enhancement, or task. An omitted type is task.
   --priority is low, medium, or high. An omitted create stores medium.
   reporter is --user. A field write uses the current body. Later field writes win. --rev is rejected.
@@ -738,7 +738,7 @@ function normalizeTitle(raw) {
 
 function normalizeParent(raw) {
   if (raw === "none") return "";
-  if (!validTicketId(raw)) return null;
+  if (!isTicketToken(raw)) return null;
   return raw;
 }
 
@@ -753,7 +753,7 @@ function normalizeDepends(raw) {
   const seen = new Set();
   for (const part of String(raw).split(",")) {
     const id = part.trim();
-    if (!validTicketId(id)) return null;
+    if (!isTicketToken(id)) return null;
     if (seen.has(id)) continue;
     seen.add(id);
     ids.push(id);
@@ -854,8 +854,8 @@ function asTicket(raw) {
   if (!TICKET_PRIORITIES.includes(raw.priority)) return null;
   const assignee = raw.assignee == null ? "" : raw.assignee;
   if (typeof assignee !== "string") return null;
-  if (typeof raw.parent !== "string" || (raw.parent !== "" && !validTicketId(raw.parent))) return null;
-  if (!Array.isArray(raw.depends) || raw.depends.some((id) => !validTicketId(id))) return null;
+  if (typeof raw.parent !== "string" || (raw.parent !== "" && !isTicketToken(raw.parent))) return null;
+  if (!Array.isArray(raw.depends) || raw.depends.some((id) => !isTicketToken(id))) return null;
   if (typeof raw.reporter !== "string" || typeof raw.created !== "string") return null;
   return {
     id: raw.id,
@@ -889,8 +889,8 @@ function asTicketNotice(msg, id) {
   if (!TICKET_PRIORITIES.includes(msg.priority)) return null;
   const assignee = msg.assignee == null ? "" : msg.assignee;
   if (typeof assignee !== "string") return null;
-  if (typeof msg.parent !== "string" || (msg.parent !== "" && !validTicketId(msg.parent))) return null;
-  if (!Array.isArray(msg.depends) || msg.depends.some((dep) => !validTicketId(dep))) return null;
+  if (typeof msg.parent !== "string" || (msg.parent !== "" && !isTicketToken(msg.parent))) return null;
+  if (!Array.isArray(msg.depends) || msg.depends.some((dep) => !isTicketToken(dep))) return null;
   if (typeof msg.reporter !== "string" || typeof msg.created !== "string") return null;
   if (typeof msg.rev !== "number") return null;
   return {

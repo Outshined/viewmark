@@ -459,3 +459,135 @@ test("assignee is optional and stays off the file until it is set", () => {
   assert.equal(composeTicket(ticket({ assignee: "\tada" })), null);
   assert.equal(parseTicket(ID, named.replace("assignee: ada", "assignee: ada\tbea")), null);
 });
+
+function scope(home, repos, nodes) {
+  return { home, repos, tickets: nodes };
+}
+
+function node(repo, id, parent = "", depends = []) {
+  return { repo, id, parent, depends };
+}
+
+test("T-ticket-cross-repo", () => {
+  const K = "k2n4p7qa";
+  const repo64 = `r${"a".repeat(63)}`;
+  const repo65 = `r${"a".repeat(64)}`;
+  assert.equal(repo64.length, 64);
+  assert.equal(repo65.length, 65);
+
+  const parent = `other:${B}`;
+  const depends = [A, `my_repo-2:${C}`, parent];
+  const stored = ticket({ parent, depends: [parent, A, parent, `my_repo-2:${C}`] });
+  const text = composeTicket(stored);
+  assert.equal(text.includes(`parent: ${parent}\n`), true);
+  assert.equal(text.includes(`depends: ${A} my_repo-2:${C} ${parent}\n`), true);
+  assert.equal(text.includes(`docs:${A}`), false);
+  assert.equal(text.includes(`depends: ${parent}`), false);
+  const parsed = parseTicket(ID, text);
+  assert.equal(parsed.parent, parent);
+  assert.deepEqual(parsed.depends, depends);
+  assert.equal(composeTicket(parsed), text);
+
+  const both = composeTicket(ticket({ depends: [A, `docs:${A}`, `docs:${A}`] }));
+  assert.equal(both.includes(`depends: ${A} docs:${A}\n`), true);
+  assert.deepEqual(parseTicket(ID, both).depends, [A, `docs:${A}`]);
+
+  const spaced = SIMPLE.replace("depends:", `depends: ${parent}  ${A}   my_repo-2:${C}`);
+  assert.deepEqual(parseTicket(ID, spaced).depends, depends);
+  assert.equal(parseTicket(ID, SIMPLE.replace("parent:", `parent:   ${parent}  `)).parent, parent);
+  assert.equal(parseTicket(ID, SIMPLE.replace("parent:", `parent: ${repo64}:${A}`)).parent, `${repo64}:${A}`);
+  assert.equal(parseTicket(ID, SIMPLE.replace("parent:", `parent: my_repo-2:${A}`)).parent, `my_repo-2:${A}`);
+  assert.equal(composeTicket(ticket({ parent: `my_repo-2:${A}` })).includes(`parent: my_repo-2:${A}\n`), true);
+
+  for (const bad of [
+    "other:",
+    `:${K}`,
+    `other:${K}:x`,
+    `other :${K}`,
+    "other:k2n4p7q",
+    "other:iiiiiiii",
+    `_repo:${A}`,
+    `${repo65}:${A}`,
+    `${B},${C}`,
+  ]) {
+    assert.equal(parseTicket(ID, SIMPLE.replace("parent:", `parent: ${bad}`)), null, bad);
+    assert.equal(composeTicket(ticket({ parent: bad })), null, bad);
+    assert.equal(parseTicket(ID, SIMPLE.replace("depends:", `depends: ${bad}`)), null, bad);
+    assert.equal(composeTicket(ticket({ depends: [bad] })), null, bad);
+  }
+  assert.equal(parseTicket(ID, SIMPLE.replace("depends:", `depends: ${B},${C}`)), null);
+  assert.equal(composeTicket(ticket({ depends: [A, "aaaaaaai"] })), null);
+
+  const one = [entry(A), entry(B)];
+  const oneBefore = JSON.stringify(one);
+  assert.equal(rejectLink(one, A, `other:${B}`, []), null);
+  assert.equal(rejectLink(one, A, "", [`other:${B}`]), null);
+  assert.equal(rejectLink(one, A, `docs:${A}`, []), null);
+  assert.equal(rejectLink(one, A, "zzzzzzzz", []), "missing");
+  assert.equal(rejectLink(one, A, "", [B, C]), "missing");
+  assert.equal(JSON.stringify(one), oneBefore);
+
+  const emptyHome = scope("docs", ["docs"], []);
+  assert.equal(rejectLink(emptyHome, A, `docs:${A}`, []), "self");
+  assert.equal(rejectLink(emptyHome, A, A, []), "self");
+  assert.equal(rejectLink(emptyHome, A, "", [`docs:${A}`]), "self");
+  assert.equal(rejectLink(emptyHome, A, `docs:${A}`, ["zzzzzzzz"]), "self");
+
+  const registered = ["docs", "other", "my_repo-2"];
+  assert.equal(rejectLink(scope("docs", registered, [node("docs", B)]), A, `other:${C}`, []), "missing");
+  assert.equal(rejectLink(scope("docs", registered, [node("other", B)]), A, B, []), "missing");
+  assert.equal(rejectLink(scope("docs", registered, []), A, `my_repo-2:${K}`, []), "missing");
+  assert.equal(rejectLink(scope("docs", registered, [node("other", B)]), A, `other:${B}`, []), null);
+  assert.equal(rejectLink(scope("docs", ["docs"], [node("docs", B)]), A, `docs:${B}`, []), null);
+  assert.equal(rejectLink(scope("docs", ["docs"], [node("docs", B)]), A, `ghost:${K}`, []), null);
+  assert.equal(rejectLink(scope("docs", ["docs", "other"], [node("other", C, `ghost:${K}`)]), A, `other:${C}`, []), null);
+
+  const cross = scope("docs", ["docs", "other"], [
+    node("docs", A, `other:${B}`),
+    node("other", B, `docs:${A}`),
+  ]);
+  const crossBefore = JSON.stringify(cross);
+  assert.equal(rejectLink(cross, A, `other:${B}`, []), "cycle");
+  assert.equal(JSON.stringify(cross), crossBefore);
+
+  const qualified = scope("docs", ["docs", "other"], [
+    node("docs", A, `other:${B}`),
+    node("other", B, A),
+  ]);
+  assert.equal(rejectLink(qualified, A, `other:${B}`, []), null);
+  assert.equal(qualified.tickets[1].parent, A);
+  assert.equal(rejectLink(scope("docs", ["docs", "other"], [
+    node("docs", A, `other:${B}`),
+    node("other", B, `docs:${A}`),
+  ]), A, `other:${B}`, []), "cycle");
+
+  assert.equal(rejectLink(scope("docs", ["docs", "other"], [
+    node("docs", A, `other:${B}`),
+    node("other", B, `ghost:${C}`),
+    node("ghost", C, `docs:${A}`),
+  ]), A, `other:${B}`, []), null);
+  assert.equal(rejectLink(scope("docs", ["docs", "other", "ghost"], [
+    node("docs", A, `other:${B}`),
+    node("other", B, `ghost:${C}`),
+    node("ghost", C, `docs:${A}`),
+  ]), A, `other:${B}`, []), "cycle");
+
+  assert.equal(rejectLink(scope("docs", ["docs", "other"], [
+    node("docs", A),
+    node("other", B),
+  ]), A, `other:${B}`, [`other:${B}`]), null);
+  assert.equal(rejectLink(scope("docs", ["docs", "other"], [
+    node("docs", A, "", [`other:${B}`]),
+    node("other", B, "", [`docs:${A}`]),
+  ]), A, "", [`other:${B}`]), "cycle");
+  assert.equal(rejectLink(scope("docs", ["docs", "other"], [
+    node("docs", A, "", [`other:${B}`]),
+    node("other", B, `docs:${A}`),
+  ]), A, "", [`other:${B}`]), null);
+  assert.equal(rejectLink(scope("docs", ["docs", "other"], [
+    node("other", B, "", [`docs:${A}`]),
+  ]), A, "", [`other:${C}`]), "missing");
+  assert.equal(rejectLink(scope("docs", ["docs"], [
+    node("docs", A, "", [`other:${C}`]),
+  ]), A, "", [`other:${C}`]), null);
+});

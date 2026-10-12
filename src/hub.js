@@ -33,6 +33,8 @@ import {
   composeTicket,
   generateId,
   parseTicket,
+  parseTicketToken,
+  REPO_NAME,
   rejectLink,
 } from "./ticket.js";
 import { MAX_PAYLOAD, acceptKey, createParser, encodeFrame, encodeText } from "./ws.js";
@@ -234,8 +236,6 @@ function containsPath(rootDir, candidate) {
   const rel = path.relative(rootDir, candidate);
   return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
 }
-
-const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 function validRepoName(name) {
   return typeof name === "string" && REPO_NAME.test(name);
@@ -623,6 +623,23 @@ async function titlesFor(repo, listed) {
     if (title) titles[rel] = title;
   }
   return titles;
+}
+
+// A bare id and this repo's repo:id name the removed ticket. Another repo's
+// token is a different ticket, and that repo's files are not written.
+function namesRemoved(token, ids, repoName) {
+  if (typeof token !== "string" || token === "") return false;
+  if (ids.has(token)) return true;
+  const parsed = parseTicketToken(token);
+  return Boolean(parsed && parsed.repo === repoName && ids.has(parsed.id));
+}
+
+function clearedParent(parent, ids, repoName) {
+  return namesRemoved(parent, ids, repoName) ? "" : parent;
+}
+
+function clearedDepends(depends, ids, repoName) {
+  return depends.filter((dep) => !namesRemoved(dep, ids, repoName));
 }
 
 function ticketIdFromRel(rel) {
@@ -1617,8 +1634,72 @@ export async function createHub(stateDir, sourceRoot) {
     return tickets;
   }
 
+  function tokenNamesRepo(token, repoName, ids) {
+    const parsed = parseTicketToken(token);
+    return Boolean(parsed && parsed.repo === repoName && ids.has(parsed.id));
+  }
+
+  // Tickets in other repos whose parent or depends names a ticket here.
+  // A bare id belongs to the file's repo, so only repo:id counts.
+  async function collectInbound(repo) {
+    const tickets = await collectTickets(repo);
+    const ids = new Set(tickets.map((ticket) => ticket.id));
+    const inbound = [];
+    for (const other of repos.values()) {
+      if (other.name === repo.name) continue;
+      const found = await collectTickets(other);
+      for (const ticket of found) {
+        const hit = tokenNamesRepo(ticket.parent, repo.name, ids)
+          || ticket.depends.some((dep) => tokenNamesRepo(dep, repo.name, ids));
+        if (!hit) continue;
+        inbound.push({
+          repo: other.name,
+          id: ticket.id,
+          title: ticket.title,
+          parent: ticket.parent,
+          depends: [...ticket.depends],
+        });
+      }
+    }
+    inbound.sort((a, b) => {
+      if (a.repo < b.repo) return -1;
+      if (a.repo > b.repo) return 1;
+      if (a.id < b.id) return -1;
+      if (a.id > b.id) return 1;
+      return 0;
+    });
+    return inbound;
+  }
+
+  async function ticketsPayload(repo) {
+    return {
+      type: "tickets",
+      tickets: await collectTickets(repo),
+      inbound: await collectInbound(repo),
+    };
+  }
+
+  async function linkIndex(home) {
+    const names = [];
+    const tickets = [];
+    for (const registered of repos.values()) {
+      names.push(registered.name);
+      const found = await collectTickets(registered);
+      for (const ticket of found) {
+        tickets.push({
+          repo: registered.name,
+          id: ticket.id,
+          parent: ticket.parent ?? "",
+          depends: Array.isArray(ticket.depends) ? ticket.depends : [],
+        });
+      }
+    }
+    return { home: home.name, repos: names, tickets };
+  }
+
+  // This repo's sockets only. Another repo's open page is not told.
   async function broadcastTickets(repo) {
-    const msg = { type: "tickets", tickets: await collectTickets(repo) };
+    const msg = await ticketsPayload(repo);
     for (const sock of sockets) {
       if (sock.session?.repo === repo) send(sock, msg);
     }
@@ -1940,7 +2021,7 @@ export async function createHub(stateDir, sourceRoot) {
   async function onTickets(socket) {
     const repo = socket.session.repo;
     if (!repo) return fail(socket, 400);
-    send(socket, { type: "tickets", tickets: await collectTickets(repo) });
+    send(socket, await ticketsPayload(repo));
   }
 
   async function onTicketCreate(socket, msg) {
@@ -2044,7 +2125,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (composed == null) return fail(socket, 400);
     const parsed = parseTicket(file.ticket.id, composed);
     if (!parsed) return fail(socket, 400);
-    const reason = rejectLink(await collectTickets(repo), parsed.id, parsed.parent, parsed.depends);
+    const reason = rejectLink(await linkIndex(repo), parsed.id, parsed.parent, parsed.depends);
     if (reason) return fail(socket, 409);
     const current = composeTicket({ ...file.ticket, body: file.text });
     if (composed === current) return;
@@ -2138,10 +2219,11 @@ export async function createHub(stateDir, sourceRoot) {
     const holder = otherHolder(repo, rel, socket);
     if (holder) return fail(socket, 409, { heldBy: holder });
     await unlinkFile(socket, rel);
+    const gone = new Set([id]);
     for (const ticket of all) {
       if (ticket.id === id) continue;
-      const parent = ticket.parent === id ? "" : ticket.parent;
-      const depends = ticket.depends.filter((dep) => dep !== id);
+      const parent = clearedParent(ticket.parent, gone, repo.name);
+      const depends = clearedDepends(ticket.depends, gone, repo.name);
       if (parent === ticket.parent && depends.length === ticket.depends.length) continue;
       await rewriteTicketLinks(repo, ticket.id, parent, depends, socket.session.username);
     }
@@ -2165,8 +2247,8 @@ export async function createHub(stateDir, sourceRoot) {
     }
     for (const ticket of all) {
       if (closedIds.has(ticket.id)) continue;
-      const parent = closedIds.has(ticket.parent) ? "" : ticket.parent;
-      const depends = ticket.depends.filter((dep) => !closedIds.has(dep));
+      const parent = clearedParent(ticket.parent, closedIds, repo.name);
+      const depends = clearedDepends(ticket.depends, closedIds, repo.name);
       if (parent === ticket.parent && depends.length === ticket.depends.length) continue;
       await rewriteTicketLinks(repo, ticket.id, parent, depends, socket.session.username);
     }

@@ -41,7 +41,7 @@ import {
   gapCaretStops,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
-import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES } from "./ticket.js";
+import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES, isTicketToken, parseTicketToken } from "./ticket.js";
 import { MAX_PAYLOAD } from "./ws.js";
 
 export {
@@ -457,6 +457,24 @@ function normalizeTicket(ticket) {
     reporter: typeof ticket.reporter === "string" ? ticket.reporter : "",
     created: typeof ticket.created === "string" ? ticket.created : "",
     rev,
+  };
+}
+
+function normalizeInbound(item) {
+  if (!item || typeof item !== "object") return null;
+  const repo = typeof item.repo === "string" ? item.repo : "";
+  const id = typeof item.id === "string" ? item.id : "";
+  if (!repo || !id) return null;
+  const depends = [];
+  if (Array.isArray(item.depends)) {
+    for (const dep of item.depends) if (typeof dep === "string") depends.push(dep);
+  }
+  return {
+    repo,
+    id,
+    title: typeof item.title === "string" ? item.title : "",
+    parent: typeof item.parent === "string" ? item.parent : "",
+    depends,
   };
 }
 
@@ -2151,6 +2169,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let treeDrop = null;
   const openDirs = new Set();
   let ticketList = [];
+  let inboundList = [];
   let openTicket = null;
   let relationTicketId = "";
   let relationShown = { parent: false, depends: false, children: false, blocks: false };
@@ -7085,12 +7104,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function relationPresence(ticket) {
-    const id = ticket.id;
     return {
       parent: ticket.parent !== "",
       depends: Array.isArray(ticket.depends) && ticket.depends.length > 0,
-      children: ticketList.some((item) => item && item.id !== id && item.parent === id),
-      blocks: ticketList.some((item) => item && item.id !== id && Array.isArray(item.depends) && item.depends.includes(id)),
+      children: childTicketsOf(ticket).length > 0,
+      blocks: blockersOf(ticket).length > 0,
     };
   }
 
@@ -7135,6 +7153,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const onClear = options.onClear;
     const commitOnPick = options.commitOnPick === true;
     const buttons = options.buttons !== false;
+    // A typed token is stored on this ticket. Children and blocks write another
+    // file, and only a ticket from this repo is that file.
+    const acceptTyped = options.acceptTyped === true;
     const picker = document.createElement("div");
     picker.className = "md-ticket-picker";
     const input = document.createElement("input");
@@ -7158,6 +7179,22 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       selectInput(input, 0, 0);
       menu.replaceChildren();
       hideElement(menu);
+    }
+
+    function typedToken() {
+      const raw = String(input.value || "").trim();
+      if (!isTicketToken(raw) || !openTicket) return "";
+      if (raw === openTicket.id) return "";
+      if (activeRepo && raw === `${activeRepo}:${openTicket.id}`) return "";
+      return raw;
+    }
+
+    function commitTyped() {
+      const token = typedToken();
+      if (!token) return false;
+      clearMatch();
+      onAdd({ id: token });
+      return true;
     }
 
     function showMatches() {
@@ -7214,6 +7251,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
 
     input.addEventListener("input", onMatchInput);
+    input.addEventListener("keydown", (event) => {
+      if (!event || event.key !== "Enter") return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      if (commitOnPick && !menu.hidden && state.chosen) {
+        const ticket = state.chosen;
+        hideElement(menu);
+        onAdd(ticket);
+        return;
+      }
+      if (acceptTyped && menu.hidden) commitTyped();
+    });
     const parts = [input];
     if (buttons) {
       const add = strokeButton("md-ticket-add", "Add", "M12 5v14M5 12h14", options.addTitle);
@@ -7221,9 +7269,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       add.addEventListener("click", (event) => {
         if (event && typeof event.preventDefault === "function") event.preventDefault();
         const ticket = state.chosen;
-        if (!ticket) return;
-        clearMatch();
-        onAdd(ticket);
+        if (ticket) {
+          clearMatch();
+          onAdd(ticket);
+          return;
+        }
+        if (acceptTyped) commitTyped();
       });
       remove.addEventListener("click", (event) => {
         if (event && typeof event.preventDefault === "function") event.preventDefault();
@@ -7256,6 +7307,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       selected = null;
       const rows = [];
       for (const ticket of next || []) {
+        // An inbound row is another repo's ticket. Selecting it would write that repo.
+        if (ticket.inbound) {
+          const row = document.createElement("div");
+          row.className = "md-ticket-link";
+          row.textContent = ticket.title || `${ticket.repo}:${ticket.id}`;
+          row.dataset.id = ticket.id;
+          row.dataset.repo = ticket.repo || "";
+          row.dataset.inbound = "true";
+          rows.push(row);
+          continue;
+        }
         const row = plainButton("md-ticket-link", ticket.title || ticket.id);
         row.dataset.id = ticket.id;
         row.addEventListener("click", (event) => {
@@ -7276,16 +7338,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return {
       links,
       removeSelected() {
-        if (!selected) return;
+        if (!selected || selected.inbound) return;
         onRemove(selected);
       },
     };
   }
 
-  function knownTicket(id) {
-    return ticketList.find((item) => item.id === id) || {
-      id,
-      title: id,
+  // A bare id and this repo's repo:id are the same local ticket. The stored
+  // token stays the row id so remove filters that token. Inbound titles belong
+  // to rows that point here; an outbound token is drawn as stored.
+  function knownTicket(token) {
+    const parsed = parseTicketToken(token);
+    if (parsed && (!parsed.repo || parsed.repo === activeRepo)) {
+      const local = ticketList.find((item) => item.id === parsed.id);
+      if (local) return { ...local, id: token, title: local.title || token };
+    }
+    return {
+      id: token,
+      title: token,
       created: "",
       parent: "",
       depends: [],
@@ -7293,22 +7363,58 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     };
   }
 
+  function namesLocal(token, id) {
+    if (token === id) return true;
+    return Boolean(activeRepo) && token === `${activeRepo}:${id}`;
+  }
+
+  function namesInbound(token, id) {
+    return Boolean(activeRepo) && token === `${activeRepo}:${id}`;
+  }
+
+  function inboundMatches(predicate) {
+    const rows = [];
+    for (const item of inboundList) {
+      if (!item || !predicate(item)) continue;
+      rows.push({
+        id: item.id,
+        title: item.title || `${item.repo}:${item.id}`,
+        repo: item.repo,
+        parent: item.parent,
+        depends: item.depends,
+        inbound: true,
+        rev: 0,
+        created: "",
+      });
+    }
+    rows.sort((a, b) => {
+      if (a.repo < b.repo) return -1;
+      if (a.repo > b.repo) return 1;
+      if (a.id < b.id) return -1;
+      if (a.id > b.id) return 1;
+      return 0;
+    });
+    return rows;
+  }
+
   function childTicketsOf(ticket) {
-    return ticketList
-      .filter((item) => item.parent === ticket.id && item.id !== ticket.id)
+    const local = ticketList
+      .filter((item) => item.id !== ticket.id && namesLocal(item.parent, ticket.id))
       .sort(compareTickets);
+    return local.concat(inboundMatches((item) => namesInbound(item.parent, ticket.id)));
   }
 
   function blockersOf(ticket) {
-    return ticketList
-      .filter((item) => item.id !== ticket.id && Array.isArray(item.depends) && item.depends.includes(ticket.id))
+    const local = ticketList
+      .filter((item) => item.id !== ticket.id && Array.isArray(item.depends) && item.depends.some((dep) => namesLocal(dep, ticket.id)))
       .sort(compareTickets);
+    return local.concat(inboundMatches((item) => Array.isArray(item.depends) && item.depends.some((dep) => namesInbound(dep, ticket.id))));
   }
 
   function parentLabel(ticket) {
     if (!ticket || !ticket.parent) return "";
-    const parentTicket = ticketList.find((item) => item.id === ticket.parent);
-    return parentTicket ? (parentTicket.title || parentTicket.id) : ticket.parent;
+    const known = knownTicket(ticket.parent);
+    return known.title || ticket.parent;
   }
 
   function ticketStructureKey(ticket) {
@@ -7623,11 +7729,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
     const parentField = document.createElement("div");
     parentField.className = "md-ticket-field md-ticket-parent";
-    const parentTicket = ticket.parent ? ticketList.find((item) => item.id === ticket.parent) : null;
-    const parentShown = ticket.parent ? (parentTicket ? (parentTicket.title || parentTicket.id) : ticket.parent) : "";
+    const parentShown = parentLabel(ticket);
     const parentPicker = buildTicketPicker({
       commitOnPick: true,
       buttons: false,
+      acceptTyped: true,
       value: parentShown,
       onAdd: (chosen) => sendTicketSet({ parent: chosen.id }),
       onClear: () => sendTicketSet({ parent: "" }),
@@ -7644,6 +7750,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const dependPicker = buildTicketPicker({
       addTitle: "Add a dependency",
       removeTitle: "Remove a dependency",
+      acceptTyped: true,
       onAdd: (chosen) => {
         const current = openTicket;
         if (!current) return;
@@ -7662,6 +7769,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     children.className = "md-ticket-children";
     const childTickets = childTicketsOf(ticket);
     const childList = buildLinkList(childTickets, (selected) => {
+      if (selected.inbound) return;
       sendTicketSet({
         path: `tickets/${selected.id}.md`,
         rev: selected.rev,
@@ -7724,10 +7832,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const blocks = document.createElement("div");
     blocks.className = "md-ticket-blocks";
     const blockList = buildLinkList(blockers, (selected) => {
+      if (selected.inbound) return;
       sendTicketSet({
         path: `tickets/${selected.id}.md`,
         rev: selected.rev,
-        depends: (selected.depends || []).filter((dep) => dep !== ticket.id),
+        depends: (selected.depends || []).filter((dep) => !namesLocal(dep, ticket.id)),
       });
     });
     const blockPicker = buildTicketPicker({
@@ -7895,6 +8004,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (ticket) next.push(ticket);
     }
     ticketList = next;
+    const incomingInbound = Array.isArray(message.inbound) ? message.inbound : [];
+    const nextInbound = [];
+    for (const item of incomingInbound) {
+      const row = normalizeInbound(item);
+      if (row) nextInbound.push(row);
+    }
+    inboundList = nextInbound;
     if (openTicket && !ticketList.some((ticket) => ticket.id === openTicket.id)) {
       clearOpenTicket();
       return;
@@ -8307,6 +8423,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     fileTitles = null;
     draggedMove = null;
     ticketList = [];
+    inboundList = [];
     state = createState("");
     sentLines = lineSet(state.anchor, state.cursor);
     outstandingLock = null;

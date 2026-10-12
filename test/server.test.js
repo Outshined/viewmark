@@ -2571,6 +2571,8 @@ test("T-repo-registry", async () => {
     assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 409 });
     client.send({ type: "repo.register", username: "A", name: "Bad Name", description: "Nope", path: other });
     assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+    client.send({ type: "repo.register", username: "A", name: "bad:name", description: "Nope", path: other });
+    assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 400 });
     client.send({ type: "repo.register", username: "A", name: "child", description: "Child", path: nested });
     assert.deepEqual(await client.next((msg) => msg.type === "error"), { type: "error", status: 400 });
     client.send({ type: "repo.register", username: "A", name: "src", description: "Package", path: repoRoot });
@@ -4992,4 +4994,300 @@ test("picture: a comment note stays text", async () => {
       ada.ws.close();
     }
   });
+});
+
+test("T-ticket-cross-repo", async () => {
+  const A = "aaaaaaaa";
+  const B = "bbbbbbbb";
+  const C = "cccccccc";
+  const D = "dddddddd";
+  const F = "ffffffff";
+  const G = "gggggggg";
+  const H = "hhhhhhhh";
+  const K = "k2n4p7qa";
+  const otherDir = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-other-"));
+  const mineDir = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-mine-"));
+  const ghostDir = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-ghost-"));
+  try {
+    await withDocs(async ({ port, dir }) => {
+      await registerRepo(port, "other", "Other", otherDir);
+      await registerRepo(port, "my_repo-2", "Mine", mineDir);
+      const stamp = (n) => `2026-03-01T00:00:0${n}.000Z`;
+      await writeTicket(dir, { id: A, title: "Alpha", state: "new", created: stamp(1), body: "alpha\n" });
+      await writeTicket(dir, { id: B, title: "Bravo", state: "new", created: stamp(2), body: "bravo\n" });
+      await writeTicket(dir, {
+        id: C,
+        title: "Cee",
+        state: "new",
+        parent: A,
+        depends: [`docs:${A}`, `other:${A}`],
+        created: stamp(3),
+        body: "cee\n",
+      });
+      await writeTicket(dir, { id: F, title: "Eff", state: "closed", created: stamp(4), body: "eff\n" });
+      await writeTicket(dir, {
+        id: G,
+        title: "Gee",
+        state: "new",
+        parent: F,
+        depends: [`docs:${F}`, `other:${B}`],
+        created: stamp(5),
+        body: "gee\n",
+      });
+      await writeTicket(otherDir, { id: B, title: "Other Bravo", state: "new", created: stamp(2), body: "ob\n" });
+      await writeTicket(otherDir, {
+        id: D,
+        title: "Dee",
+        state: "new",
+        parent: `docs:${A}`,
+        depends: [`docs:${A}`],
+        created: stamp(3),
+        body: "dee\n",
+      });
+      await writeTicket(otherDir, {
+        id: H,
+        title: "Aitch",
+        state: "new",
+        parent: `docs:${F}`,
+        created: stamp(4),
+        body: "aitch\n",
+      });
+
+      const ada = await hello(port, "A");
+      const ada2 = await hello(port, "A2");
+      const bo = await hello(port, "B", "other");
+      const pathOf = (id) => `tickets/${id}.md`;
+      const readId = async (root, id) => readDoc(root, pathOf(id));
+
+      function assertInbound(records, expected) {
+        for (const row of records) {
+          assert.deepEqual(Object.keys(row).sort(), ["depends", "id", "parent", "repo", "title"]);
+        }
+        assert.deepEqual(records, expected);
+      }
+
+      async function expectNoTicketBroadcast(client, username) {
+        assert.equal(client.all.some((msg) => msg.type === "tickets" || msg.type === "docs"), false);
+        client.send({ type: "list", username });
+        const msg = await client.next((item) => item.type === "docs" || item.type === "tickets");
+        assert.equal(msg.type, "docs");
+        assert.equal(client.all.some((item) => item.type === "tickets"), false);
+      }
+
+      async function setResult(client, username, payload) {
+        client.send({ type: "ticket.set", username, ...payload });
+        return client.next((msg) => msg.type === "tickets" || msg.type === "error" || msg.type === "ticket");
+      }
+
+      async function setOk(client, username, payload, peers) {
+        const msg = await setResult(client, username, payload);
+        assert.equal(msg.type, "tickets");
+        assert.ok(Array.isArray(msg.inbound));
+        for (const ticket of msg.tickets) assertTicketEntry(ticket);
+        for (const peer of peers) {
+          const copy = await peer.next((item) => item.type === "tickets" || item.type === "error");
+          assert.deepEqual(copy, msg);
+        }
+        return msg;
+      }
+
+      async function setBad(client, username, payload, status, fileRoot, id, peers) {
+        const before = await readId(fileRoot, id);
+        const msg = await setResult(client, username, payload);
+        assert.deepEqual(msg, { type: "error", status });
+        assert.equal(await readId(fileRoot, id), before);
+        for (const peer of peers) await expectNoTicketBroadcast(peer.client, peer.username);
+        return before;
+      }
+
+      try {
+        const listedMine = await setOk(ada, "A", { path: pathOf(A), parent: `ghost:${K}` }, [ada2]);
+        assert.equal(listedMine.tickets.find((ticket) => ticket.id === A).parent, `ghost:${K}`);
+        assert.equal(listedMine.tickets.some((ticket) => ticket.id === D), false);
+        const ghostParent = await readId(dir, A);
+        assert.match(ghostParent, /^parent: ghost:k2n4p7qa$/m);
+        assert.equal(ghostParent.includes(`docs:${K}`), false);
+        await expectNoTicketBroadcast(bo, "B");
+
+        await setBad(ada, "A", { path: pathOf(A), depends: [`my_repo-2:${K}`] }, 409, dir, A, [
+          { client: ada2, username: "A2" },
+          { client: bo, username: "B" },
+        ]);
+        await setBad(ada, "A", { path: pathOf(A), parent: `other:${K}` }, 409, dir, A, [
+          { client: ada2, username: "A2" },
+          { client: bo, username: "B" },
+        ]);
+        assert.equal(await readId(dir, A), ghostParent);
+
+        await registerRepo(port, "ghost", "Ghost", ghostDir);
+        for (const client of [ada, ada2, bo]) {
+          const repos = await client.next((msg) => msg.type === "repos");
+          const names = repos.repos.map((repo) => repo.name);
+          assert.equal(names.includes("my_repo-2"), true);
+          assert.equal(names.includes("ghost"), true);
+          assert.equal(names.includes("bad:name"), false);
+        }
+
+        await setBad(ada, "A", { path: pathOf(A), title: "Renamed" }, 409, dir, A, [
+          { client: ada2, username: "A2" },
+          { client: bo, username: "B" },
+        ]);
+        assert.equal(parseTicket(A, await readId(dir, A)).title, "Alpha");
+        assert.equal(parseTicket(A, await readId(dir, A)).parent, `ghost:${K}`);
+
+        const cleared = await setOk(ada, "A", { path: pathOf(A), parent: "" }, [ada2]);
+        assert.equal(cleared.tickets.find((ticket) => ticket.id === A).parent, "");
+        await expectNoTicketBroadcast(bo, "B");
+
+        for (const parent of ["other:", `:${K}`, `other:${K}:x`, `other :${K}`, "other:k2n4p7q", "other:iiiiiiii", `_repo:${A}`, `${"n".repeat(65)}:${A}`]) {
+          await setBad(ada, "A", { path: pathOf(A), parent }, 400, dir, A, [
+            { client: ada2, username: "A2" },
+            { client: bo, username: "B" },
+          ]);
+        }
+        await setBad(ada, "A", { path: pathOf(A), depends: [B, "other:"] }, 400, dir, A, [
+          { client: ada2, username: "A2" },
+          { client: bo, username: "B" },
+        ]);
+
+        for (const parent of [A, `docs:${A}`]) {
+          await setBad(ada, "A", { path: pathOf(A), parent }, 409, dir, A, [
+            { client: ada2, username: "A2" },
+            { client: bo, username: "B" },
+          ]);
+        }
+        for (const depends of [[A], [`docs:${A}`]]) {
+          await setBad(ada, "A", { path: pathOf(A), depends }, 409, dir, A, [
+            { client: ada2, username: "A2" },
+            { client: bo, username: "B" },
+          ]);
+        }
+
+        const bare = await setOk(ada, "A", { path: pathOf(A), parent: B }, [ada2]);
+        assert.equal(bare.tickets.find((ticket) => ticket.id === A).parent, B);
+        const bareDisk = await readId(dir, A);
+        assert.match(bareDisk, /^parent: bbbbbbbb$/m);
+        assert.equal(bareDisk.includes("docs:bbbbbbbb"), false);
+        await expectNoTicketBroadcast(bo, "B");
+
+        const qualified = await setOk(ada, "A", { path: pathOf(A), parent: `docs:${B}` }, [ada2]);
+        assert.equal(qualified.tickets.find((ticket) => ticket.id === A).parent, `docs:${B}`);
+        assert.match(await readId(dir, A), /^parent: docs:bbbbbbbb$/m);
+        await expectNoTicketBroadcast(bo, "B");
+
+        const linked = await setOk(ada, "A", { path: pathOf(A), parent: `other:${B}` }, [ada2]);
+        assert.equal(linked.tickets.find((ticket) => ticket.id === A).parent, `other:${B}`);
+        assert.equal(linked.tickets.some((ticket) => ticket.id === D), false);
+        assertInbound(linked.inbound, [
+          { repo: "other", id: D, title: "Dee", parent: `docs:${A}`, depends: [`docs:${A}`] },
+          { repo: "other", id: H, title: "Aitch", parent: `docs:${F}`, depends: [] },
+        ]);
+        assert.match(await readId(dir, A), /^parent: other:bbbbbbbb$/m);
+        await expectNoTicketBroadcast(bo, "B");
+
+        bo.send({ type: "tickets", username: "B" });
+        const otherList = await bo.next((msg) => msg.type === "tickets");
+        assert.equal(otherList.tickets.some((ticket) => ticket.id === A), false);
+        assert.equal(otherList.tickets.some((ticket) => ticket.id === B), true);
+        assertInbound(otherList.inbound, [
+          { repo: "docs", id: A, title: "Alpha", parent: `other:${B}`, depends: [] },
+          {
+            repo: "docs",
+            id: G,
+            title: "Gee",
+            parent: F,
+            depends: [`docs:${F}`, `other:${B}`],
+          },
+        ]);
+        ada.send({ type: "tickets", username: "A" });
+        const docsList = await ada.next((msg) => msg.type === "tickets");
+        assert.equal(docsList.tickets.some((ticket) => ticket.id === D), false);
+        assertInbound(docsList.inbound, linked.inbound);
+        await expectNoTicketBroadcast(ada2, "A2");
+        await expectNoTicketBroadcast(bo, "B");
+
+        await setBad(bo, "B", { path: pathOf(B), parent: `docs:${A}` }, 409, otherDir, B, [
+          { client: ada, username: "A" },
+          { client: ada2, username: "A2" },
+        ]);
+        assert.equal(parseTicket(B, await readId(otherDir, B)).parent, "");
+
+        const dependBack = await setOk(bo, "B", { path: pathOf(B), depends: [`docs:${A}`] }, []);
+        assert.deepEqual(dependBack.tickets.find((ticket) => ticket.id === B).depends, [`docs:${A}`]);
+        await expectNoTicketBroadcast(ada, "A");
+        await expectNoTicketBroadcast(ada2, "A2");
+        await setBad(ada, "A", { path: pathOf(A), depends: [`other:${B}`] }, 409, dir, A, [
+          { client: ada2, username: "A2" },
+          { client: bo, username: "B" },
+        ]);
+        assert.deepEqual(parseTicket(A, await readId(dir, A)).depends, []);
+
+        await setOk(bo, "B", { path: pathOf(B), depends: [] }, []);
+        await expectNoTicketBroadcast(ada, "A");
+        await expectNoTicketBroadcast(ada2, "A2");
+        const ownParent = await setOk(ada, "A", { path: pathOf(A), depends: [`other:${B}`] }, [ada2]);
+        assert.equal(ownParent.tickets.find((ticket) => ticket.id === A).parent, `other:${B}`);
+        assert.deepEqual(ownParent.tickets.find((ticket) => ticket.id === A).depends, [`other:${B}`]);
+        const ownDisk = await readId(dir, A);
+        assert.match(ownDisk, /^parent: other:bbbbbbbb$/m);
+        assert.match(ownDisk, /^depends: other:bbbbbbbb$/m);
+        await expectNoTicketBroadcast(bo, "B");
+
+        const foreign = await setOk(bo, "B", { path: pathOf(B), parent: `nope:${A}` }, []);
+        assert.equal(foreign.tickets.find((ticket) => ticket.id === B).parent, `nope:${A}`);
+        await setOk(bo, "B", { path: pathOf(B), title: "Still Bravo" }, []);
+        assert.equal(parseTicket(B, await readId(otherDir, B)).title, "Still Bravo");
+        assert.equal(parseTicket(B, await readId(otherDir, B)).parent, `nope:${A}`);
+        await expectNoTicketBroadcast(ada, "A");
+        await expectNoTicketBroadcast(ada2, "A2");
+
+        const deeBefore = await readId(otherDir, D);
+        const aitchBefore = await readId(otherDir, H);
+        ada.send({ type: "ticket.delete", username: "A", id: A });
+        assert.equal((await ada.next((msg) => msg.type === "deleted" || msg.type === "error")).type, "deleted");
+        assert.equal((await ada.next((msg) => msg.type === "docs" || msg.type === "tickets")).type, "docs");
+        const afterDelete = await ada.next((msg) => msg.type === "tickets");
+        assert.equal((await ada2.next((msg) => msg.type === "docs" || msg.type === "tickets")).type, "docs");
+        assert.deepEqual(await ada2.next((msg) => msg.type === "tickets"), afterDelete);
+        assert.equal(afterDelete.tickets.some((ticket) => ticket.id === A), false);
+        await expectNoTicketBroadcast(bo, "B");
+        const cee = parseTicket(C, await readId(dir, C));
+        assert.equal(cee.parent, "");
+        assert.deepEqual(cee.depends, [`other:${A}`]);
+        assert.equal(await readId(otherDir, D), deeBefore);
+        assert.equal(parseTicket(D, deeBefore).parent, `docs:${A}`);
+        await setBad(ada, "A", { path: pathOf(C), title: "Cee 2" }, 409, dir, C, [
+          { client: ada2, username: "A2" },
+          { client: bo, username: "B" },
+        ]);
+
+        ada.send({ type: "ticket.purge", username: "A" });
+        const purged = await ada.next((msg) => msg.type === "tickets" || msg.type === "error");
+        assert.equal(purged.type, "tickets");
+        assert.deepEqual(await ada2.next((msg) => msg.type === "tickets"), purged);
+        assert.equal(purged.tickets.some((ticket) => ticket.id === F), false);
+        await expectNoTicketBroadcast(bo, "B");
+        await assert.rejects(() => fs.lstat(path.join(dir, pathOf(F))));
+        const gee = parseTicket(G, await readId(dir, G));
+        assert.equal(gee.parent, "");
+        assert.deepEqual(gee.depends, [`other:${B}`]);
+        assert.equal(await readId(otherDir, H), aitchBefore);
+        assert.equal(await readId(otherDir, D), deeBefore);
+        await setBad(bo, "B", { path: pathOf(H), title: "Aitch 2" }, 409, otherDir, H, [
+          { client: ada, username: "A" },
+          { client: ada2, username: "A2" },
+        ]);
+        assert.equal(parseTicket(H, await readId(otherDir, H)).title, "Aitch");
+        assert.equal(parseTicket(H, await readId(otherDir, H)).parent, `docs:${F}`);
+      } finally {
+        ada.ws.close();
+        ada2.ws.close();
+        bo.ws.close();
+      }
+    });
+  } finally {
+    await fs.rm(otherDir, { recursive: true, force: true });
+    await fs.rm(mineDir, { recursive: true, force: true });
+    await fs.rm(ghostDir, { recursive: true, force: true });
+  }
 });

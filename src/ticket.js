@@ -20,6 +20,26 @@ function isId(value) {
   return true;
 }
 
+// A letter or digit, then up to 63 more of those, underscore, or hyphen. Same
+// shape as a registered repo name, so a token's repo is not a narrower name.
+export const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+// A bare id, or repo:id. The bare id stays bare: saving does not add a repo.
+export function parseTicketToken(value) {
+  if (isId(value)) return { repo: "", id: value };
+  if (typeof value !== "string") return null;
+  const split = value.indexOf(":");
+  if (split <= 0 || split !== value.lastIndexOf(":")) return null;
+  const repo = value.slice(0, split);
+  const id = value.slice(split + 1);
+  if (!REPO_NAME.test(repo) || !isId(id)) return null;
+  return { repo, id };
+}
+
+export function isTicketToken(value) {
+  return parseTicketToken(value) !== null;
+}
+
 function presentId(id) {
   return typeof id === "string" && id.length > 0;
 }
@@ -71,7 +91,7 @@ function parseDepends(value) {
   if (value === "") return [];
   const parts = value.split(" ").filter((part) => part.length > 0);
   for (const part of parts) {
-    if (!isId(part)) return null;
+    if (!isTicketToken(part)) return null;
   }
   return [...new Set(parts)].sort();
 }
@@ -96,12 +116,12 @@ function validateFields(fields) {
   }
 
   const parent = typeof fields.parent === "string" ? fields.parent.trim() : null;
-  if (parent === null || (parent !== "" && !isId(parent))) return null;
+  if (parent === null || (parent !== "" && !isTicketToken(parent))) return null;
 
   if (!Array.isArray(fields.depends)) return null;
   const depends = [];
   for (const dep of fields.depends) {
-    if (!isId(dep)) return null;
+    if (!isTicketToken(dep)) return null;
     depends.push(dep);
   }
 
@@ -180,12 +200,12 @@ export function composeTicket(ticket) {
 function parentCloses(graph, start) {
   let current = start;
   const seen = new Set();
-  while (!seen.has(current)) {
+  while (current && !seen.has(current)) {
     seen.add(current);
     const node = graph.get(current);
     if (!node) return false;
-    const next = node.parent ?? "";
-    if (next === "") return false;
+    const next = node.parent;
+    if (!next) return false;
     if (next === start) return true;
     current = next;
   }
@@ -197,6 +217,7 @@ function dependsCloses(graph, start) {
   const pending = [...(graph.get(start)?.depends ?? [])];
   while (pending.length > 0) {
     const next = pending.pop();
+    if (!next) continue;
     if (next === start) return true;
     if (seen.has(next)) continue;
     seen.add(next);
@@ -207,32 +228,102 @@ function dependsCloses(graph, start) {
   return false;
 }
 
+// A list is one repo with no name. { home, repos, tickets } is every registered repo.
+function linkScope(tickets) {
+  if (tickets && typeof tickets === "object" && !Array.isArray(tickets)
+    && Array.isArray(tickets.tickets) && Array.isArray(tickets.repos)) {
+    const registered = new Set();
+    for (const name of tickets.repos) {
+      if (typeof name === "string") registered.add(name);
+    }
+    return {
+      home: typeof tickets.home === "string" ? tickets.home : "",
+      registered,
+      list: tickets.tickets,
+    };
+  }
+  return {
+    home: "",
+    registered: new Set([""]),
+    list: Array.isArray(tickets) ? tickets : [],
+  };
+}
+
+function fileRepo(ticket, home) {
+  if (ticket && typeof ticket.repo === "string" && ticket.repo !== "") return ticket.repo;
+  return home;
+}
+
+function nodeKey(repo, id) {
+  return `${repo}:${id}`;
+}
+
+// A bare id belongs to the file that stores it. repo:id names that repo.
+// An unregistered name is not a node: the walk stops there.
+function classify(token, fileRepoName, registered) {
+  if (token === "") return "";
+  const parsed = parseTicketToken(token);
+  if (!parsed) return null;
+  const repo = parsed.repo || fileRepoName;
+  if (!registered.has(repo)) return "";
+  return nodeKey(repo, parsed.id);
+}
+
+function namesSelf(token, id, home) {
+  if (typeof token !== "string" || !presentId(id)) return false;
+  if (token === id) return true;
+  return Boolean(home) && token === `${home}:${id}`;
+}
+
 // A one-node loop is "self", not "cycle", and it is not a link to some other
 // ticket. Parent links and depends links are walked separately so a ticket
-// may depend on its own parent.
+// may depend on its own parent. A bare id is qualified with the file's repo.
+// "missing" is only an id absent from a registered repo. An unregistered name
+// is stored and ends the walk.
 export function rejectLink(tickets, id, parent, depends) {
   const proposedParent = parent ?? "";
   const proposedDepends = depends ?? [];
+  const scope = linkScope(tickets);
+  const home = scope.home;
   const hasId = presentId(id);
 
-  if (hasId && (proposedParent === id || proposedDepends.includes(id))) return "self";
+  if (hasId && (namesSelf(proposedParent, id, home) || proposedDepends.some((dep) => namesSelf(dep, id, home)))) {
+    return "self";
+  }
 
   const graph = new Map();
-  for (const ticket of tickets) {
-    graph.set(ticket.id, {
-      parent: ticket.parent ?? "",
-      depends: Array.isArray(ticket.depends) ? [...ticket.depends] : [],
+  for (const ticket of scope.list) {
+    if (!ticket || typeof ticket !== "object" || typeof ticket.id !== "string") continue;
+    const repo = fileRepo(ticket, home);
+    if (!scope.registered.has(repo)) continue;
+    const storedParent = typeof ticket.parent === "string" ? ticket.parent : "";
+    const storedDepends = Array.isArray(ticket.depends) ? ticket.depends : [];
+    graph.set(nodeKey(repo, ticket.id), {
+      parent: classify(storedParent, repo, scope.registered),
+      depends: storedDepends.map((dep) => classify(dep, repo, scope.registered)),
     });
   }
-  if (hasId) graph.set(id, { parent: proposedParent, depends: [...proposedDepends] });
+  if (hasId) {
+    graph.set(nodeKey(home, id), {
+      parent: classify(proposedParent, home, scope.registered),
+      depends: [...proposedDepends].map((dep) => classify(dep, home, scope.registered)),
+    });
+  }
 
-  if (proposedParent !== "" && (!graph.has(proposedParent) || proposedParent === id)) return "missing";
+  const missing = (token) => {
+    if (token === "") return false;
+    const key = classify(token, home, scope.registered);
+    if (key === "") return false;
+    return key === null || !graph.has(key);
+  };
+  if (missing(proposedParent)) return "missing";
   for (const dep of proposedDepends) {
-    if (!graph.has(dep) || dep === id) return "missing";
+    if (missing(dep)) return "missing";
   }
 
   if (!hasId) return null;
-  if (parentCloses(graph, id)) return "cycle";
-  if (dependsCloses(graph, id)) return "cycle";
+  const start = nodeKey(home, id);
+  if (parentCloses(graph, start)) return "cycle";
+  if (dependsCloses(graph, start)) return "cycle";
   return null;
 }
