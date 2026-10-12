@@ -28,7 +28,6 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment resolve <path> <thread>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment open <path> <thread>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment delete <path> <thread>
-  viewmark [--port PORT] [--user NAME] [--json] --repo NAME commit [--message TEXT]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket list [--closed]
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket show <id>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME ticket create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY] [--assignee NAME]
@@ -45,7 +44,7 @@ Usage:
 --port or VIEWMARK_PORT, default 8765. --user or VIEWMARK_USER; the flag wins.
 Missing, empty, NUL, CR, LF, <, or > is rejected. There is no default name.
 --json is global. --help, help, or no args exits 0.
---repo is required on list, show, create, edit, attach, delete, move, rev, comment, commit, and ticket.
+--repo is required on list, show, create, edit, attach, delete, move, rev, comment, and ticket.
 serve keeps running. The default directory is \`state\` beside the program, and --user is not required.
 
 stdout and stderr:
@@ -53,7 +52,6 @@ stdout and stderr:
   show: the document text on stdout and rev N on stderr
   create: path on stdout and rev 0 on stderr
   edit: the diff on stdin, then the same stdout and stderr as show
-  commit: the subject on stdout, or nothing when commits is empty. stderr is empty.
   conflict: the held text on stdout and rev N plus conflict on stderr, then held by NAME when the hub names that user
   context: the held text on stdout and rev N plus context on stderr
   match count other than one: matches N on stderr
@@ -64,7 +62,6 @@ stdout and stderr:
     list {files}; show and edit {path,rev,text}; create {path,rev:0};
     conflict {path,rev,text,error:"conflict"} and heldBy only when the hub names that user;
     context {path,rev,text,error:"context"};
-    commit {type:"commit",commits:[{author,subject,paths}]}
   repo list: name, description, and path, tab-separated, in name order
   repo register: the name
   repo deregister: nothing
@@ -95,10 +92,6 @@ attach:
 
 create:
   The body is stdin when stdin is not a terminal. A terminal sends an empty body. --file PATH reads that file instead and does not read stdin.
-
-commit:
-  --message TEXT is optional. An omitted message lets the hub choose the subject.
-  The message is trimmed and must be 1–200 characters. CR, LF, tab, and NUL are rejected.
 
 ticket:
   list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY] [--assignee NAME], set <id>, delete <id>, purge.
@@ -157,7 +150,6 @@ const VALUE_FLAGS = new Set([
   "name",
   "description",
   "path",
-  "message",
   "file",
   "dir",
   "start",
@@ -168,14 +160,6 @@ const VALUE_FLAGS = new Set([
 // Same rejection the hub uses, so a bad name never opens a socket.
 export function validUsername(name) {
   return typeof name === "string" && name.length > 0 && !/[\0\r\n<>]/.test(name);
-}
-
-// Same rejection the hub uses, so a bad message never opens a socket.
-function validCommitMessage(value) {
-  if (typeof value !== "string") return null;
-  const title = value.trim();
-  if (title.length < 1 || title.length > 200 || /[\0\r\n\t]/.test(title)) return null;
-  return title;
 }
 
 function normalizeCreate(input) {
@@ -274,8 +258,6 @@ function parseArgs(argv) {
     description: "",
     pathSet: false,
     path: "",
-    messageSet: false,
-    message: "",
     fileSet: false,
     file: "",
     dirSet: false,
@@ -369,9 +351,6 @@ function parseArgs(argv) {
       } else if (name === "path") {
         args.pathSet = true;
         args.path = value;
-      } else if (name === "message") {
-        args.messageSet = true;
-        args.message = value;
       } else if (name === "file") {
         args.fileSet = true;
         args.file = value;
@@ -526,7 +505,6 @@ function connectHub(port, username) {
       exit();
       return;
     }
-    // The hub commits a dirty path from the disconnect handler.
     const backup = setTimeout(exit, 1000);
     ws.addEventListener("close", () => {
       clearTimeout(backup);
@@ -1184,31 +1162,6 @@ async function runRepoDeregister(hub, username, name, json) {
   return 0;
 }
 
-function asCommitList(msg) {
-  if (!msg || !Array.isArray(msg.commits)) return null;
-  for (const item of msg.commits) {
-    if (!item || typeof item.author !== "string" || typeof item.subject !== "string") return null;
-    if (!Array.isArray(item.paths) || item.paths.some((rel) => typeof rel !== "string")) return null;
-  }
-  return msg.commits;
-}
-
-async function runCommit(hub, username, message, json) {
-  const frame = { type: "commit", username };
-  if (typeof message === "string") frame.message = message;
-  hub.send(frame);
-  const msg = await hub.next((item) => item.type === "commit" || item.type === "error");
-  if (msg.type === "error") return serverError(msg);
-  const commits = asCommitList(msg);
-  if (!commits) return 1;
-  if (json) {
-    writeJson(msg);
-    return 0;
-  }
-  if (commits.length > 0) process.stdout.write(commits.map((item) => `${item.subject}\n`).join(""));
-  return 0;
-}
-
 function commentNoteFields(notes) {
   return notes.map((note) => ({
     id: note.id,
@@ -1517,7 +1470,7 @@ function serveFlagRejected(args) {
   return args.revSet || args.findSet || args.replaceSet || args.titleSet
     || args.stateSet || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet || args.assigneeSet
     || args.repoSet || args.nameSet || args.descriptionSet || args.pathSet
-    || args.messageSet || args.fileSet || args.dirSet || args.startSet || args.endSet || args.expectSet;
+    || args.fileSet || args.dirSet || args.startSet || args.endSet || args.expectSet;
 }
 
 function defaultStateDir() {
@@ -1590,10 +1543,6 @@ async function main() {
   }
 
   if (args.assigneeSet && cmd !== "ticket") {
-    usage("unexpected flag");
-    return;
-  }
-  if (args.messageSet && cmd !== "commit") {
     usage("unexpected flag");
     return;
   }
@@ -1676,7 +1625,7 @@ async function main() {
     return;
   }
 
-  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "attach" && cmd !== "delete" && cmd !== "move" && cmd !== "rev" && cmd !== "comment" && cmd !== "ticket" && cmd !== "commit") {
+  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "attach" && cmd !== "delete" && cmd !== "move" && cmd !== "rev" && cmd !== "comment" && cmd !== "ticket") {
     usage("unknown command");
     return;
   }
@@ -1701,22 +1650,6 @@ async function main() {
     }
     if (command.sub === "create") command.body = await readStdin();
     await withHub(port, user, (hub) => runTicket(hub, user, args, command), args.repo);
-    return;
-  }
-  if (cmd === "commit") {
-    if (rest.length !== 0) {
-      usage("unexpected argument");
-      return;
-    }
-    let message;
-    if (args.messageSet) {
-      message = validCommitMessage(args.message);
-      if (message === null) {
-        usage("invalid message");
-        return;
-      }
-    }
-    await withHub(port, user, (hub) => runCommit(hub, user, message, args.json), args.repo);
     return;
   }
   if (cmd === "comment") {

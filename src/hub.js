@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -40,35 +39,7 @@ import {
 import { MAX_PAYLOAD, acceptKey, createParser, encodeFrame, encodeText } from "./ws.js";
 
 const PING_MS = 15000;
-const CHECKPOINT_MS = 3600000;
 const STACK_CAP = 200;
-
-function gitEnv(docsDir, username) {
-  const env = { ...process.env };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_INDEX_FILE;
-  env.GIT_DIR = path.join(docsDir, ".git");
-  env.GIT_WORK_TREE = docsDir;
-  env.GIT_TERMINAL_PROMPT = "0";
-  env.GIT_EDITOR = "true";
-  return env;
-}
-
-function git(docsDir, args, username) {
-  return new Promise((resolve, reject) => {
-    const env = gitEnv(docsDir, username);
-    execFile("git", args, { cwd: docsDir, env }, (err, stdout, stderr) => {
-      if (err) {
-        err.stdout = stdout;
-        err.stderr = stderr;
-        reject(err);
-        return;
-      }
-      resolve(stdout);
-    });
-  });
-}
 
 async function copyStock(source, dest) {
   try {
@@ -85,7 +56,6 @@ async function copyStock(source, dest) {
   }
 }
 
-// git init adds .git, so emptiness is the work tree from before that command.
 async function seedEmptyWorkTree(real, sourceRoot) {
   await copyStock(path.join(sourceRoot, "samples", "welcome.md"), path.join(real, "welcome.md"));
   const dest = path.join(real, "tickets", "seedmark.md");
@@ -117,30 +87,8 @@ export async function ensureDocsRepo(docsDir, sourceRoot) {
   if (real === sourceRoot) {
     throw new Error("docs directory must not be the Viewmark source repo");
   }
-  let hasGit = false;
-  try {
-    const info = await fs.lstat(path.join(real, ".git"));
-    hasGit = info.isDirectory() || info.isFile();
-  } catch {
-    hasGit = false;
-  }
-  if (!hasGit) {
-    const entries = await fs.readdir(real);
-    const env = gitEnv(real);
-    delete env.GIT_DIR;
-    delete env.GIT_WORK_TREE;
-    await new Promise((resolve, reject) => {
-      execFile("git", ["init", "--quiet"], { cwd: real, env }, (err, stdout, stderr) => {
-        if (err) {
-          err.stderr = stderr;
-          reject(err);
-          return;
-        }
-        resolve(stdout);
-      });
-    });
-    if (entries.length === 0) await seedEmptyWorkTree(real, sourceRoot);
-  }
+  const entries = await fs.readdir(real);
+  if (entries.length === 0) await seedEmptyWorkTree(real, sourceRoot);
   return real;
 }
 
@@ -261,8 +209,6 @@ async function loadRepos(stateDir) {
       description: entry.description,
       path: entry.path,
       files: new Map(),
-      dirty: new Map(),
-      timer: null,
     });
   }
   return map;
@@ -703,25 +649,6 @@ function closeCode(reason) {
   return 1002;
 }
 
-// Ambient GIT_DIR, GIT_WORK_TREE, or GIT_INDEX_FILE would name a different tree than root.
-function gitAt(root, args) {
-  return new Promise((resolve, reject) => {
-    const env = { ...process.env };
-    delete env.GIT_DIR;
-    delete env.GIT_WORK_TREE;
-    delete env.GIT_INDEX_FILE;
-    execFile("git", args, { cwd: root, env }, (err, stdout, stderr) => {
-      if (err) {
-        err.stdout = stdout;
-        err.stderr = stderr;
-        reject(err);
-        return;
-      }
-      resolve(typeof stdout === "string" ? stdout : stdout.toString("utf8"));
-    });
-  });
-}
-
 async function isRegularFile(abs) {
   try {
     const info = await fs.lstat(abs);
@@ -771,17 +698,6 @@ async function hashBuild(root) {
 }
 
 export async function readBuild(root) {
-  try {
-    const top = (await gitAt(root, ["rev-parse", "--show-toplevel"])).trim();
-    const topReal = await fs.realpath(top);
-    const rootReal = await fs.realpath(root);
-    if (topReal === rootReal) {
-      const head = (await gitAt(root, ["rev-parse", "HEAD"])).trim();
-      if (/^[0-9a-f]{40}$/.test(head)) return head;
-    }
-  } catch {
-    // Not this repository's toplevel. Hash the page sources instead.
-  }
   try {
     return await hashBuild(root);
   } catch {
@@ -1146,125 +1062,6 @@ export async function createHub(stateDir, sourceRoot) {
     socket.end();
   }
 
-  function arm(repo) {
-    if (repo.timer) clearTimeout(repo.timer);
-    repo.timer = setTimeout(() => {
-      repo.timer = null;
-      enqueue(() => checkpoint(repo, null, null, true)).catch((err) => console.error(err));
-    }, CHECKPOINT_MS);
-    // The listening socket keeps the process up. A quiet repo must not.
-    repo.timer.unref();
-  }
-
-  function mark(repo, rel, username) {
-    repo.dirty.set(rel, username);
-    arm(repo);
-  }
-
-  async function tracked(repo, rel) {
-    try {
-      await git(repo.path, ["ls-files", "--error-unmatch", "--", rel]);
-      return true;
-    } catch (err) {
-      const detail = `${err.stdout ?? ""}\n${err.stderr ?? ""}`;
-      if (/did not match any file/i.test(detail)) return false;
-      throw err;
-    }
-  }
-
-  // git add refuses a missing path that was never committed, so drop it.
-  // A path already in the index stays and the next commit records the removal.
-  async function markDelete(repo, rel, username) {
-    if (await tracked(repo, rel)) {
-      mark(repo, rel, username);
-      return;
-    }
-    repo.dirty.delete(rel);
-    if (repo.dirty.size === 0 && repo.timer) {
-      clearTimeout(repo.timer);
-      repo.timer = null;
-    }
-  }
-
-  async function assertToplevel(repo) {
-    const top = (await git(repo.path, ["rev-parse", "--show-toplevel"])).trim();
-    const topReal = await fs.realpath(top);
-    if (topReal !== repo.path) throw new Error("refusing to commit outside the docs repo");
-  }
-
-  async function commitAuthor(repo, username, paths, message) {
-    const docsDir = repo.path;
-    const config = [
-      "-c", "core.autocrlf=false",
-    ];
-    await git(docsDir, [...config, "add", "-A", "--", ...paths], username);
-    const subject = message ?? (paths.length === 1 ? `Edit ${paths[0]}` : `Update ${repo.name}`);
-    const args = [...config, "commit", "-m", subject];
-    if (paths.length > 1) args.push("-m", paths.join("\n"));
-    args.push("--", ...paths);
-    try {
-      await git(docsDir, args, username);
-    } catch (err) {
-      const detail = `${err.stdout ?? ""}\n${err.stderr ?? ""}`;
-      if (/nothing to commit|nothing added/i.test(detail)) return null;
-      throw err;
-    }
-    return subject;
-  }
-
-  // user null commits every author, sorted, one commit each. background logs
-  // and keeps that author's paths; an explicit failure throws and keeps them.
-  async function checkpoint(repo, user, message, background) {
-    if (!repo) return [];
-    const grouped = new Map();
-    for (const [rel, author] of repo.dirty) {
-      if (user != null && author !== user) continue;
-      let paths = grouped.get(author);
-      if (!paths) {
-        paths = [];
-        grouped.set(author, paths);
-      }
-      paths.push(rel);
-    }
-    const authors = [...grouped.keys()].sort();
-    if (authors.length === 0) {
-      if (repo.dirty.size === 0 && repo.timer) {
-        clearTimeout(repo.timer);
-        repo.timer = null;
-      }
-      return [];
-    }
-    try {
-      await assertToplevel(repo);
-    } catch (err) {
-      if (!background) throw err;
-      console.error(err);
-      if (!repo.timer) arm(repo);
-      return [];
-    }
-    const results = [];
-    for (const author of authors) {
-      const paths = grouped.get(author).sort();
-      try {
-        const subject = await commitAuthor(repo, author, paths, message);
-        for (const rel of paths) {
-          if (repo.dirty.get(rel) === author) repo.dirty.delete(rel);
-        }
-        if (subject != null) results.push({ author, subject, paths });
-      } catch (err) {
-        if (!background) throw err;
-        console.error(err);
-      }
-    }
-    if (repo.dirty.size === 0 && repo.timer) {
-      clearTimeout(repo.timer);
-      repo.timer = null;
-    } else if (background && repo.dirty.size > 0 && !repo.timer) {
-      arm(repo);
-    }
-    return results;
-  }
-
   function lockSnapshot(file) {
     const lines = [];
     for (const [index, owner] of file.locks) {
@@ -1380,7 +1177,6 @@ export async function createHub(stateDir, sourceRoot) {
     }
     socket.session.cursor = caret.cursor;
     socket.session.anchor = caret.anchor;
-    mark(socket.session.repo, file.rel, socket.session.username);
     // The preparatory lock covers every span the change list claimed.
     // Keep the caret line so the rest can be taken, unless that line is still
     // someone else's. A ranged diff keeps every splice span instead.
@@ -1456,7 +1252,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (file.subscribers.size > 0) {
       broadcast(file, { type: "locks", path: file.rel, rev: file.rev, lines: lockSnapshot(file) });
     } else {
-      await sweepUnreferencedImages(session.repo, file.rel, file.text, session.username);
+      await sweepUnreferencedImages(session.repo, file.rel, file.text);
     }
   }
 
@@ -1470,7 +1266,7 @@ export async function createHub(stateDir, sourceRoot) {
 
   // The bytes stay while someone still has the document. A file no image line names goes away
   // with the last subscriber, so undo can put the line back and the picture is still there.
-  async function sweepUnreferencedImages(repo, rel, text, username) {
+  async function sweepUnreferencedImages(repo, rel, text) {
     if (!repo || !rel) return;
     const dir = assetDirOf(rel);
     if (!dir) return;
@@ -1479,16 +1275,13 @@ export async function createHub(stateDir, sourceRoot) {
     for (const name of names) {
       if (keep.has(name)) continue;
       await fs.rm(path.join(repo.path, dir, name), { force: true });
-      await markDelete(repo, `${dir}/${name}`, username);
     }
   }
 
-  async function removeAssetDir(repo, rel, username) {
+  async function removeAssetDir(repo, rel) {
     const dir = assetDirOf(rel);
     if (!dir || !repo) return;
-    const names = await listAssetNames(repo.path, dir);
     await fs.rm(path.join(repo.path, dir), { recursive: true, force: true });
-    for (const name of names) await markDelete(repo, `${dir}/${name}`, username);
   }
 
   async function prepareAssetDir(repo, dirRel) {
@@ -1812,7 +1605,7 @@ export async function createHub(stateDir, sourceRoot) {
       const destRoot = dir ? `${dir}/${baseName(rel)}` : baseName(rel);
       for (const item of nested) pairs.push({ src: item, dest: destRoot + item.slice(rel.length) });
     }
-    // Leaving every path where it is does not dirty the repo or the listeners.
+    // Leaving every path where it is does not notify the listeners.
     const replyMoved = () => {
       send(socket, { type: "moved", path: rel, moves: pairs.map((pair) => ({ path: pair.src, dest: pair.dest })) });
     };
@@ -1901,17 +1694,6 @@ export async function createHub(stateDir, sourceRoot) {
         cached.file.rev += 1;
       }
       await writeAtomic(full, next);
-    }
-    const username = socket.session.username;
-    for (const pair of pairs) {
-      await markDelete(repo, pair.src, username);
-      mark(repo, pair.dest, username);
-    }
-    for (const plan of assetPlans) {
-      for (const name of plan.names) {
-        await markDelete(repo, `${plan.srcDir}/${name}`, username);
-        mark(repo, `${plan.destDir}/${name}`, username);
-      }
     }
     for (const item of opened) retargetOpen(item.src, item.file);
     broadcastDocs(repo, await docsPayload(repo));
@@ -2004,7 +1786,6 @@ export async function createHub(stateDir, sourceRoot) {
     if (await existsPath(dest)) return fail(socket, 409);
     await writeAtomic(dest, text);
     files.set(rel, { rel, full: dest, rev: 0, text, subscribers: new Set(), locks: new Map() });
-    mark(repo, rel, socket.session.username);
     broadcastDocs(repo, await docsPayload(repo));
     await onOpen(socket, { path: rel });
   }
@@ -2085,7 +1866,6 @@ export async function createHub(stateDir, sourceRoot) {
       subscribers: new Set(),
       locks: new Map(),
     });
-    mark(repo, allocated.rel, socket.session.username);
     await broadcastTickets(repo);
     await onOpen(socket, { path: allocated.rel });
   }
@@ -2123,12 +1903,11 @@ export async function createHub(stateDir, sourceRoot) {
     await writeAtomic(file.full, composed);
     file.rev += 1;
     file.ticket = ticketView(parsed, file.rev);
-    mark(repo, file.rel, socket.session.username);
     await broadcastTickets(repo);
     broadcast(file, ticketNotice(file));
   }
 
-  async function rewriteTicketLinks(repo, id, parent, depends, username) {
+  async function rewriteTicketLinks(repo, id, parent, depends) {
     const files = repo.files;
     const docsDir = repo.path;
     const rel = `tickets/${id}.md`;
@@ -2142,7 +1921,6 @@ export async function createHub(stateDir, sourceRoot) {
       cached.rev += 1;
       cached.ticket = ticketView(next, cached.rev);
       broadcast(cached, ticketNotice(cached));
-      mark(repo, rel, username);
       return;
     }
     const full = path.join(docsDir, rel);
@@ -2157,7 +1935,6 @@ export async function createHub(stateDir, sourceRoot) {
     const composed = composeTicket({ ...parsed, parent, depends });
     if (composed == null || composed === raw) return;
     await writeAtomic(full, composed);
-    mark(repo, rel, username);
   }
 
   function otherHolder(repo, rel, socket) {
@@ -2173,15 +1950,14 @@ export async function createHub(stateDir, sourceRoot) {
     return null;
   }
 
-  // The requester may still have the file open. Removal is not an edit: no undo entry and no commit.
+  // The requester may still have the file open. Removal is not an edit: no undo entry.
   async function unlinkFile(socket, rel) {
     const repo = socket.session.repo;
     if (socket.session.docPath === rel) await releaseFile(socket);
     const cached = repo.files.get(rel);
     repo.files.delete(rel);
     await fs.rm(cached ? cached.full : path.join(repo.path, rel), { force: true });
-    await markDelete(repo, rel, socket.session.username);
-    await removeAssetDir(repo, rel, socket.session.username);
+    await removeAssetDir(repo, rel);
     send(socket, { type: "deleted", path: rel });
     broadcastDocs(repo, await docsPayload(repo));
   }
@@ -2216,7 +1992,7 @@ export async function createHub(stateDir, sourceRoot) {
       const parent = clearedParent(ticket.parent, gone, repo.name);
       const depends = clearedDepends(ticket.depends, gone, repo.name);
       if (parent === ticket.parent && depends.length === ticket.depends.length) continue;
-      await rewriteTicketLinks(repo, ticket.id, parent, depends, socket.session.username);
+      await rewriteTicketLinks(repo, ticket.id, parent, depends);
     }
     await broadcastTickets(repo);
   }
@@ -2233,15 +2009,14 @@ export async function createHub(stateDir, sourceRoot) {
       const cached = files.get(rel);
       files.delete(rel);
       await fs.rm(cached ? cached.full : path.join(docsDir, rel), { force: true });
-      await markDelete(repo, rel, socket.session.username);
-      await removeAssetDir(repo, rel, socket.session.username);
+      await removeAssetDir(repo, rel);
     }
     for (const ticket of all) {
       if (closedIds.has(ticket.id)) continue;
       const parent = clearedParent(ticket.parent, closedIds, repo.name);
       const depends = clearedDepends(ticket.depends, closedIds, repo.name);
       if (parent === ticket.parent && depends.length === ticket.depends.length) continue;
-      await rewriteTicketLinks(repo, ticket.id, parent, depends, socket.session.username);
+      await rewriteTicketLinks(repo, ticket.id, parent, depends);
     }
     await broadcastTickets(repo);
   }
@@ -2648,7 +2423,7 @@ export async function createHub(stateDir, sourceRoot) {
       if (hit === "nest") return fail(socket, 400);
     }
 
-    const repo = { name: msg.name, description, path: real, files: new Map(), dirty: new Map(), timer: null };
+    const repo = { name: msg.name, description, path: real, files: new Map() };
     repos.set(repo.name, repo);
     try {
       await saveRegistry();
@@ -2663,11 +2438,6 @@ export async function createHub(stateDir, sourceRoot) {
     if (typeof msg.name !== "string") return fail(socket, 404);
     const repo = repos.get(msg.name);
     if (!repo) return fail(socket, 404);
-    await checkpoint(repo, null, null);
-    if (repo.timer) {
-      clearTimeout(repo.timer);
-      repo.timer = null;
-    }
     await dropRepoSelection(repo);
     repos.delete(repo.name);
     repo.files.clear();
@@ -2686,23 +2456,9 @@ export async function createHub(stateDir, sourceRoot) {
     if (!repo) return fail(socket, 404);
     const session = socket.session;
     if (session.repo === repo) return;
-    if (session.repo) await checkpoint(session.repo, session.username, null);
     await releaseFile(socket);
     session.repo = repo;
     clearDocState(session);
-  }
-
-  async function onCommit(socket, msg) {
-    const repo = socket.session.repo;
-    if (!repo) return fail(socket, 400);
-    let message = null;
-    if (Object.prototype.hasOwnProperty.call(msg, "message")) {
-      if (typeof msg.message !== "string" || msg.message.includes("\0")) return fail(socket, 400);
-      message = validTitle(msg.message);
-      if (!message) return fail(socket, 400);
-    }
-    const commits = await checkpoint(repo, socket.session.username, message);
-    send(socket, { type: "commit", commits });
   }
 
   // One-shot. Opening would subscribe this socket and leave it holding the document.
@@ -2997,7 +2753,6 @@ export async function createHub(stateDir, sourceRoot) {
       await fs.rm(imageFull, { force: true });
       return wrote && wrote.heldBy ? failHeld(socket, wrote) : fail(socket, 500);
     }
-    mark(repo, named.rel, session.username);
     session.redo = [];
     pushCap(session.undo, entry);
     const reply = fileFrame(file);
@@ -3040,7 +2795,6 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "repo.register") return onRegister(socket, msg);
     if (msg.type === "repo.deregister") return onDeregister(socket, msg);
     if (msg.type === "repo") return onSelect(socket, msg);
-    if (msg.type === "commit") return onCommit(socket, msg);
     if (msg.type === "comment.threads") return onCommentThreads(socket, msg);
     if (msg.type === "comment.reply") return onCommentReply(socket, msg);
     if (msg.type === "comment.edit") return onCommentEdit(socket, msg);
@@ -3187,17 +2941,10 @@ export async function createHub(stateDir, sourceRoot) {
     },
     shutdown() {
       // Close can observe the http server before a socket "close" listener
-      // runs. Checkpoint first so that work is on this queue, then drop sessions.
+      // runs. Queue the disconnect on this queue before returning it.
       if (!stopped) {
         stopped = true;
         clearInterval(pingTimer);
-        for (const repo of repos.values()) {
-          if (repo.timer) {
-            clearTimeout(repo.timer);
-            repo.timer = null;
-          }
-          enqueue(() => checkpoint(repo, null, null, true)).catch((err) => console.error(err));
-        }
         for (const sock of [...sockets]) {
           enqueue(() => disconnect(sock)).catch((err) => console.error(err));
           sock.destroy();

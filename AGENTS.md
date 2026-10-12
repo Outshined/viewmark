@@ -49,7 +49,7 @@ A ticket is `tickets/<id>.md`. `ticket create` reads the body from stdin. `ticke
 
 ## Changing this source
 
-Node and git are the toolchain. There are no packages. From the repository root, `node --test` runs the unit tests in `test/` and `node cli.js serve` starts the hub. The browser tests are separate, below.
+Node is the toolchain. There are no packages. From the repository root, `node --test` runs the unit tests in `test/` and `node cli.js serve` starts the hub. The browser tests are separate, below.
 
 `src/doc.js` is the model: strings, offsets, and tokens. `src/editor.js` is the page and re-exports the names the editor tests call. `src/hub.js` stores the open files and publishes edits. `src/session.js` is the page socket. `cli.js` opens one socket, finishes the command, and exits. The page retries a dropped socket. The CLI stays one-shot.
 
@@ -57,7 +57,7 @@ The page builds the DOM with elements and text nodes. It prevents the browser's 
 
 `index.html` on disk has no build meta. The server inserts `<meta name="viewmark-build">` when it serves the page. A later hello whose build differs from that meta reloads the page.
 
-This repository tracks the program. `docs/` and `state/` are gitignored, and a docs directory is its own checkout, registered with the hub. Prism and Mermaid are the files in `vendor/`, loaded by the script tags in `index.html`.
+This repository tracks the program. `docs/` and `state/` are gitignored. A docs directory is registered with the hub. Prism and Mermaid are the files in `vendor/`, loaded by the script tags in `index.html`.
 
 The main branch is `master`. The words for lists of permitted and excluded things are whitelist and blacklist.
 

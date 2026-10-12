@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn, execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import http from "node:http";
 import fs from "node:fs/promises";
@@ -75,7 +75,7 @@ const HELP_NEEDLES = [
   "comment delete <path> <thread>",
   "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin.",
   "Lines count from 1. Offset counts from 0. The end offset is exclusive.",
-  "--repo is required on list, show, create, edit, attach, delete, move, rev, comment, commit, and ticket.",
+  "--repo is required on list, show, create, edit, attach, delete, move, rev, comment, and ticket.",
   "viewmark [--port PORT] [--user NAME] [--json] --repo NAME attach <path> --start LINE:OFFSET --end LINE:OFFSET --expect TEXT",
   "ticket delete",
   "--title",
@@ -97,9 +97,6 @@ const HELP_NEEDLES = [
   "keeps running",
   "beside the program",
   "--user is not required",
-  "commit [--message TEXT]",
-  "An omitted message lets the hub choose the subject.",
-  "1–200",
 ];
 
 function run(args, extraEnv = {}, input = "") {
@@ -162,20 +159,6 @@ async function withDocs(fn) {
     await fs.rm(dir, { recursive: true, force: true });
     await fs.rm(state, { recursive: true, force: true });
   }
-}
-
-function git(dir, args) {
-  return new Promise((resolve, reject) => {
-    execFile("git", args, { cwd: dir }, (err, stdout, stderr) => {
-      if (err) {
-        err.stdout = stdout;
-        err.stderr = stderr;
-        reject(err);
-        return;
-      }
-      resolve(stdout.toString());
-    });
-  });
 }
 
 function messageText(data) {
@@ -338,287 +321,6 @@ test("T-cli-help", async () => {
   }
 });
 
-async function runArgv(args, extraEnv = {}) {
-  const helper = path.join(
-    os.tmpdir(),
-    `viewmark-argv-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.mjs`,
-  );
-  const source = `import { pathToFileURL } from "node:url";
-process.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(args)}];
-await import(pathToFileURL(${JSON.stringify(cli)}).href);
-`;
-  await fs.writeFile(helper, source);
-  try {
-    return await new Promise((resolve, reject) => {
-      const env = { ...process.env };
-      delete env.VIEWMARK_USER;
-      delete env.VIEWMARK_PORT;
-      for (const [key, value] of Object.entries(extraEnv)) {
-        if (value === undefined) delete env[key];
-        else env[key] = value;
-      }
-      const child = spawn(process.execPath, [helper], { env, stdio: ["ignore", "pipe", "pipe"] });
-      const out = [];
-      const err = [];
-      child.stdout.on("data", (chunk) => out.push(chunk));
-      child.stderr.on("data", (chunk) => err.push(chunk));
-      child.on("error", reject);
-      child.on("close", (code) => {
-        resolve({
-          code,
-          stdout: Buffer.concat(out).toString("utf8"),
-          stderr: Buffer.concat(err).toString("utf8"),
-        });
-      });
-    });
-  } finally {
-    await fs.rm(helper, { force: true });
-  }
-}
-
-async function captureCli(args) {
-  const messages = [];
-  let peer = null;
-  const server = http.createServer();
-  server.on("upgrade", (req, socket) => {
-    peer = socket;
-    const key = req.headers["sec-websocket-key"];
-    socket.write(
-      "HTTP/1.1 101 Switching Protocols\r\n" +
-        "Upgrade: websocket\r\n" +
-        "Connection: Upgrade\r\n" +
-        `Sec-WebSocket-Accept: ${acceptKey(key)}\r\n` +
-        "\r\n",
-    );
-    const parser = createParser({
-      requireMask: true,
-      onText(payload) {
-        const msg = JSON.parse(payload.toString("utf8"));
-        messages.push(msg);
-        if (msg.type !== "commit") return;
-        const commits = Object.hasOwn(msg, "message")
-          ? [{ author: msg.username, subject: msg.message, paths: ["hello.md"] }]
-          : [];
-        socket.write(encodeFrame(0x1, Buffer.from(JSON.stringify({ type: "commit", commits }))));
-      },
-      onPing(payload) {
-        socket.write(encodeFrame(0xa, payload));
-      },
-      onClose() {
-        socket.end();
-      },
-      onError() {
-        socket.destroy();
-      },
-    });
-    socket.on("data", (chunk) => parser.push(chunk));
-    socket.on("error", () => {});
-  });
-  await listen(server);
-  try {
-    const res = await run(["--port", String(server.address().port), "--user", "user", "--repo", "docs", ...args]);
-    return { res, messages };
-  } finally {
-    peer?.destroy();
-    await new Promise((resolve) => {
-      server.close(() => resolve());
-      server.closeAllConnections();
-    });
-  }
-}
-
-test("T-cli-commit", async () => {
-  const gate = await trap();
-  try {
-    const noRepo = await run(["--port", String(gate.port), "--user", "user", "commit"]);
-    assert.equal(noRepo.code, 2);
-    assert.equal(noRepo.stdout, "");
-    assert.equal(noRepo.stderr, "viewmark: --repo is required\n");
-
-    const positional = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "commit", "hello.md"]);
-    assert.equal(positional.code, 2);
-    assert.equal(positional.stdout, "");
-    assert.equal(positional.stderr, "viewmark: unexpected argument\n");
-    const positionalMessage = await run([
-      "--port", String(gate.port),
-      "--user", "user",
-      "--repo", "docs",
-      "commit",
-      "--message", "hi",
-      "extra",
-    ]);
-    assert.equal(positionalMessage.code, 2);
-    assert.equal(positionalMessage.stdout, "");
-
-    for (const message of ["", "   ", "\n", "bad\nnote", "\t", "bad\ttab", "bad\rnote", "a".repeat(201), ` ${"a".repeat(201)} `]) {
-      const res = await run([
-        "--port", String(gate.port),
-        "--user", "user",
-        "--repo", "docs",
-        "commit",
-        "--message", message,
-      ]);
-      assert.equal(res.code, 2, JSON.stringify(message));
-      assert.equal(res.stdout, "");
-      assert.equal(res.stderr, "viewmark: invalid message\n");
-    }
-    for (const message of ["\0", "nul\0here"]) {
-      const res = await runArgv([
-        "--port", String(gate.port),
-        "--user", "user",
-        "--repo", "docs",
-        "commit",
-        "--message", message,
-      ]);
-      assert.equal(res.code, 2, JSON.stringify(message));
-      assert.equal(res.stdout, "");
-      assert.equal(res.stderr, "viewmark: invalid message\n");
-    }
-
-    const onList = await run([
-      "--port", String(gate.port),
-      "--user", "user",
-      "--repo", "docs",
-      "list",
-      "--message", "hi",
-    ]);
-    assert.equal(onList.code, 2);
-    assert.equal(onList.stdout, "");
-    assert.equal(onList.stderr, "viewmark: unexpected flag\n");
-    for (const args of [
-      ["show", "hello.md", "--message", "hi"],
-      ["create", "a.md", "--message", "hi"],
-      ["edit", "hello.md", "--message", "hi"],
-      ["delete", "hello.md", "--message", "hi"],
-      ["ticket", "list", "--message", "hi"],
-      ["repo", "list", "--message", "hi"],
-    ]) {
-      const res = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", ...args]);
-      assert.equal(res.code, 2, args.join(" "));
-      assert.equal(res.stdout, "");
-      assert.equal(res.stderr, "viewmark: unexpected flag\n");
-    }
-    const served = await run(["serve", "--message=hi"], { VIEWMARK_PORT: String(gate.port), VIEWMARK_USER: "user" });
-    assert.equal(served.code, 2);
-    assert.equal(served.stdout, "");
-    assert.equal(served.stderr, "viewmark: unexpected flag\n");
-    assert.equal(gate.hits.length, 0);
-  } finally {
-    await gate.close();
-  }
-
-  const omitted = await captureCli(["commit"]);
-  assert.equal(omitted.res.code, 0);
-  assert.equal(omitted.res.stdout, "");
-  assert.equal(omitted.res.stderr, "");
-  assert.deepEqual(omitted.messages.map((msg) => msg.type), ["hello", "repo", "commit"]);
-  assert.deepEqual(omitted.messages[1], { type: "repo", username: "user", name: "docs" });
-  assert.deepEqual(omitted.messages[2], { type: "commit", username: "user" });
-  assert.equal(Object.hasOwn(omitted.messages[2], "message"), false);
-
-  const trimmed = await captureCli(["commit", "--message", " \thello\n "]);
-  assert.equal(trimmed.res.code, 0);
-  assert.equal(trimmed.res.stderr, "");
-  assert.equal(trimmed.res.stdout, "hello\n");
-  assert.deepEqual(trimmed.messages[2], { type: "commit", username: "user", message: "hello" });
-
-  const wide = ` ${"a".repeat(200)} `;
-  const sent = await captureCli(["commit", "--message", wide]);
-  assert.equal(sent.res.code, 0);
-  assert.equal(sent.res.stderr, "");
-  assert.equal(sent.res.stdout, `${"a".repeat(200)}\n`);
-  assert.equal(sent.messages[2].message, "a".repeat(200));
-
-  await withDocs(async ({ dir, port }) => {
-    const args = ["--port", String(port), "--user", "user", "--repo", "docs", "commit"];
-    const clean = await run(args);
-    assert.equal(clean.code, 0);
-    assert.equal(clean.stdout, "");
-    assert.equal(clean.stderr, "");
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
-
-    const cleanJson = await run(["--json", ...args]);
-    assert.equal(cleanJson.code, 0);
-    assert.equal(cleanJson.stderr, "");
-    assert.equal(cleanJson.stdout, `${JSON.stringify({ type: "commit", commits: [] })}\n`);
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
-
-    const edited = await run([
-      "--port", String(port),
-      "--user", "user",
-      "--repo", "docs",
-      "edit",
-      "notes/draft.md",
-    ], {}, diffText([["-a draft", "+a note"]]));
-    assert.equal(edited.code, 0);
-    assert.equal(edited.stdout, "a note\n");
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
-
-    const committed = await run(args);
-    assert.equal(committed.code, 0);
-    assert.equal(committed.stderr, "");
-    assert.equal(committed.stdout, "Edit notes/draft.md\n");
-    const head = (await git(dir, ["rev-parse", "HEAD"])).trim();
-    assert.match(head, /^[0-9a-f]{40}$/);
-    assert.equal((await git(dir, ["rev-parse", "HEAD^{/Edit notes/draft.md}"])).trim(), head);
-    assert.equal(await git(dir, ["show", "HEAD:notes/draft.md"]), "a note\n");
-
-    const again = await run(args);
-    assert.equal(again.code, 0);
-    assert.equal(again.stdout, "");
-    assert.equal(again.stderr, "");
-    assert.equal((await git(dir, ["rev-parse", "HEAD"])).trim(), head);
-
-    const hello = await run([
-      "--port", String(port),
-      "--user", "user",
-      "--repo", "docs",
-      "edit",
-      "hello.md",
-    ], {}, diffText([["-hello line", "+hi line"]]));
-    assert.equal(hello.code, 0);
-    assert.equal(hello.stdout, "hi line\nsecond line\n");
-    assert.equal((await git(dir, ["rev-parse", "HEAD"])).trim(), head);
-
-    const json = await run(["--json", ...args]);
-    assert.equal(json.code, 0);
-    assert.equal(json.stderr, "");
-    const ack = {
-      type: "commit",
-      commits: [{ author: "user", subject: "Edit hello.md", paths: ["hello.md"] }],
-    };
-    assert.equal(json.stdout, `${JSON.stringify(ack)}\n`);
-    const next = (await git(dir, ["rev-parse", "HEAD"])).trim();
-    assert.notEqual(next, head);
-    assert.equal((await git(dir, ["rev-parse", "HEAD^{/Edit hello.md}"])).trim(), next);
-    assert.equal((await git(dir, ["log", "-1", "--format=%s"])).trim(), "Edit hello.md");
-
-    const shipped = await run([
-      "--port", String(port),
-      "--user", "user",
-      "--repo", "docs",
-      "edit",
-      "hello.md",
-    ], {}, diffText([["-hi line", "+yo line"]]));
-    assert.equal(shipped.code, 0);
-    const noted = await run([...args, "--message", "  Ship it  "]);
-    assert.equal(noted.code, 0);
-    assert.equal(noted.stderr, "");
-    assert.equal(noted.stdout, "Ship it\n");
-    assert.equal((await git(dir, ["log", "-1", "--format=%s"])).trim(), "Ship it");
-    assert.equal((await git(dir, ["rev-parse", "HEAD^{/Ship it}"])).trim(), (await git(dir, ["rev-parse", "HEAD"])).trim());
-
-    const missing = await run(["--port", String(port), "--user", "user", "--repo", "missing", "commit"]);
-    assert.equal(missing.code, shellStatus(404));
-    assert.equal(missing.stdout, "");
-    assert.equal(missing.stderr, "error 404\n");
-    const missingJson = await run(["--json", "--port", String(port), "--user", "user", "--repo", "missing", "commit"]);
-    assert.equal(missingJson.code, shellStatus(404));
-    assert.equal(missingJson.stdout, "");
-    assert.equal(missingJson.stderr, "error 404\n");
-  });
-});
-
 test("T-cli-list", async () => {
   await withDocs(async ({ port }) => {
     const res = await run(["--port", String(port), "--user", "user", "--repo", "docs", "list"]);
@@ -665,7 +367,6 @@ test("T-cli-show", async () => {
     assert.equal(missing.code, shellStatus(404));
     assert.equal(missing.stdout, "");
     assert.equal(missing.stderr, "error 404\n");
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
     watcher.ws.close();
   });
 });
@@ -967,7 +668,6 @@ test("T-cli-create", async () => {
       ["show", "hello.md", "--file", "x"],
       ["edit", "hello.md", "--file", "x"],
       ["delete", "hello.md", "--file", "x"],
-      ["commit", "--file", "x"],
       ["ticket", "list", "--file", "x"],
       ["repo", "list", "--file", "x"],
     ]) {
@@ -1003,7 +703,6 @@ test("T-cli-create", async () => {
     assert.equal(nope.stdout, "");
     assert.equal(nope.stderr, "error 404\n");
     await assert.rejects(() => fs.lstat(path.join(dir, "nope.md")));
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
 
     const trimmed = await run(["--port", String(port), "--user", "user", "--repo", "docs", "create", "  /notes/next  "]);
     assert.equal(trimmed.code, 0);
@@ -1016,7 +715,6 @@ test("T-cli-create", async () => {
     assert.equal(markdown.stderr, "");
     assert.equal(markdown.stdout, `${JSON.stringify({ path: "notes/keep.markdown", rev: 0 })}\n`);
     assert.equal(await fs.readFile(path.join(dir, "notes", "keep.markdown"), "utf8"), "");
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
 
     const piped = await run(
       ["--port", String(port), "--user", "user", "--repo", "docs", "create", "notes/piped"],
@@ -1194,8 +892,6 @@ test("T-cli-edit", async () => {
     assert.equal(edited.stdout, "Alpha\nBeta\nDelta\n");
     assert.equal(edited.stderr, "rev 1\n");
     assert.equal(await fs.readFile(path.join(dir, "greek.md"), "utf8"), "Alpha\nBeta\nDelta\n");
-    await delay(400);
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
 
     const cleared = await run(
       editArgs(port, "hello.md"),
@@ -1402,7 +1098,6 @@ test("T-cli-stale", async () => {
     assert.equal(later.stdout, DRAFT);
     assert.equal(later.stderr, "rev 0\nconflict\nheld by holder\n");
     assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), DRAFT);
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
     holder.ws.close();
   });
 });
@@ -1438,7 +1133,6 @@ test("T-cli-matches", async () => {
     assert.equal(overlap.stdout, "");
     assert.equal(overlap.stderr, "overlap\n");
     assert.equal(await fs.readFile(path.join(dir, "pair.md"), "utf8"), "Alpha\nBeta\n");
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
     watcher.ws.close();
   });
 });
@@ -1462,7 +1156,6 @@ test("T-cli-noop", async () => {
     await delay(100);
     assert.equal(sawOwnEdit(watcher.queue, "user"), false);
     assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
     watcher.ws.close();
   });
 });
@@ -1518,8 +1211,6 @@ test("T-cli-user", async () => {
     );
     assert.equal(fromEnv.code, 0);
     assert.equal(fromEnv.stdout, "howdy line\nsecond line\n");
-    await delay(400);
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
 
     const flagged = await run(
       [
@@ -1533,8 +1224,6 @@ test("T-cli-user", async () => {
     );
     assert.equal(flagged.code, 0);
     assert.equal(flagged.stdout, "flagged\n");
-    await delay(400);
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
 
     const shown = await run(["--port", String(port), "show", "notes/draft.md"], { VIEWMARK_USER: "a<b" });
     assert.equal(shown.code, 2);
@@ -2174,7 +1863,6 @@ test("T-cli-ticket-create", async () => {
     assert.equal(tabbed.stdout, "");
     assert.equal(tabbed.stderr, "error 400\n");
     assert.equal(await count(), beforeCount);
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
   });
 });
 
@@ -2443,7 +2131,6 @@ test("T-cli-ticket-set", async () => {
       assert.equal(laterDisk.title, "Later");
       assert.equal(laterDisk.body, BODY);
       assert.equal(laterDisk.parent, A);
-      await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
     } finally {
       watcher.ws.close();
     }
@@ -2638,7 +2325,6 @@ test("T-cli-ticket-purge", async () => {
     assert.equal(json.stdout, `${JSON.stringify({ purged: [C, "ffffffff"] })}\n`);
     const left = await runFast(ticketArgs(port, ["ticket", "list", "--closed"]));
     assert.equal(left.stdout, `${B}\t${T0}\tnew\ttask\tmedium\tBeta\n${E}\t${T2}\tnew\ttask\tmedium\tEe\n${SEED_LINE}`);
-    await assert.rejects(() => git(dir, ["rev-parse", "HEAD"]));
   });
 });
 
@@ -3429,7 +3115,7 @@ test("T-comment-usage", async () => {
   ]) {
     assert.ok(help.stdout.includes(line), line);
   }
-  assert.match(help.stdout, /--repo is required on list, show, create, edit, attach, delete, move, rev, comment, commit, and ticket\./);
+  assert.match(help.stdout, /--repo is required on list, show, create, edit, attach, delete, move, rev, comment, and ticket\./);
 
   const gate = await trap();
   try {
