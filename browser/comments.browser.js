@@ -711,3 +711,73 @@ test("the add-comment button: after the page scrolls under the pointer, is half 
   await sleep(300);
   assertPlaced(await buttonPlace(page), `after a 120 px scroll, with the highlight's bottom gone from y ${Math.round(before)} to y ${Math.round(await highlight())}`);
 });
+
+// Ticket mar9nkqb, the owner's answer of 2026-10-13: when the button's place under the highlight
+// is not inside the window, the page makes room for it there. QA's reading: for a selection just
+// made, the page scrolls until the whole button is inside the window, and at the end of the
+// document it adds room to scroll into. A scroll the person makes is left alone.
+const ROOM = Array.from({ length: 60 }, (_, i) => `Filler paragraph ${i + 1} holds the word mark${i + 1}x here.`).join("\n\n") + "\n\nThe last paragraph ends with omega.\n";
+
+// Scrolls the page until the line holding `word` ends at the bottom of the window, or as far as
+// the page goes. Returns the bottom of that line, and the window's height.
+function lineToBottom(page, word) {
+  return page.eval(`(() => {
+    const editor = document.getElementById("editor");
+    const walk = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    let node = walk.nextNode();
+    while (node && !node.data.includes(${JSON.stringify(word)})) node = walk.nextNode();
+    const line = node && (node.parentElement.closest(".md-line") || node.parentElement);
+    if (!line) return { error: "no line drawn for " + ${JSON.stringify(word)} };
+    line.scrollIntoView({ block: "end" });
+    if (${JSON.stringify(word)} === "omega") {
+      editor.scrollTop = editor.scrollHeight;
+      scrollTo(0, document.documentElement.scrollHeight);
+    }
+    return { bottom: line.getBoundingClientRect().bottom, height: innerHeight };
+  })()`);
+}
+
+for (const [name, word] of [["a word on the window's last line", "mark30x"], ["the last word of the document, scrolled to its end", "omega"]]) {
+  test(`the add-comment button: ${name}, double-clicked, the page makes room and the button is half a line below the highlight, in the window (ticket mar9nkqb)`, async (t) => {
+    const { page } = await setup(t, { "a.md": ROOM });
+    await open(page, "a.md");
+    await place(page, 0);
+    const moved = await lineToBottom(page, word);
+    assert.ok(!moved.error, moved.error);
+    await sleep(200);
+    const point = await page.eval(`window.__qaWordPoint(${JSON.stringify(word)}, 1)`);
+    assert.ok(point && point.y < moved.height, `the word ${word} is not in the window: ${JSON.stringify(point)}`);
+    await page.click(point.x, point.y, { clickCount: 2 });
+    await page.quiet();
+    await sleep(400);
+    const at = await buttonPlace(page);
+    assertPlaced(at, `${name}, its line's bottom at y ${Math.round(moved.bottom)} in a ${moved.height} px window before the double-click`);
+  });
+}
+
+// QA's reading: the room is made for a selection just made. When the person scrolls the
+// highlight down and out of the window, the page does not scroll it back.
+test("the add-comment button: after the person scrolls the highlight below the window, the page leaves the scroll where the person put it (ticket mar9nkqb)", async (t) => {
+  const { page } = await setup(t, { "a.md": ROOM });
+  await open(page, "a.md");
+  await place(page, 0);
+  await page.eval(`(() => { const p = window.__qaWordPoint("mark30x", 1); const hit = document.elementFromPoint(p.x, Math.min(innerHeight - 1, Math.max(0, p.y))); (hit.closest(".md-line") || hit).scrollIntoView({ block: "center" }); })()`);
+  await sleep(200);
+  const word = await page.eval(`window.__qaWordPoint("mark30x", 1)`);
+  await page.click(word.x, word.y, { clickCount: 2 });
+  await page.quiet();
+  await sleep(300);
+  assertPlaced(await buttonPlace(page), "before the scroll");
+  const highlight = async () => page.eval(`Math.max(...[...getSelection().getRangeAt(0).getClientRects()].filter((r) => r.width > 0).map((r) => r.bottom))`);
+  const before = await highlight();
+  const height = await page.eval("innerHeight");
+  const delta = Math.round(height - before + 40);
+  await page.session.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: word.x, y: word.y, deltaX: 0, deltaY: -delta });
+  await page.until(async () => (await highlight()) > before + delta - 30, "the page scrolled up", 3000);
+  await sleep(400);
+  const settled = await highlight();
+  await sleep(600);
+  const later = await highlight();
+  assert.ok(settled > height, `the wheel left the highlight's bottom at y ${Math.round(settled)}, inside the ${height} px window`);
+  assert.ok(Math.abs(later - settled) < 1, `the page scrolled by itself after the person's scroll: the highlight's bottom went from y ${Math.round(settled)} to y ${Math.round(later)}`);
+});
