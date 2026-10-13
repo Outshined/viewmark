@@ -7,3 +7,4 @@
 - [Ticket body for content](ticket-body-for-content.md) — criteria, plans, and evidence go in the body; comments are discussion; leave closed tickets alone
 - [Owner decisions stand](owner-decisions-stand.md) — restore an owner decision the implementer edited away and report it; do not re-ask a settled question
 - [No operator quotes](no-operator-quotes.md) — never quote the operator anywhere; state the owner's decision in QA's words, every point kept
+- [American spelling](american-spelling.md) — center, color, behavior; never British forms, in any written text
