@@ -53,10 +53,10 @@ async function ticketJson(hub, repo, id) {
   return JSON.parse(out.stdout);
 }
 
-async function openTicket(page, id) {
+async function openTicket(page, id, repo = REPO) {
   const since = page.frames.length;
   page.loads = (page.loads || 0) + 1;
-  await page.session.send("Page.navigate", { url: `http://127.0.0.1:${page.port}/?load=${page.loads}#${REPO}/ticket/${encodeURIComponent(id)}` });
+  await page.session.send("Page.navigate", { url: `http://127.0.0.1:${page.port}/?load=${page.loads}#${repo}/ticket/${encodeURIComponent(id)}` });
   await page.until(() => page.frames.slice(since).some((frame) => frame.dir === "in" && frame.data && frame.data.type === "file" && frame.data.path === `tickets/${id}.md`), `ticket ${id}`);
   await page.until(() => page.eval(SHOWN(BUTTON)), `the menu button on ${id}`);
   await page.quiet();
@@ -208,4 +208,26 @@ test("Blocks and Children: an inbound ticket offers no remove, and pressing remo
   const sent = page.frames.slice(since).filter((f) => f.dir === "out" && f.data && /^ticket\./.test(f.data.type || "")).map((f) => f.data);
   assert.deepEqual(sent, [], "the page sent a ticket write");
   assert.equal(await snapshot(), before, "a ticket changed");
+});
+
+// The owner's answer of 2026-10-13: a link to a ticket that has gone missing is removed or ignored.
+// The hub removes it on the next write to the ticket that holds it. Until then the page does not
+// draw it. A token whose repo is not registered has not gone missing, and is still drawn.
+test("Parent and Depends: a link to a ticket deleted from another repo is not drawn, and an unregistered token still is (ticket dfpje5ux)", async (t) => {
+  const { hub, page } = await setup(t);
+  const a = await makeTicket(hub, REPO, "Ticket A");
+  const p = await makeTicket(hub, REPO, "Parent P");
+  const b = await makeTicket(hub, OTHER_REPO, "Ticket B");
+  await setTicket(hub, OTHER_REPO, b, "--depends", `${REPO}:${a},${GHOST}`, "--parent", `${REPO}:${p}`);
+  for (const id of [a, p]) {
+    const out = await cli(hub.port, ["--user", USER, "--repo", REPO, "ticket", "delete", id], "");
+    assert.equal(out.code, 0, out.stderr);
+  }
+  const stored = await ticketJson(hub, OTHER_REPO, b);
+  assert.deepEqual([...stored.depends].sort(), [`${REPO}:${a}`, GHOST].sort(), "B's file still holds both depends tokens before any write");
+  assert.equal(stored.parent, `${REPO}:${p}`, "B's file still holds its parent before any write");
+  await openTicket(page, b, OTHER_REPO);
+  await page.until(() => page.eval(SHOWN(`.ticket-form ${FIELD.depends}`)), "the Depends row", 3000);
+  assert.deepEqual((await links(page, FIELD.depends)).map((l) => l.text), [GHOST]);
+  assert.equal((await shownFields(page)).parent, false, `the Parent row is drawn for ${REPO}:${p}, which is gone`);
 });
