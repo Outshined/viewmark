@@ -15993,6 +15993,143 @@ function input(mounted, inputType, data) {
   });
 }
 
+// End's offset is after the last character of the visual line. Chromium's collapsed
+// caret at that soft wrap reports the next line, so End asks for the line boundary.
+test("raw End at a soft wrap asks for the line boundary and keeps that offset", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const doc = "aaaa bbbb\n";
+  const wrapAt = 5;
+  let wrap = true;
+  let boundaryOff = wrapAt;
+  let focusNode = null;
+  let focusOffset = 0;
+  const calls = [];
+  const caretTop = () => (wrap && focusOffset >= wrapAt ? 40 : 10);
+  const sel = {
+    rangeCount: 1,
+    get anchorNode() { return focusNode; },
+    get anchorOffset() { return focusOffset; },
+    get focusNode() { return focusNode; },
+    get focusOffset() { return focusOffset; },
+    removeAllRanges() {},
+    addRange(range) {
+      focusNode = range.startContainer;
+      focusOffset = range.startOffset;
+    },
+    setBaseAndExtent(node, offset) {
+      focusNode = node;
+      focusOffset = offset;
+    },
+    modify(action, direction, granularity) {
+      calls.push([action, direction, granularity]);
+      if (action === "move" && direction === "backward" && granularity === "character") focusOffset -= 1;
+      if (action === "move" && direction === "forward" && granularity === "lineboundary") focusOffset = boundaryOff;
+    },
+    getRangeAt() {
+      const top = caretTop();
+      return {
+        startContainer: focusNode,
+        startOffset: focusOffset,
+        endContainer: focusNode,
+        endOffset: focusOffset,
+        collapsed: true,
+        getClientRects() {
+          return [{ left: 8, right: 8, top, bottom: top + 16, width: 0, height: 16 }];
+        },
+      };
+    },
+  };
+  globalThis.document.createTreeWalker = (root) => {
+    const nodes = [];
+    const walk = (node) => {
+      if (node.nodeType === 3) nodes.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(root);
+    let index = 0;
+    return { nextNode() { return index < nodes.length ? nodes[index++] : null; } };
+  };
+  globalThis.document.createRange = () => {
+    const range = {
+      startContainer: null,
+      startOffset: 0,
+      endOffset: 0,
+      setStart(node, offset) {
+        range.startContainer = node;
+        range.startOffset = offset;
+      },
+      setEnd(_node, offset) {
+        range.endOffset = offset;
+      },
+      collapse() {},
+      selectNode() {},
+      setStartAfter() {},
+      setStartBefore() {},
+      getClientRects() {
+        if (!range.startContainer || range.endOffset !== range.startOffset + 1) return [];
+        const top = wrap && range.startOffset >= wrapAt ? 40 : 10;
+        const left = range.startOffset * 8;
+        return [{ left, right: left + 8, top, bottom: top + 16, width: 8, height: 16 }];
+      },
+    };
+    return range;
+  };
+  globalThis.window.getSelection = () => sel;
+  try {
+    const view = createEditor(mounted.root, doc, 2);
+    pressViewToggle(mounted.root);
+    calls.length = 0;
+    keyDown(mounted, "Home");
+    assert.equal(view.getState().cursor, 0);
+    assert.deepEqual(calls, []);
+    keyDown(mounted, "ArrowRight");
+    keyDown(mounted, "ArrowRight");
+    assert.equal(view.getState().cursor, 2);
+    keyDown(mounted, "End");
+    assert.equal(view.getState().cursor, wrapAt);
+    assert.equal(view.getState().anchor, wrapAt);
+    assert.deepEqual(calls, [["move", "backward", "character"], ["move", "forward", "lineboundary"]]);
+    assert.equal(focusOffset, wrapAt);
+
+    calls.length = 0;
+    boundaryOff = doc.indexOf("\n");
+    keyDown(mounted, "ArrowLeft");
+    keyDown(mounted, "ArrowLeft");
+    keyDown(mounted, "ArrowLeft");
+    assert.equal(view.getState().cursor, 2);
+    keyDown(mounted, "End");
+    assert.equal(view.getState().cursor, wrapAt);
+    assert.equal(focusOffset, wrapAt, "a line boundary that leaves the offset is put back");
+    assert.deepEqual(calls, [["move", "backward", "character"], ["move", "forward", "lineboundary"]]);
+
+    calls.length = 0;
+    boundaryOff = wrapAt;
+    keyDown(mounted, "ArrowLeft");
+    keyDown(mounted, "ArrowLeft");
+    keyDown(mounted, "ArrowLeft");
+    keyDown(mounted, "End", { shiftKey: true });
+    assert.equal(view.getState().anchor, 2);
+    assert.equal(view.getState().cursor, wrapAt);
+    assert.deepEqual(calls, []);
+    keyDown(mounted, "End", { ctrlKey: true });
+    assert.equal(view.getState().cursor, doc.length);
+    assert.deepEqual(calls, []);
+
+    wrap = false;
+    keyDown(mounted, "Home", { ctrlKey: true });
+    keyDown(mounted, "ArrowRight");
+    keyDown(mounted, "ArrowRight");
+    calls.length = 0;
+    keyDown(mounted, "End");
+    assert.equal(view.getState().cursor, doc.indexOf("\n"));
+    assert.deepEqual(calls, [], "End on one visual line does not move the caret again");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("raw mode is a view and Enter stores one newline", () => {
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
   assert.match(css, /#editor\.md-source\s*\{[^}]*font-family:\s*ui-monospace,\s*SFMono-Regular,\s*Menlo,\s*Consolas,\s*monospace;/);

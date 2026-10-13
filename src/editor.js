@@ -6089,6 +6089,34 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     else placeCaret();
   }
 
+  // Chromium paints a collapsed caret after a soft wrap on the next line.
+  // End belongs at the end of the line it landed on. One character back is
+  // still on that line, and the line boundary returns to this offset painted there.
+  function hangRawLineEnd() {
+    if (state.anchor !== state.cursor || state.cursor <= 0) return;
+    const prev = state.cursor - 1;
+    if (state.doc[prev] === "\n" || state.doc[prev] === "\r") return;
+    const point = pointFor(prev);
+    const glyph = point && point.node && point.node.nodeType === 3 ? rawCharRect(point.node, point.offset) : null;
+    const caret = caretRect();
+    if (!glyph || !caret || !(glyph.height > 0) || !(caret.height > 0)) return;
+    const glyphMid = (glyph.top + glyph.bottom) / 2;
+    const caretMid = (caret.top + caret.bottom) / 2;
+    if (!(caretMid > glyphMid + 3)) return;
+    const sel = window.getSelection();
+    if (!sel || typeof sel.modify !== "function" || sel.rangeCount === 0) return;
+    const want = state.cursor;
+    placingCaret = true;
+    try {
+      sel.modify("move", "backward", "character");
+      sel.modify("move", "forward", "lineboundary");
+    } finally {
+      placingCaret = false;
+    }
+    const mapped = selectionFromDom(sel);
+    if (!mapped || mapped.anchor !== want || mapped.cursor !== want) placeCaret();
+  }
+
   function moveRawCaret(key, extend, jump) {
     const vertical = key === "ArrowUp" || key === "ArrowDown";
     if (!vertical) {
@@ -6123,6 +6151,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const after = lineIndexAt(state.doc, state.cursor);
     if (before !== after) render();
     else placeCaret();
+    if (key === "End" && !extend && !jump) hangRawLineEnd();
   }
 
   // Enter on an item inserts the same kind of marker. A paragraph whose next
