@@ -4637,16 +4637,22 @@ test("T-ticket-cross-repo", async () => {
           assert.equal(names.includes("bad:name"), false);
         }
 
-        await setBad(ada, "A", { path: pathOf(A), title: "Renamed" }, 409, dir, A, [
+        const renamed = await setOk(ada, "A", { path: pathOf(A), title: "Renamed" }, [ada2]);
+        assert.equal(renamed.tickets.find((ticket) => ticket.id === A).title, "Renamed");
+        assert.equal(renamed.tickets.find((ticket) => ticket.id === A).parent, "");
+        assert.equal(renamed.present.includes(`docs:${A}`), true);
+        assert.equal(renamed.present.includes(`other:${B}`), true);
+        assert.equal(renamed.present.includes(`ghost:${K}`), false);
+        const renamedDisk = parseTicket(A, await readId(dir, A));
+        assert.equal(renamedDisk.title, "Renamed");
+        assert.equal(renamedDisk.parent, "");
+        await expectNoTicketBroadcast(bo, "B");
+
+        await setBad(ada, "A", { path: pathOf(A), parent: `other:${K}` }, 409, dir, A, [
           { client: ada2, username: "A2" },
           { client: bo, username: "B" },
         ]);
-        assert.equal(parseTicket(A, await readId(dir, A)).title, "Alpha");
-        assert.equal(parseTicket(A, await readId(dir, A)).parent, `ghost:${K}`);
-
-        const cleared = await setOk(ada, "A", { path: pathOf(A), parent: "" }, [ada2]);
-        assert.equal(cleared.tickets.find((ticket) => ticket.id === A).parent, "");
-        await expectNoTicketBroadcast(bo, "B");
+        assert.equal(parseTicket(A, await readId(dir, A)).parent, "");
 
         for (const parent of ["other:", `:${K}`, `other:${K}:x`, `other :${K}`, "other:k2n4p7q", "other:iiiiiiii", `_repo:${A}`, `${"n".repeat(65)}:${A}`]) {
           await setBad(ada, "A", { path: pathOf(A), parent }, 400, dir, A, [
@@ -4699,7 +4705,7 @@ test("T-ticket-cross-repo", async () => {
         assert.equal(otherList.tickets.some((ticket) => ticket.id === A), false);
         assert.equal(otherList.tickets.some((ticket) => ticket.id === B), true);
         assertInbound(otherList.inbound, [
-          { repo: "docs", id: A, title: "Alpha", parent: `other:${B}`, depends: [] },
+          { repo: "docs", id: A, title: "Renamed", parent: `other:${B}`, depends: [] },
           {
             repo: "docs",
             id: G,
@@ -4765,10 +4771,13 @@ test("T-ticket-cross-repo", async () => {
         assert.deepEqual(cee.depends, [`other:${A}`]);
         assert.equal(await readId(otherDir, D), deeBefore);
         assert.equal(parseTicket(D, deeBefore).parent, `docs:${A}`);
-        await setBad(ada, "A", { path: pathOf(C), title: "Cee 2" }, 409, dir, C, [
-          { client: ada2, username: "A2" },
-          { client: bo, username: "B" },
-        ]);
+        const ceeSet = await setOk(ada, "A", { path: pathOf(C), title: "Cee 2" }, [ada2]);
+        assert.equal(ceeSet.tickets.find((ticket) => ticket.id === C).title, "Cee 2");
+        assert.deepEqual(ceeSet.tickets.find((ticket) => ticket.id === C).depends, []);
+        const ceeDisk = parseTicket(C, await readId(dir, C));
+        assert.equal(ceeDisk.title, "Cee 2");
+        assert.deepEqual(ceeDisk.depends, []);
+        await expectNoTicketBroadcast(bo, "B");
 
         ada.send({ type: "ticket.purge", username: "A" });
         const purged = await ada.next((msg) => msg.type === "tickets" || msg.type === "error");
@@ -4782,12 +4791,14 @@ test("T-ticket-cross-repo", async () => {
         assert.deepEqual(gee.depends, [`other:${B}`]);
         assert.equal(await readId(otherDir, H), aitchBefore);
         assert.equal(await readId(otherDir, D), deeBefore);
-        await setBad(bo, "B", { path: pathOf(H), title: "Aitch 2" }, 409, otherDir, H, [
-          { client: ada, username: "A" },
-          { client: ada2, username: "A2" },
-        ]);
-        assert.equal(parseTicket(H, await readId(otherDir, H)).title, "Aitch");
-        assert.equal(parseTicket(H, await readId(otherDir, H)).parent, `docs:${F}`);
+        const aitchSet = await setOk(bo, "B", { path: pathOf(H), title: "Aitch 2" }, []);
+        assert.equal(aitchSet.tickets.find((ticket) => ticket.id === H).title, "Aitch 2");
+        assert.equal(aitchSet.tickets.find((ticket) => ticket.id === H).parent, "");
+        await expectNoTicketBroadcast(ada, "A");
+        await expectNoTicketBroadcast(ada2, "A2");
+        assert.equal(parseTicket(H, await readId(otherDir, H)).title, "Aitch 2");
+        assert.equal(parseTicket(H, await readId(otherDir, H)).parent, "");
+        assert.equal(await readId(otherDir, D), deeBefore);
       } finally {
         ada.ws.close();
         ada2.ws.close();

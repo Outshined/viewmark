@@ -35,6 +35,7 @@ import {
   parseTicketToken,
   REPO_NAME,
   rejectLink,
+  dropStoredMissing,
 } from "./ticket.js";
 import { MAX_PAYLOAD, acceptKey, createParser, encodeFrame, encodeText } from "./ws.js";
 
@@ -1455,11 +1456,24 @@ export async function createHub(stateDir, sourceRoot) {
     return inbound;
   }
 
+  // repo:id for every ticket this hub has. The page uses it to skip a missing
+  // token. Titles stay out: an outbound row is the stored token.
+  async function presentTokens() {
+    const tokens = [];
+    for (const registered of repos.values()) {
+      const found = await collectTickets(registered);
+      for (const ticket of found) tokens.push(`${registered.name}:${ticket.id}`);
+    }
+    tokens.sort();
+    return tokens;
+  }
+
   async function ticketsPayload(repo) {
     return {
       type: "tickets",
       tickets: await collectTickets(repo),
       inbound: await collectInbound(repo),
+      present: await presentTokens(),
     };
   }
 
@@ -1896,13 +1910,21 @@ export async function createHub(stateDir, sourceRoot) {
     if (composed == null) return fail(socket, 400);
     const parsed = parseTicket(file.ticket.id, composed);
     if (!parsed) return fail(socket, 400);
-    const reason = rejectLink(await linkIndex(repo), parsed.id, parsed.parent, parsed.depends);
+    // A stored link whose ticket is gone is removed with this write. One this
+    // set adds is still a conflict. This repo's sockets only: broadcastTickets
+    // does not tell another repo.
+    const index = await linkIndex(repo);
+    const dropped = dropStoredMissing(index, file.ticket.parent, file.ticket.depends, parsed.parent, parsed.depends);
+    const reason = rejectLink(index, parsed.id, dropped.parent, dropped.depends);
     if (reason) return fail(socket, 409);
+    const stored = { ...parsed, parent: dropped.parent, depends: dropped.depends };
+    const rewritten = composeTicket({ ...stored, body: file.text });
+    if (rewritten == null) return fail(socket, 400);
     const current = composeTicket({ ...file.ticket, body: file.text });
-    if (composed === current) return;
-    await writeAtomic(file.full, composed);
+    if (rewritten === current) return;
+    await writeAtomic(file.full, rewritten);
     file.rev += 1;
-    file.ticket = ticketView(parsed, file.rev);
+    file.ticket = ticketView(stored, file.rev);
     await broadcastTickets(repo);
     broadcast(file, ticketNotice(file));
   }

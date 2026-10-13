@@ -2173,6 +2173,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const openDirs = new Set();
   let ticketList = [];
   let inboundList = [];
+  // repo:id the last tickets message said exist. Null until that list arrives.
+  let linkPresent = null;
   let openTicket = null;
   let relationTicketId = "";
   let relationShown = { parent: false, depends: false, children: false, blocks: false };
@@ -7207,10 +7209,33 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     closeTicketMenu();
   }
 
+  // The file can still hold a token whose ticket is gone. It is not drawn as a
+  // parent, a dependency, a block, or a child. An unregistered name is not gone.
+  // Another repo's title is not fetched; an outbound row stays the stored token.
+  function tokenAbsent(token) {
+    if (typeof token !== "string" || token === "") return false;
+    const parsed = parseTicketToken(token);
+    if (!parsed) return false;
+    const repo = parsed.repo || activeRepo;
+    if (!repo || repo === activeRepo) return !ticketList.some((ticket) => ticket.id === parsed.id);
+    if (!repoNames.has(repo) || !linkPresent) return false;
+    return !linkPresent.has(`${repo}:${parsed.id}`);
+  }
+
+  function shownParent(ticket) {
+    if (!ticket || typeof ticket.parent !== "string" || ticket.parent === "" || tokenAbsent(ticket.parent)) return "";
+    return ticket.parent;
+  }
+
+  function shownDepends(ticket) {
+    const deps = Array.isArray(ticket && ticket.depends) ? ticket.depends : [];
+    return deps.filter((dep) => !tokenAbsent(dep));
+  }
+
   function relationPresence(ticket) {
     return {
-      parent: ticket.parent !== "",
-      depends: Array.isArray(ticket.depends) && ticket.depends.length > 0,
+      parent: shownParent(ticket) !== "",
+      depends: shownDepends(ticket).length > 0,
       children: childTicketsOf(ticket).length > 0,
       blocks: blockersOf(ticket).length > 0,
     };
@@ -7503,22 +7528,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function childTicketsOf(ticket) {
     const local = ticketList
-      .filter((item) => item.id !== ticket.id && namesLocal(item.parent, ticket.id))
+      .filter((item) => item.id !== ticket.id && !tokenAbsent(item.parent) && namesLocal(item.parent, ticket.id))
       .sort(compareTickets);
-    return local.concat(inboundMatches((item) => namesInbound(item.parent, ticket.id)));
+    return local.concat(inboundMatches((item) => !tokenAbsent(item.parent) && namesInbound(item.parent, ticket.id)));
   }
 
   function blockersOf(ticket) {
+    const namesHere = (dep) => !tokenAbsent(dep) && namesLocal(dep, ticket.id);
+    const namesHereInbound = (dep) => !tokenAbsent(dep) && namesInbound(dep, ticket.id);
     const local = ticketList
-      .filter((item) => item.id !== ticket.id && Array.isArray(item.depends) && item.depends.some((dep) => namesLocal(dep, ticket.id)))
+      .filter((item) => item.id !== ticket.id && Array.isArray(item.depends) && item.depends.some(namesHere))
       .sort(compareTickets);
-    return local.concat(inboundMatches((item) => Array.isArray(item.depends) && item.depends.some((dep) => namesInbound(dep, ticket.id))));
+    return local.concat(inboundMatches((item) => Array.isArray(item.depends) && item.depends.some(namesHereInbound)));
   }
 
   function parentLabel(ticket) {
-    if (!ticket || !ticket.parent) return "";
-    const known = knownTicket(ticket.parent);
-    return known.title || ticket.parent;
+    const parent = shownParent(ticket);
+    if (!parent) return "";
+    const known = knownTicket(parent);
+    return known.title || parent;
   }
 
   function ticketStructureKey(ticket) {
@@ -7652,7 +7680,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (parent) {
       paintField(findElement(parent, (el) => el.classList && el.classList.contains("md-ticket-match")), parentLabel(ticket));
     }
-    refreshLinkList("md-ticket-depends", (ticket.depends || []).map(knownTicket));
+    refreshLinkList("md-ticket-depends", shownDepends(ticket).map(knownTicket));
     refreshLinkList("md-ticket-children", childTicketsOf(ticket));
     refreshLinkList("md-ticket-blocks", blockersOf(ticket));
   }
@@ -7846,7 +7874,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
     const depends = document.createElement("div");
     depends.className = "md-ticket-depends";
-    const dependList = buildLinkList((ticket.depends || []).map(knownTicket), (selected) => {
+    const dependList = buildLinkList(shownDepends(ticket).map(knownTicket), (selected) => {
       const current = openTicket;
       if (!current) return;
       sendTicketSet({ depends: (current.depends || []).filter((id) => id !== selected.id) });
@@ -8108,6 +8136,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (ticket) next.push(ticket);
     }
     ticketList = next;
+    linkPresent = Array.isArray(message.present)
+      ? new Set(message.present.filter((item) => typeof item === "string"))
+      : null;
     const incomingInbound = Array.isArray(message.inbound) ? message.inbound : [];
     const nextInbound = [];
     for (const item of incomingInbound) {
@@ -8528,6 +8559,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     draggedMove = null;
     ticketList = [];
     inboundList = [];
+    linkPresent = null;
     state = createState("");
     sentLines = lineSet(state.anchor, state.cursor);
     outstandingLock = null;

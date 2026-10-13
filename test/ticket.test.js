@@ -8,6 +8,7 @@ import {
   generateId,
   parseTicket,
   composeTicket,
+  dropStoredMissing,
   rejectLink,
 } from "../src/ticket.js";
 
@@ -590,4 +591,46 @@ test("T-ticket-cross-repo", () => {
   assert.equal(rejectLink(scope("docs", ["docs"], [
     node("docs", A, "", [`other:${C}`]),
   ]), A, "", [`other:${C}`]), null);
+
+  const ghostHeld = scope("docs", ["docs"], [node("docs", A, `ghost:${K}`, [`ghost:${K}`])]);
+  const ghostSnap = JSON.stringify(ghostHeld);
+  assert.deepEqual(
+    dropStoredMissing(ghostHeld, `ghost:${K}`, [`ghost:${K}`], `ghost:${K}`, [`ghost:${K}`]),
+    { parent: `ghost:${K}`, depends: [`ghost:${K}`] },
+  );
+  assert.equal(JSON.stringify(ghostHeld), ghostSnap);
+  const ghostGone = scope("docs", ["docs", "ghost"], [node("docs", A, `ghost:${K}`)]);
+  assert.deepEqual(
+    dropStoredMissing(ghostGone, `ghost:${K}`, [], `ghost:${K}`, []),
+    { parent: "", depends: [] },
+  );
+  const mixed = scope("docs", ["docs", "other"], [node("docs", A), node("other", B)]);
+  assert.deepEqual(
+    dropStoredMissing(mixed, "", [`other:${C}`, `other:${B}`], "", [`other:${B}`, `other:${C}`, `other:${K}`]),
+    { parent: "", depends: [`other:${B}`, `other:${K}`] },
+  );
+  assert.equal(rejectLink(mixed, A, "", [`other:${K}`]), "missing");
+  assert.deepEqual(
+    dropStoredMissing(mixed, "", [], "", [`other:${K}`]),
+    { parent: "", depends: [`other:${K}`] },
+  );
+  assert.deepEqual(
+    dropStoredMissing(scope("docs", ["docs"], [node("docs", A)]), A, [], A, []),
+    { parent: A, depends: [] },
+  );
+  assert.deepEqual(
+    dropStoredMissing(scope("docs", ["docs"], []), "other:", [], "other:", []),
+    { parent: "other:", depends: [] },
+  );
+  assert.deepEqual(
+    dropStoredMissing([entry(A)], "zzzzzzzz", [C], "zzzzzzzz", [B, C]),
+    { parent: "", depends: [B] },
+  );
+  const throughGhost = scope("docs", ["docs", "other", "ghost"], [
+    node("docs", A, `other:${B}`, [`ghost:${K}`]),
+    node("other", B, `docs:${A}`),
+  ]);
+  const droppedCycle = dropStoredMissing(throughGhost, `other:${B}`, [`ghost:${K}`], `other:${B}`, [`ghost:${K}`]);
+  assert.deepEqual(droppedCycle, { parent: `other:${B}`, depends: [] });
+  assert.equal(rejectLink(throughGhost, A, droppedCycle.parent, droppedCycle.depends), "cycle");
 });

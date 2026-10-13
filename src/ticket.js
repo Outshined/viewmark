@@ -279,7 +279,8 @@ function namesSelf(token, id, home) {
 // ticket. Parent links and depends links are walked separately so a ticket
 // may depend on its own parent. A bare id is qualified with the file's repo.
 // "missing" is only an id absent from a registered repo. An unregistered name
-// is stored and ends the walk.
+// is stored and ends the walk. dropStoredMissing takes a stored missing token
+// off before this runs. A missing token the set itself adds is still "missing".
 export function rejectLink(tickets, id, parent, depends) {
   const proposedParent = parent ?? "";
   const proposedDepends = depends ?? [];
@@ -326,4 +327,39 @@ export function rejectLink(tickets, id, parent, depends) {
   if (parentCloses(graph, start)) return "cycle";
   if (dependsCloses(graph, start)) return "cycle";
   return null;
+}
+
+function presentKeys(scope) {
+  const present = new Set();
+  for (const ticket of scope.list) {
+    if (!ticket || typeof ticket !== "object" || typeof ticket.id !== "string") continue;
+    const repo = fileRepo(ticket, scope.home);
+    if (!scope.registered.has(repo)) continue;
+    present.add(nodeKey(repo, ticket.id));
+  }
+  return present;
+}
+
+// A registered repo whose id is absent. Malformed and unregistered tokens are not.
+function tokenAbsent(token, home, registered, present) {
+  if (typeof token !== "string" || token === "") return false;
+  const key = classify(token, home, registered);
+  if (key === "" || key === null) return false;
+  return !present.has(key);
+}
+
+// A stored link whose ticket is gone is removed with the set. A token this
+// write adds stays, so rejectLink can still refuse it. An unregistered name stays.
+export function dropStoredMissing(tickets, storedParent, storedDepends, parent, depends) {
+  const scope = linkScope(tickets);
+  const present = presentKeys(scope);
+  const gone = (token) => tokenAbsent(token, scope.home, scope.registered, present);
+  const nextParent = typeof parent === "string" ? parent : "";
+  const nextDepends = Array.isArray(depends) ? depends : [];
+  const keptParent = typeof storedParent === "string" ? storedParent : "";
+  const keptDepends = new Set(Array.isArray(storedDepends) ? storedDepends : []);
+  return {
+    parent: nextParent === keptParent && gone(nextParent) ? "" : nextParent,
+    depends: nextDepends.filter((dep) => !(keptDepends.has(dep) && gone(dep))),
+  };
 }

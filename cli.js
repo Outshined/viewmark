@@ -97,6 +97,7 @@ ticket:
   list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY] [--assignee NAME], set <id>, delete <id>, purge.
   --title, --state, --type, --priority, --parent, --depends, --assignee, --closed.
   --parent and --depends take an id or repo:id. --parent none clears. --depends none clears. --state is new, triaged, in progress, blocked, pending review, or closed.
+  A stored link to a ticket that is gone from a registered repo is removed on set and is not an error. An unregistered repo name stays. A token this set adds that names a missing ticket is still a conflict.
   --type is bug, enhancement, or task. An omitted type is task.
   --priority is low, medium, or high. An omitted create stores medium.
   reporter is --user. A field write uses the current body. Later field writes win. --rev is rejected.

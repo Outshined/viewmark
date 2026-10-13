@@ -7,12 +7,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { start } from "../server.js";
 
-// Ticket dfpje5ux: a link to a ticket that has gone missing is removed or ignored. A ticket in
-// `other` that holds `docs:A` still takes a field write after A is deleted or purged from `docs`.
-// A write that adds a link to a missing ticket in a registered repo is still 409.
+// Ticket dfpje5ux: a link to a ticket that has gone missing is removed on set. A ticket in
+// `other` that holds `docs:A` still takes a field write after A is deleted or purged from `docs`,
+// and that write drops the token. A write that adds a link to a missing ticket in a registered
+// repo is still 409.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "cli.js");
-const TODO = "ticket dfpje5ux: at f0cc055 a write to a ticket that holds a missing link is 409";
 
 function cliEnv() {
   const env = { ...process.env };
@@ -87,18 +87,18 @@ async function writeAfterGone(gone) {
     assert.equal(closed.code, 0, `ticket set B --state closed exited ${closed.code}: ${closed.stderr.trim()}`);
     const after = await fields(port, "other", b);
     assert.equal(after.state, "closed");
-    assert.ok(after.depends === `docs:${a}` || after.depends === "", `B's depends is ${JSON.stringify(after.depends)}, neither kept as docs:${a} nor removed`);
+    assert.equal(after.depends, "");
   });
 }
 
-test("a ticket whose link went missing when that ticket was deleted still takes a field write (ticket dfpje5ux)", { todo: TODO }, async () => {
+test("a ticket whose link went missing when that ticket was deleted still takes a field write (ticket dfpje5ux)", async () => {
   await writeAfterGone(async (port, a) => {
     const deleted = await run(port, ["--repo", "docs", "ticket", "delete", a]);
     assert.equal(deleted.code, 0, deleted.stderr);
   });
 });
 
-test("a ticket whose link went missing when that ticket was purged still takes a field write (ticket dfpje5ux)", { todo: TODO }, async () => {
+test("a ticket whose link went missing when that ticket was purged still takes a field write (ticket dfpje5ux)", async () => {
   await writeAfterGone(async (port, a) => {
     const closed = await run(port, ["--repo", "docs", "ticket", "set", a, "--state", "closed"]);
     assert.equal(closed.code, 0, closed.stderr);
