@@ -655,8 +655,9 @@ function assertPlaced(at, what) {
   const where = `${what}: the button is at x ${Math.round(b.left)} to ${Math.round(b.right)}, y ${Math.round(b.top)} to ${Math.round(b.bottom)}`;
   assert.ok(Math.abs(b.top - want) <= at.pitch / 4, `${where}. Its top should be half a line, ${(at.pitch / 2).toFixed(1)} px, below the highlight's bottom at y ${Math.round(at.bottom)}, so near y ${Math.round(want)}`);
   assert.ok(b.left <= at.middle && at.middle <= b.right, `${where}. It should span x ${Math.round(at.middle)}, the middle of the last highlighted character`);
-  assert.deepEqual(at.covered, [], `${where}. Something else is drawn over it`);
+  // Outside the window, elementFromPoint finds nothing, so the window is checked before the cover.
   assert.ok(b.left >= 0 && b.top >= 0 && b.right <= at.window.width && b.bottom <= at.window.height, `${where}, outside the ${at.window.width} by ${at.window.height} window`);
+  assert.deepEqual(at.covered, [], `${where}. Something else is drawn over it`);
 }
 
 const PLACEMENTS = [
