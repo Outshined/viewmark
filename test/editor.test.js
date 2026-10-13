@@ -3303,6 +3303,54 @@ test("T-table-atom", () => {
   assert.notEqual(inside.doc, "\n");
 });
 
+test("escaped pipes in a table cell draw as pipes without the backslash (ticket jxzuzfy9)", () => {
+  const doc = "x\n\n| a \\| b | c |\n| --- | --- |\n| 1 \\| 2 | 3 |\n| `p \\| q` | r \\|\n";
+  const table = plan(doc, doc.length).blocks.find((block) => block.type === "table");
+  const shown = (row) => row.map((cell) => cell.parts.map((part) => part.text).join(""));
+  assert.deepEqual(shown(table.header), ["a | b", "c"]);
+  assert.deepEqual(shown(table.rows[0]), ["1 | 2", "3"]);
+  assert.deepEqual(shown(table.rows[1]), ["p | q", "r |"]);
+  assert.equal(table.header.length, 2);
+  assert.equal(table.rows[0].length, 2);
+  assert.equal(table.rows[1].length, 2);
+  const code = table.rows[1][0].parts;
+  assert.equal(code.length, 1);
+  assert.deepEqual(code[0].classes, ["md-code"]);
+  assert.equal(code[0].text, "p | q");
+  assert.equal(table.rows[0][0].text, "1 \\| 2");
+  assert.equal(table.rows[0][0].start, doc.indexOf("1 \\| 2"));
+  assert.equal(table.rows[0][0].end, doc.indexOf("1 \\| 2") + "1 \\| 2".length);
+  assert.equal(table.rows[0][1].start, doc.indexOf("3 |\n"));
+  assert.equal(table.rows[1][1].text, "r \\|");
+  assert.equal(table.rows[1][1].end, table.rows[1][1].start + table.rows[1][1].text.length);
+  const plain = plan("a \\| b\n", "a \\| b\n".length);
+  assert.equal(plain.blocks.some((block) => block.type === "table"), false);
+  assert.equal(plain.lines[0].runs.map((run) => run.text).join(""), "a \\| b");
+  const same = plan(D, D.length).blocks.find((block) => block.type === "table");
+  assert.deepEqual(shown(same.header), ["a", "b"]);
+  assert.deepEqual(shown(same.rows[0]), ["1", "2"]);
+  const spec = "| **f\\|oo** |\n| --- |\n| b `\\|` az |\n";
+  const drawn = plan(spec, spec.length).blocks.find((block) => block.type === "table");
+  assert.deepEqual(shown(drawn.header), ["f|oo"]);
+  assert.ok(drawn.header[0].parts[0].classes.includes("md-strong"));
+  assert.deepEqual(shown(drawn.rows[0]), ["b | az"]);
+  assert.equal(drawn.rows[0][0].parts.find((part) => part.classes.includes("md-code")).text, "|");
+
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, doc, doc.length);
+    const cells = mounted.findAll((node) => node.tagName === "TH" || node.tagName === "TD");
+    assert.deepEqual(cells.map((cell) => cell.textContent.trim()), ["a | b", "c", "1 | 2", "3", "p | q", "r |"]);
+    const codeEl = mounted.findAll((node) => node.tagName === "CODE");
+    assert.equal(codeEl.length, 1);
+    assert.equal(codeEl[0].textContent, "p | q");
+    assert.equal(codeEl[0].closest("td").textContent.trim(), "p | q");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("T-image-atom", () => {
   const p = plan(F, 0);
   assert.equal(p.lines[0].raw, true);

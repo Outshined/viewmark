@@ -1162,10 +1162,10 @@ function renderCommentMarker(part) {
   return el;
 }
 
-function renderRun(part) {
+function renderRun(part, tag) {
   const marker = renderCommentMarker(part);
   if (marker) return marker;
-  const el = part.href ? document.createElement("a") : document.createElement("span");
+  const el = part.href ? document.createElement("a") : document.createElement(tag || "span");
   el.className = part.classes.join(" ");
   el.dataset.start = String(part.start);
   el.dataset.end = String(part.end);
@@ -1264,7 +1264,10 @@ function placeImageSelection(range, image) {
 function renderCell(tag, cell) {
   const el = document.createElement(tag);
   if (cell.parts) {
-    for (const part of cell.parts) el.append(renderRun(part));
+    for (const part of cell.parts) {
+      const code = part.classes && part.classes.includes("md-code");
+      el.append(renderRun(part, code ? "code" : undefined));
+    }
   } else {
     el.textContent = cell.text;
   }

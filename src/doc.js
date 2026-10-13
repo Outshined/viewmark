@@ -1232,18 +1232,28 @@ function isTableBody(text) {
   return text.trim() !== "" && text.includes("|");
 }
 
+// A pipe with a backslash immediately before it belongs to the cell.
+function cellPipe(text, index) {
+  return text[index] === "|" && (index === 0 || text[index - 1] !== "\\");
+}
+
 function cellRanges(line) {
   const text = line.text;
   const leading = text.length - text.trimStart().length;
   let start = leading;
   let end = text.length - (text.length - text.trimEnd().length);
-  if (start < end && text[start] === "|") start += 1;
-  if (end > start && text[end - 1] === "|") end -= 1;
+  if (start < end && cellPipe(text, start)) start += 1;
+  if (end > start && cellPipe(text, end - 1)) end -= 1;
   const cells = [];
   let index = start;
   while (index <= end) {
-    const pipe = text.indexOf("|", index);
-    const cellEnd = pipe < 0 || pipe > end ? end : pipe;
+    let pipe = -1;
+    for (let i = index; i < end; i += 1) {
+      if (!cellPipe(text, i)) continue;
+      pipe = i;
+      break;
+    }
+    const cellEnd = pipe < 0 ? end : pipe;
     const raw = text.slice(index, cellEnd);
     const lead = raw.length - raw.trimStart().length;
     const core = raw.trim();
@@ -1696,9 +1706,24 @@ export function blockSpan(doc, offset) {
   return [start, span.end];
 }
 
+// The escape that kept the pipe in the cell is not drawn. The run still covers
+// those source bytes, including when the pipe sits inside a code span.
+function hidePipeEscape(part) {
+  if (!part || part.type !== "run" || !part.text.includes("\\|")) return part;
+  let text = "";
+  for (let i = 0; i < part.text.length; i += 1) {
+    if (part.text[i] === "\\" && part.text[i + 1] === "|") continue;
+    text += part.text[i];
+  }
+  if (text === part.text) return part;
+  const copy = { ...part, text };
+  if (part.classes) copy.classes = part.classes.slice();
+  return copy;
+}
+
 function paintCell(cell, doc) {
   const parsed = parseInlines(cell.text, cell.start, "md-p");
-  return { ...cell, parts: paintParts(parsed.parts, findSpans(doc)) };
+  return { ...cell, parts: paintParts(parsed.parts, findSpans(doc)).map(hidePipeEscape) };
 }
 
 function structures(doc) {
