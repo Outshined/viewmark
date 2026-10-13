@@ -5346,6 +5346,100 @@ test("SE.q.1", () => {
   }
 });
 
+// Shift+Enter at the end of a line whose next source line is already in the block.
+// The caret has to land on the continued text, after that line's marker.
+function shiftMarked(mounted, marked) {
+  const at = marked.indexOf("‸");
+  const doc = marked.replace("‸", "");
+  const view = createEditor(mounted.root, doc, at);
+  mounted.listeners.beforeinput({
+    inputType: "insertLineBreak",
+    preventDefault() {},
+  });
+  const state = view.getState();
+  view.destroy();
+  return {
+    shown: state.doc.slice(0, state.cursor) + "‸" + state.doc.slice(state.cursor),
+    collapsed: state.anchor === state.cursor,
+  };
+}
+
+test("SE.q.2", () => {
+  const mounted = mountEditor();
+  try {
+    const quote = shiftMarked(mounted, "> alpha‸\n> beta\n");
+    assert.equal(quote.shown, "> alpha\\\n> ‸beta\n");
+    assert.equal(quote.collapsed, true);
+    const paired = shiftMarked(mounted, "> alpha‸\r\n> beta\r\n");
+    assert.equal(paired.shown, "> alpha\\\r\n> ‸beta\r\n");
+    assert.equal(paired.collapsed, true);
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("SE.li.2", () => {
+  const mounted = mountEditor();
+  try {
+    const item = shiftMarked(mounted, "- alpha‸\n  beta\n");
+    assert.equal(item.shown, "- alpha\\\n  ‸beta\n");
+    assert.equal(item.collapsed, true);
+    const paired = shiftMarked(mounted, "- alpha‸\r\n  beta\r\n");
+    assert.equal(paired.shown, "- alpha\\\r\n  ‸beta\r\n");
+    assert.equal(paired.collapsed, true);
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("SE.p.2", () => {
+  const mounted = mountEditor();
+  try {
+    const paragraph = shiftMarked(mounted, "alpha‸\nbeta\n");
+    assert.equal(paragraph.shown, "alpha\\\n‸beta\n");
+    assert.equal(paragraph.collapsed, true);
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("shift enter rests after a continuation marker", () => {
+  const apply = (marked) => {
+    const at = marked.indexOf("‸");
+    const doc = marked.replace("‸", "");
+    const brk = shiftBreak(doc, at, at);
+    const nl = doc.includes("\r\n") ? "\r\n" : "\n";
+    const text = brk.text.replace(/\n/g, nl);
+    const from = typeof brk.anchor === "number" ? Math.min(brk.anchor, brk.cursor) : at;
+    const to = typeof brk.anchor === "number" ? Math.max(brk.anchor, brk.cursor) : at;
+    const next = doc.slice(0, from) + text + doc.slice(to);
+    const caret = typeof brk.caret === "number" ? brk.caret : from + text.length;
+    return next.slice(0, caret) + "‸" + next.slice(caret);
+  };
+  const cases = [
+    ["> alpha‸\n> beta\n", "> alpha\\\n> ‸beta\n"],
+    ["- alpha‸\n  beta\n", "- alpha\\\n  ‸beta\n"],
+    ["alpha‸\nbeta\n", "alpha\\\n‸beta\n"],
+    ["1. alpha‸\n   beta\n", "1. alpha\\\n   ‸beta\n"],
+    ["10. alpha‸\n    beta\n", "10. alpha\\\n    ‸beta\n"],
+    ["  - alpha‸\n    beta\n", "  - alpha\\\n    ‸beta\n"],
+    ["\t- alpha‸\n\t  beta\n", "\t- alpha\\\n\t  ‸beta\n"],
+    ["- [ ] alpha‸\n  more\n", "- [ ] alpha\\\n  ‸more\n"],
+    ["> - alpha‸\nBeta\n", "> - alpha\\\n‸Beta\n"],
+    ["> - alpha‸\n>   beta\n", "> - alpha\\\n>   ‸beta\n"],
+    ["> alpha‸\nbeta\n", "> alpha\\\n‸beta\n"],
+    ["> alpha\nbeta‸\n> gamma\n", "> alpha\nbeta\\\n> ‸gamma\n"],
+    ["- alpha\n  beta‸\n  gamma\n", "- alpha\n  beta\\\n  ‸gamma\n"],
+    ["- alpha‸\n    beta\n", "- alpha\\\n  ‸  beta\n"],
+    ["> al‸pha\n> beta\n", "> al\\\n‸pha\n> beta\n"],
+    ["- al‸pha\n  beta\n", "- al\\\n‸pha\n  beta\n"],
+    ["> alpha‸\n> beta\n> gamma\n", "> alpha\\\n> ‸beta\n> gamma\n"],
+  ];
+  for (const [before, after] of cases) {
+    assert.equal(apply(before), after, JSON.stringify(before));
+  }
+});
+
 test("SE.h.1", () => {
   const mounted = mountEditor();
   const press = () => {

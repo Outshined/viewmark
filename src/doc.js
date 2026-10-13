@@ -375,6 +375,40 @@ function hardNextStays(text, line) {
   return false;
 }
 
+// The item this line continues, or this line when it is the item. A quote's
+// plain lines are not an item, and a blank line ends the walk.
+function listOpener(text, line) {
+  const own = classify(line.text);
+  if (own.kind === "li" || own.kind === "ol") return line;
+  if (own.kind !== "p" || line.text === "") return null;
+  let current = line;
+  while (current.start > 0 && text[current.start - 1] === "\n") {
+    const prev = sourceLine(text, current.start - 1);
+    if (prev.text === "" || imageLine(prev.text) || fenceOpen(prev.text) || prev.text.startsWith("|")) return null;
+    const kind = classify(prev.text);
+    if (kind.kind === "li" || kind.kind === "ol") return prev;
+    if (kind.kind !== "p") return null;
+    current = prev;
+  }
+  return null;
+}
+
+// Characters of the next line that are its marker, not its text. A letter
+// typed in front of that marker becomes text, and the marker stops marking.
+function continuedHead(text, line) {
+  let next = nextLineText(text, line.end);
+  if (next.endsWith("\r")) next = next.slice(0, -1);
+  const nextMode = classify(next);
+  let head = 0;
+  if (nextMode.kind === "quote") head = nextMode.marker || 0;
+  else if (nextMode.quoted) head = nextMode.quote || 0;
+  const opener = listOpener(text, line);
+  if (!opener) return head;
+  const columns = contentColumn(opener.text, classify(opener.text).marker || 0);
+  const used = contentColumn(next, head);
+  return head + continuationIndent(next.slice(head), Math.max(0, columns - used));
+}
+
 // Shift+Enter writes a backslash and a newline. The newline already between
 // two lines of one block stays; only the backslash is added. A new quote line
 // that would otherwise be empty starts with "> ", or the quote would end.
@@ -387,7 +421,7 @@ function shiftInsert(text, at) {
   const moved = point === at ? null : { anchor: point, cursor: point };
   if (onBreak && hardNextStays(text, line)) {
     const nlLen = text[point] === "\r" ? 2 : 1;
-    return { text: "\\", caret: point + 1 + nlLen, ...moved };
+    return { text: "\\", caret: point + 1 + nlLen + continuedHead(text, line), ...moved };
   }
   const contentEnd = line.newline && line.end > line.start && text[line.end - 1] === "\r" ? line.end - 1 : line.end;
   const prefix = inQuoteLine(text, line) && text.slice(point, contentEnd) === "" ? "> " : "";
