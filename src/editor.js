@@ -6799,15 +6799,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }, { signal: ac.signal });
   }
 
+  // A fixed button keeps its window coordinates while the highlight moves with the text.
+  const onScroll = () => {
+    pinViewToggle();
+    updateCommentButton();
+  };
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     window.addEventListener("resize", () => {
       layoutComments();
       pinViewToggle();
     }, { signal: ac.signal });
-    window.addEventListener("scroll", () => pinViewToggle(), { capture: true, signal: ac.signal });
+    window.addEventListener("scroll", onScroll, { capture: true, signal: ac.signal });
     window.addEventListener("hashchange", () => onHashChange(), { signal: ac.signal });
   }
-  listen("scroll", () => pinViewToggle());
+  listen("scroll", onScroll);
 
   function visibleTicketList() {
     const on = enabledFilters(filesNav());

@@ -6922,6 +6922,84 @@ test("the add-comment button appears under the highlight's last line when the se
   }
 });
 
+test("the add-comment button follows the highlight when the page scrolls", () => {
+  const mounted = mountSheet();
+  const windowListeners = {};
+  globalThis.window.addEventListener = (type, fn) => {
+    windowListeners[type] = fn;
+  };
+  const create = globalThis.document.createElement;
+  globalThis.document.createElement = (tag) => {
+    const el = create(tag);
+    Object.defineProperty(el, "offsetWidth", {
+      configurable: true,
+      get() {
+        return el.classList && el.classList.contains("md-add-comment") ? 80 : undefined;
+      },
+    });
+    return el;
+  };
+  try {
+    const view = createEditor(mounted.root, "hello fox two deer\n", 0);
+    const text = mounted.root.childNodes[0].childNodes[0].childNodes[0];
+    let rect = { top: 40, left: 8, right: 72, bottom: 58, width: 64, height: 18 };
+    mounted.setSelection({
+      rangeCount: 1,
+      anchorNode: text,
+      anchorOffset: 6,
+      focusNode: text,
+      focusOffset: 9,
+      getRangeAt() {
+        return {
+          collapsed: false,
+          startContainer: text,
+          endContainer: text,
+          startOffset: 6,
+          endOffset: 9,
+          commonAncestorContainer: text,
+          getClientRects() {
+            return [rect];
+          },
+        };
+      },
+    });
+    mounted.listeners.selectionchange();
+    const button = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    const pitch = 18 * 1.2;
+    assert.equal(button.hidden, false);
+    assert.equal(button.styleProps.top, `${58 + pitch / 2}px`);
+    assert.equal(button.styleProps.left, `${72 - 1 - 40}px`);
+
+    rect = { top: 160, left: 20, right: 90, bottom: 178, width: 70, height: 18 };
+    windowListeners.scroll();
+    assert.equal(button.hidden, false);
+    assert.equal(button.styleProps.top, `${178 + pitch / 2}px`);
+    assert.equal(button.styleProps.left, `${90 - 1 - 40}px`);
+
+    rect = { top: -40, left: 8, right: 72, bottom: -22, width: 64, height: 18 };
+    mounted.listeners.scroll();
+    assert.equal(button.hidden, false);
+    assert.equal(button.styleProps.top, `${-22 + pitch / 2}px`);
+    assert.equal(button.styleProps.left, `${72 - 1 - 40}px`);
+
+    // A place past the window stays at the rule's coordinates.
+    globalThis.window.innerHeight = 800;
+    rect = { top: 790, left: 8, right: 72, bottom: 808, width: 64, height: 18 };
+    windowListeners.scroll();
+    const below = 808 + pitch / 2;
+    assert.ok(below + 30 > 800);
+    assert.equal(button.hidden, false);
+    assert.equal(button.styleProps.top, `${below}px`);
+    assert.equal(button.styleProps.left, `${72 - 1 - 40}px`);
+    delete globalThis.window.innerHeight;
+
+    view.destroy();
+    mounted.setSelection(null);
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("comment cards save, reply, resolve, and discard without writing keystrokes", () => {
   const mounted = mountSheet();
   const matchesLabel = (node, label) => node && node.tagName === "BUTTON" && (
