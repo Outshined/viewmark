@@ -15,7 +15,7 @@ import { onPath, spawnTied, stopProcess } from "./harness.js";
 
 const FIREFOX = process.env.VIEWMARK_FIREFOX || "firefox";
 const CAGE = process.env.VIEWMARK_CAGE || "cage";
-const VIEWPORT = { width: 1200, height: 900 };
+const VIEWPORT = { width: 1920, height: 1080 };
 
 const PREFS = {
   "browser.shell.checkDefaultBrowser": false,

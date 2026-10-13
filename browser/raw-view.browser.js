@@ -601,7 +601,7 @@ async function buttonBox(page) {
     const b = document.querySelector(${JSON.stringify(TOGGLE)});
     const e = document.getElementById("editor").getBoundingClientRect();
     const r = b.getBoundingClientRect();
-    return { count: document.querySelectorAll("button.md-view-toggle").length, left: r.left, right: r.right, top: r.top, bottom: r.bottom, paneTop: Math.max(0, e.top), paneRight: Math.min(innerWidth, e.right) };
+    return { count: document.querySelectorAll("button.md-view-toggle").length, left: r.left, right: r.right, top: r.top, bottom: r.bottom, paneTop: Math.max(0, e.top), paneRight: Math.min(innerWidth, e.right), windowBottom: innerHeight };
   })()`);
 }
 
@@ -666,7 +666,7 @@ test("button (R107): it stays in the visible corner of the pane while the docume
   const scrolled = await page.eval("scrollY + document.getElementById('editor').scrollTop");
   assert.ok(scrolled > 200, `the page did not scroll (${scrolled})`);
   const box = await buttonBox(page);
-  assert.ok(box.top >= box.paneTop && box.top - box.paneTop <= 16 && box.bottom <= 900, `after scrolling the button is at ${JSON.stringify(box)}`);
+  assert.ok(box.top >= box.paneTop && box.top - box.paneTop <= 16 && box.bottom <= box.windowBottom, `after scrolling the button is at ${JSON.stringify(box)}`);
 });
 
 test("button: a button with aria-label and aria-pressed, toggled by Enter or Space", async (t) => {

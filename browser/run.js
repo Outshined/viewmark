@@ -410,7 +410,8 @@ async function place(page, cell, route, interval, context, target) {
   } else if (route === "resize") {
     await clickAt(page, bytes, focus);
     await page.quiet();
-    await page.session.send("Emulation.setDeviceMetricsOverride", { width: 700, height: 813, deviceScaleFactor: 1, mobile: false });
+    const height = await page.eval("innerHeight");
+    await page.session.send("Emulation.setDeviceMetricsOverride", { width: 700, height, deviceScaleFactor: 1, mobile: false });
     await page.quiet();
     await page.session.send("Emulation.clearDeviceMetricsOverride");
   } else if (route === "refocus") {

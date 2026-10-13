@@ -622,7 +622,7 @@ test("Id row: a click puts exactly the 8-character id on the clipboard, and the 
 // The menu button sits at the top right of the pane, and the copy button follows the id, so a
 // wide id pushes the copy button toward it. Ids are drawn in a proportional font, so the check is
 // also made with the row's id put to eight of the widest letter an id can hold.
-test("Id row: no other control covers the copy button, at its centre or its four corners, for any id", async (t) => {
+test("Id row: no other control covers the copy button, at its center or its four corners, for any id", async (t) => {
   const { hub, page } = await setup(t);
   const id = await makeTicket(hub, "Alpha");
   await openTicket(page, id);
@@ -631,7 +631,7 @@ test("Id row: no other control covers the copy button, at its centre or its four
     if (${JSON.stringify(text)}) row.firstChild.data = ${JSON.stringify(text)};
     const copy = row.querySelector("button");
     const r = copy.getBoundingClientRect();
-    const points = { centre: [(r.left + r.right) / 2, (r.top + r.bottom) / 2], "top left": [r.left + 2, r.top + 2], "top right": [r.right - 2, r.top + 2], "bottom left": [r.left + 2, r.bottom - 2], "bottom right": [r.right - 2, r.bottom - 2] };
+    const points = { center: [(r.left + r.right) / 2, (r.top + r.bottom) / 2], "top left": [r.left + 2, r.top + 2], "top right": [r.right - 2, r.top + 2], "bottom left": [r.left + 2, r.bottom - 2], "bottom right": [r.right - 2, r.bottom - 2] };
     const out = {};
     for (const [name, [x, y]] of Object.entries(points)) {
       const el = document.elementFromPoint(x, y);

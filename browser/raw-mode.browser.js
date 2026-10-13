@@ -239,7 +239,7 @@ test("raw mode draws every byte and edits as plain text", async (t) => {
   const back = await page.caret();
   assert.equal(back.focus, low.focus);
   assert.equal(back.anchor, low.anchor);
-  assert.ok(back.rect && back.rect.top >= 0 && back.rect.bottom <= 900, `caret top ${back.rect && back.rect.top}`);
+  assert.ok(back.rect && back.rect.top >= 0 && back.rect.bottom <= (await page.eval("innerHeight")), `caret top ${back.rect && back.rect.top}`);
 
   await page.open("item.md");
   await setRaw(page, true);

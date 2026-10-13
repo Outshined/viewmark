@@ -212,7 +212,7 @@ export async function launchBrowser() {
     ...(process.env.VIEWMARK_HEADED === "1" ? [] : ["--headless=new"]),
     "--remote-debugging-port=0",
     `--user-data-dir=${profile}`,
-    "--window-size=1200,900",
+    "--window-size=1920,1080",
     "--force-device-scale-factor=1",
     "--font-render-hinting=none",
     "--hide-scrollbars",
@@ -477,7 +477,7 @@ window.__qaTextPoint = (marked, nth) => {
   const r = window.__qaDrawnRect(found.drawn, at - 1);
   return r && { x: r.right - 1, y: (r.top + r.bottom) / 2 };
 };
-// 1 px left of the centre of a glyph, the middle one of a word or the index-th of a run.
+// 1 px left of the center of a glyph, the middle one of a word or the index-th of a run.
 window.__qaWordPoint = (word, nth, index) => {
   const found = window.__qaFindText(word, nth);
   if (!found) return null;
@@ -487,14 +487,14 @@ window.__qaWordPoint = (word, nth, index) => {
 };
 window.__qaTarget = (name, arg) => {
   const root = window.__qaRoot();
-  const centre = (el) => {
+  const center = (el) => {
     if (!el) return null;
     const r = el.getBoundingClientRect();
     return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
   };
-  if (name === "image") return centre(root.querySelector(".md-image"));
-  if (name === "diagram") return centre(root.querySelector(".md-diagram"));
-  if (name === "cell") return centre([...root.querySelectorAll("td, th")].find((cell) => cell.textContent.trim() === arg));
+  if (name === "image") return center(root.querySelector(".md-image"));
+  if (name === "diagram") return center(root.querySelector(".md-diagram"));
+  if (name === "cell") return center([...root.querySelectorAll("td, th")].find((cell) => cell.textContent.trim() === arg));
   if (name === "rule") {
     const rule = root.querySelector(".md-hr");
     if (!rule) return null;
