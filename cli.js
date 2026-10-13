@@ -497,9 +497,43 @@ function connectHub(port, username) {
       readyReject = null;
       reject(code);
     }
+    // process.exit drops writes still queued on a pipe, and the reader then sees one
+    // buffer and status 0. Wait until those writes land. A pipe that closes first fails
+    // the command instead of truncating it.
+    let leaving = false;
     const exit = () => {
-      process.exitCode = code;
-      process.exit(code);
+      if (leaving) return;
+      leaving = true;
+      let status = code;
+      let pending = 0;
+      const watch = (stream) => {
+        if (stream.destroyed || !stream.writableNeedDrain) return;
+        pending += 1;
+        if (typeof stream.ref === "function") stream.ref();
+        let onDrain;
+        let onError;
+        const settle = (err) => {
+          stream.off("drain", onDrain);
+          stream.off("error", onError);
+          if (typeof stream.unref === "function") stream.unref();
+          if (err && status === 0) status = 1;
+          pending -= 1;
+          if (pending === 0) {
+            process.exitCode = status;
+            process.exit(status);
+          }
+        };
+        onDrain = () => settle(null);
+        onError = () => settle(true);
+        stream.on("drain", onDrain);
+        stream.on("error", onError);
+      };
+      watch(process.stdout);
+      watch(process.stderr);
+      if (pending === 0) {
+        process.exitCode = status;
+        process.exit(status);
+      }
     };
     if (ws.readyState === WebSocket.CLOSED) {
       exit();

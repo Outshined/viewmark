@@ -8,11 +8,7 @@ import { fileURLToPath } from "node:url";
 import { start } from "../server.js";
 
 // Ticket xwcxqsrk: show and ticket show, plain and --json, write the whole document to a pipe
-// whose reader starts late, or exit non-zero when they cannot. The late reader's test is todo
-// until the fix lands, and the fix removes the todo. The early close already exits non-zero, and
-// its test checks that the fix keeps it so.
-const TODO = "ticket xwcxqsrk";
-
+// whose reader starts late, or exit non-zero when they cannot.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "cli.js");
 const LINE = "The quick brown fox jumps over the lazy dog, again and again.\n";
@@ -78,7 +74,7 @@ async function withHub(fn) {
   }
 }
 
-test("show and ticket show write the whole document to a pipe whose reader starts late (ticket xwcxqsrk)", { todo: TODO }, async () => {
+test("show and ticket show write the whole document to a pipe whose reader starts late (ticket xwcxqsrk)", async () => {
   await withHub(async ({ port, id }) => {
     const shown = await runSlow(port, ["--repo", "docs", "show", "big.md"]);
     assert.equal(shown.code, 0);
