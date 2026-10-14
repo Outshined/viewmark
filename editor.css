@@ -670,6 +670,21 @@ button.md-doc-menu-item[hidden] {
   display: none;
 }
 
+span.md-vim-status {
+  position: absolute;
+  top: 0.35rem;
+  right: calc(0.35rem + (1.75rem + 4px) * 2);
+  z-index: 2;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0 0.35rem;
+  background: #1c1b19;
+  color: inherit;
+  font: inherit;
+  line-height: 1.75rem;
+  user-select: none;
+}
+
 .ticket-form {
   position: relative;
   box-sizing: border-box;
@@ -939,6 +954,10 @@ button.md-ticket-filter-all:hover,
   overflow-wrap: anywhere;
   caret-color: #e7e2d8;
   tab-size: 4;
+}
+
+.editor.md-vim-block {
+  caret-shape: block;
 }
 
 #editor.md-source {

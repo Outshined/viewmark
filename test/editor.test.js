@@ -24,6 +24,8 @@ import {
   formatHash,
   parseHash,
   wordSpan,
+  vimDrawsBlockCaret,
+  vimStatusText,
 } from "../src/editor.js";
 import { splitCommentNote, lockSpans, lockIndexAt, blockSpan, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, shiftBreak, moveText, endBeforeTail, ruleLineStop, gapCaretStops } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
@@ -10374,7 +10376,7 @@ test("document menu offers Attach image and Delete file", () => {
     assert.deepEqual(iconPaths(button), ["M4 6h16M4 12h16M4 18h16"]);
     assert.equal(panel.getAttribute("role"), "menu");
     assert.equal(panel.hidden, true);
-    assert.deepEqual(panel.childNodes.map((node) => node.textContent), ["Attach image", "Delete file"]);
+    assert.deepEqual(panel.childNodes.map((node) => node.textContent), ["Attach image", "Delete file", "Vim keys"]);
     assert.equal(panel.childNodes[1].hidden, true);
     assert.equal(panel.childNodes[1].hasAttribute("hidden"), true);
     assert.equal(mounted.root.childNodes.at(-1), toggle);
@@ -13720,7 +13722,7 @@ test("T-deep-link", () => {
     assert.equal(docMenu[0].getAttribute("aria-label"), "Menu");
     assert.equal(docPanel.length, 1);
     assert.equal(docPanel[0].getAttribute("role"), "menu");
-    assert.deepEqual(docPanel[0].childNodes.map((node) => node.textContent), ["Attach image", "Delete file"]);
+    assert.deepEqual(docPanel[0].childNodes.map((node) => node.textContent), ["Attach image", "Delete file", "Vim keys"]);
     fireHash();
     assert.equal(opens().length, 1);
     const commentDoc = "See {c1}fox{/c1}.\n\n```comment c1 resolved\nhi\n```\n";
@@ -17405,6 +17407,248 @@ test("a missing ticket link is not shown as a parent, dependency, block, or chil
     else globalThis.history = previousHistory;
     if (previousLocation === undefined) delete globalThis.location;
     else globalThis.location = previousLocation;
+    mounted.restore();
+  }
+});
+
+test("vim keys checkbox, status, and caret", () => {
+  const empty = { prefixRepeat: "", operator: null, motionRepeat: "", keyBuffer: "" };
+  assert.equal(vimStatusText("normal", empty), "N");
+  assert.equal(vimStatusText("insert", empty), "I");
+  assert.equal(vimStatusText("visual", empty), "V");
+  assert.equal(vimStatusText("visual-line", empty), "VL");
+  assert.equal(vimStatusText("normal", null), "N");
+  assert.equal(vimStatusText("normal", { prefixRepeat: "3" }), "3");
+  assert.equal(vimStatusText("normal", { prefixRepeat: "3", operator: "d" }), "3d");
+  assert.equal(vimStatusText("normal", { keyBuffer: "f" }), "f");
+  assert.equal(vimStatusText("normal", { prefixRepeat: "3", operator: "d", motionRepeat: "2" }), "3d2");
+  assert.equal(vimStatusText("normal", { prefixRepeat: "3", operator: "d", keyBuffer: "2" }), "3d2");
+  assert.equal(vimStatusText("normal", { keyBuffer: "g" }), "g");
+  assert.equal(vimStatusText("normal", { operator: "d", keyBuffer: "i" }), "di");
+  assert.equal(vimStatusText("normal", { operator: "d", keyBuffer: "" }), "d");
+  assert.equal(vimStatusText("insert", { operator: "d", keyBuffer: "i" }), "di");
+  assert.equal(vimDrawsBlockCaret("normal"), true);
+  assert.equal(vimDrawsBlockCaret("insert"), false);
+  assert.equal(vimDrawsBlockCaret("visual"), false);
+  assert.equal(vimDrawsBlockCaret("visual-line"), false);
+
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
+  const editorRule = css.match(/\.editor \{[^}]*\}/)[0];
+  assert.match(editorRule, /caret-color:\s*#e7e2d8/);
+  assert.equal(editorRule.includes("caret-shape"), false);
+  assert.match(css, /\.editor\.md-vim-block\s*\{[^}]*caret-shape:\s*block/);
+  assert.equal(css.split("caret-shape").length, 2);
+  assert.equal(src.includes("vimKey"), false);
+  assert.match(src, /typedAt - typingRun\.at <= 1000/);
+
+  const previousLocal = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const useLocal = (value) => {
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value });
+  };
+  const mapStorage = (initial = {}) => {
+    const data = { ...initial };
+    const reads = [];
+    const writes = [];
+    return {
+      data,
+      reads,
+      writes,
+      getItem(key) {
+        reads.push(key);
+        return Object.prototype.hasOwnProperty.call(data, key) ? data[key] : null;
+      },
+      setItem(key, value) {
+        writes.push(key);
+        data[key] = String(value);
+      },
+      removeItem(key) {
+        writes.push(key);
+        delete data[key];
+      },
+    };
+  };
+  const mounted = mountEditor();
+  const click = (node) => node.listeners.click({ preventDefault() {}, stopPropagation() {} });
+  const vimButton = () => walkNodes(mounted.root, (node) => node.tagName === "BUTTON" && node.textContent === "Vim keys")[0];
+  const statuses = () => byClass(mounted.root, "md-vim-status");
+  const letter = (key) => {
+    let prevented = false;
+    mounted.listeners.keydown({
+      key,
+      shiftKey: false,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      preventDefault() { prevented = true; },
+    });
+    assert.equal(prevented, false);
+    input(mounted, "insertText", key);
+  };
+  try {
+    useLocal(undefined);
+    const store = mapStorage();
+    const transport = holdingTransport();
+    const view = createEditor(mounted.root, "alpha\n", 0, transport, store);
+    const item = vimButton();
+    assert.equal(item.getAttribute("role"), "menuitemcheckbox");
+    assert.equal(item.getAttribute("aria-checked"), "false");
+    assert.equal(walkNodes(item, (node) => node.localName === "svg").length, 0);
+    assert.equal(statuses().length, 0);
+    assert.equal(mounted.root.classList.contains("md-vim-block"), false);
+    assert.equal(store.reads.includes("viewmark.vim"), true);
+    assert.equal(store.writes.includes("viewmark.vim"), false);
+    const before = transport.sent.length;
+    click(item);
+    assert.equal(transport.sent.length, before);
+    assert.equal(store.getItem("viewmark.vim"), "1");
+    assert.equal(item.getAttribute("aria-checked"), "true");
+    assert.equal(statuses().length, 1);
+    const status = statuses()[0];
+    assert.equal(status.textContent, "N");
+    assert.equal(status.getAttribute("contenteditable"), "false");
+    assert.equal(status.getAttribute("role"), "status");
+    assert.equal(status.getAttribute("aria-live"), "polite");
+    assert.equal(walkNodes(status, (node) => node.localName === "svg").length, 0);
+    assert.equal(mounted.root.classList.contains("md-vim-block"), true);
+    assert.equal(mounted.root.childNodes.at(-1), status);
+    const lines = mounted.root.childNodes.filter((node) => node.classList && node.classList.contains("md-line"));
+    assert.ok(lines.length > 0);
+    assert.equal(mounted.root.childNodes.indexOf(lines[0]), 0);
+    assert.ok(mounted.root.childNodes.indexOf(status) > mounted.root.childNodes.indexOf(lines[lines.length - 1]));
+    assert.equal(JSON.stringify(view.getState()).includes("viewmark.vim"), false);
+    view.destroy();
+
+    const again = createEditor(mounted.root, "alpha\n", 0, null, store);
+    assert.equal(vimButton().getAttribute("aria-checked"), "true");
+    assert.equal(statuses().length, 1);
+    assert.equal(statuses()[0].getAttribute("contenteditable"), "false");
+    assert.equal(statuses()[0].textContent, "N");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), true);
+    letter("x");
+    assert.equal(again.getState().doc, "xalpha\n");
+    assert.equal(again.getState().cursor, 1);
+    assert.equal(statuses().length, 1);
+    assert.equal(statuses()[0].getAttribute("contenteditable"), "false");
+    assert.equal(statuses()[0].textContent, "N");
+    const doc = again.getState().doc;
+    const cursor = again.getState().cursor;
+    let prevented = false;
+    let stopped = false;
+    statuses()[0].listeners.mousedown({
+      preventDefault() { prevented = true; },
+      stopPropagation() { stopped = true; },
+    });
+    statuses()[0].listeners.pointerdown({
+      preventDefault() { prevented = true; },
+      stopPropagation() { stopped = true; },
+    });
+    assert.equal(prevented, true);
+    assert.equal(stopped, true);
+    assert.equal(again.getState().doc, doc);
+    assert.equal(again.getState().cursor, cursor);
+    mounted.root.getBoundingClientRect = () => ({ width: 800, height: 400, top: 10, right: 900, left: 100, bottom: 410 });
+    globalThis.window.innerWidth = 1000;
+    input(mounted, "insertText", "y");
+    const pinned = statuses()[0];
+    assert.equal(pinned.styleProps.position, "fixed");
+    assert.equal(pinned.styleProps.top, "16px");
+    assert.equal(pinned.styleProps.right, "calc(106px + (1.75rem + 4px) * 2)");
+    assert.equal(viewToggleOf(mounted.root).styleProps.top, "16px");
+    assert.equal(viewToggleOf(mounted.root).styleProps.right, "106px");
+    const menu = byClass(mounted.root, "md-doc-menu")[0];
+    assert.equal(menu.styleProps.top, "16px");
+    assert.equal(menu.styleProps.right, "calc(106px + 1.75rem + 4px)");
+    pressViewToggle(mounted.root);
+    assert.equal(statuses().length, 1);
+    assert.equal(statuses()[0].getAttribute("contenteditable"), "false");
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    assert.equal(mounted.root.childNodes.filter((node) => node.classList && node.classList.contains("md-line"))[0], mounted.root.childNodes[0]);
+    pressViewToggle(mounted.root);
+    assert.equal(statuses().length, 1);
+    mounted.listeners.keydown({
+      key: "a",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+    });
+    assert.notEqual(again.getState().anchor, again.getState().cursor);
+    const selected = again.getState().doc;
+    click(vimButton());
+    assert.equal(store.getItem("viewmark.vim"), null);
+    assert.equal(vimButton().getAttribute("aria-checked"), "false");
+    assert.equal(statuses().length, 0);
+    assert.equal(mounted.root.classList.contains("md-vim-block"), false);
+    assert.equal(again.getState().doc, selected);
+    assert.equal(again.getState().anchor, again.getState().cursor);
+    click(vimButton());
+    assert.equal(store.getItem("viewmark.vim"), "1");
+    assert.equal(statuses().length, 1);
+    again.destroy();
+
+    const off = createEditor(mounted.root, "alpha\n", 0);
+    assert.equal(statuses().length, 0);
+    assert.equal(mounted.root.classList.contains("md-vim-block"), false);
+    letter("x");
+    assert.equal(off.getState().doc, "xalpha\n");
+    assert.equal(statuses().length, 0);
+    off.destroy();
+
+    for (const value of ["0", "true", " 1", ""]) {
+      const other = mapStorage({ "viewmark.vim": value });
+      const closed = createEditor(mounted.root, "alpha\n", 0, null, other);
+      assert.equal(vimButton().getAttribute("aria-checked"), "false", value);
+      assert.equal(statuses().length, 0, value);
+      assert.equal(mounted.root.classList.contains("md-vim-block"), false, value);
+      closed.destroy();
+    }
+
+    const session = mapStorage({
+      "viewmark.username": "ada",
+      "viewmark.repo": "notes",
+      "viewmark.session": "tok",
+    });
+    const sessionBefore = { ...session.data };
+    useLocal(mapStorage());
+    const both = createEditor(mounted.root, "alpha\n", 0, holdingTransport(), session);
+    assert.equal(statuses().length, 0);
+    assert.equal(session.reads.includes("viewmark.vim"), false);
+    click(vimButton());
+    assert.equal(globalThis.localStorage.getItem("viewmark.vim"), "1");
+    assert.equal(statuses()[0].textContent, "N");
+    assert.deepEqual(session.data, sessionBefore);
+    assert.equal(session.writes.includes("viewmark.vim"), false);
+    assert.equal(session.reads.includes("viewmark.vim"), false);
+    both.destroy();
+
+    const kept = { ...session.data };
+    useLocal({
+      getItem() { throw new Error("denied"); },
+      setItem() { throw new Error("denied"); },
+      removeItem() { throw new Error("denied"); },
+    });
+    const thrown = createEditor(mounted.root, "alpha\n", 0, holdingTransport(), session);
+    assert.equal(statuses().length, 0);
+    assert.equal(mounted.root.classList.contains("md-vim-block"), false);
+    click(vimButton());
+    assert.equal(statuses().length, 1);
+    assert.equal(statuses()[0].textContent, "N");
+    assert.equal(statuses()[0].getAttribute("contenteditable"), "false");
+    assert.equal(vimButton().getAttribute("aria-checked"), "true");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), true);
+    assert.deepEqual(session.data, kept);
+    thrown.destroy();
+    const reloaded = createEditor(mounted.root, "alpha\n", 0, holdingTransport(), session);
+    assert.equal(statuses().length, 0);
+    assert.equal(vimButton().getAttribute("aria-checked"), "false");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), false);
+    reloaded.destroy();
+  } finally {
+    if (previousLocal) Object.defineProperty(globalThis, "localStorage", previousLocal);
+    else delete globalThis.localStorage;
+    delete globalThis.window.innerWidth;
     mounted.restore();
   }
 });

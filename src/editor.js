@@ -2147,6 +2147,41 @@ function metaBuild(node) {
   return null;
 }
 
+const VIM_KEY = "viewmark.vim";
+
+function vimField(value) {
+  return typeof value === "string" ? value : "";
+}
+
+function emptyVimInput() {
+  return { prefixRepeat: "", operator: null, motionRepeat: "", keyBuffer: "" };
+}
+
+// Normal is a block. Insert keeps the thin caret already drawn for the editor.
+// Visual and Visual Line do not get a caret of their own.
+export function vimDrawsBlockCaret(mode) {
+  return mode === "normal";
+}
+
+// Idle is the mode letter. Anything pending is the prefix, the operator, the
+// motion count, and the key buffer, in that order. The operator is its own
+// field, so it stays after its key has left the buffer.
+export function vimStatusText(mode, input) {
+  const record = input && typeof input === "object" ? input : {};
+  const prefix = vimField(record.prefixRepeat);
+  const operator = vimField(record.operator);
+  const motion = vimField(record.motionRepeat);
+  let buffer = vimField(record.keyBuffer);
+  const head = prefix + operator + motion;
+  if (head && buffer.startsWith(head)) buffer = buffer.slice(head.length);
+  const pending = head + buffer;
+  if (pending) return pending;
+  if (mode === "insert") return "I";
+  if (mode === "visual") return "V";
+  if (mode === "visual-line") return "VL";
+  return "N";
+}
+
 function readPageBuild() {
   const doc = globalThis.document;
   if (!doc) return "";
@@ -2216,6 +2251,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let docMenuButton = null;
   let docMenuPanel = null;
   let docMenuDelete = null;
+  let docMenuVim = null;
   let docLinkButton = null;
   let docAttachInput = null;
   let docLinkOnClick = null;
@@ -2236,6 +2272,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let sourceMode = false;
   let rawPath = "";
   let viewToggle = null;
+  let vimStatus = null;
+  let vimMode = "normal";
+  let vimInput = emptyVimInput();
+  // The flag is this page's memory. Storage is read once here and written on toggle.
+  let vimOn = readVimOn();
   // Create is answered by its own error or by the file from onOpen.
   // A 409 for that create is not a rejected caret grant.
   const conflictWaiters = [];
@@ -4589,6 +4630,61 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     else root.classList.remove("md-source");
   }
 
+  function syncVimCaret() {
+    if (!root || !root.classList) return;
+    if (vimOn && vimDrawsBlockCaret(vimMode)) root.classList.add("md-vim-block");
+    else root.classList.remove("md-vim-block");
+  }
+
+  // localStorage wins when it exists. The session object is not that store.
+  // When it is missing, the object passed to createEditor is the stand-in.
+  function vimStore() {
+    let local = null;
+    try {
+      if (globalThis.localStorage) local = globalThis.localStorage;
+    } catch {
+      local = null;
+    }
+    if (local && typeof local.getItem === "function") return local;
+    if (repoStorage && typeof repoStorage.getItem === "function") return repoStorage;
+    return null;
+  }
+
+  function readVimOn() {
+    const store = vimStore();
+    if (!store) return false;
+    try {
+      return store.getItem(VIM_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function writeVimOn(on) {
+    const store = vimStore();
+    if (!store) return;
+    try {
+      if (on) {
+        if (typeof store.setItem === "function") store.setItem(VIM_KEY, "1");
+      } else if (typeof store.removeItem === "function") {
+        store.removeItem(VIM_KEY);
+      }
+    } catch {
+      // The memory flag already holds the toggle. The next load starts off.
+    }
+  }
+
+  function setVimOn(next) {
+    const on = next === true;
+    vimOn = on;
+    vimMode = "normal";
+    vimInput = emptyVimInput();
+    if (!on && state.anchor !== state.cursor) state = { ...state, anchor: state.cursor };
+    writeVimOn(on);
+    syncVimItem();
+    render();
+  }
+
   // The CR of a CRLF is the caret after the last drawn character, not a glyph.
   // A following LF is the line itself, so it is not a stop between those two.
   function renderSourceLine(doc, line) {
@@ -4725,13 +4821,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         const path = openPath;
         showConfirm(pathBase(path), () => emit({ type: "delete", path }));
       });
+      const vimItem = plainButton("md-doc-menu-item", "Vim keys");
+      docMenuVim = vimItem;
+      if (typeof vimItem.setAttribute === "function") vimItem.setAttribute("role", "menuitemcheckbox");
+      onItem(vimItem, () => {
+        setVimOn(!vimOn);
+      });
       if (typeof panel.appendChild === "function") {
         panel.appendChild(attach);
         panel.appendChild(remove);
+        panel.appendChild(vimItem);
       }
       syncDocMenuDelete();
       docMenuPanel = panel;
     }
+    syncVimItem();
     appendEditorChrome(docMenuButton);
     appendEditorChrome(docMenuPanel);
   }
@@ -4741,6 +4845,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!docMenuDelete) return;
     if (openPath && !openPath.startsWith("tickets/")) showElement(docMenuDelete);
     else hideElement(docMenuDelete);
+  }
+
+  function syncVimItem() {
+    if (!docMenuVim || typeof docMenuVim.setAttribute !== "function") return;
+    docMenuVim.setAttribute("aria-checked", vimOn ? "true" : "false");
   }
 
   function openDocMenu() {
@@ -4785,6 +4894,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (index >= 0 && typeof children.splice === "function") children.splice(index, 1);
       root.appendChild(button);
     }
+    mountVimStatus();
     pinViewToggle();
     const view = typeof window !== "undefined" ? window : null;
     if (view && typeof view.requestAnimationFrame === "function") {
@@ -4821,6 +4931,48 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     setStyle(button, "right", `${edge}px`);
     setStyle(button, "left", "auto");
     pinDocMenu(visibleTop + inset, edge);
+    pinVimStatus(visibleTop + inset, edge);
+  }
+
+  // After the lines, so a line's child index stays the block it paints.
+  // replaceChildren drops it, so each paint appends it again with the eye button.
+  function mountVimStatus() {
+    if (!vimOn) {
+      if (vimStatus) detachNode(vimStatus);
+      return;
+    }
+    if (!vimStatus && typeof document !== "undefined" && typeof document.createElement === "function") {
+      const span = document.createElement("span");
+      span.className = "md-vim-status";
+      span.contentEditable = "false";
+      if (typeof span.setAttribute === "function") {
+        span.setAttribute("role", "status");
+        span.setAttribute("aria-live", "polite");
+        span.setAttribute("contenteditable", "false");
+      }
+      if (typeof span.addEventListener === "function") {
+        span.addEventListener("mousedown", stopViewEvent, { signal: ac.signal });
+        span.addEventListener("pointerdown", stopViewEvent, { signal: ac.signal });
+      }
+      vimStatus = span;
+    }
+    const span = vimStatus;
+    if (!span || !root || typeof root.appendChild !== "function") return;
+    span.textContent = vimStatusText(vimMode, vimInput);
+    const children = root.childNodes || [];
+    const index = typeof children.indexOf === "function" ? children.indexOf(span) : -1;
+    if (index < 0 || index !== children.length - 1) {
+      if (index >= 0) detachNode(span);
+      root.appendChild(span);
+    }
+  }
+
+  function pinVimStatus(top, edge) {
+    if (!vimOn || !vimStatus) return;
+    setStyle(vimStatus, "position", "fixed");
+    setStyle(vimStatus, "top", `${top}px`);
+    setStyle(vimStatus, "right", `calc(${edge}px + (1.75rem + 4px) * 2)`);
+    setStyle(vimStatus, "left", "auto");
   }
 
   function dropRaw() {
@@ -4901,6 +5053,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const gestureHeld = gestureHold;
     try {
       syncSourceClass();
+      syncVimCaret();
       if (sourceMode) {
         renderSourceView(caretTop());
         mountViewToggle();
