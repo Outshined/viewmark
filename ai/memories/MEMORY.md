@@ -8,3 +8,4 @@
 - [Owner decisions stand](owner-decisions-stand.md) — restore an owner decision the implementer edited away and report it; do not re-ask a settled question
 - [No operator quotes](no-operator-quotes.md) — never quote the operator anywhere; state the owner's decision in QA's words, every point kept
 - [American spelling](american-spelling.md) — center, color, behavior; never British forms, in any written text
+- [Docs hold reader material](docs-hold-reader-material.md) — no QA tracking, findings, run records, pass status, or decision history in hub docs; that goes on tickets
