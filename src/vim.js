@@ -637,6 +637,280 @@ function keptMarker(doc, from, to) {
   return kept;
 }
 
+function indentOp(operator) {
+  return operator === ">" || operator === "<" || operator === "=";
+}
+
+function separatorWidth(text, index) {
+  if (text[index] === "\t") return 1;
+  let count = 0;
+  while (count < 4 && text[index + count] === " ") count += 1;
+  return count;
+}
+
+function listMarkerLength(text) {
+  let index = 0;
+  while (index < text.length && (text[index] === " " || text[index] === "\t")) index += 1;
+  const bullet = text[index];
+  if (bullet === "-" || bullet === "+" || bullet === "*") {
+    const separator = separatorWidth(text, index + 1);
+    return separator === 0 ? 0 : index + 1 + separator;
+  }
+  const ordered = /^(\d{1,9})[.)]/.exec(text.slice(index));
+  if (!ordered) return 0;
+  const separator = separatorWidth(text, index + ordered[0].length);
+  return separator === 0 ? 0 : index + ordered[0].length + separator;
+}
+
+function leadingTabs(text) {
+  let count = 0;
+  while (text[count] === "\t") count += 1;
+  return count;
+}
+
+// A tab, or else as many as four leading spaces. A top-level item has none.
+function outdentWidth(text) {
+  if (text.startsWith("\t")) return 1;
+  let count = 0;
+  while (count < 4 && text[count] === " ") count += 1;
+  return count;
+}
+
+function indentColumns(text) {
+  let column = 0;
+  let index = 0;
+  while (index < text.length && (text[index] === " " || text[index] === "\t")) {
+    column += text[index] === " " ? 1 : 4 - (column % 4);
+    index += 1;
+  }
+  return { column, index };
+}
+
+function orderedMark(text) {
+  const { column, index } = indentColumns(text);
+  const ordered = /^(\d{1,9})([.)])/.exec(text.slice(index));
+  if (!ordered) return null;
+  if (separatorWidth(text, index + ordered[0].length) === 0) return null;
+  return {
+    indent: column,
+    num: ordered[1],
+    numStart: index,
+    numEnd: index + ordered[1].length,
+  };
+}
+
+function bulletMark(text) {
+  const { column, index } = indentColumns(text);
+  const bullet = text[index];
+  if (bullet !== "-" && bullet !== "+" && bullet !== "*") return null;
+  if (separatorWidth(text, index + 1) === 0) return null;
+  return { indent: column };
+}
+
+function blocksOutdentScan(text) {
+  if (text === "") return true;
+  if (text.startsWith("|") || text.startsWith("```")) return true;
+  const core = text.trim();
+  if (!core.startsWith("![")) return false;
+  const labelEnd = core.indexOf("](");
+  if (labelEnd < 2) return false;
+  return core.indexOf(")", labelEnd + 2) === core.length - 1;
+}
+
+function sourceRecords(doc) {
+  return rawLines(doc).map((line) => {
+    const cr = line.end > line.start
+      && doc[line.end - 1] === "\r"
+      && (line.end === doc.length || doc[line.end] === "\n");
+    const textEnd = cr ? line.end - 1 : line.end;
+    return { start: line.start, end: line.end, text: doc.slice(line.start, textEnd), cr };
+  });
+}
+
+function inFence(all, offset) {
+  let open = false;
+  for (const line of all) {
+    if (line.text.startsWith("```")) open = !open;
+    else if (open && offset >= line.start && offset <= line.end) return true;
+  }
+  return false;
+}
+
+function plainListLine(all, offset, text) {
+  if (text.startsWith("> ")) return false;
+  if (inFence(all, offset)) return false;
+  return listMarkerLength(text) > 0;
+}
+
+// The row rawLines adds after a final newline is not a line to shift.
+function sourceLinesCovering(all, doc, from, to) {
+  const lo = Math.min(from, to);
+  const hi = Math.max(from, to);
+  const out = [];
+  for (const line of all) {
+    if (line.start === doc.length && doc.endsWith("\n") && !(lo === hi && lo === doc.length)) continue;
+    const past = line.end < doc.length && doc[line.end] === "\n" ? line.end + 1 : line.end;
+    if (lo === hi) {
+      if (lo >= line.start && lo <= line.end) out.push(line);
+    } else if (line.start < hi && past > lo) out.push(line);
+  }
+  if (out.length === 0 && all.length) out.push(all[Math.max(0, all.length - 1)]);
+  return out;
+}
+
+function previousRecord(all, lineStart) {
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    if (all[i].end < lineStart) return all[i];
+  }
+  return null;
+}
+
+// One leading tab. An ordered item whose new tab depth passes the previous
+// line starts at 1. A line in the same shift already counts the tab it gains.
+function indentListItem(all, line, text, chosen) {
+  const previous = previousRecord(all, line.start);
+  let prevTabs = 0;
+  if (previous) {
+    prevTabs = leadingTabs(previous.text);
+    if (chosen.some((item) => item.start === previous.start)) prevTabs += 1;
+  }
+  let body = "\t" + text;
+  if (leadingTabs(body) > prevTabs) {
+    let index = 0;
+    while (index < text.length && (text[index] === " " || text[index] === "\t")) index += 1;
+    const ordered = /^(\d{1,9})([.)])/.exec(text.slice(index));
+    if (ordered && ordered[1] !== "1") {
+      body = "\t" + text.slice(0, index) + "1" + ordered[2] + text.slice(index + ordered[0].length);
+    }
+  }
+  return body;
+}
+
+function nextOutdentNumber(all, lineStart, indent, rewritten) {
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    const line = all[i];
+    if (line.start >= lineStart) continue;
+    const text = rewritten.has(line.start) ? rewritten.get(line.start) : line.text;
+    if (blocksOutdentScan(text)) return "1";
+    const ordered = orderedMark(text);
+    if (ordered) {
+      if (ordered.indent > indent) continue;
+      if (ordered.indent < indent) return "1";
+      return String(Number(ordered.num) + 1);
+    }
+    const bullet = bulletMark(text);
+    if (bullet) {
+      if (bullet.indent > indent) continue;
+      return "1";
+    }
+    if (text.startsWith("> ") || text === "---" || text === "***" || text === "___" || /^(#{1,6}) /.test(text)) return "1";
+  }
+  return "1";
+}
+
+function outdentListItem(all, line, text, rewritten) {
+  const width = outdentWidth(text);
+  if (width === 0) return text;
+  let body = text.slice(width);
+  const mark = orderedMark(body);
+  if (mark) {
+    const next = nextOutdentNumber(all, line.start, mark.indent, rewritten);
+    if (next !== mark.num) body = body.slice(0, mark.numStart) + next + body.slice(mark.numEnd);
+  }
+  return body;
+}
+
+function previousListTabs(all, lineStart, rewritten) {
+  for (let i = all.length - 1; i >= 0; i -= 1) {
+    const line = all[i];
+    if (line.start >= lineStart) continue;
+    const text = rewritten.has(line.start) ? rewritten.get(line.start) : line.text;
+    if (!plainListLine(all, line.start, text)) continue;
+    return leadingTabs(text);
+  }
+  return null;
+}
+
+function resetDeeperNumber(rest) {
+  const ordered = /^(\d{1,9})([.)])/.exec(rest);
+  if (!ordered || ordered[1] === "1") return rest;
+  if (separatorWidth(rest, ordered[0].length) === 0) return rest;
+  return "1" + ordered[2] + rest.slice(ordered[0].length);
+}
+
+// One tab deeper than the previous list item. No previous item is the top level.
+function equalListItem(all, line, text, rewritten) {
+  const prevTabs = previousListTabs(all, line.start, rewritten);
+  const target = prevTabs == null ? 0 : prevTabs + 1;
+  let index = 0;
+  while (index < text.length && (text[index] === " " || text[index] === "\t")) index += 1;
+  let rest = text.slice(index);
+  if (prevTabs != null && target > prevTabs) rest = resetDeeperNumber(rest);
+  return "\t".repeat(target) + rest;
+}
+
+function shiftText(all, line, text, operator, chosen, rewritten) {
+  const list = plainListLine(all, line.start, text);
+  if (operator === ">") return list ? indentListItem(all, line, text, chosen) : "\t" + text;
+  if (operator === "<") {
+    if (list) return outdentListItem(all, line, text, rewritten);
+    return text.startsWith("\t") ? text.slice(1) : text;
+  }
+  if (!list) return text;
+  return equalListItem(all, line, text, rewritten);
+}
+
+// << on an item lands on the item text. The marker is not that stop.
+function indentCaret(line, operator, list) {
+  if (operator === "<" && list) {
+    const marker = listMarkerLength(line);
+    if (marker > 0) {
+      let at = marker;
+      while (at < line.length && (line[at] === " " || line[at] === "\t")) at += 1;
+      return at < line.length ? at : marker;
+    }
+  }
+  let at = 0;
+  while (at < line.length && (line[at] === " " || line[at] === "\t")) at += 1;
+  return at < line.length ? at : 0;
+}
+
+function applyIndent(vim, doc, from, to, operator) {
+  const all = sourceRecords(doc);
+  const lines = sourceLinesCovering(all, doc, from, to);
+  const rewritten = new Map();
+  for (const line of lines) {
+    rewritten.set(line.start, shiftText(all, line, line.text, operator, lines, rewritten));
+  }
+  const sliceFrom = lines[0].start;
+  const sliceTo = lines[lines.length - 1].end;
+  let text = "";
+  let prev = sliceFrom;
+  for (const line of lines) {
+    text += doc.slice(prev, line.start) + rewritten.get(line.start) + (line.cr ? "\r" : "");
+    prev = line.end;
+  }
+  text += doc.slice(prev, sliceTo);
+  const next = clearInput(vim);
+  if (text === doc.slice(sliceFrom, sliceTo)) return pack("full", true, next, null);
+  // The caret is now the first non-blank, so a remembered column would miss it.
+  next.column = null;
+  if (vim.once) {
+    next.once = false;
+    next.mode = "insert";
+  }
+  const first = rewritten.get(lines[0].start);
+  const list = plainListLine(all, lines[0].start, first);
+  return pack("full", true, next, {
+    type: "splice",
+    from: sliceFrom,
+    to: sliceTo,
+    text,
+    caret: sliceFrom + indentCaret(first, operator, list),
+    yank: null,
+  });
+}
+
 function applyRange(op, doc, range, motion, vim) {
   let { from, to } = range;
   // cw drops one trailing run of spaces when the cut is not only whitespace.
@@ -728,6 +1002,14 @@ function finishMotion(vim, doc, anchor, cursor, raw, motion, operator) {
   }
   if (motion.kind === "scroll") {
     return pack("full", true, next, motion.effect);
+  }
+  if (indentOp(operator) && motion.kind === "caret") {
+    // A tab is a source prefix. A rendered block joins source lines, and the
+    // motion still names each of those lines.
+    const range = linewiseRange(doc, cursor, motion.cursor, true);
+    const result = applyIndent(vim, doc, range.from, range.to, operator);
+    if (motion.find) result.vim.find = motion.find;
+    return result;
   }
   const at = motion.cursor;
   if (operator === "d" || operator === "c" || operator === "y") {
@@ -856,7 +1138,7 @@ function dispatchResolved(vim, doc, anchor, cursor, raw, layout, id, extra) {
       doc,
       cursor,
       anchor,
-      raw,
+      raw: indentOp(operator) ? true : raw,
       layout,
       count: repeatOf(vim),
       column: vim.column,
@@ -880,8 +1162,9 @@ function dispatchResolved(vim, doc, anchor, cursor, raw, layout, id, extra) {
 }
 
 function repeatedLine(vim, doc, cursor, raw, operator) {
-  const range = countedLines(doc, cursor, repeatOf(vim), raw);
+  const range = countedLines(doc, cursor, repeatOf(vim), indentOp(operator) ? true : raw);
   if (caseOp(operator)) return spliceCase(vim, doc, range.from, range.to, operator);
+  if (indentOp(operator)) return applyIndent(vim, doc, range.from, range.to, operator);
   const motion = { cursor: range.to, linewise: true, inclusive: false, past: false, word: false, origin: cursor };
   const applied = applyRange(operator, doc, { ...range, originCaret: cursor }, motion, vim);
   const next = clearInput(vim);
@@ -1367,6 +1650,7 @@ function finishObject(vim, doc, anchor, cursor, key) {
     next.mode = "visual";
     return pack("full", true, next, { type: "caret", anchor: from, cursor: to });
   }
+  if (indentOp(operator)) return applyIndent(vim, doc, from, to, operator);
   if (operator !== "d" && operator !== "c" && operator !== "y") return pack("none", true, clearInput(vim), null);
   const motion = { cursor, origin: cursor, linewise: false, inclusive: false, past: false, word: false };
   const applied = applyRange(operator, doc, { from, to, originCaret: cursor }, motion, vim);

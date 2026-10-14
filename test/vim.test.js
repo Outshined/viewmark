@@ -1098,6 +1098,87 @@ test("VB.10", () => {
   }
 });
 
+test("VD.1", () => {
+  const out = run("al‸pha\n", [">", ">"]);
+  assert.equal(out.show, "\t‸alpha\n");
+  assert.equal(out.vim.mode, "normal");
+  assert.equal(out.vim.input.operator, null);
+  const effect = oneSplice(out);
+  assert.equal(effect.text, "\talpha");
+  assert.equal(effect.caret, 1);
+  assert.equal(effect.yank, null);
+});
+
+test("VD.2", () => {
+  const bullet = run("- a\n- ‸b\n", [">", ">"]);
+  assert.equal(bullet.show, "- a\n\t‸- b\n");
+  assert.equal(oneSplice(bullet).text, "\t- b");
+  const ordered = run("1. a\n2. ‸b\n", [">", ">"]);
+  assert.equal(ordered.show, "1. a\n\t‸1. b\n");
+  assert.equal(oneSplice(ordered).text, "\t1. b");
+});
+
+test("VD.3", () => {
+  const plain = run("\tal‸pha\n", ["<", "<"]);
+  assert.equal(plain.show, "‸alpha\n");
+  assert.equal(plain.doc, "alpha\n");
+  assert.equal(oneSplice(plain).text, "alpha");
+  const item = run("- a\n\t- ‸b\n", ["<", "<"]);
+  assert.equal(item.show, "- a\n- ‸b\n");
+  assert.equal(oneSplice(item).text, "- b");
+  const spaces = run("  al‸pha\n", ["<", "<"]);
+  assert.equal(spaces.show, "  al‸pha\n");
+  assert.equal(spaces.doc, "  alpha\n");
+  assert.equal(last(spaces).match, "full");
+  assert.equal(last(spaces).consumed, true);
+  assert.equal(last(spaces).effect, null);
+  assert.equal(spaces.vim.input.operator, null);
+  const top = run("- ‸a\n", ["<", "<"]);
+  assert.equal(top.show, "- ‸a\n");
+  assert.equal(top.doc, "- a\n");
+  assert.equal(last(top).effect, null);
+  const spaced = run("2. two\n    2. ‸x\n", ["<", "<"]);
+  assert.equal(spaced.show, "2. two\n3. ‸x\n");
+  assert.equal(oneSplice(spaced).text, "3. x");
+  const nested = run("2. a\n\t2. ‸b\n", ["<", "<"]);
+  assert.equal(nested.show, "2. a\n3. ‸b\n");
+  assert.equal(oneSplice(nested).text, "3. b");
+});
+
+test("VD.4", () => {
+  const count = run("‸a\nb\nc\nd\n", ["3", ">", ">"]);
+  assert.equal(count.show, "\t‸a\n\tb\n\tc\nd\n");
+  assert.equal(count.doc, "\ta\n\tb\n\tc\nd\n");
+  assert.equal(oneSplice(count).text, "\ta\n\tb\n\tc");
+  const motion = run("‸a\nb\nc\nd\n", [">", "j"]);
+  assert.equal(motion.show, "\t‸a\n\tb\nc\nd\n");
+  assert.equal(motion.doc, "\ta\n\tb\nc\nd\n");
+  assert.equal(oneSplice(motion).text, "\ta\n\tb");
+  const para = run("one\n\nal‸pha\nbeta\n\ntwo\n", [">", "i", "p"]);
+  assert.equal(para.show, "one\n\n\t‸alpha\n\tbeta\n\ntwo\n");
+  assert.equal(para.doc, "one\n\n\talpha\n\tbeta\n\ntwo\n");
+  const effect = oneSplice(para);
+  assert.equal(effect.text, "\talpha\n\tbeta");
+  assert.equal(para.vim.input.operator, null);
+});
+
+test("VD.6", () => {
+  const item = run("- a\n\t\t- ‸b\n", ["=", "="]);
+  assert.equal(item.show, "- a\n\t‸- b\n");
+  assert.equal(item.doc, "- a\n\t- b\n");
+  assert.equal(oneSplice(item).text, "\t- b");
+  const plain = run("al‸pha\n", ["=", "="]);
+  assert.equal(plain.show, "al‸pha\n");
+  assert.equal(plain.doc, "alpha\n");
+  assert.equal(last(plain).match, "full");
+  assert.equal(last(plain).effect, null);
+  assert.equal(plain.vim.input.operator, null);
+  const deeper = run("- a\n- ‸b\n", ["=", "="]);
+  assert.equal(deeper.show, "- a\n\t‸- b\n");
+  const numbered = run("1. a\n\t\t2. ‸b\n", ["=", "="]);
+  assert.equal(numbered.show, "1. a\n\t‸1. b\n");
+});
+
 test("VB.11", () => {
   const out = run("‸alpha\n", ["i", "w"]);
   assert.equal(out.steps[0].vim.mode, "insert");
