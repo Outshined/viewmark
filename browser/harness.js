@@ -775,7 +775,10 @@ export class Page {
     throw new Error(`timed out waiting for ${what}`);
   }
 
+  // Firefox runs no animation frames in a tab behind another one, so in Firefox the page is
+  // brought to the front before it waits for two.
   async frame() {
+    if (this.session.bringForward) await this.session.bringForward();
     await this.eval("new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))");
   }
 
