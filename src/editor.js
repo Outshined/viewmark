@@ -1276,9 +1276,17 @@ function renderCell(tag, cell) {
   return el;
 }
 
+function atomClassName(base, atom) {
+  const names = base.slice();
+  for (const name of (atom && atom.classes) || []) {
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names.join(" ");
+}
+
 function renderTable(atom) {
   const el = document.createElement("div");
-  el.className = "md-atom md-table";
+  el.className = atomClassName(["md-atom", "md-table"], atom);
   el.contentEditable = "false";
   el.dataset.start = String(atom.start);
   el.dataset.end = String(atom.end);
@@ -1343,7 +1351,7 @@ function showDiagramSvg(el, source, svg) {
 
 function renderDiagram(atom) {
   const el = document.createElement("div");
-  el.className = "md-atom md-diagram";
+  el.className = atomClassName(["md-atom", "md-diagram"], atom);
   el.contentEditable = "false";
   el.dataset.start = String(atom.start);
   el.dataset.end = String(atom.end);

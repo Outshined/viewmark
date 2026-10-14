@@ -2650,6 +2650,7 @@ function fenceBlock(slot, cursor, spans) {
     type: "line",
     raw,
     empty: false,
+    fence: true,
     start,
     end,
     text: runs.map((run) => run.text).join(""),
@@ -2805,6 +2806,110 @@ function markParagraphSpace(blocks) {
     if (!plainParagraph(blocks[i - 1]) && !apartBlock(blocks[i - 1])) continue;
     if (blocks[i].raw && gapStop(blocks, i)) continue;
     addClassName(blocks[i], "md-paragraph-gap");
+  }
+  markBlockGaps(blocks);
+}
+
+function classHas(block, name) {
+  return Boolean(block && block.classes && block.classes.includes(name));
+}
+
+function headingName(block) {
+  const classes = (block && block.classes) || [];
+  for (let level = 1; level <= 6; level += 1) {
+    if (classes.includes(`md-h${level}`)) return `md-h${level}`;
+  }
+  return "";
+}
+
+function listMember(block) {
+  if (!block || block.type !== "line" || block.empty || classHas(block, "md-paragraph-gap")) return false;
+  if (classHas(block, "md-quote")) return false;
+  return classHas(block, "md-li") || classHas(block, "md-ol");
+}
+
+function quoteMember(block) {
+  if (!block || block.type !== "line" || classHas(block, "md-paragraph-gap")) return false;
+  return classHas(block, "md-quote");
+}
+
+// A list, a quote, or a fence is one block. The height-0 gap between members
+// stays out of the run, so the outside space is marked once.
+function markRun(blocks, member, runClass) {
+  let index = 0;
+  while (index < blocks.length) {
+    if (!member(blocks[index])) {
+      index += 1;
+      continue;
+    }
+    const start = index;
+    let end = index;
+    let next = index + 1;
+    while (next < blocks.length) {
+      if (member(blocks[next])) {
+        end = next;
+        next += 1;
+        continue;
+      }
+      if (classHas(blocks[next], "md-paragraph-gap") && next + 1 < blocks.length && member(blocks[next + 1])) {
+        next += 1;
+        continue;
+      }
+      break;
+    }
+    for (let i = start; i <= end; i += 1) {
+      if (!member(blocks[i])) continue;
+      addClassName(blocks[i], runClass);
+      if (i === start) addClassName(blocks[i], "md-run-start");
+      if (i === end) addClassName(blocks[i], "md-run-end");
+    }
+    index = next;
+  }
+}
+
+function soloGapBlock(block) {
+  if (!block || classHas(block, "md-paragraph-gap")) return false;
+  if (classHas(block, "md-block-list") || classHas(block, "md-block-quote")) return false;
+  if (block.type === "table" || block.type === "diagram") return true;
+  if (block.type !== "line") return false;
+  if (block.fence || headingName(block) || classHas(block, "md-hr") || classHas(block, "md-block-image")) return true;
+  return false;
+}
+
+// Raw paragraphs already carry the trailing pad. Other raw lines keep the
+// metrics they had, so they do not claim a trail the stylesheet will not draw.
+function trailName(block) {
+  if (!block || classHas(block, "md-paragraph-gap")) return "";
+  if (classHas(block, "md-paragraph")) return "md-trail-p";
+  if (block.raw) return "";
+  const heading = headingName(block);
+  if (heading === "md-h1" || heading === "md-h2") return "md-trail-p";
+  if (heading) return "md-trail-half";
+  if (classHas(block, "md-run-end") && (classHas(block, "md-block-list") || classHas(block, "md-block-quote"))) return "md-trail-p";
+  if (classHas(block, "md-block-fence") || classHas(block, "md-block-rule") || classHas(block, "md-block-image")) return "md-trail-p";
+  if (block.type === "table" || block.type === "diagram") return "md-trail-p";
+  return "";
+}
+
+function markBlockGaps(blocks) {
+  for (const block of blocks) {
+    if (!block) continue;
+    if (block.fence) addClassName(block, "md-block-fence");
+    if (block.type === "table") addClassName(block, "md-block-table");
+    if (block.type === "diagram") addClassName(block, "md-block-diagram");
+    if (block.type === "line" && classHas(block, "md-hr")) addClassName(block, "md-block-rule");
+    if (block.type === "line" && imageOnlyLine(block) && !classHas(block, "md-quote")) addClassName(block, "md-block-image");
+  }
+  markRun(blocks, listMember, "md-block-list");
+  markRun(blocks, quoteMember, "md-block-quote");
+  for (const block of blocks) {
+    if (!soloGapBlock(block)) continue;
+    addClassName(block, "md-run-start");
+    addClassName(block, "md-run-end");
+  }
+  for (const block of blocks) {
+    const trail = trailName(block);
+    if (trail) addClassName(block, trail);
   }
 }
 

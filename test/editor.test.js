@@ -318,7 +318,9 @@ test("quoted paragraph is one block", () => {
     assert.equal(block.start, 0);
     assert.equal(block.end, 10);
     assert.equal(block.raw, cursor <= 10);
-    assert.deepEqual(block.classes, cursor <= 10 ? ["md-raw", "md-quote"] : ["md-quote"]);
+    assert.deepEqual(block.classes, cursor <= 10
+      ? ["md-raw", "md-quote", "md-block-quote", "md-run-start", "md-run-end"]
+      : ["md-quote", "md-block-quote", "md-run-start", "md-run-end", "md-trail-p"]);
     assert.equal(shownText(block), "hi there");
     assert.equal(shownText(block).includes(">"), false);
     assert.equal(shownText(block).includes("\n"), false);
@@ -361,7 +363,7 @@ test("quoted paragraph is one block", () => {
   assert.ok(stars.classes.includes("md-strong"));
   const renderedMarked = proseBlocks(marked, marked.length)[0];
   assert.equal(renderedMarked.raw, false);
-  assert.deepEqual(renderedMarked.classes, ["md-quote"]);
+  assert.deepEqual(renderedMarked.classes, ["md-quote", "md-block-quote", "md-run-start", "md-run-end", "md-trail-p"]);
   assert.equal(shownText(renderedMarked), "hi there");
   assert.equal(shownText(renderedMarked).includes(">"), false);
   assert.equal(shownText(renderedMarked).includes("*"), false);
@@ -776,11 +778,67 @@ function imageText(text) {
 
 test("the last line of a paragraph is half a line taller", () => {
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
-  assert.match(css, /\.md-line\.md-paragraph\s*\{[^}]*padding-bottom:\s*calc\(1\.55em \/ 2\);/);
+  assert.match(css, /--p:\s*calc\(1\.55em \/ 2\)/);
+  assert.match(css, /\.md-line\.md-paragraph\s*\{[^}]*padding-bottom:\s*var\(--p\);/);
   assert.match(
     css,
     /\.md-line\.md-paragraph-gap\s*,\s*\.md-line\.md-paragraph-gap br\s*\{[^}]*height:\s*0;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;[^}]*margin:\s*0;/,
   );
+});
+
+test("block gaps are marked once on each construct", () => {
+  const names = (doc, cursor) => plan(doc, cursor).blocks.map((block) => block.classes || []);
+  const has = (classes, name) => classes.includes(name);
+  const para = names("one\n\ntwo\n", 0);
+  assert.ok(has(para[0], "md-paragraph") && has(para[0], "md-trail-p"));
+  assert.ok(has(para[1], "md-paragraph-gap"));
+  assert.equal(has(para[1], "md-run-start"), false);
+  assert.ok(has(para[2], "md-trail-p"));
+
+  const heads = names("# A\n## B\n### C\n#### D\n##### E\n###### F\n", 100);
+  assert.deepEqual(heads.map((classes) => classes.includes("md-trail-p")), [true, true, false, false, false, false]);
+  assert.deepEqual(heads.map((classes) => classes.includes("md-trail-half")), [false, false, true, true, true, true]);
+  assert.ok(heads.every((classes) => has(classes, "md-run-start") && has(classes, "md-run-end")));
+  const rawHead = names("# A\n", 0)[0];
+  assert.ok(has(rawHead, "md-h1") && has(rawHead, "md-raw"));
+  assert.equal(has(rawHead, "md-trail-p"), false);
+
+  const list = names("- a\n\n- [ ] b\n  cont\n1. c\n  - d\n", 0);
+  const items = list.filter((classes) => has(classes, "md-li") || has(classes, "md-ol"));
+  assert.equal(items.length, 4);
+  assert.ok(items.every((classes) => has(classes, "md-block-list")));
+  assert.ok(has(items[0], "md-run-start") && !has(items[0], "md-run-end"));
+  assert.ok(!has(items[1], "md-run-start") && !has(items[1], "md-run-end"));
+  assert.ok(!has(items[2], "md-run-start") && !has(items[2], "md-run-end"));
+  assert.ok(has(items[3], "md-run-end") && has(items[3], "md-trail-p"));
+  assert.ok(has(list[1], "md-paragraph-gap"));
+  assert.equal(has(list[1], "md-block-list"), false);
+  assert.equal(list.some((classes) => has(classes, "md-paragraph")), false);
+
+  const quote = names("> a\n> \n> - b\n> c\n", 100);
+  assert.equal(quote.length, 4);
+  assert.ok(quote.every((classes) => has(classes, "md-block-quote")));
+  assert.equal(quote.some((classes) => has(classes, "md-block-list")), false);
+  assert.ok(has(quote[0], "md-run-start") && !has(quote[0], "md-run-end"));
+  assert.ok(has(quote[3], "md-run-end") && has(quote[3], "md-trail-p"));
+  assert.equal(has(quote[1], "md-run-start") || has(quote[1], "md-run-end"), false);
+
+  const fence = names("```js\nlet x\n```\n", 100)[0];
+  assert.ok(has(fence, "md-block-fence") && has(fence, "md-run-start") && has(fence, "md-run-end") && has(fence, "md-trail-p"));
+  const rawFence = names("```js\nlet x\n```\n", 0)[0];
+  assert.ok(has(rawFence, "md-block-fence") && has(rawFence, "md-raw"));
+  assert.equal(has(rawFence, "md-trail-p"), false);
+
+  const rule = names("a\n\n---\n", 100).find((classes) => has(classes, "md-hr"));
+  assert.ok(has(rule, "md-block-rule") && has(rule, "md-run-start") && has(rule, "md-run-end") && has(rule, "md-trail-p"));
+  const image = names("a\n\n![x](y)\n", 0).find((classes) => has(classes, "md-block-image"));
+  assert.ok(has(image, "md-run-end") && has(image, "md-trail-p"));
+  assert.equal(has(image, "md-paragraph"), false);
+  const table = names("| a | b |\n| --- | --- |\n| 1 | 2 |\n", 100)[0];
+  assert.ok(has(table, "md-block-table") && has(table, "md-run-start") && has(table, "md-run-end") && has(table, "md-trail-p"));
+  const diagram = names("```mermaid\nA-->B\n```\n", 100)[0];
+  assert.ok(has(diagram, "md-block-diagram") && has(diagram, "md-trail-p"));
+  assert.equal(has(diagram, "md-block-fence"), false);
 });
 
 test("a blank between paragraphs takes no line and keeps its offset", () => {
@@ -1002,7 +1060,9 @@ test("list item is one block", () => {
     assert.equal(block.start, 0);
     assert.equal(block.end, 12);
     assert.equal(block.raw, cursor <= 12);
-    assert.deepEqual(block.classes, cursor <= 12 ? ["md-raw", "md-li"] : ["md-li"]);
+    assert.deepEqual(block.classes, cursor <= 12
+      ? ["md-raw", "md-li", "md-block-list", "md-run-start", "md-run-end"]
+      : ["md-li", "md-block-list", "md-run-start", "md-run-end", "md-trail-p"]);
     assert.equal(Object.hasOwn(block, "marker"), false);
     assert.equal(block.indent, 0);
     assert.equal(shownText(block), cursor <= 12 ? "- Alpha Beta" : "Alpha Beta");
@@ -1147,7 +1207,7 @@ test("list item is one block", () => {
   const orderedRaw = proseBlocks(ordered, 0);
   assert.equal(orderedRaw.length, 2);
   assert.equal(orderedRaw[0].raw, true);
-  assert.deepEqual(orderedRaw[0].classes, ["md-raw", "md-ol"]);
+  assert.deepEqual(orderedRaw[0].classes, ["md-raw", "md-ol", "md-block-list", "md-run-start"]);
   assert.equal(Object.hasOwn(orderedRaw[0], "marker"), false);
   assert.equal(shownText(orderedRaw[0]), "1. Alpha 2 next");
   assert.equal(orderedRaw[0].runs.filter((run) => run.text.includes("1.")).length, 1);
@@ -1162,7 +1222,7 @@ test("list item is one block", () => {
   assert.equal(shownText(orderedRendered[0]), "Alpha 2 next");
   assert.equal(shownText(orderedRendered[0]).includes("1."), false);
   assert.equal(orderedRendered[0].marker, "1. ");
-  assert.deepEqual(orderedRendered[0].classes, ["md-ol"]);
+  assert.deepEqual(orderedRendered[0].classes, ["md-ol", "md-block-list", "md-run-start"]);
   assert.equal(orderedRendered[0].runs.find((run) => run.start === 8).text, " ");
   assert.equal(ordered[8], "\n");
   assert.equal(shownText(orderedRendered[1]), "Beta");
@@ -1612,7 +1672,9 @@ test("quoted item is one block", () => {
     assert.equal(block.start, 0);
     assert.equal(block.end, 14);
     assert.equal(block.raw, cursor <= 14);
-    assert.deepEqual(block.classes, cursor <= 14 ? ["md-raw", "md-quote", "md-li"] : ["md-quote", "md-li"]);
+    assert.deepEqual(block.classes, cursor <= 14
+      ? ["md-raw", "md-quote", "md-li", "md-block-quote", "md-run-start", "md-run-end"]
+      : ["md-quote", "md-li", "md-block-quote", "md-run-start", "md-run-end", "md-trail-p"]);
     assert.equal(Object.hasOwn(block, "marker"), false);
     assert.equal(block.indent, 0);
     assert.equal(shownText(block), cursor <= 14 ? "- Alpha Beta" : "Alpha Beta");
@@ -1661,13 +1723,13 @@ test("quoted item is one block", () => {
   const oneRaw = proseBlocks(one, 0)[0];
   assert.equal(shownText(oneRaw), "- a");
   assert.equal(shownText(oneRaw).includes(">"), false);
-  assert.deepEqual(oneRaw.classes, ["md-raw", "md-quote", "md-li"]);
+  assert.deepEqual(oneRaw.classes, ["md-raw", "md-quote", "md-li", "md-block-quote", "md-run-start", "md-run-end"]);
   assert.equal(Object.hasOwn(oneRaw, "marker"), false);
   const oneRendered = proseBlocks(one, one.length)[0];
   assert.equal(shownText(oneRendered), "a");
   assert.equal(shownText(oneRendered).includes("-"), false);
   assert.equal(shownText(oneRendered).includes(">"), false);
-  assert.deepEqual(oneRendered.classes, ["md-quote", "md-li"]);
+  assert.deepEqual(oneRendered.classes, ["md-quote", "md-li", "md-block-quote", "md-run-start", "md-run-end", "md-trail-p"]);
 
   for (const bullet of ["+", "*"]) {
     const marked = `> ${bullet} Alpha\nBeta\n`;
@@ -1679,7 +1741,7 @@ test("quoted item is one block", () => {
     assert.equal(shownText(markedRendered), "Alpha Beta");
     assert.equal(shownText(markedRendered).includes(bullet), false);
     assert.equal(shownText(markedRendered).includes(">"), false);
-    assert.deepEqual(markedRendered.classes, ["md-quote", "md-li"]);
+    assert.deepEqual(markedRendered.classes, ["md-quote", "md-li", "md-block-quote", "md-run-start", "md-run-end", "md-trail-p"]);
     assert.equal(Object.hasOwn(markedRendered, "marker"), false);
   }
 
@@ -1689,7 +1751,7 @@ test("quoted item is one block", () => {
   const orderedRaw = proseBlocks(ordered, 0)[0];
   assert.equal(proseBlocks(ordered, 0).length, 1);
   assert.equal(orderedRaw.raw, true);
-  assert.deepEqual(orderedRaw.classes, ["md-raw", "md-quote", "md-ol"]);
+  assert.deepEqual(orderedRaw.classes, ["md-raw", "md-quote", "md-ol", "md-block-quote", "md-run-start", "md-run-end"]);
   assert.equal(Object.hasOwn(orderedRaw, "marker"), false);
   assert.equal(shownText(orderedRaw), "1. Alpha more");
   assert.equal(shownText(orderedRaw).includes(">"), false);
@@ -1702,17 +1764,17 @@ test("quoted item is one block", () => {
   assert.equal(shownText(orderedRendered).includes("1."), false);
   assert.equal(shownText(orderedRendered).includes(">"), false);
   assert.equal(orderedRendered.marker, "1. ");
-  assert.deepEqual(orderedRendered.classes, ["md-quote", "md-ol"]);
+  assert.deepEqual(orderedRendered.classes, ["md-quote", "md-ol", "md-block-quote", "md-run-start", "md-run-end", "md-trail-p"]);
   assert.equal(orderedRendered.runs.find((run) => run.text === "Alpha").start, 5);
 
   const orderedLine = "> 1. a\n";
   assert.equal(shownText(proseBlocks(orderedLine, 0)[0]), "1. a");
   assert.equal(shownText(proseBlocks(orderedLine, 0)[0]).includes(">"), false);
-  assert.deepEqual(proseBlocks(orderedLine, 0)[0].classes, ["md-raw", "md-quote", "md-ol"]);
+  assert.deepEqual(proseBlocks(orderedLine, 0)[0].classes, ["md-raw", "md-quote", "md-ol", "md-block-quote", "md-run-start", "md-run-end"]);
   assert.equal(Object.hasOwn(proseBlocks(orderedLine, 0)[0], "marker"), false);
   assert.equal(shownText(proseBlocks(orderedLine, orderedLine.length)[0]), "a");
   assert.equal(proseBlocks(orderedLine, orderedLine.length)[0].marker, "1. ");
-  assert.deepEqual(proseBlocks(orderedLine, orderedLine.length)[0].classes, ["md-quote", "md-ol"]);
+  assert.deepEqual(proseBlocks(orderedLine, orderedLine.length)[0].classes, ["md-quote", "md-ol", "md-block-quote", "md-run-start", "md-run-end", "md-trail-p"]);
 
   const paren = "> 1) Alpha\nmore\n";
   assert.deepEqual(lockSpans(paren), [{ start: 0, end: 15 }]);
@@ -1731,7 +1793,7 @@ test("quoted item is one block", () => {
 
   const notItem = "> -Alpha\n";
   const notBlock = proseBlocks(notItem, 0)[0];
-  assert.deepEqual(notBlock.classes, ["md-raw", "md-quote"]);
+  assert.deepEqual(notBlock.classes, ["md-raw", "md-quote", "md-block-quote", "md-run-start", "md-run-end"]);
   assert.equal(shownText(notBlock), "> -Alpha");
   assert.equal(shownText(proseBlocks(notItem, notItem.length)[0]), "-Alpha");
   assert.equal(proseBlocks(notItem, notItem.length)[0].classes.includes("md-li"), false);
@@ -1740,13 +1802,13 @@ test("quoted item is one block", () => {
   const indentedRaw = proseBlocks(indented, 0)[0];
   assert.equal(shownText(indentedRaw), "  - child");
   assert.equal(shownText(indentedRaw).includes(">"), false);
-  assert.deepEqual(indentedRaw.classes, ["md-raw", "md-quote", "md-li"]);
+  assert.deepEqual(indentedRaw.classes, ["md-raw", "md-quote", "md-li", "md-block-quote", "md-run-start", "md-run-end"]);
   assert.equal(indentedRaw.indent, 2);
   const indentedRendered = proseBlocks(indented, indented.length)[0];
   assert.equal(shownText(indentedRendered), "child");
   assert.equal(shownText(indentedRendered).includes("-"), false);
   assert.equal(shownText(indentedRendered).includes(">"), false);
-  assert.deepEqual(indentedRendered.classes, ["md-quote", "md-li"]);
+  assert.deepEqual(indentedRendered.classes, ["md-quote", "md-li", "md-block-quote", "md-run-start", "md-run-end", "md-trail-p"]);
   assert.equal(indentedRendered.indent, 2);
 
   const spaces = "> - red  \nblue\n";
@@ -1819,7 +1881,7 @@ test("a quoted list keeps the bar with the parent quote", () => {
   assert.equal(blocks.length, 5);
   assert.equal(blocks.some((block) => block.raw), false);
   assert.equal(shownText(blocks[0]), "Parent");
-  assert.deepEqual(blocks[0].classes, ["md-quote"]);
+  assert.deepEqual(blocks[0].classes, ["md-quote", "md-block-quote", "md-run-start"]);
   assert.equal(blocks[0].classes.includes("md-li"), false);
   assert.equal(blocks[0].classes.includes("md-ol"), false);
   assert.equal(shownText(blocks[1]), "alpha");
@@ -1903,13 +1965,13 @@ test("quoted item child is not quoted", () => {
   assert.equal(shownText(atParent[0]), "- a");
   assert.equal(shownText(atParent[0]).includes(">"), false);
   assert.equal(shownText(atParent[0]).includes("b"), false);
-  assert.deepEqual(atParent[0].classes, ["md-raw", "md-quote", "md-li"]);
+  assert.deepEqual(atParent[0].classes, ["md-raw", "md-quote", "md-li", "md-block-quote", "md-run-start", "md-run-end"]);
   assert.equal(atParent[0].end, 5);
   assert.equal(atParent[1].raw, false);
   assert.equal(shownText(atParent[1]), "b");
   assert.equal(shownText(atParent[1]).includes("-"), false);
   assert.equal(atParent[1].classes.includes("md-quote"), false);
-  assert.deepEqual(atParent[1].classes, ["md-li"]);
+  assert.deepEqual(atParent[1].classes, ["md-li", "md-block-list", "md-run-start", "md-run-end", "md-trail-p"]);
   assert.equal(atParent[1].indent, 2);
   assert.equal(atParent[0].indent, 0);
   assert.equal(atParent[1].start, 6);

@@ -1,3 +1,10 @@
+/* A length, so a heading's font size does not rescale the body em. */
+@property --p {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
 :root {
   color-scheme: dark;
   --danger: #ff7b72;
@@ -49,6 +56,7 @@ body {
   background: #1c1b19;
   color: #e7e2d8;
   font: 17px/1.55 "URW Gothic", sans-serif;
+  --p: calc(1.55em / 2);
 }
 
 ::selection {
@@ -1005,6 +1013,16 @@ a.md-link {
   font-weight: 700;
 }
 
+/* The body min-height is in this element's em, which would sit under the glyphs. */
+.md-line.md-h1:not(.md-raw),
+.md-line.md-h2:not(.md-raw),
+.md-line.md-h3:not(.md-raw),
+.md-line.md-h4:not(.md-raw),
+.md-line.md-h5:not(.md-raw),
+.md-line.md-h6:not(.md-raw) {
+  min-height: 0;
+}
+
 .md-line.md-quote {
   border-left: 3px solid #5c574e;
   padding-left: 0.7em;
@@ -1045,7 +1063,7 @@ a.md-link {
   border: 0;
   border-top: 1px solid #3f3c37;
   height: 0;
-  margin: 0.9em 0;
+  margin: 0;
 }
 
 .md-raw.md-li,
@@ -1075,7 +1093,7 @@ a.md-link {
 }
 
 .md-table {
-  margin: 0.45em 0;
+  margin: 0;
 }
 
 .md-table table {
@@ -1095,7 +1113,7 @@ a.md-link {
 
 .md-diagram {
   display: block;
-  margin: 0.45em 0;
+  margin: 0;
   padding: 0.45em 0.7em;
   background: #1e242c;
   border: 1px dashed #4d6270;
@@ -1103,7 +1121,7 @@ a.md-link {
 }
 
 .md-diagram pre {
-  margin: 0.25em 0 0;
+  margin: 0;
   white-space: pre-wrap;
 }
 
@@ -1120,12 +1138,165 @@ a.md-link {
 }
 
 .md-line.md-paragraph {
-  padding-bottom: calc(1.55em / 2);
+  padding-bottom: var(--p);
 }
 
 /* Nothing follows the last block, so it has no break under it. */
 .md-line.md-paragraph:not(:has(~ .md-line)):not(:has(~ .md-atom)) {
   padding-bottom: 0;
+}
+
+/* Trailing space is padding where that does not grow a background or a border,
+   and margin where it would. Leading space is only the part past that trail,
+   so the two do not add. A gap line between them is height 0. */
+.md-line.md-h1:not(.md-raw),
+.md-line.md-h2:not(.md-raw),
+.md-line.md-run-end.md-block-list:not(.md-raw),
+.md-line.md-block-image:not(.md-raw) {
+  padding-bottom: var(--p);
+}
+
+.md-line.md-h3:not(.md-raw),
+.md-line.md-h4:not(.md-raw),
+.md-line.md-h5:not(.md-raw),
+.md-line.md-h6:not(.md-raw) {
+  padding-bottom: calc(var(--p) / 2);
+}
+
+.md-line.md-block-quote:not(.md-raw) {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.md-line.md-run-end.md-block-quote:not(.md-raw),
+.md-line.md-block-fence:not(.md-raw),
+.md-line.md-block-rule:not(.md-raw),
+.md-atom.md-block-table,
+.md-atom.md-block-diagram {
+  margin-bottom: var(--p);
+}
+
+.md-line.md-h1:not(.md-raw):not(:has(~ .md-line)):not(:has(~ .md-atom)),
+.md-line.md-h2:not(.md-raw):not(:has(~ .md-line)):not(:has(~ .md-atom)),
+.md-line.md-h3:not(.md-raw):not(:has(~ .md-line)):not(:has(~ .md-atom)),
+.md-line.md-h4:not(.md-raw):not(:has(~ .md-line)):not(:has(~ .md-atom)),
+.md-line.md-h5:not(.md-raw):not(:has(~ .md-line)):not(:has(~ .md-atom)),
+.md-line.md-h6:not(.md-raw):not(:has(~ .md-line)):not(:has(~ .md-atom)),
+.md-line.md-run-end.md-block-list:not(.md-raw):not(:has(~ .md-line)):not(:has(~ .md-atom)),
+.md-line.md-block-image:not(.md-raw):not(:has(~ .md-line)):not(:has(~ .md-atom)),
+.md-line.md-run-end.md-block-quote:not(.md-raw):not(:has(~ .md-line)):not(:has(~ .md-atom)),
+.md-line.md-block-fence:not(.md-raw):not(:has(~ .md-line)):not(:has(~ .md-atom)),
+.md-line.md-block-rule:not(.md-raw):not(:has(~ .md-line)):not(:has(~ .md-atom)),
+.md-atom.md-block-table:not(:has(~ .md-line)):not(:has(~ .md-atom)),
+.md-atom.md-block-diagram:not(:has(~ .md-line)):not(:has(~ .md-atom)) {
+  padding-bottom: 0;
+  margin-bottom: 0;
+}
+
+.md-trail-p + .md-line.md-h1:not(.md-raw),
+.md-trail-p + .md-paragraph-gap + .md-line.md-h1:not(.md-raw) {
+  padding-top: var(--p);
+}
+
+.md-trail-p + .md-line.md-h2:not(.md-raw),
+.md-trail-p + .md-paragraph-gap + .md-line.md-h2:not(.md-raw) {
+  padding-top: calc(var(--p) / 2);
+}
+
+.md-trail-half + .md-line.md-h1:not(.md-raw),
+.md-trail-half + .md-paragraph-gap + .md-line.md-h1:not(.md-raw) {
+  padding-top: calc(var(--p) * 1.5);
+}
+
+.md-trail-half + .md-line.md-h2:not(.md-raw),
+.md-trail-half + .md-paragraph-gap + .md-line.md-h2:not(.md-raw) {
+  padding-top: var(--p);
+}
+
+.md-trail-half + .md-line.md-h3:not(.md-raw),
+.md-trail-half + .md-line.md-h4:not(.md-raw),
+.md-trail-half + .md-line.md-h5:not(.md-raw),
+.md-trail-half + .md-line.md-h6:not(.md-raw),
+.md-trail-half + .md-paragraph-gap + .md-line.md-h3:not(.md-raw),
+.md-trail-half + .md-paragraph-gap + .md-line.md-h4:not(.md-raw),
+.md-trail-half + .md-paragraph-gap + .md-line.md-h5:not(.md-raw),
+.md-trail-half + .md-paragraph-gap + .md-line.md-h6:not(.md-raw),
+.md-trail-half + .md-line.md-block-image:not(.md-raw),
+.md-trail-half + .md-paragraph-gap + .md-line.md-block-image:not(.md-raw) {
+  padding-top: calc(var(--p) / 2);
+}
+
+.md-trail-half + .md-line.md-run-start.md-block-quote:not(.md-raw),
+.md-trail-half + .md-paragraph-gap + .md-line.md-run-start.md-block-quote:not(.md-raw),
+.md-trail-half + .md-line.md-block-fence:not(.md-raw),
+.md-trail-half + .md-paragraph-gap + .md-line.md-block-fence:not(.md-raw),
+.md-trail-half + .md-line.md-block-rule:not(.md-raw),
+.md-trail-half + .md-paragraph-gap + .md-line.md-block-rule:not(.md-raw),
+.md-trail-half + .md-atom.md-block-table,
+.md-trail-half + .md-paragraph-gap + .md-atom.md-block-table,
+.md-trail-half + .md-atom.md-block-diagram,
+.md-trail-half + .md-paragraph-gap + .md-atom.md-block-diagram {
+  margin-top: calc(var(--p) / 2);
+}
+
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-line.md-h1:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-line.md-h1:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-h1:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-h1:not(.md-raw) {
+  padding-top: calc(var(--p) * 2);
+}
+
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-line.md-h2:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-line.md-h2:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-h2:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-h2:not(.md-raw) {
+  padding-top: calc(var(--p) * 1.5);
+}
+
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-line.md-h3:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-line.md-h4:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-line.md-h5:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-line.md-h6:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-line.md-h3:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-line.md-h4:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-line.md-h5:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-line.md-h6:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-h3:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-h4:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-h5:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-h6:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-h3:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-h4:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-h5:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-h6:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-line.md-block-image:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-line.md-block-image:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-block-image:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-block-image:not(.md-raw) {
+  padding-top: var(--p);
+}
+
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-line.md-run-start.md-block-quote:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-line.md-run-start.md-block-quote:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-run-start.md-block-quote:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-run-start.md-block-quote:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-line.md-block-fence:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-line.md-block-fence:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-block-fence:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-block-fence:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-line.md-block-rule:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-line.md-block-rule:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-block-rule:not(.md-raw),
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-line.md-block-rule:not(.md-raw),
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-atom.md-block-table,
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-atom.md-block-table,
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-atom.md-block-table,
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-atom.md-block-table,
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-atom.md-block-diagram,
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-atom.md-block-diagram,
+.md-line:not(.md-paragraph-gap):not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-atom.md-block-diagram,
+.md-atom:not(.md-trail-p):not(.md-trail-half) + .md-paragraph-gap + .md-atom.md-block-diagram {
+  margin-top: var(--p);
 }
 
 .md-line.md-paragraph-gap,
