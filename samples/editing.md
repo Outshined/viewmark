@@ -52,6 +52,7 @@ This lists what the page should do for each key and click, not what it does toda
 - Markdown syntax is not visible, and no space is held for it, until its block is the current one. A list item's bullet or number is drawn in the gutter left of its text, raw or not, so the text does not move when the item turns raw (R6).
 - A single newline inside a paragraph is drawn as a space (R31). A blank line separates blocks.
 - {c1}In formatted text, the space between paragraphs is padding, not an empty line. The blank line stays in the raw markdown, and there is no empty line between the paragraphs for the caret to land on (R7).{/c1} The last line of a paragraph is slightly padded to make visual room before the next line. There is no line between two paragraphs, so the caret cannot stop there: it goes from the last line of one paragraph to the first line of the next. Line behaviors stay as they are. `browser/paragraph-gap.browser.js` checks it.
+- The caret can stop on any line that is not only markdown structure the renderer consumes. So it can stop on a line of only spaces or a tab between two paragraphs, at the line's start (D16).
 - A table or a diagram opens as source while the caret is inside it, from its start through the end of its last line (R2, D14).
 - A file that ends with a newline has an empty line after it, drawn while the caret is on it (R3, D2).
 - A line that holds only an image is its own block. A line that does not start with `|` ends a table. A rule is exactly `---`, `***`, or `___` (R4, D21).
