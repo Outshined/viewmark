@@ -1,17 +1,14 @@
 # Editing
-
 What the page and the hub do when a person edits a document. The first five sections are the model the page and the hub share. Each is met in that model, not by a special case in the key handler. Expected behavior, after them, lists what each key and click does.
 
 A number in parentheses, such as (R74), names the rule in `qa/editor-matrix-test-plan.md`, where the cells that check it are listed. The two files hold the same rules, and a change to a rule in one is made in the other. A D number names a default in that plan. A default or a reading marked not approved is QA's proposal, and the owner has not approved it.
 
 ## An edit always gets an answer
-
 When an operation leaves the text unchanged, the hub answers it with `{type:"noop", path, rev}`. The rev stays. The document is not broadcast. Undo and redo on an empty stack use the same answer. They do not return 409.
 
 The page clears the edit waiter on `noop` the same way it clears it on its own `doc`. It does not send a backspace at offset 0 or a delete at the end of the text. When no `doc`, `noop`, or error has arrived for an edit after 2 seconds, the page drops the waiter, drops the queued edits, and opens the file again.
 
 ## The hub {c14}decides what a key changes{/c14}
-
 The page sends the key, such as a letter, Backspace, or Delete, and the hub works out which text changes. A paragraph, a list item, a blank line, and the other parts of a document can each be held by one person at a time, while that person edits there.
 
 A key is accepted when the text it changes is in a part this person holds, or in a part nobody holds. That stays true when the change reaches past the caret's own part into a free neighbor, for example when Backspace at the start of a line joins it to the line above. A key that would change a part another person holds is refused, the text stays as it was, and that person's name flashes on the part (D26).
@@ -19,13 +16,11 @@ A key is accepted when the text it changes is in a part this person holds, or in
 The page does not guess ahead of time which parts a key will touch. It holds the part the caret is in, and the hub settles the rest when the key arrives.
 
 ## One caret
-
 The page keeps the caret in `state`, and the browser keeps the DOM selection. `selectionchange` copies the DOM selection into `state`, except while `placeCaret` is writing it. `placeCaret` runs after this client's edit and after a `file` or `doc` that changes the text. A `locks` message redraws the text and leaves the DOM selection where it is.
 
 Home, End, Shift+Home, Shift+End, and composition update the caret through that path. The page does not grow a handler for each of those keys.
 
 ## Every offset has one DOM point
-
 `pointFor` returns a point for every offset from 0 through the length of the text. `mapOffset` of that point returns the same offset.
 
 A caret does not sit inside a hidden marker. Comment markers and hard-break spaces are skipped. The point for an offset inside one of them is the visible side of that marker, and reading it back returns that visible offset. A closed table or diagram takes the caret before the atom or after it. The offset past the final newline has a point, and deleting the last character of the last line leaves the caret on that point.
@@ -33,21 +28,17 @@ A caret does not sit inside a hidden marker. Comment markers and hard-break spac
 A test places every offset of a fixed set of documents, reads the selection back, and requires the same offset.
 
 ## A gesture keeps the layout it started on
-
 The block stays rendered until the pointer is released. The word under the first press is the word the double-click selects. The add-comment button sits clear of the selection and takes the primary button only.
 
 The add-comment button's top edge is a half line under the lowest edge of the selection highlight, and across, it sits at about the last selected character (R108). It comes after any selection that can take a comment, however the selection was made (QA's reading, not approved). In that place it covers part of the text under the highlight's last line, near that character, and a press there lands on the button. The line above and the selection's own line stay clear. The button stays off comment cards, and moves sideways to clear one (not approved). When its place is not inside the window, the page makes room for the button there. Only if there is really no room, and the page cannot be extended, does the button go above the highlight. `browser/comments.browser.js` tests the placement, with the tolerances QA reads into it.
 
 ## Expected behavior
-
 This lists what the page should do for each key and click, not what it does today.
 
 ### The rule for the whole page
-
 - Text appears where the caret is when keys are pressed. A typed character is drawn where the caret was drawn just before the key (R99). The character then wraps as normal text does, so at the end of a line that wraps it goes in at the caret and can start the next line. A picture pasted inside a block is drawn after that block, and that block is not split. That paste is the exception (R91).
 
 ### What is drawn
-
 - Only the block holding the caret is raw and shows its markdown source. Every other block is drawn rendered. Hard-break markers stay hidden even in the raw block, and so does the `>` on the later lines of a quoted paragraph (R1).
 - Markdown syntax is not visible, and no space is held for it, until its block is the current one. A list item's bullet or number is drawn in the gutter left of its text, raw or not, so the text does not move when the item turns raw (R6).
 - A single newline inside a paragraph is drawn as a space (R31). A blank line separates blocks.
@@ -59,13 +50,11 @@ This lists what the page should do for each key and click, not what it does toda
 - A `\r\n` file is drawn and edited as if each `\r\n` were one newline, and every newline written into it is `\r\n` (R5, D18).
 
 ### Typing
-
 - A typed character goes in at the caret, and the caret follows it. A selection is replaced by it (R10).
 - The first character typed on the empty line after the final newline, under a paragraph, an item, or a quote, starts its own block (R11, D2). The same holds on any empty line directly under a paragraph, an item, or a quote, and at the start of a rule or a fence directly under one. A character, or a paste that does not already start with a newline, writes one newline first. A paste that starts with a newline does not gain another. A continuation line of a wrapped paragraph, item, or quote stays in that block. The implementer added these four sentences, and they are not approved. List items pasted on the empty line under a list join that list, with no newline first: nothing in a list pasted into another list says it should break off as a new list, a person who wants a new list makes one, and the page does what surprises the person least.
 - Text from an input method is written once, at the caret, when the composition ends (R93).
 
 ### Enter
-
 - On a list item, Enter starts a new item with the same marker, and the text after the caret moves to it. An ordered number goes up by one, and later items at that level are renumbered. A task item continues as `- [ ] ` (R20, D4, D19).
 - On a quote line, Enter starts a new line with `> ` (R21).
 - Enter on an empty item leaves the list. A top-level item loses its marker, a nested item moves out one level, and an empty quoted item becomes `> `. Enter on an empty `> ` line leaves the quote (R22).
@@ -77,7 +66,6 @@ This lists what the page should do for each key and click, not what it does toda
 - Enter with a selection deletes the selection first (R29).
 
 ### Backspace
-
 - On an empty line, Backspace removes the line, and the caret goes to the end of the line above. A line drawn empty counts, such as a line of spaces. At the start of the file it does nothing (R30, D16).
 - Directly after a list, task, or quote marker, Backspace removes the marker. A task's `[ ] ` goes first. A nested item moves out one level instead (R32, D5, D19).
 - Otherwise Backspace deletes the one character before the caret. A newline drawn as a space is such a character (R31).
@@ -87,13 +75,11 @@ This lists what the page should do for each key and click, not what it does toda
 - At the start of a paragraph directly under another paragraph, Backspace joins the two with no space: the blank line between them and the newline both go. Delete at the end of the first paragraph does the same. So `he` and `llo` become `hello`, whether Enter split them or not. The person sees no space between the two paragraphs, so the join writes none, as a hard break joins its two lines directly (R18, R33, D34, not approved). The blank line under a list item or a quote has no height either, so QA proposes the same join there: Backspace at the start of two, under the item alpha, gives the item alphatwo (D34, not approved).
 
 ### Delete
-
 - {c4}On an empty line, Delete removes that line, and the caret stays before the next line's text (R40).{/c4} Delete pulls the previous line up, and the page then copes with whatever that does to the markdown below it. In QA's reading (D31), the line under the empty one moves up into its place, with the caret at its start, and the page changes whatever else the markdown needs so every block keeps its kind. For example, `# Title\n‸\n- a\n` becomes `# Title\n‸- a\n`, the item right under the heading. Where removing the line would merge blocks, as in `- a\n‸\nnext\n`, where `- a\nnext` reads as one item, the file needs that blank line. QA proposes that the page draw it with no height and no caret stop, as R7 does between paragraphs (not approved).
 - Otherwise Delete removes the one character after the caret. At the end of the file it does nothing (R41).
 - When only hidden hard-break markers lie between the caret and the newline, Delete removes the newline and the markers, as the mirror of Backspace after a hard break (R42, D15, D35).
 
 ### Comments
-
 - Emptying a comment's text removes the comment and its thread (R36).
 - A comment marker is never cut, and the caret never rests inside one. Backspace, Delete, and word delete act on the character beyond the marker, and ← and → step over a whole marker (R37, R38, D6).
 - A selection delete that takes one marker of a comment keeps the comment on what is left of its text (R39, D6).
@@ -105,18 +91,15 @@ This lists what the page should do for each key and click, not what it does toda
 - {c7}While the pointer is over a comment's highlight, each end of it is drawn as a rounded handle, in rendered and in raw text. Dragging a handle moves that end of the comment. In the raw block the markers are drawn as these handles, so the caret cannot aim inside them (R105).{/c7} This is how a person changes a comment's range. In the raw block, the end marker adds no space between the highlight's last character and the character after it. Whether the start marker may add space before the highlight is an open question on ticket `arh58dxz`.
 
 ### Word delete
-
 - Ctrl+Backspace deletes back to the start of a group: first the spaces before the caret, then the run before them. A run is word characters, or other characters that are not spaces, so `**bold**` takes three presses. On an empty line it is Backspace. Ctrl+Delete does the same forward (R50, D7).
 
 ### Tab
-
 - On a list item, Tab indents the item one level by writing a tab at the start of its line, and Shift+Tab outdents it. The caret keeps its place in the text. A top-level item does not outdent, and a quoted item does neither (R60, D8).
 - An ordered item that starts a new level is numbered `1`. An ordered item that moves to a level where an item comes before it takes the next number after that item (R60).
 - With a selection over several items, each item moves, and the selection keeps covering the same text (R60).
 - Elsewhere, Tab writes a tab at the caret. Shift+Tab does nothing, and the focus stays in the editor (R61, R62).
 
 ### Moving the caret
-
 - ← and → move one character as drawn, and hidden characters are skipped. Shift extends the selection. Alt with an arrow still moves one character (R70).
 - {c3}Ctrl+← and Ctrl+→ move by word (R70).{/c3} Words are split at spaces, as a person would split them. Punctuation and markdown markers are part of the word they touch. The stops are the same in raw and in rendered mode. In QA's reading (D29), Ctrl+→ goes to the start of the next word, and Ctrl+← to the start of the word the caret is in, or of the word before. For example, `‸hello fox` with Ctrl+→ gives `hello ‸fox`, and `x **bo‸ld** y` with Ctrl+→ gives `x **bold** ‸y`.
 - → at the end of a line lands after the next line's marker. ← at the start of a line lands at the end of the line above (R71, D9).
@@ -129,7 +112,6 @@ This lists what the page should do for each key and click, not what it does toda
 - Escape changes nothing. PageUp and PageDown are the browser's own (R75, D11).
 
 ### Mouse
-
 - A click puts the caret at the boundary under the pointer. The left half of a glyph means before it, and the right half means after it (R80).
 - A click on a table cell opens the table with the caret at the start of that cell. A click on a picture that is the whole line selects that line, including the newline after it, and the picture stays drawn. A click on an inline image puts the caret at its start. A click on a diagram puts the caret at the start of its body. A click on a bullet or a quote bar puts the caret after the marker, and a click on a rule at the start of its line (R81, R82, D12).
 - A click below the last line puts the caret at the end of the file (R83).
@@ -140,7 +122,6 @@ This lists what the page should do for each key and click, not what it does toda
 - A middle-click pastes the primary selection where it clicks. Dragging selected text moves it (R88, D20).
 
 ### Selection, clipboard, and undo
-
 - Typing replaces a selection, and Backspace and Delete delete it. Ctrl+A selects the whole file (R90).
 - Copy and cut put the selected source on the clipboard as plain text. Paste inserts plain text at the caret (R91).
 - A pasted or picked picture is stored beside the document and written as its own image line. Inside a paragraph, such as `alpha beta`, the paragraph stays whole and the image line follows it after a blank line. On the blank line between `alpha` and `beta`, that blank line becomes the image line, so the bytes are `alpha`, the image line, `beta`, with no extra blank line. The caret ends after the image line (R91). The picture is drawn at its intrinsic size.
@@ -158,7 +139,6 @@ This lists what the page should do for each key and click, not what it does toda
 - Undo and redo act only on this session's own edits (R98, D25, not approved).
 
 ### Other sessions
-
 - An edit by someone else moves the caret only when it lands before the caret, and the caret keeps its place in the text (R94).
 - A redraw that changes no bytes, such as another client opening or reading the file, never moves the caret or the selection (R95).
 - A block another session holds shows that user's name, and a click into it leaves the caret where it was (R96).
@@ -167,7 +147,6 @@ This lists what the page should do for each key and click, not what it does toda
 - {c10}A file a session has open cannot be deleted. The CLI's delete and the page's Delete are refused with 409 and name that session's user. A rename or a move updates every session that has the file open: its address, its files list, and its title (R106).{/c10} A closed tab, or a page that is left, lets go of its file and its blocks at once. A rename or a move leaves every open session's caret where it was in the text (D37).
 
 ### Open choices
-
 Each of these has been questioned. The page follows the rule above until the owner picks the other side.
 - {c13}With text selected, an arrow key without Shift could collapse the selection to its edge, instead of moving one step on from the focus.{/c13} An example: in `alpha beta gamma`, select `beta` with a drag from left to right, so the selection's focus is after `beta`.
   - Today → moves one step on from the focus, to `alpha beta ‸gamma`, past the space. ← moves one step back from the focus, to `alpha bet‸a gamma`, inside what was selected.

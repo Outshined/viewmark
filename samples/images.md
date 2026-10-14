@@ -1,5 +1,4 @@
 # Images
-
 A picture stays out of the document string. The document holds an image line. The bytes live in a directory named for that document. The hub writes both. The page and a script read the bytes back from this same hub.
 
 The image line is markdown, and the page draws it:
@@ -13,7 +12,6 @@ The line stands alone, so it is one lock span. The alt text is the file name. Th
 The directory sits beside the markdown. `tickets/<id>.md` owns `tickets/<id>/`. `notes/welcome.md` owns `notes/welcome/`. The directory is not a document, and it does not appear in the file list.
 
 ## A script
-
 A test that has caught a failure creates the ticket, then attaches the screenshot it holds.
 
 ```
@@ -31,7 +29,6 @@ One command, `attach <path> --start LINE:OFFSET --end LINE:OFFSET --expect TEXT`
 `ticket show` prints the image line with the body. The bytes come from the `/raw` address.
 
 ## A person
-
 The document or the ticket is open. The person pastes a picture, drops a file, or picks one with Attach image in the document menu. Pasted text that is a `data:image/…;base64,` address is decoded and sent as bytes. The page sends the bytes. {c9}The hub makes an id the way it makes a ticket id, and that id and the suffix are the file name.{/c9} {c7}The picture follows the block that holds the caret, as its own paragraph, and the caret ends after the image line. A script names a range, and the line follows the block that holds it.{/c7} Clicking the picture selects its image line. Backspace or Delete removes that line.
 
 The hub reads the kind of picture from the bytes, and the suffix is png, jpg, gif, or webp. Other bytes are 400. A name is one path segment. {c6}If that id is already in the directory, the hub makes another. The person does not choose the name.{/c6} The hub also makes another when the document already names that file, and after eight tries it returns 500.
@@ -39,7 +36,6 @@ The hub reads the kind of picture from the bytes, and the suffix is png, jpg, gi
 {c5}A comment note stays text.{/c5} A screenshot goes in the document.
 
 ## A move
-
 Changing a ticket's title does not move the file. The id is the filename, and the directory is `tickets/<id>/`. A ticket cannot be moved.
 
 Moving `notes/welcome.md` to `archive/` moves the markdown and moves `notes/welcome/` to `archive/welcome/` at the same time. The hub rewrites image addresses in that document from `notes/welcome/` to `archive/welcome/`. Other documents are not rewritten. A destination that already has that directory is 409, and both stay where they were.
@@ -47,15 +43,12 @@ Moving `notes/welcome.md` to `archive/` moves the markdown and moves `notes/welc
 Retyping an image line does not move the bytes. The old address becomes unreferenced.
 
 ## A picture nobody names
-
 Selecting the picture and pressing Backspace removes the line. A diff that drops the line does the same. The file stays while a session has the document open. A CLI command that edits or attaches counts as a session until it exits. {c4}Undo puts the line back, and the picture is still there.{/c4} When the last session closes the document, the hub deletes each file in the directory that no image line in the document still names.
 
 ## A deleted document
-
 Deleting the document, deleting the ticket, or purging a closed ticket removes the markdown and removes its directory. {c3}A move rewrites no other document, and a delete removes the directory even when another document names a file in it.{/c3}
 
 ## The upload
-
 An attach is a JSON text frame, `{type:"attach", username, path, …}`, followed by one binary frame that holds the raw bytes. The CLI's frame carries `start`, `end`, and `expect`, and the page's carries `cursor`. A binary frame with no attach before it closes the socket. A hub frame may be 2 MiB, and a larger one closes the socket. The bytes are not base64 inside a JSON text frame, because that encoding of a 2 MiB image would pass the frame limit. Later edits broadcast the image line, not the bytes. Empty bytes, bytes over the limit, and bytes that are not a picture are each 400. The CLI and the page refuse empty or oversize bytes before they send them.
 
 `attach` and a paste {c2}send the bytes on that socket{/c2}. The hub writes the file and splices the image line before it answers. The page and a script read the bytes with `GET /raw/<repo>/<path>`. That route serves any file in the repository, for GET and HEAD. {c1}One image may be at most 2 MiB.{/c1}

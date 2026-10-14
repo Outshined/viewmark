@@ -1,5 +1,4 @@
 # Browser tests: how to run them
-
 The browser tests run the editing matrix of `qa/editor-matrix-test-plan.md` in a real browser, Chromium by default, or Firefox:
 - The keys and the mouse are real input events, sent through the browser's remote protocol.
 - Each result is checked against the bytes a hub holds.
@@ -8,7 +7,6 @@ The browser tests run the editing matrix of `qa/editor-matrix-test-plan.md` in a
 - Eight of the files are the matrix suites, listed under Who acts in a cell. The others test one feature each, such as `browser/comments.browser.js` or `browser/two-tabs.browser.js`. They do not read the plan, and they run and report the same way.
 
 ## What you need
-
 - **Node.** There are no packages to install.
 - **Chromium** at `/usr/bin/chromium`. `VIEWMARK_CHROMIUM` names another binary.
 - **Firefox**, only to run the tests in Firefox. It runs inside cage, a compositor with a headless backend, when cage is installed, and with `--headless` otherwise, so your screen and clipboard are not touched.
@@ -16,7 +14,6 @@ The browser tests run the editing matrix of `qa/editor-matrix-test-plan.md` in a
 - **A display**, only when you want to watch (`VIEWMARK_HEADED=1`).
 
 ## Your data is not touched
-
 Every suite starts a hub of its own, as a separate process, with a small proxy in front of it:
 
 ```text
@@ -31,7 +28,6 @@ node cli.js --port 0 serve <new temporary directory>
 - **Cleanup.** When the suite ends, it stops its hub and deletes the state directory, the repo directory, and the browser profile.
 
 ## Running
-
 ```text
 node --test browser/*.browser.js                         every suite
 node --test --test-concurrency=3 browser/*.browser.js    three suites at a time, about ten minutes in Chromium
@@ -47,7 +43,6 @@ VIEWMARK_BROWSER=firefox node --test browser/delete.browser.js
 Each suite has its own hub and its own browser, so suites can run side by side. Every cell starts from a fresh page load, so one cell that wedges the page cannot fail the next. The browser window is 1920 by 1080.
 
 ## Who acts in a cell
-
 - **Page A** is logged in as `qa-bot` and holds the caret marked in the cell's source.
 - **Page B** is a second tab, logged in as `qa-two`. It is opened only for cells that use it, those whose keys start with `B:`. It opens the same file once A's caret is placed.
 - **The agent** is the CLI, run as `qa-cli`. It reads the file with `show`, then makes its change with `edit` or `comment add`, as an agent would. `read` has it only read.
@@ -65,7 +60,6 @@ Each suite has its own hub and its own browser, so suites can run side by side. 
 | `browser/sessions.browser.js` | MS: a second person, an agent, and a dropped socket |
 
 ## Settings
-
 - `VIEWMARK_BROWSER=firefox`: run in Firefox instead of Chromium.
 - `VIEWMARK_HEADED=1`: show the browser window, so you can watch the cells run.
 - `VIEWMARK_KEEP_PROFILE=1`: keep the browser profile directory after the run.
@@ -77,7 +71,6 @@ Each suite has its own hub and its own browser, so suites can run side by side. 
 - `VIEWMARK_PORT`: the live hub's port, 8765 by default. The test hub must not come up on it.
 
 ## Reading the output
-
 Each cell is a test, and each route it runs by is a subtest. The routes are:
 - `click`, `down` (↓), `up` (↑), `emptied`, and `drag`;
 - for the wide `BG` cells, named in `WIDE` in `browser/run.js`, also:
@@ -112,11 +105,9 @@ With `VIEWMARK_QA_RESULTS`, each suite writes one JSON object per run of a cell.
 - **Screenshots.** To check where the caret is painted (I3), the harness takes screenshots of the caret's line and reads them in memory. It does not save them. Firefox leaves the caret out of its screenshots, so in Firefox that check is reported as not done.
 
 ## Changing the cells
-
 The plan in the hub is the only copy of the cells. Edit a cell there, and the next run uses it; the source tree keeps no copy. A cell is a line in the plan's notation, inside a `text` fence in the plan. A cell placed outside a fence would be read as markdown, which the dialect mangles: it reads comment markers even inside code spans.
 
 ## How the harness is put together
-
 - `browser/harness.js`:
   - starts the test hub and Chromium;
   - speaks the DevTools protocol over Node's built-in `WebSocket`;
@@ -128,7 +119,6 @@ The plan in the hub is the only copy of the cells. Edit a cell there, and the ne
 - `browser/*.browser.js`: one line each, naming a suite and its prefixes.
 
 ## Known gaps
-
 - **Checks not done.** The plan's I6 (undo), I8 (reload), and I11 (late re-render) are not checked. I3 is checked only for a collapsed caret, and not in Firefox.
 - **Passes not done.** P2 to P5 (undo, probe, burst, latency) are not separate passes yet. The probe runs inside P1.
 - **Glyph widths.** No cell's answer depends on glyph widths: the plan writes those as exact positions or as which line or block the caret is on.

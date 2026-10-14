@@ -1,5 +1,4 @@
 # QA plan: editing matrix in a live browser
-
 Contract: Every key, click, and clipboard action a person uses on the page, applied to every markdown construct that changes layout, in Chromium and in Firefox, against a running hub, with real input events. The rules below are what the cells check. Each rule names its source: `[A]` AGENTS.md, README.md, or `qa/lock-spans-test-plan.md`; `[T name]` a test in `test/editor.test.js` that asserts it; `[U]` decided by the owner; `[D#]` a default listed under Decisions. A default is approved unless it says it is not, or says which part is QA's reading. A rule with no tag is restated from a tagged rule next to it. Tests are cited by name because line numbers drift.
 
 `editing.md` states the same rules for the owner, under the same numbers. A change to a rule here is made there too, and a change there is made here.
@@ -394,7 +393,6 @@ In scope for comments: the markers in the prose, and what keys do at them. A com
 Cleanup: The harness closes the browser, stops the proxy and the hub, and removes the state directory and the repo directory. It removes `PROFILE` unless `VIEWMARK_KEEP_PROFILE=1` is set.
 
 ## Decisions
-
 The owner decided these `[U]`:
 - Enter continues a quote with `> `, and Enter on an empty quote line leaves the quote.
 - Enter inside a paragraph makes a paragraph break.
@@ -520,7 +518,6 @@ The owner approved D1 to D22 as correct enough to start. A later default is appr
 
 
 ## Coverage
-
 `node --test` reports how many cells and routes ran. P1 runs each cell once per route it lists, and the `DC` and `T3` cells at two press intervals.
 
 The cells are grouped by construct and by action. Some pairs of a construct and an action have no cell:
@@ -536,9 +533,7 @@ The cells are grouped by construct and by action. Some pairs of a construct and 
 - **Ranges.** Selections (`SX`), clipboard (`CB`), undo (`UR`), composition (`IM`), and drags and drops across constructs act on a range, not on one construct.
 
 ## Cells
-
 ### TY: typing (R10)
-
 ```text
 - `TY.p.1` `alpha‸ beta\n` x → `alphax‸ beta\n`
 - `TY.p.2` `‸alpha beta\n` x → `x‸alpha beta\n`
@@ -588,7 +583,6 @@ The cells are grouped by construct and by action. Some pairs of a construct and 
 ```
 
 ### TC: typing that makes a construct (R10, R1)
-
 ```text
 - `TC.h.1` `‸Title\n` "# " → `# ‸Title\n` · a level-1 heading; raw `# Title`
 - `TC.h.2` `‸Title\n` "### " → `### ‸Title\n` · level 3
@@ -601,7 +595,6 @@ The cells are grouped by construct and by action. Some pairs of a construct and 
 ```
 
 ### EN: Enter (R20–R29)
-
 Items.
 
 ```text
@@ -696,7 +689,6 @@ Headings, rules, fences, tables, images.
 ```
 
 ### SE: Shift+Enter (R26)
-
 ```text
 - `SE.li.1` `- alpha‸\n` Shift+Enter → `- alpha\\\n‸\n` · a hard break in the item, not a new item [U] [D28]
 - `SE.q.1` `> alpha‸\n` Shift+Enter → `> alpha\\\n> ‸\n` [U] [D28]
@@ -709,7 +701,6 @@ Headings, rules, fences, tables, images.
 ```
 
 ### EB: Enter, then Backspace (R18, R20–R32)
-
 Each cell starts from the state a person leaves after typing, then backs out.
 
 ```text
@@ -739,7 +730,6 @@ Each cell starts from the state a person leaves after typing, then backs out.
 ```
 
 ### EF: end of file (R3, R30, R73, R83)
-
 The leading suspect for the empty-line Backspace bug lives here. Each cell checks I3 with extra care: the caret must be drawn on the line that owns its offset, never left where the browser last had it.
 
 ```text
@@ -762,7 +752,6 @@ The leading suspect for the empty-line Backspace bug lives here. Each cell check
 ```
 
 ### BS: Backspace (R30–R37)
-
 ```text
 - `BS.p.1` `al‸pha\n` Backspace → `a‸pha\n`
 - `BS.p.2` `‸alpha\n` Backspace → same
@@ -823,7 +812,6 @@ The leading suspect for the empty-line Backspace bug lives here. Each cell check
 ```
 
 ### BG: Backspace on an empty line (R30)
-
 This is the grid behind the reported bug. Every cell is decided by R30 `[U]`. The routes each cell runs are listed under Routes, and the expectation is the same for every route. Unless the cell's note says otherwise, the caret is drawn at the end of the line above, on that line's box, and the empty line is gone from the drawn page. The `BG.rep.1` cell runs in the burst pass P4, where its three Backspaces arrive faster than the hub replies.
 
 Line above varies; the line below is `two`.
@@ -894,7 +882,6 @@ Files with `\r\n` (D18).
 ```
 
 ### DL: Delete (R40, R41)
-
 ```text
 - `DL.p.1` `al‸pha\n` Delete → `al‸ha\n`
 - `DL.p.2` `alpha‸` Delete → same
@@ -928,7 +915,6 @@ Files with `\r\n` (D18).
 ```
 
 ### WB and WD: word delete (R50)
-
 ```text
 - `WB.p.1` `alpha beta‸\n` Ctrl+Backspace → `alpha ‸\n` [D7]
 - `WB.p.2` `alpha be‸ta\n` Ctrl+Backspace → `alpha ‸ta\n` [D7]
@@ -951,7 +937,6 @@ Files with `\r\n` (D18).
 ```
 
 ### TB: Tab and Shift+Tab (R60–R62)
-
 ```text
 - `TB.li.1` `- a\n- b‸\n` Tab → `- a\n\t- b‸\n` · `b` is drawn as a child of `a` [U] [D8]
 - `TB.li.2` `- a\n- ‸b\n` Tab → `- a\n\t- ‸b\n` [U] [D8]
@@ -978,7 +963,6 @@ Files with `\r\n` (D18).
 ```
 
 ### MV: arrows, Home, End (R70–R74)
-
 ```text
 - `MV.p.1` `al‸pha\n` → → `alp‸ha\n`
 - `MV.p.2` `al‸pha\n` ← → `a‸lpha\n`
@@ -1052,7 +1036,6 @@ Files with `\r\n` (D18).
 ```
 
 ### CK: click (R80–R83)
-
 The caret starts on `x`, so the target block is drawn rendered when it is clicked.
 
 ```text
@@ -1100,7 +1083,6 @@ The caret starts on `x`, so the target block is drawn rendered when it is clicke
 ```
 
 ### DC: double-click (R84)
-
 ```text
 - `DC.p.1` `‸x\n\nhello fox two\n` dblclick `fox` → `x\n\nhello «fox‸ two\n`
 - `DC.mk.1` `‸x\n\na **bold** b\n` dblclick `bold` → `x\n\na **«bold‸** b\n` · the block turns raw between the presses; the selection covers `bold` and is drawn over exactly `bold` [U]
@@ -1127,7 +1109,6 @@ The caret starts on `x`, so the target block is drawn rendered when it is clicke
 ```
 
 ### T3: triple-click (R85, D32)
-
 ```text
 - `T3.p.1` `‸x\n\nhello fox two\nnext\n` tripleclick `fox` → `x\n\n«hello fox two\nnext‸\n` · the whole block, both source lines [U] [D32]
 - `T3.h.1` `‸x\n\n# Title\n` tripleclick `Title` → `x\n\n# «Title‸\n` [U] [D32]
@@ -1140,7 +1121,6 @@ The caret starts on `x`, so the target block is drawn rendered when it is clicke
 ```
 
 ### DG: drag (R86)
-
 ```text
 - `DG.p.1` `‸x\n\nalpha beta\n` drag `al¦pha` to `be¦ta` → `x\n\nal«pha be‸ta\n`
 - `DG.p.2` `‸x\n\nalpha beta\n` drag `be¦ta` to `al¦pha` → `x\n\nal‸pha be«ta\n`
@@ -1150,7 +1130,6 @@ The caret starts on `x`, so the target block is drawn rendered when it is clicke
 ```
 
 ### SX: selections (R90)
-
 ```text
 - `SX.1` `ab«cde‸f\n` X → `abX‸f\n` · route `drag`
 - `SX.2` `# Ti«tle\n\n- al‸pha\n` y → `# Tiy‸pha\n` · route `drag`
@@ -1167,7 +1146,6 @@ The caret starts on `x`, so the target block is drawn rendered when it is clicke
 ```
 
 ### CB: clipboard (R91)
-
 ```text
 - `CB.1` `al«ph‸a\n` Ctrl+C, End, Ctrl+V → `alphaph‸\n` [D11]
 - `CB.2` `«a **bold**‸ b\n` Ctrl+X → `‸ b\n` · route `drag` · then Ctrl+V gives back `a **bold**‸ b\n`
@@ -1177,7 +1155,6 @@ The caret starts on `x`, so the target block is drawn rendered when it is clicke
 ```
 
 ### UR: undo and redo (R92)
-
 ```text
 - `UR.1` `alpha‸\n` x, y, Ctrl+Z → `alpha‸\n` · `x` and `y` are one run [U] [D33]
 - `UR.2` `alpha‸\n` x, Ctrl+Z, Ctrl+Shift+Z → `alphax‸\n`
@@ -1199,14 +1176,12 @@ The caret starts on `x`, so the target block is drawn rendered when it is clicke
 ```
 
 ### IM: composition (R93)
-
 ```text
 - `IM.1` `- al‸pha\n` compose `´`, commit `é` → `- alé‸pha\n` · one rev; no edit is sent before the commit
 - `IM.3` `# ‸Title\n` compose `~`, commit `ñ` → `# ñ‸Title\n`
 ```
 
 ### RD: another client reads the file (R95)
-
 Each cell moves the caret, then has another client read the file. The redraw that follows must leave the caret where the person put it.
 
 ```text
@@ -1219,7 +1194,6 @@ Each cell moves the caret, then has another client read the file. The redraw tha
 ```
 
 ### MS: several sessions (R94 to R98)
-
 Page A holds the caret marked in the source. Page B and the agent act through the keys. Each cell starts both pages from a fresh load of the cell's file. B is opened and logged in only for the cells that use it.
 
 ```text
@@ -1242,7 +1216,6 @@ Page A holds the caret marked in the source. Page B and the agent act through th
 ```
 
 ### WK: walking the caret (R1, R70, D6, D14, D17)
-
 Each cell walks the caret from the start of the file to where → stops. These check that every offset the caret can rest at has one drawn place.
 
 ```text

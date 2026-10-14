@@ -1,5 +1,4 @@
 # Architecture
-
 Viewmark is a live markdown editor for a shared set of files. A single Node process holds every open document. The document is a single string, and the caret is an offset into that string. The page keeps a mirror of that string and redraws when the hub sends a `file` or `doc` message. The contenteditable region is how the browser reports a selection and a caret.
 
 ## The program
@@ -82,7 +81,6 @@ Every other fence is code. While the caret is outside the fence, each body line 
 Updating Prism or Mermaid is a manual step: replace `vendor/prism.js` or `vendor/mermaid.min.js`, then reload the page.
 
 ## Collaboration
-
 The username is a label supplied by the caller. Viewmark does not try to find out whether a person by that name exists.
 
 The page asks for the name before it opens a socket, and keeps the accepted name in `sessionStorage` under `viewmark.username`. The command line takes `--user` or `VIEWMARK_USER`. When both are set, the flag wins. There is no default. An empty name is rejected, as is a name that contains a NUL, a carriage return, a line feed, `<`, or `>`. After `hello`, a frame whose username does not match the session is 403.
