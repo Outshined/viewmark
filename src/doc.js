@@ -3135,12 +3135,61 @@ function renderedAtomAt(doc, cursor, hit) {
   return plan(doc, cursor).atoms.find(hit) || null;
 }
 
-function sourceLine(doc, offset) {
+export function sourceLine(doc, offset) {
   let start = offset;
   while (start > 0 && doc[start - 1] !== "\n") start -= 1;
   let end = offset;
   while (end < doc.length && doc[end] !== "\n") end += 1;
   return { start, end, text: lineText(doc, start, end), newline: end < doc.length && doc[end] === "\n" };
+}
+
+// The caller passes one source line and an offset into that line.
+// open and close are the backtick indexes. start and end are the interior.
+export function codeSpanAt(text, offset) {
+  const line = typeof text === "string" ? text : "";
+  const at = Math.max(0, Math.min(line.length, Number.isFinite(offset) ? Math.trunc(offset) : 0));
+  let index = 0;
+  while (index < line.length) {
+    if (line[index] !== "`") {
+      index += 1;
+      continue;
+    }
+    const close = line.indexOf("`", index + 1);
+    if (!(close > index + 1)) {
+      index += 1;
+      continue;
+    }
+    if (at >= index && at <= close) return { open: index, close, start: index + 1, end: close };
+    index = close + 1;
+  }
+  return null;
+}
+
+// Same line-local contract as codeSpanAt. A bare bracket pair is null.
+export function linkSpanAt(text, offset) {
+  const line = typeof text === "string" ? text : "";
+  const at = Math.max(0, Math.min(line.length, Number.isFinite(offset) ? Math.trunc(offset) : 0));
+  let index = 0;
+  while (index < line.length) {
+    const image = line.startsWith("![", index);
+    if (image || line[index] === "[") {
+      const link = matchLinkOrImage(line, index, image);
+      if (link) {
+        if (at >= link.start && at < link.end) {
+          return {
+            start: link.start,
+            end: link.end,
+            labelStart: link.labelStart,
+            labelEnd: link.labelEnd,
+          };
+        }
+        index = link.end;
+        continue;
+      }
+    }
+    index += 1;
+  }
+  return null;
 }
 
 // The caret rests on the first offset of a hard-break marker. Offsets after that,
@@ -3261,11 +3310,14 @@ function snapBreak(next) {
 
 // A drawn comment marker, or the hidden tail of a hard break. direction "nearer"
 // is a click. The break's br is the newline and stays; a hidden space takes the line start.
-export function skipHidden(doc, offset, direction) {
+export function skipHidden(doc, offset, direction, options) {
   const text = typeof doc === "string" ? doc : "";
   const at = Math.max(0, Math.min(text.length, Number.isFinite(offset) ? Math.trunc(offset) : 0));
-  const gap = paragraphGapLeave(text, at, direction);
-  if (gap != null) return gap;
+  // Raw motions keep a blank source line. The default stays the arrow's gap leave.
+  if (!options || options.gap !== false) {
+    const gap = paragraphGapLeave(text, at, direction);
+    if (gap != null) return gap;
+  }
   for (const token of commentTokens(text)) {
     if (at > token.start && at < token.end) {
       if (direction === "nearer") return at - token.start <= token.end - at ? token.start : token.end;

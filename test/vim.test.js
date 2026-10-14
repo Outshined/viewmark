@@ -1,0 +1,762 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { vimKey } from "../src/vim.js";
+import { codeSpanAt, createState, deleteForward, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
+
+const CARET = "‸";
+
+function marked(text) {
+  let doc = "";
+  let cursor = null;
+  let anchor = null;
+  for (const ch of text) {
+    if (ch === CARET) cursor = doc.length;
+    else if (ch === "«") anchor = doc.length;
+    else doc += ch;
+  }
+  if (cursor == null) throw new Error("missing caret");
+  if (anchor == null) anchor = cursor;
+  return { doc, cursor, anchor };
+}
+
+function show(doc, cursor, anchor = cursor) {
+  let out = "";
+  for (let i = 0; i <= doc.length; i += 1) {
+    if (anchor !== cursor && i === anchor) out += "«";
+    if (i === cursor) out += CARET;
+    if (i < doc.length) out += doc[i];
+  }
+  return out;
+}
+
+function keyOf(item) {
+  if (typeof item === "string") return { key: item, ctrl: false, meta: false, alt: false, shift: false };
+  return { ctrl: false, meta: false, alt: false, shift: false, ...item };
+}
+
+function run(start, keys, opts = {}) {
+  let { doc, cursor, anchor } = marked(start);
+  let vim = opts.vim || {
+    mode: opts.mode || "normal",
+    input: { prefixRepeat: "", operator: null, motionRepeat: "", motion: null, keyBuffer: "" },
+    register: { text: "", linewise: false },
+    search: null,
+    find: null,
+    column: null,
+    once: false,
+  };
+  const steps = [];
+  for (const item of keys) {
+    const result = vimKey({
+      key: keyOf(item),
+      vim,
+      doc,
+      anchor,
+      cursor,
+      raw: opts.raw === true,
+      layout: opts.layout === true ? true : null,
+      flag: opts.flag,
+    });
+    steps.push(result);
+    vim = result.vim;
+    const effect = result.effect;
+    if (!effect) continue;
+    if (effect.type === "caret") {
+      anchor = effect.anchor;
+      cursor = effect.cursor;
+    } else if (effect.type === "splice") {
+      doc = doc.slice(0, effect.from) + effect.text + doc.slice(effect.to);
+      cursor = effect.caret;
+      anchor = cursor;
+    } else if (effect.type === "scroll" && Number.isInteger(effect.cursor)) {
+      cursor = effect.cursor;
+      anchor = Number.isInteger(effect.anchor) ? effect.anchor : effect.cursor;
+    } else if (effect.type === "forward-delete") {
+      const next = deleteForward(createState(doc, cursor, anchor));
+      doc = next.doc;
+      cursor = next.cursor;
+      anchor = next.anchor;
+    }
+  }
+  return { doc, cursor, anchor, vim, steps, show: show(doc, cursor, anchor) };
+}
+
+function last(out) {
+  return out.steps[out.steps.length - 1];
+}
+
+function assertView(out, command, repeat) {
+  const effect = last(out).effect;
+  assert.equal(last(out).match, "full");
+  assert.equal(last(out).consumed, true);
+  assert.equal(effect.type, "view-motion");
+  assert.equal(effect.command, command);
+  assert.equal(effect.repeat, repeat);
+  assert.equal(Object.hasOwn(effect, "cursor"), false);
+  assert.equal(Object.hasOwn(effect, "anchor"), false);
+  assert.equal(Object.hasOwn(effect, "offset"), false);
+}
+
+test("sourceLine", () => {
+  assert.deepEqual(sourceLine("alpha\nbeta\n", 7), { start: 6, end: 10, text: "beta", newline: true });
+  assert.deepEqual(sourceLine("alpha", 2), { start: 0, end: 5, text: "alpha", newline: false });
+});
+
+test("codeSpanAt", () => {
+  const line = "a `code` b";
+  assert.deepEqual(codeSpanAt(line, 4), { open: 2, close: 7, start: 3, end: 7 });
+  assert.deepEqual(codeSpanAt(line, 2), { open: 2, close: 7, start: 3, end: 7 });
+  assert.deepEqual(codeSpanAt(line, 7), { open: 2, close: 7, start: 3, end: 7 });
+  assert.equal(codeSpanAt(line, 8), null);
+  assert.equal(codeSpanAt("plain", 1), null);
+  assert.equal(codeSpanAt("``", 0), null);
+  assert.equal(codeSpanAt("`a` `b`", 5).open, 4);
+});
+
+test("linkSpanAt", () => {
+  const line = "see [text](https://x.test/p) now";
+  const found = linkSpanAt(line, 6);
+  assert.deepEqual(found, { start: 4, end: 28, labelStart: 5, labelEnd: 9 });
+  assert.equal(linkSpanAt(line, 0), null);
+  assert.equal(linkSpanAt(line, 28), null);
+  assert.equal(linkSpanAt("see [text] now", 6), null);
+  const image = "go ![alt](sample.svg) on";
+  const picture = linkSpanAt(image, 5);
+  assert.equal(picture.start, 3);
+  assert.equal(picture.labelStart, 5);
+  assert.equal(image.slice(picture.labelStart, picture.labelEnd), "alt");
+});
+
+test("skipHidden gap", () => {
+  assert.equal(skipHidden("one\n\ntwo\n", 4, "forward"), 5);
+  assert.equal(skipHidden("one\n\ntwo\n", 4, "backward"), 3);
+  assert.equal(skipHidden("one\n\ntwo\n", 4, "nearer"), 3);
+  assert.equal(skipHidden("one\n\ntwo\n", 4, "forward", { gap: false }), 4);
+  assert.equal(skipHidden("one\n\ntwo\n", 4, "backward", { gap: false }), 4);
+  const comment = "See {c1}this{/c1} now.";
+  assert.equal(skipHidden(comment, 5, "forward"), 8);
+  assert.equal(skipHidden(comment, 5, "forward", { gap: false }), 8);
+  assert.equal(skipHidden(comment, 16, "backward", { gap: false }), 12);
+  assert.equal(skipHidden("red  \nblue\n", 4, "forward", { gap: false }), 6);
+  assert.equal(skipHidden("red  \nblue\n", 5, "backward", { gap: false }), 3);
+  assert.equal(skipHidden("alpha\r\nbeta\r\n", 6, "forward", { gap: false }), 7);
+  assert.equal(skipHidden("alpha\r\nbeta\r\n", 6, "backward", { gap: false }), 5);
+});
+
+test("vimKey is pure", () => {
+  const src = readFileSync(new URL("../src/vim.js", import.meta.url), "utf8");
+  assert.match(src, /from "\.\/doc\.js"/);
+  assert.doesNotMatch(src, /editor\.js|codemirror|CodeMirror/);
+  assert.doesNotMatch(src, /\bdocument\b|\bwindow\b/);
+  const editor = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
+  assert.equal(editor.includes("vimKey"), false);
+  const vim = {
+    mode: "normal",
+    input: { prefixRepeat: "2", operator: "d", motionRepeat: "", motion: null, keyBuffer: "" },
+  };
+  const snapshot = structuredClone(vim);
+  const doc = "alpha\n";
+  vimKey({ key: { key: "w" }, vim, doc, cursor: 0, anchor: 0 });
+  assert.deepEqual(vim, snapshot);
+});
+
+test("flag off", () => {
+  const vim = {
+    mode: "normal",
+    input: { prefixRepeat: "", operator: "d", motionRepeat: "", motion: null, keyBuffer: "g" },
+  };
+  const out = vimKey({
+    flag: false,
+    key: { key: "j" },
+    vim,
+    doc: "al pha\n\nbeta\n",
+    cursor: 2,
+    anchor: 2,
+    raw: false,
+    layout: true,
+  });
+  assert.equal(out.match, "none");
+  assert.equal(out.consumed, false);
+  assert.equal(out.effect, null);
+  assert.equal(out.vim.input.operator, "d");
+  assert.equal(out.vim.input.keyBuffer, "g");
+  const letter = run("‸alpha\n", ["x"], { flag: false });
+  assert.equal(letter.steps[0].consumed, false);
+  assert.equal(letter.steps[0].effect, null);
+  assert.equal(letter.doc, "alpha\n");
+});
+
+test("VK.1", () => {
+  const out = run("al‸pha beta\n", ["d", "w"]);
+  assert.equal(out.steps[0].match, "full");
+  assert.equal(out.steps[0].effect, null);
+  assert.equal(out.steps[0].vim.input.operator, "d");
+  assert.equal(out.steps.filter((step) => step.effect && step.effect.type === "splice").length, 1);
+  assert.equal(out.show, "al‸beta\n");
+});
+
+test("VK.2", () => {
+  const out = run("‸alpha\n", ["g"]);
+  assert.equal(out.steps[0].match, "partial");
+  assert.equal(out.steps[0].consumed, true);
+  assert.equal(out.steps[0].effect, null);
+  assert.equal(out.vim.input.keyBuffer, "g");
+  assert.equal(out.show, "‸alpha\n");
+  assert.equal(out.doc, "alpha\n");
+});
+
+test("VK.3", () => {
+  const out = run("‸alpha beta\n", ["d", "Q", "w"]);
+  assert.equal(out.steps[1].match, "none");
+  assert.equal(out.steps[1].consumed, true);
+  assert.equal(out.steps[1].effect, null);
+  assert.equal(out.vim.input.operator, null);
+  assert.equal(out.vim.input.keyBuffer, "");
+  assert.equal(out.doc, "alpha beta\n");
+  assert.equal(out.show, "alpha ‸beta\n");
+});
+
+test("VK.4", () => {
+  for (const keys of [["3", "d", "2", "w"], ["2", "d", "3", "w"], ["6", "d", "w"]]) {
+    const out = run("‸a b c d e f g h\n", keys);
+    assert.equal(out.steps.filter((step) => step.effect && step.effect.type === "splice").length, 1);
+    assert.equal(out.show, "‸g h\n");
+  }
+  for (const keys of [["3", "d", "w"], ["d", "3", "w"]]) {
+    const out = run("‸a b c d e\n", keys);
+    assert.equal(out.show, "‸d e\n");
+  }
+});
+
+test("VK.5", () => {
+  const zero = run("abc‸def\n", ["0"]);
+  assert.equal(zero.show, "‸abcdef\n");
+  assert.equal(zero.vim.input.prefixRepeat, "");
+  assert.equal(zero.vim.input.keyBuffer, "");
+  const ten = run("‸abcdefghijkl\n", ["1", "0", "l"]);
+  assert.equal(ten.steps[0].match, "partial");
+  assert.equal(ten.steps[1].match, "partial");
+  assert.equal(ten.steps[1].vim.input.keyBuffer, "10");
+  assertView(ten, "l", 10);
+  assert.equal(ten.doc, "abcdefghijkl\n");
+  assert.equal(ten.cursor, 0);
+});
+
+test("VK.6", () => {
+  const out = run(`${CARET}${"a".repeat(12000)}`, ["1", "2", "0", "0", "0", "x"]);
+  assert.equal(last(out).match, "full");
+  assert.equal(last(out).effect.type, "view-edit");
+  assert.equal(last(out).effect.command, "x");
+  assert.equal(last(out).effect.repeat, 10000);
+  assert.equal(out.doc, "a".repeat(12000));
+});
+
+test("VK.7", () => {
+  const out = run("‸alpha beta\n", ["d", "c", "w"]);
+  assert.equal(out.steps[1].match, "none");
+  assert.equal(out.steps[1].effect, null);
+  assert.equal(out.steps.filter((step) => step.effect && step.effect.type === "splice").length, 0);
+  assert.equal(out.doc, "alpha beta\n");
+  assert.equal(out.show, "alpha ‸beta\n");
+});
+
+test("VK.8", () => {
+  const cut = run("al‸pha beta\n", ["d", "w"]);
+  assert.equal(cut.show, "al‸beta\n");
+  const out = run("al‸beta\n", ["d", "u"], { vim: { ...cut.vim, input: { prefixRepeat: "", operator: null, motionRepeat: "", motion: null, keyBuffer: "" }, register: cut.vim.register } });
+  assert.equal(out.steps[1].match, "none");
+  assert.equal(out.steps[1].consumed, true);
+  assert.equal(out.steps[1].effect, null);
+  assert.equal(out.doc, "albeta\n");
+  assert.equal(out.show, "al‸beta\n");
+});
+
+test("VK.16", () => {
+  const partial = run("‸alpha\nbeta\n", ['"']);
+  assert.equal(partial.steps[0].match, "partial");
+  assert.equal(partial.steps[0].consumed, true);
+  assert.equal(partial.vim.input.keyBuffer, '"');
+  assert.equal(partial.show, "‸alpha\nbeta\n");
+  const accepted = run("‸alpha\nbeta\n", ['"', '"']);
+  assert.equal(accepted.steps[1].match, "full");
+  assert.equal(accepted.steps[1].effect, null);
+  assert.equal(accepted.vim.input.keyBuffer, "");
+  assert.equal(accepted.doc, "alpha\nbeta\n");
+  // alpha and beta are one rendered block. The cell's duplicate is the raw source line.
+  const put = run("‸alpha\nbeta\n", ['"', '"', "y", "y", "p"], { raw: true });
+  assert.equal(put.show, "alpha\n‸alpha\nbeta\n");
+  const inserted = put.steps.filter((step) => step.effect && step.effect.type === "splice" && step.effect.from === step.effect.to);
+  assert.equal(inserted.length, 1);
+  assert.equal(inserted[0].effect.text, "alpha\n");
+});
+
+test("VN.1", () => {
+  const right = run("al‸pha\n", ["l"]);
+  assertView(right, "l", 1);
+  assert.equal(right.show, "al‸pha\n");
+  const left = run("al‸pha\n", ["h"]);
+  assertView(left, "h", 1);
+  const three = run("al‸pha\n", ["3", "l"]);
+  assertView(three, "l", 3);
+  assert.equal(three.doc, "alpha\n");
+});
+
+test("VN.2", () => {
+  const back = run("al‸pha\n", ["Backspace"]);
+  assertView(back, "h", 1);
+  assert.equal(back.doc, "alpha\n");
+  const space = run("al‸pha\n", [" "]);
+  assertView(space, "l", 1);
+  assert.equal(space.doc, "alpha\n");
+  const del = run("al‸pha\n", ["Delete"]);
+  assert.equal(del.steps[0].effect.type, "forward-delete");
+  assert.equal(del.show, "al‸ha\n");
+});
+
+test("VN.3", () => {
+  const joined = run("al‸pha\nbeta\n", ["j"]);
+  assert.equal(joined.show, "al‸pha\nbeta\n");
+  assert.equal(joined.vim.mode, "normal");
+  const blocks = run("al‸pha\n\nbeta\n", ["j"]);
+  assert.equal(blocks.show, "alpha\n\nbe‸ta\n");
+  const raw = run("al‸pha\nbeta\n", ["j"], { raw: true });
+  assert.equal(raw.show, "alpha\nbe‸ta\n");
+});
+
+test("VN.4", () => {
+  const start = `‸${"x".repeat(40)}\n\nnext\n`;
+  const down = run(start, ["ArrowDown"]);
+  assert.equal(down.show, `${"x".repeat(40)}\n\n‸next\n`);
+  const ctrl = run(start, [{ key: "n", ctrl: true }]);
+  assert.equal(ctrl.show, down.show);
+  const up = run(down.show, ["ArrowUp"]);
+  assert.equal(up.cursor, 0);
+  const ctrlUp = run(down.show, [{ key: "p", ctrl: true }]);
+  assert.equal(ctrlUp.cursor, up.cursor);
+});
+
+test("VN.5", () => {
+  // A paragraph is one vim line. The column crosses blocks, and raw source lines.
+  const joined = run("alpha‸\nab\nalpha\n", ["j"]);
+  assert.equal(joined.show, "alpha‸\nab\nalpha\n");
+  const once = run("alpha‸\n\nab\n\nalpha\n", ["j"]);
+  assert.equal(once.show, "alpha\n\nab‸\n\nalpha\n");
+  assert.equal(once.vim.column, 5);
+  const twice = run("alpha‸\n\nab\n\nalpha\n", ["j", "j"]);
+  assert.equal(twice.show, "alpha\n\nab\n\nalpha‸\n");
+  assert.equal(twice.vim.column, 5);
+  const raw = run("alpha‸\nab\nalpha\n", ["j", "j"], { raw: true });
+  assert.equal(raw.show, "alpha\nab\nalpha‸\n");
+  const cleared = run("alpha‸\n\nab\n\nalpha\n", ["j", "h"]);
+  assert.equal(cleared.steps[1].effect.command, "h");
+  assert.equal(cleared.vim.column, null);
+  const placed = vimKey({
+    key: { key: "j" },
+    vim: cleared.vim,
+    doc: cleared.doc,
+    cursor: cleared.cursor - 1,
+    anchor: cleared.cursor - 1,
+    raw: false,
+    layout: null,
+  });
+  assert.equal(show(cleared.doc, placed.effect.cursor), "alpha\n\nab\n\na‸lpha\n");
+});
+
+test("VN.6", () => {
+  const moved = run("al‸pha\n\nbeta\n", ["g", "j"]);
+  assert.equal(moved.show, "alpha\n\nbe‸ta\n");
+  const view = run("al‸pha\n\nbeta\n", ["g", "j"], { layout: true });
+  assertView(view, "gj", 1);
+  assert.equal(view.show, "al‸pha\n\nbeta\n");
+  const down = run("al‸pha\n\nbeta\n", ["g", "ArrowDown"], { layout: true });
+  assertView(down, "gj", 1);
+  const up = run("alpha\n\nbe‸ta\n", ["g", "ArrowUp"], { layout: true });
+  assertView(up, "gk", 1);
+  assert.equal(Object.hasOwn(up.steps[1].effect, "cursor"), false);
+});
+
+test("VN.7", () => {
+  assert.equal(run("‸alpha, beta\n", ["w"]).show, "alpha, ‸beta\n");
+  assert.equal(run("‸alpha, beta\n", ["e"]).show, "alpha‸, beta\n");
+  assert.equal(run("alpha, be‸ta\n", ["b"]).show, "alpha, ‸beta\n");
+  assert.equal(run("alpha, be‸ta\n", ["g", "e"]).show, "alpha‸, beta\n");
+  assert.equal(run("‸alpha\n", ["e"]).show, "alph‸a\n");
+});
+
+test("VN.8", () => {
+  assert.equal(run("‸alpha,beta gamma\n", ["W"]).show, "alpha,beta ‸gamma\n");
+  assert.equal(run("‸alpha,beta gamma\n", ["w"]).show, "alpha,beta ‸gamma\n");
+  assert.equal(run("alpha,beta gam‸ma\n", ["E"]).show, run("alpha,beta gam‸ma\n", ["e"]).show);
+  assert.equal(run("alpha,beta gam‸ma\n", ["g", "E"]).show, run("alpha,beta gam‸ma\n", ["g", "e"]).show);
+});
+
+test("VN.9", () => {
+  assert.equal(run("al‸pha\nbeta\n", ["w"]).show, "alpha\n‸beta\n");
+  assert.equal(run("alpha be‸ta\n\ngamma\n", ["w"]).show, "alpha beta\n\n‸gamma\n");
+  assert.equal(run("alpha be‸ta\n", ["w"]).show, "alpha beta‸\n");
+});
+
+test("VN.10", () => {
+  const back = run("alpha be‸ta\n", [{ key: "Backspace", ctrl: true }]);
+  assert.equal(back.show, "alpha ‸beta\n");
+  assert.equal(back.doc, "alpha beta\n");
+  assert.equal(run("alpha be‸ta\n", [{ key: " ", ctrl: true }]).show, run("alpha be‸ta\n", ["W"]).show);
+  assert.equal(run("‸alpha beta\n", [{ key: " ", shift: true }]).show, "alpha ‸beta\n");
+  assert.equal(run("alpha be‸ta\n", [{ key: "Backspace", shift: true }]).show, "alpha ‸beta\n");
+});
+
+test("VN.11", () => {
+  assert.equal(run("  al‸pha\n", ["0"]).show, "‸  alpha\n");
+  assert.equal(run("  al‸pha\n", ["^"]).show, "  ‸alpha\n");
+  assert.equal(run("- al‸pha\n", ["^"]).show, "‸- alpha\n");
+  assert.equal(run("# Ti‸tle\n", ["^"]).show, "‸# Title\n");
+});
+
+test("VN.12", () => {
+  const spaced = run("‸alpha \n", ["$"]);
+  assert.equal(spaced.show, "alpha ‸\n");
+  const broken = run("r‸ed  \nblue\n", ["$"]);
+  assert.equal(broken.show, "red‸  \nblue\n");
+  const line = sourceLine(broken.doc, 1);
+  assert.equal(broken.cursor, 3);
+  assert.ok(broken.cursor < line.end);
+});
+
+test("VN.13", () => {
+  assert.equal(run("- al‸pha\n", ["Home"]).show, "‸- alpha\n");
+  const long = `${CARET}${"x".repeat(80)}`;
+  const end = run(long, ["End"]);
+  assert.equal(end.cursor, 80);
+  assert.equal(end.show, `${"x".repeat(80)}${CARET}`);
+  const visual = run("- al‸pha\n", ["Home"], { mode: "visual" });
+  assert.equal(visual.cursor, 0);
+  assert.equal(visual.vim.mode, "visual");
+});
+
+test("VN.14", () => {
+  assert.equal(run("al‸pha\n\n  beta\n", ["+"]).show, "alpha\n\n  ‸beta\n");
+  assert.equal(run("  al‸pha\n", ["_"]).show, "  ‸alpha\n");
+  assert.equal(run("  al‸pha\n\n  beta\n", ["2", "_"]).show, "  alpha\n\n  ‸beta\n");
+  assert.equal(run("  al‸pha\n  beta\n", ["2", "_"], { raw: true }).show, "  alpha\n  ‸beta\n");
+});
+
+test("VN.15", () => {
+  assert.equal(run("‸alpha beta\n", ["7", "|"]).show, "alpha ‸beta\n");
+  assert.equal(run("\tab‸c\n", ["5", "|"]).show, "\t‸abc\n");
+  assert.equal(run("‸alpha\n", ["2", "0", "|"]).show, "alpha‸\n");
+});
+
+test("VN.16", () => {
+  assert.equal(run("alpha\nbe‸ta\n", ["g", "g"]).show, "‸alpha\nbeta\n");
+  assert.equal(run("alpha\nbe‸ta\n", ["G"]).show, "alpha\nbeta\n‸");
+  assert.equal(run("alpha\nbe‸ta\n", ["G"]).cursor, "alpha\nbeta\n".length);
+});
+
+test("VN.17", () => {
+  assert.equal(run("‸one\n\ntwo\n\nthree\n", ["2", "G"]).show, "one\n\n‸two\n\nthree\n");
+  assert.equal(run("‸alpha\nbeta\ngamma\n", ["2", "G"], { raw: true }).show, "alpha\n‸beta\ngamma\n");
+  assert.equal(run("‸one\n\ntwo\n", ["2", "G"]).show, "one\n\n‸two\n");
+  assert.equal(run("‸one\n\ntwo\n", ["2", "G"], { raw: true }).show, "one\n‸\ntwo\n");
+});
+
+test("VN.18", () => {
+  const view = run(`${CARET}${"x".repeat(200)}`, ["g", "0"], { layout: true });
+  assertView(view, "g0", 1);
+  assert.equal(view.cursor, 0);
+  const end = run(`${CARET}${"x".repeat(40)}`, ["g", "$"], { layout: true });
+  assertView(end, "g$", 1);
+  const plain = run("  al‸pha\n", ["g", "0"]);
+  assert.equal(plain.show, "‸  alpha\n");
+  assert.equal(plain.steps[1].effect.type, "caret");
+  assert.equal(run("  al‸pha\n", ["g", "^"]).show, "  ‸alpha\n");
+  assert.equal(run("ab‸c\n", ["g", "$"]).show, "abc‸\n");
+});
+
+test("VN.19", () => {
+  assert.equal(run("‸alpha beta\n", ["f", "b"]).show, "alpha ‸beta\n");
+  assert.equal(run("alpha be‸ta\n", ["F", "a"]).show, "alph‸a beta\n");
+  assert.equal(run("‸alpha\nbeta\n", ["f", "b"]).show, "‸alpha\nbeta\n");
+  const repeat = run("‸a-b-c\n", ["f", "-", ";"]);
+  assert.equal(repeat.show, "a-b‸-c\n");
+  assert.equal(run(repeat.show, [","], { vim: repeat.vim }).show, "a‸-b-c\n");
+});
+
+test("VN.20", () => {
+  assert.equal(run("‸alpha beta\n", ["t", "b"]).show, "alpha‸ beta\n");
+  assert.equal(run("alpha be‸ta\n", ["T", "a"]).show, "alpha‸ beta\n");
+  const repeat = run("‸a-b-c\n", ["t", "-", ";"]);
+  assert.equal(repeat.show, "a-‸b-c\n");
+  const further = run("‸a-b-c-d\n", ["t", "-", ";", ";"]);
+  assert.equal(further.show, "a-b-‸c-d\n");
+  assert.equal(run(further.show, [","], { vim: further.vim }).show, "a-‸b-c-d\n");
+});
+
+test("VN.21", () => {
+  assert.equal(run("‸((a) b)\n", ["%"]).show, "((a) b‸)\n");
+  assert.equal(run("(a)‸", ["%"]).show, "‸(a)");
+  assert.equal(run("‸x (a) y\n", ["%"]).show, "x (a‸) y\n");
+  assert.equal(run("(‸a) b\n", ["%"]).show, "(a‸) b\n");
+  assert.equal(run("‸alpha\n", ["%"]).show, "‸alpha\n");
+  assert.equal(run("‸(a\n", ["%"]).show, "‸(a\n");
+});
+
+test("VN.22", () => {
+  assert.equal(run("‸one\n\ntwo\n\nthree\n", ["}"]).show, "one\n\n‸two\n\nthree\n");
+  assert.equal(run("‸one\n\ntwo\n\nthree\n", ["2", "}"]).show, "one\n\ntwo\n\n‸three\n");
+  assert.equal(run("one\n\ntwo\n\nthr‸ee\n", ["{"]).show, "one\n\n‸two\n\nthree\n");
+});
+
+test("VN.23", () => {
+  for (const command of ["H", "M", "L"]) {
+    const idle = run("‸alpha\nbeta\n", [command]);
+    assert.equal(idle.steps[0].match, "full");
+    assert.equal(idle.steps[0].effect, null);
+    assert.equal(idle.show, "‸alpha\nbeta\n");
+    const view = run("‸alpha\nbeta\n", [command], { layout: true });
+    assertView(view, command, 1);
+    assert.equal(view.show, "‸alpha\nbeta\n");
+  }
+});
+
+test("VN.24", () => {
+  let doc = "";
+  const starts = [];
+  for (let i = 0; i < 25; i += 1) {
+    if (i) doc += "\n\n";
+    starts.push(doc.length);
+    doc += `p${i}`;
+  }
+  doc += "\n";
+  const page = run(`${CARET}${doc}`, [{ key: "f", ctrl: true }]);
+  assert.equal(page.cursor, starts[20]);
+  const half = run(`${CARET}${doc}`, [{ key: "d", ctrl: true }]);
+  assert.equal(half.cursor, starts[10]);
+  const down = run(`${CARET}${doc}`, ["PageDown"]);
+  assert.equal(down.cursor, starts[20]);
+  const view = run(`${CARET}${doc}`, [{ key: "b", ctrl: true }], { layout: true });
+  assertView(view, "ctrl-b", 1);
+  assert.equal(view.cursor, 0);
+  const counted = run(`${CARET}${doc}`, ["2", { key: "u", ctrl: true }], { layout: true });
+  assertView(counted, "ctrl-u", 2);
+  const rawDoc = Array.from({ length: 30 }, (_, i) => `L${i}`).join("\n") + "\n";
+  const raw = run(`${CARET}${rawDoc}`, [{ key: "f", ctrl: true }], { raw: true });
+  assert.equal(raw.doc.slice(raw.cursor, raw.cursor + 3), "L20");
+});
+
+test("VN.25", () => {
+  assert.equal(run("al‸pha\n  beta\n", ["Enter"], { raw: true }).show, "alpha\n  ‸beta\n");
+  assert.equal(run("al‸pha\n\n  beta\n", ["Enter"]).show, "alpha\n\n  ‸beta\n");
+  const joined = run("al‸pha\n  beta\n", ["Enter"]);
+  assert.equal(joined.doc, "alpha\n  beta\n");
+  assert.equal(joined.show.includes("beta"), true);
+  assert.equal(joined.cursor < joined.doc.indexOf("beta"), true);
+});
+
+test("VN.26", () => {
+  const line = "  al‸pha\n";
+  for (const [keys, edge, also] of [
+    [["z", "z"], "center", false],
+    [["z", "t"], "top", false],
+    [["z", "b"], "bottom", false],
+    [["z", "."], "center", true],
+    [["z", "-"], "bottom", true],
+    [["z", "Enter"], "top", true],
+  ]) {
+    const out = run(line, keys);
+    assert.equal(last(out).effect.type, "scroll");
+    assert.equal(last(out).effect.edge, edge);
+    assert.equal(last(out).effect.alsoFirstNonBlank, also);
+    assert.equal(out.doc, "  alpha\n");
+    if (also) assert.equal(out.show, "  ‸alpha\n");
+    else assert.equal(out.show, line);
+  }
+});
+
+test("VN.27", () => {
+  assert.equal(run("‸a b c d\n", ["3", "w"]).show, "a b c ‸d\n");
+  assert.equal(run("‸one\ntwo\nthree\n", ["2", "j"], { raw: true }).show, "one\ntwo\n‸three\n");
+  assert.equal(run("‸one\ntwo\nthree\n", ["2", "j"]).show, "‸one\ntwo\nthree\n");
+  assert.equal(run("‸one\n\ntwo\n\nthree\n", ["2", "j"]).show, "one\n\ntwo\n\n‸three\n");
+});
+
+test("VW.1", () => {
+  assert.equal(run("al‸pha\n\nbeta\n", ["j"]).show, "alpha\n\nbe‸ta\n");
+  assert.equal(run("alpha\n\nbe‸ta\n", ["k"]).show, "al‸pha\n\nbeta\n");
+});
+
+test("VW.2", () => {
+  const once = run("al‸pha\n\nbeta\n", ["j"], { raw: true });
+  assert.equal(once.show, "alpha\n‸\nbeta\n");
+  assert.equal(once.vim.column, 2);
+  assert.equal(run(once.show, ["j"], { raw: true, vim: once.vim }).show, "alpha\n\nbe‸ta\n");
+});
+
+test("VW.3", () => {
+  assert.equal(run("‸one\n\n\n", ["j"]).show, "one\n\n‸\n");
+  assert.equal(run("‸one\n\n\n", ["j"], { raw: true }).show, "one\n‸\n\n");
+});
+
+test("VW.4", () => {
+  const once = run("‸one\n\n\n\ntwo\n", ["j"]);
+  assert.equal(once.show, "one\n\n‸\n\ntwo\n");
+  const twice = run(once.show, ["j"], { vim: once.vim });
+  assert.equal(twice.show, "one\n\n\n‸\ntwo\n");
+  assert.equal(run(twice.show, ["j"], { vim: twice.vim }).show, "one\n\n\n\n‸two\n");
+});
+
+test("VW.5", () => {
+  assert.equal(run("al‸pha\n\n   \n\nbeta\n", ["j"]).show, "alpha\n\n‸   \n\nbeta\n");
+});
+
+test("VW.6", () => {
+  assert.equal(run("al‸pha\n\n**bold** text\n", ["j"]).show, "alpha\n\n**‸bold** text\n");
+});
+
+test("VW.7", () => {
+  const raw = run("abcdef‸\nred  \nblue\n", ["j"], { raw: true });
+  assert.equal(raw.show, "abcdef\nred‸  \nblue\n");
+  const joined = run("abcdef‸\nred  \nblue\n", ["j"]);
+  assert.equal(joined.show, "abcdef‸\nred  \nblue\n");
+  const apart = run("abcdef‸\n\nred  \n", ["j"]);
+  assert.equal(apart.show, "abcdef\n\nred‸  \n");
+});
+
+test("VW.8", () => {
+  const joined = "abcdef‸\nSee {c1}this{/c1} now.";
+  assert.equal(run(joined, ["j"]).show, joined);
+  const apart = run("abcdef‸\n\nSee {c1}this{/c1} now.", ["j"]);
+  assert.equal(apart.doc, "abcdef\n\nSee {c1}this{/c1} now.");
+  assert.ok(apart.cursor > apart.doc.indexOf("See"));
+  assert.equal(skipHidden(apart.doc, apart.cursor, "forward"), apart.cursor);
+  assert.equal(skipHidden(apart.doc, apart.cursor, "backward"), apart.cursor);
+  assert.equal(apart.show.includes("{c1}‸") || apart.show.includes("‸{c1}"), true);
+  const right = run("See ‸{c1}this{/c1} now.", ["l"]);
+  assertView(right, "l", 1);
+  assert.equal(right.doc, "See {c1}this{/c1} now.");
+  assert.equal(run("‸See {c1}this{/c1} now.", ["f", "c"]).show, "‸See {c1}this{/c1} now.");
+  assert.equal(run("‸x {c1}a{/c1} y.", ["%"]).show, "x {c1}‸a{/c1} y.");
+  assert.equal(run("‸x {c1}a{/c1} y.", ["%"]).doc, "x {c1}a{/c1} y.");
+});
+
+test("VW.9", () => {
+  const out = run("‸x\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n", ["j"]);
+  assert.equal(out.doc[out.cursor], "|");
+  assert.equal(out.show.startsWith("x\n\n‸| a | b |"), true);
+});
+
+test("VW.10", () => {
+  const out = run("‸x\n\n```mermaid\ngraph TD\nA-->B\n```\n", ["j"]);
+  assert.equal(out.show.startsWith("x\n\n‸```mermaid\n"), true);
+  assert.equal(out.doc[out.cursor], "`");
+});
+
+test("VW.11", () => {
+  const doc = "al‸pha\r\nbeta\r\n";
+  const three = run(doc, ["3", "l"], { raw: true });
+  assertView(three, "l", 3);
+  const one = run(doc, ["l"], { raw: true });
+  assertView(one, "l", 1);
+  assert.equal(one.doc, "alpha\r\nbeta\r\n");
+  assert.equal(skipHidden(one.doc, one.doc.indexOf("\n"), "backward", { gap: false }), one.doc.indexOf("\r"));
+});
+
+test("VW.12", () => {
+  const out = run("al‸pha\n\nbeta\n", ["v", "j"]);
+  assert.equal(out.vim.mode, "visual");
+  assert.equal(out.anchor, 2);
+  assert.equal(out.show, "al«pha\n\nbe‸ta\n");
+  assert.notEqual(out.cursor, out.doc.indexOf("\n\n") + 1);
+  assert.equal(out.doc, "alpha\n\nbeta\n");
+});
+
+test("VX.1", () => {
+  const keys = ["Q", "K", "q", "@", "m", "'", "`", "(", ")", "R", "&", { key: "e", ctrl: true }, { key: "o", ctrl: true }, { key: "q", ctrl: true }, { key: "k", ctrl: true }, { key: "Insert" }];
+  for (const key of keys) {
+    const normal = run("‸alpha\n", [key]);
+    assert.equal(normal.steps[0].match, "none", JSON.stringify(key));
+    assert.equal(normal.steps[0].consumed, true);
+    assert.equal(normal.steps[0].effect, null);
+    assert.equal(normal.show, "‸alpha\n");
+    assert.equal(normal.vim.mode, "normal");
+    const visual = run("«alpha‸ beta\n", [key], { mode: "visual" });
+    assert.equal(visual.steps[0].match, "none");
+    assert.equal(visual.steps[0].consumed, true);
+    assert.equal(visual.vim.mode, "visual");
+    assert.equal(visual.show, "«alpha‸ beta\n");
+  }
+});
+
+test("VX.2", () => {
+  const out = run("‸alpha\n", ["q", "x"]);
+  assert.equal(out.steps[0].match, "none");
+  assert.equal(out.steps[1].effect.type, "forward-delete");
+  assert.equal(out.show, "‸lpha\n");
+});
+
+test("VX.3", () => {
+  for (const pair of ["gv", "gi", "gq", "gw", "zf", "zo", "zc", "za"]) {
+    const out = run("‸alpha\n", [pair[0], pair[1]]);
+    assert.equal(out.steps[0].match, "partial", pair);
+    assert.equal(out.steps[1].match, "none", pair);
+    assert.equal(out.steps[1].consumed, true);
+    assert.equal(out.show, "‸alpha\n");
+    assert.equal(out.vim.input.keyBuffer, "");
+  }
+});
+
+test("VX.4", () => {
+  const out = run("‸alpha\n", ['"', "a"]);
+  assert.equal(out.steps[0].match, "partial");
+  assert.equal(out.steps[1].match, "none");
+  assert.equal(out.steps[1].consumed, true);
+  assert.equal(out.vim.input.keyBuffer, "");
+  assert.equal(out.vim.input.operator, null);
+  assert.equal(out.show, "‸alpha\n");
+});
+
+test("VX.5", () => {
+  const chords = ["a", "c", "v", "x", "y", "z"];
+  for (const id of chords) {
+    for (const mode of ["normal", "visual", "insert"]) {
+      for (const field of ["ctrl", "meta"]) {
+        const out = run("‸alpha\n", [{ key: id, [field]: true }], { mode });
+        assert.equal(out.steps[0].match, "none", `${field}-${id} ${mode}`);
+        assert.equal(out.steps[0].consumed, false);
+        assert.equal(out.steps[0].effect, null);
+        assert.equal(out.doc, "alpha\n");
+      }
+    }
+  }
+});
+
+test("VX.6", () => {
+  const dot = run("‸alpha\n", ["."]);
+  assert.equal(dot.steps[0].match, "none");
+  assert.equal(dot.steps[0].consumed, true);
+  assert.equal(dot.steps[0].effect, null);
+  assert.equal(dot.show, "‸alpha\n");
+  const insert = run("al‸pha\n", [{ key: "r", ctrl: true }], { mode: "insert" });
+  assert.equal(insert.steps[0].match, "none");
+  assert.equal(insert.steps[0].consumed, false);
+  assert.equal(insert.doc, "alpha\n");
+  const object = run("‸alpha\n", ["d", "i", "("]);
+  assert.equal(object.steps.filter((step) => step.effect && step.effect.type === "splice").length, 0);
+  assert.equal(object.doc, "alpha\n");
+  assert.equal(object.vim.input.operator, null);
+  const ex = run("‸alpha\n", [":"]);
+  assert.equal(ex.steps[0].effect.type, "prompt");
+  assert.equal(ex.steps[0].effect.kind, "ex");
+  assert.equal(ex.doc, "alpha\n");
+});
+
+test("insert none", () => {
+  const out = run("‸alpha\n", ["x"], { mode: "insert" });
+  assert.equal(out.steps[0].match, "none");
+  assert.equal(out.steps[0].consumed, false);
+  assert.equal(out.steps[0].effect, null);
+  assert.equal(out.doc, "alpha\n");
+  const arrow = run("al‸pha\n", ["ArrowLeft"], { mode: "insert" });
+  assert.equal(arrow.steps[0].consumed, false);
+  assert.equal(arrow.steps[0].effect, null);
+});
