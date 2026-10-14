@@ -86,6 +86,15 @@ function last(out) {
   return out.steps[out.steps.length - 1];
 }
 
+function oneSplice(out) {
+  const splices = out.steps.filter((step) => step.effect && step.effect.type === "splice");
+  assert.equal(splices.length, 1);
+  assert.equal(splices[0].match, "full");
+  assert.equal(splices[0].consumed, true);
+  assert.equal(Object.hasOwn(splices[0].effect, "group"), false);
+  return splices[0].effect;
+}
+
 function assertView(out, command, repeat) {
   const effect = last(out).effect;
   assert.equal(last(out).match, "full");
@@ -748,6 +757,107 @@ test("VX.6", () => {
   assert.equal(ex.steps[0].effect.type, "prompt");
   assert.equal(ex.steps[0].effect.kind, "ex");
   assert.equal(ex.doc, "alpha\n");
+});
+
+test("VO.2", () => {
+  const end = run("alpha ‸beta\n", ["d", "w"]);
+  assert.equal(end.show, "alpha ‸\n");
+  assert.equal(end.vim.mode, "normal");
+  assert.equal(oneSplice(end).text, "");
+  assert.equal(run("al‸pha beta\n", ["d", "w"]).show, "al‸beta\n");
+  assert.equal(run("alpha ‸beta\n\ngamma\n", ["d", "w"]).show, "alpha ‸\n\ngamma\n");
+});
+
+test("VO.3", () => {
+  const word = run("al‸pha beta\n", ["c", "w"]);
+  assert.equal(word.show, "al‸ beta\n");
+  assert.equal(word.vim.mode, "insert");
+  assert.equal(oneSplice(word).text, "");
+  const spaces = run("alpha‸   beta\n", ["c", "w"]);
+  assert.equal(spaces.show, "alpha‸beta\n");
+  assert.equal(spaces.vim.mode, "insert");
+});
+
+test("VO.4", () => {
+  const joined = run("al‸pha\nbeta\n", ["d", "w"]);
+  assert.equal(joined.show, "al‸beta\n");
+  assert.equal(oneSplice(joined).text, "");
+  const apart = run("al‸pha\n\nbeta\n", ["d", "w"]);
+  assert.equal(apart.show, "al‸\n\nbeta\n");
+  assert.equal(oneSplice(apart).text, "");
+  const raw = run("al‸pha\nbeta\n", ["d", "w"], { raw: true });
+  assert.equal(raw.show, "al‸\nbeta\n");
+  assert.equal(oneSplice(raw).text, "");
+  const joinedChange = run("al‸pha\nbeta\n", ["c", "w"]);
+  assert.equal(joinedChange.show, "al‸beta\n");
+  assert.equal(joinedChange.vim.mode, "insert");
+  const apartChange = run("al‸pha\n\nbeta\n", ["c", "w"]);
+  assert.equal(apartChange.show, "al‸\n\nbeta\n");
+  assert.equal(apartChange.vim.mode, "insert");
+  const rawChange = run("al‸pha\nbeta\n", ["c", "w"], { raw: true });
+  assert.equal(rawChange.show, "al‸\nbeta\n");
+  assert.equal(rawChange.vim.mode, "insert");
+  const held = run("alpha‸\n\nbeta\n", ["d", "w"]);
+  assert.equal(held.steps.filter((step) => step.effect && step.effect.type === "splice").length, 0);
+  assert.equal(held.show, "alpha‸\n\nbeta\n");
+  assert.equal(held.vim.mode, "normal");
+  const rawHeld = run("alpha‸\nbeta\n", ["d", "w"], { raw: true });
+  assert.equal(rawHeld.steps.filter((step) => step.effect && step.effect.type === "splice").length, 0);
+  assert.equal(rawHeld.show, "alpha‸\nbeta\n");
+});
+
+test("VO.5", () => {
+  assert.equal(run("‸alpha beta\n", ["d", "e"]).show, "‸ beta\n");
+  assert.equal(run("‸alpha beta\n", ["d", "f", "b"]).show, "‸eta\n");
+  assert.equal(run("‸(a [b] c) d\n", ["d", "%"]).show, "‸ d\n");
+  const miss = run("‸alpha beta\n", ["d", "f", "q"]);
+  assert.equal(miss.steps.filter((step) => step.effect && step.effect.type === "splice").length, 0);
+  assert.equal(miss.show, "‸alpha beta\n");
+  const bare = run("‸alpha beta\n", ["d", "%"]);
+  assert.equal(bare.steps.filter((step) => step.effect && step.effect.type === "splice").length, 0);
+  assert.equal(bare.show, "‸alpha beta\n");
+});
+
+test("VO.6", () => {
+  assert.equal(run("‸alpha beta\n", ["d", "t", "b"]).show, "‸ beta\n");
+  assert.equal(run("alpha be‸ta\n", ["d", "T", "a"]).show, "alpha ‸ta\n");
+});
+
+test("VO.7", () => {
+  assert.equal(run("alpha be‸ta\n", ["d", "b"]).show, "alpha ‸ta\n");
+  assert.equal(run("alpha be‸ta\n", ["d", "g", "e"]).show, "alph‸ta\n");
+  assert.equal(run("alpha be‸ta\n", ["d", "F", "a"]).show, "alph‸ta\n");
+});
+
+test("VO.8", () => {
+  const cut = run("al‸pha beta\n", ["d", "$"]);
+  assert.equal(cut.show, "al‸\n");
+  assert.equal(cut.vim.mode, "normal");
+  assert.equal(oneSplice(cut).text, "");
+  const big = run("al‸pha beta\n", ["D"]);
+  assert.equal(big.show, "al‸\n");
+  assert.equal(big.vim.mode, "normal");
+  assert.equal(oneSplice(big).text, "");
+  const change = run("al‸pha beta\n", ["C"]);
+  assert.equal(change.show, "al‸\n");
+  assert.equal(change.vim.mode, "insert");
+  assert.equal(oneSplice(change).text, "");
+  const motion = run("al‸pha beta\n", ["c", "$"]);
+  assert.equal(motion.show, "al‸\n");
+  assert.equal(motion.vim.mode, "insert");
+});
+
+test("VO.19c", () => {
+  const out = run("«See {c1}th‸is{/c1} now.", ["d"], { mode: "visual" });
+  assert.equal(out.show, "‸{c1}is{/c1} now.");
+  assert.equal(out.vim.mode, "normal");
+  const effect = oneSplice(out);
+  assert.equal(effect.from, 0);
+  assert.equal(effect.to, 10);
+  assert.equal(effect.text, "{c1}");
+  assert.equal(effect.caret, 0);
+  assert.equal(effect.yank.text, "See {c1}th");
+  assert.equal(effect.yank.linewise, false);
 });
 
 test("insert none", () => {

@@ -3251,7 +3251,7 @@ function markerAt(doc, index) {
 // The caret stays outside the comment: before an opener, after a closer.
 // A selection that covers both markers keeps both, so the comment stays whole
 // and only its text leaves. Empty cleanup must not then drop that span.
-function markerSplice(doc, from, to) {
+export function markerSplice(doc, from, to) {
   const wholes = [];
   let partial = false;
   for (const span of findSpans(doc)) {

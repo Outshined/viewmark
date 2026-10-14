@@ -1,5 +1,5 @@
 // Pure key match. The page applies the effect. This module does not touch the editor.
-import { endBeforeTail, lineCaret, lockSpans, plan, skipHidden, sourceLine, wordStop } from "./doc.js";
+import { endBeforeTail, lineCaret, lockSpans, markerSplice, plan, skipHidden, sourceLine, wordStop } from "./doc.js";
 
 const REPEAT_CAP = 10000;
 const PAGE = 20;
@@ -571,7 +571,7 @@ function runMotion(id, spec) {
     const forward = id === ";" ? find.forward : !find.forward;
     const at = findChar(doc, cursor, find.ch, forward, find.till, count, true);
     if (at == null) return { kind: "stay" };
-    return { kind: "caret", cursor: at, column: null, linewise: false, inclusive: !find.till, past: false, word: false, find };
+    return { kind: "caret", cursor: at, column: null, linewise: false, inclusive: !find.till, past: false, word: false, find, till: find.till === true };
   }
   if (id === "f" || id === "F" || id === "t" || id === "T") {
     const forward = id === "f" || id === "t";
@@ -579,7 +579,7 @@ function runMotion(id, spec) {
     const at = findChar(doc, cursor, spec.ch, forward, till, count, false);
     const found = { ch: spec.ch, forward, till };
     if (at == null) return { kind: "stay", find: found };
-    return { kind: "caret", cursor: at, column: null, linewise: false, inclusive: !till, past: false, word: false, find: found };
+    return { kind: "caret", cursor: at, column: null, linewise: false, inclusive: !till, past: false, word: false, find: found, till };
   }
   return { kind: "stay", anchor };
 }
@@ -602,26 +602,49 @@ function countedLines(doc, origin, count, raw) {
   return { from: lines[index].start, to: endPast(doc, lines[last]) };
 }
 
+// dw and cw stay on the vim line. w itself may leave. A rendered line is one
+// block, so one newline inside it is still this line. The gap is not. Raw is
+// one source line.
+function limitWord(doc, origin, motion, raw) {
+  if (!motion.word || motion.inclusive || motion.linewise || motion.cursor <= origin) return motion;
+  const limit = lineDollar(doc, lineBounds(doc, origin, raw));
+  if (motion.cursor <= limit) return motion;
+  return { ...motion, cursor: limit };
+}
+
+// A forward inclusive motion takes the character the caret lands before.
+// t and T do not. Backward, that character is the low end.
 function charRange(doc, origin, motion) {
-  let from = origin;
-  let to = motion.cursor;
-  if (to < from) {
-    const swap = from;
-    from = to;
-    to = swap;
-  }
-  if (motion.inclusive && !motion.past && motion.cursor > origin && to < doc.length) {
+  const forward = motion.cursor >= origin;
+  let from = forward ? origin : motion.cursor;
+  let to = forward ? motion.cursor : origin;
+  if (forward && motion.inclusive && !motion.past && motion.cursor > origin && to < doc.length) {
     to += unitLen(doc, to);
+  }
+  if (!forward && motion.till) {
+    const next = from + unitLen(doc, from);
+    if (next >= to) return { from: origin, to: origin };
+    from = next;
   }
   return { from, to };
 }
 
+// One marker in the splice stays on the text that remains. Both markers leave
+// with the text they wrap.
+function keptMarker(doc, from, to) {
+  const kept = markerSplice(doc, from, to);
+  if (!kept || kept.whole) return null;
+  return kept;
+}
+
 function applyRange(op, doc, range, motion, vim) {
   let { from, to } = range;
+  // cw drops one trailing run of spaces when the cut is not only whitespace.
+  // A newline stays: inside a rendered line it separates words.
   if (op === "c" && motion && motion.word && motion.cursor > range.from) {
     const chunk = doc.slice(from, to);
     if (/\S/.test(chunk)) {
-      const spaces = /\s+$/.exec(chunk);
+      const spaces = /[ \t]+$/.exec(chunk);
       if (spaces) to -= spaces[0].length;
     }
   }
@@ -643,16 +666,18 @@ function applyRange(op, doc, range, motion, vim) {
       mode: vim.mode,
     };
   }
-  const caret = legal(doc, from, 1, false);
+  const kept = keptMarker(doc, from, to);
+  const text = kept ? kept.text : "";
+  const caret = kept ? kept.caret : legal(doc, from, 1, false);
   if (op === "d") {
     return {
-      effect: { type: "splice", from, to, text: "", caret, yank: { text: removed, linewise } },
+      effect: { type: "splice", from, to, text, caret, yank: { text: removed, linewise } },
       mode: vim.once ? "insert" : "normal",
     };
   }
   if (op === "c") {
     return {
-      effect: { type: "splice", from, to, text: "", caret, yank: { text: removed, linewise } },
+      effect: { type: "splice", from, to, text, caret, yank: { text: removed, linewise } },
       mode: "insert",
     };
   }
@@ -679,11 +704,12 @@ function finishMotion(vim, doc, anchor, cursor, raw, motion, operator) {
   const at = motion.cursor;
   if (operator === "d" || operator === "c" || operator === "y") {
     const origin = cursor;
+    const used = operator === "y" ? motion : limitWord(doc, origin, motion, raw);
     let range;
-    if (motion.linewise) range = linewiseRange(doc, origin, at, raw);
-    else range = charRange(doc, origin, motion);
+    if (used.linewise) range = linewiseRange(doc, origin, used.cursor, raw);
+    else range = charRange(doc, origin, used);
     range.originCaret = origin;
-    const applied = applyRange(operator, doc, range, { ...motion, origin }, vim);
+    const applied = applyRange(operator, doc, range, { ...used, origin }, vim);
     if (!applied) return pack("full", true, next, null);
     next.mode = applied.mode;
     if (applied.register) next.register = applied.register;
@@ -755,8 +781,37 @@ function spliceCase(vim, doc, from, to, mode) {
   });
 }
 
+function deleteVisual(vim, doc, anchor, cursor, raw) {
+  const next = clearInput(vim);
+  next.once = false;
+  next.mode = vim.once ? "insert" : "normal";
+  let from = Math.min(anchor, cursor);
+  let to = Math.max(anchor, cursor);
+  let linewise = false;
+  if (vim.mode === "visual-line") {
+    const range = linewiseRange(doc, from, to, raw);
+    from = range.from;
+    to = range.to;
+    linewise = true;
+  }
+  if (from === to) return pack("full", true, next, null);
+  const removed = doc.slice(from, to);
+  const kept = keptMarker(doc, from, to);
+  return pack("full", true, next, {
+    type: "splice",
+    from,
+    to,
+    text: kept ? kept.text : "",
+    caret: kept ? kept.caret : legal(doc, from, 1, raw),
+    yank: { text: removed, linewise },
+  });
+}
+
 function dispatchResolved(vim, doc, anchor, cursor, raw, layout, id, extra) {
   const operator = vim.input.operator;
+  if (!operator && (vim.mode === "visual" || vim.mode === "visual-line") && id === "d") {
+    return deleteVisual(vim, doc, anchor, cursor, raw);
+  }
   if (operator && doubled(operator, id)) {
     const range = countedLines(doc, cursor, repeatOf(vim), raw);
     if (caseOp(operator)) return spliceCase(vim, doc, range.from, range.to, operator);
@@ -811,7 +866,7 @@ function isActionId(id) {
     || id === "i" || id === "a" || id === "I" || id === "A" || id === "o" || id === "O"
     || id === "ctrl-w" || id === "." || id === "p" || id === "P" || id === "r" || id === "~"
     || id === "J" || id === "s" || id === "S" || id === "/" || id === "?" || id === "n" || id === "N"
-    || id === "*" || id === "#" || id === ":";
+    || id === "*" || id === "#" || id === ":" || id === "D" || id === "C";
 }
 
 function putRegister(vim, doc, cursor, raw, after) {
@@ -837,6 +892,20 @@ function putRegister(vim, doc, cursor, raw, after) {
 }
 
 function runAction(vim, doc, anchor, cursor, raw, layout, id) {
+  if (id === "D" || id === "C") {
+    const motion = runMotion("$", {
+      doc,
+      cursor,
+      anchor,
+      raw,
+      layout,
+      count: 1,
+      column: null,
+      find: null,
+      vim,
+    });
+    return finishMotion(vim, doc, anchor, cursor, raw, motion, id === "C" ? "c" : "d");
+  }
   const next = clearInput(vim);
   if (id === "x" || id === "X") {
     const n = repeatOf(vim);
