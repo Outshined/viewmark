@@ -255,10 +255,12 @@ test("VK.5", () => {
 test("VK.6", () => {
   const out = run(`${CARET}${"a".repeat(12000)}`, ["1", "2", "0", "0", "0", "x"]);
   assert.equal(last(out).match, "full");
-  assert.equal(last(out).effect.type, "view-edit");
-  assert.equal(last(out).effect.command, "x");
-  assert.equal(last(out).effect.repeat, 10000);
-  assert.equal(out.doc, "a".repeat(12000));
+  const effect = oneSplice(out);
+  assert.equal(effect.from, 0);
+  assert.equal(effect.to, 10000);
+  assert.equal(effect.text, "");
+  assert.equal(effect.caret, 0);
+  assert.equal(out.show, `${CARET}${"a".repeat(2000)}`);
 });
 
 test("VK.7", () => {
@@ -845,6 +847,86 @@ test("VO.8", () => {
   const motion = run("al‸pha beta\n", ["c", "$"]);
   assert.equal(motion.show, "al‸\n");
   assert.equal(motion.vim.mode, "insert");
+});
+
+test("VO.9", () => {
+  const out = run("al‸pha\n\nbeta\n\ngamma\n", ["d", "j"]);
+  assert.equal(out.show, "‸gamma\n");
+  assert.equal(out.vim.mode, "normal");
+  assert.equal(oneSplice(out).text, "");
+});
+
+test("VO.14", () => {
+  const three = run("al‸pha\n", ["3", "x"]);
+  assert.equal(three.show, "al‸\n");
+  assert.equal(three.vim.mode, "normal");
+  assert.equal(oneSplice(three).text, "");
+  const five = run("al‸pha\n", ["5", "x"]);
+  assert.equal(five.show, "al‸\n");
+  assert.equal(oneSplice(five).text, "");
+  const end = run("alpha‸\n", ["3", "x"]);
+  assert.equal(end.show, "alpha‸\n");
+  assert.equal(last(end).match, "full");
+  assert.equal(last(end).effect, null);
+});
+
+test("VO.15", () => {
+  const three = run("alp‸ha\n", ["3", "X"]);
+  assert.equal(three.show, "‸ha\n");
+  assert.equal(oneSplice(three).text, "");
+  const short = run("al‸pha\n", ["3", "X"]);
+  assert.equal(short.show, "‸pha\n");
+  assert.equal(oneSplice(short).text, "");
+});
+
+test("VO.16", () => {
+  const one = run("al‸pha\n", ["s"]);
+  assert.equal(one.show, "al‸ha\n");
+  assert.equal(one.vim.mode, "insert");
+  assert.equal(oneSplice(one).text, "");
+  const three = run("al‸pha\n", ["3", "s"]);
+  assert.equal(three.show, "al‸\n");
+  assert.equal(three.vim.mode, "insert");
+  assert.equal(oneSplice(three).text, "");
+});
+
+test("VO.17", () => {
+  const mid = run("one\n\nt‸wo\n\nthree\n", ["c", "c"]);
+  assert.equal(mid.show, "one\n\n‸\n\nthree\n");
+  assert.equal(mid.vim.mode, "insert");
+  assert.equal(oneSplice(mid).text, "\n");
+  const para = run("al‸pha\nbeta\n", ["c", "c"]);
+  assert.equal(para.show, "‸\n");
+  assert.equal(para.vim.mode, "insert");
+  assert.equal(oneSplice(para).text, "\n");
+  const raw = run("alpha\nbe‸ta\ngamma\n", ["c", "c"], { raw: true });
+  assert.equal(raw.show, "alpha\n‸\ngamma\n");
+  assert.equal(raw.vim.mode, "insert");
+  assert.equal(oneSplice(raw).text, "\n");
+  const midS = run("one\n\nt‸wo\n\nthree\n", ["S"]);
+  assert.equal(midS.show, mid.show);
+  assert.equal(midS.vim.mode, "insert");
+  assert.equal(oneSplice(midS).text, "\n");
+  const paraS = run("al‸pha\nbeta\n", ["S"]);
+  assert.equal(paraS.show, "‸\n");
+  assert.equal(paraS.vim.mode, "insert");
+  const rawS = run("alpha\nbe‸ta\ngamma\n", ["S"], { raw: true });
+  assert.equal(rawS.show, "alpha\n‸\ngamma\n");
+  assert.equal(rawS.vim.mode, "insert");
+  assert.equal(oneSplice(rawS).text, "\n");
+});
+
+test("VO.18", () => {
+  const out = run("‸ab\n", ["x", "d", "h", "P"]);
+  assert.equal(out.show, "‸ab\n");
+  assert.equal(out.steps[0].effect.type, "forward-delete");
+  assert.equal(out.steps[0].vim.register.text, "a");
+  assert.equal(out.steps[0].vim.register.linewise, false);
+  const dh = out.steps[2];
+  assert.notEqual(dh.effect && dh.effect.type, "splice");
+  assert.equal(dh.vim.register.text, "a");
+  assert.equal(dh.vim.register.linewise, false);
+  oneSplice(out);
 });
 
 test("VO.19c", () => {

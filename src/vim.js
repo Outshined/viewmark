@@ -1,5 +1,5 @@
 // Pure key match. The page applies the effect. This module does not touch the editor.
-import { endBeforeTail, lineCaret, lockSpans, markerSplice, plan, skipHidden, sourceLine, wordStop } from "./doc.js";
+import { createState, deleteForward, endBeforeTail, lineCaret, lockSpans, markerSplice, plan, skipHidden, sourceLine, wordStop } from "./doc.js";
 
 const REPEAT_CAP = 10000;
 const PAGE = 20;
@@ -676,12 +676,40 @@ function applyRange(op, doc, range, motion, vim) {
     };
   }
   if (op === "c") {
+    let changeText = text;
+    let changeCaret = caret;
+    // cc and S leave one empty line. The caret rests on it.
+    if (linewise && !kept) {
+      changeText = removed.includes("\r\n") ? "\r\n" : "\n";
+      changeCaret = from;
+    }
     return {
-      effect: { type: "splice", from, to, text, caret, yank: { text: removed, linewise } },
+      effect: { type: "splice", from, to, text: changeText, caret: changeCaret, yank: { text: removed, linewise } },
       mode: "insert",
     };
   }
   return null;
+}
+
+// endPast stops on the paragraph's own newline. The blank under it is not a
+// vim line, so a rendered linewise delete has to take that gap too.
+function throughGap(doc, to) {
+  if (to < 0 || to >= doc.length || doc[to] !== "\n") return to;
+  const blocks = plan(doc, to).blocks;
+  let end = to;
+  while (end < doc.length && doc[end] === "\n") {
+    let gap = false;
+    for (let i = 0; i < blocks.length; i += 1) {
+      const block = blocks[i];
+      if (block && block.start === end && block.classes && block.classes.includes("md-paragraph-gap")) {
+        gap = true;
+        break;
+      }
+    }
+    if (!gap) break;
+    end += 1;
+  }
+  return end;
 }
 
 function finishMotion(vim, doc, anchor, cursor, raw, motion, operator) {
@@ -708,6 +736,7 @@ function finishMotion(vim, doc, anchor, cursor, raw, motion, operator) {
     let range;
     if (used.linewise) range = linewiseRange(doc, origin, used.cursor, raw);
     else range = charRange(doc, origin, used);
+    if (operator === "d" && used.linewise && !raw) range.to = throughGap(doc, range.to);
     range.originCaret = origin;
     const applied = applyRange(operator, doc, range, { ...used, origin }, vim);
     if (!applied) return pack("full", true, next, null);
@@ -812,21 +841,7 @@ function dispatchResolved(vim, doc, anchor, cursor, raw, layout, id, extra) {
   if (!operator && (vim.mode === "visual" || vim.mode === "visual-line") && id === "d") {
     return deleteVisual(vim, doc, anchor, cursor, raw);
   }
-  if (operator && doubled(operator, id)) {
-    const range = countedLines(doc, cursor, repeatOf(vim), raw);
-    if (caseOp(operator)) return spliceCase(vim, doc, range.from, range.to, operator);
-    const motion = { cursor: range.to, linewise: true, inclusive: false, past: false, word: false, origin: cursor };
-    const applied = applyRange(operator, doc, { ...range, originCaret: cursor }, motion, vim);
-    const next = clearInput(vim);
-    if (!applied) return pack("full", true, next, null);
-    next.mode = applied.mode;
-    if (vim.once) {
-      next.once = false;
-      next.mode = operator === "c" ? "insert" : "insert";
-    }
-    if (applied.register) next.register = applied.register;
-    return pack("full", true, next, applied.effect);
-  }
+  if (operator && doubled(operator, id)) return repeatedLine(vim, doc, cursor, raw, operator);
   if (operator && operatorOf(id) && !doubled(operator, id)) return pack("none", true, clearInput(vim), null);
   if (!operator && operatorOf(id)) {
     const next = commitDigits(vim);
@@ -859,6 +874,66 @@ function dispatchResolved(vim, doc, anchor, cursor, raw, layout, id, extra) {
   }
   if (operator && isActionId(id)) return pack("none", true, clearInput(vim), null);
   return runAction(vim, doc, anchor, cursor, raw, layout, id);
+}
+
+function repeatedLine(vim, doc, cursor, raw, operator) {
+  const range = countedLines(doc, cursor, repeatOf(vim), raw);
+  if (caseOp(operator)) return spliceCase(vim, doc, range.from, range.to, operator);
+  const motion = { cursor: range.to, linewise: true, inclusive: false, past: false, word: false, origin: cursor };
+  const applied = applyRange(operator, doc, { ...range, originCaret: cursor }, motion, vim);
+  const next = clearInput(vim);
+  if (!applied) return pack("full", true, next, null);
+  next.mode = applied.mode;
+  if (vim.once) {
+    next.once = false;
+    next.mode = "insert";
+  }
+  if (applied.register) next.register = applied.register;
+  return pack("full", true, next, applied.effect);
+}
+
+function stepBack(doc, index) {
+  if (index <= 1) return Math.max(0, index - 1);
+  const lead = doc.charCodeAt(index - 2);
+  const low = doc.charCodeAt(index - 1);
+  if (lead >= 0xD800 && lead <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF) return index - 2;
+  return index - 1;
+}
+
+// Counted x, X, and s stay on the source line and stop before its newline.
+function sourceSpan(doc, cursor, count, backward) {
+  const line = sourceLine(doc, cursor);
+  const steps = count < 1 ? 1 : count;
+  if (backward) {
+    let from = cursor;
+    for (let n = 0; n < steps && from > line.start; n += 1) {
+      const prev = stepBack(doc, from);
+      if (prev < line.start) break;
+      from = prev;
+    }
+    return { from, to: cursor };
+  }
+  let to = cursor;
+  for (let n = 0; n < steps && to < line.end; n += 1) to += unitLen(doc, to);
+  return { from: cursor, to };
+}
+
+function forwardCut(doc, cursor) {
+  const after = deleteForward(createState(doc, cursor, cursor));
+  if (after.doc === doc) return "";
+  const at = Math.min(after.cursor, after.doc.length);
+  const lost = doc.length - after.doc.length;
+  if (lost > 0 && doc.slice(0, at) + doc.slice(at + lost) === after.doc) return doc.slice(at, at + lost);
+  let head = 0;
+  const limit = Math.min(doc.length, after.doc.length);
+  while (head < limit && doc[head] === after.doc[head]) head += 1;
+  let tail = 0;
+  while (
+    tail < doc.length - head &&
+    tail < after.doc.length - head &&
+    doc[doc.length - 1 - tail] === after.doc[after.doc.length - 1 - tail]
+  ) tail += 1;
+  return doc.slice(head, doc.length - tail);
 }
 
 function isActionId(id) {
@@ -931,9 +1006,44 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
       });
     }
     if (n <= 1) {
+      if (id === "x") {
+        const text = forwardCut(doc, cursor);
+        if (text) next.register = { text, linewise: false };
+      }
       return pack("full", true, leavingOnce(next, vim), { type: id === "x" ? "forward-delete" : "backspace" });
     }
-    return pack("full", true, leavingOnce(next, vim), { type: "view-edit", command: id, repeat: n });
+    const span = sourceSpan(doc, cursor, n, id === "X");
+    if (span.from === span.to) return pack("full", true, leavingOnce(next, vim), null);
+    const removed = doc.slice(span.from, span.to);
+    next.register = { text: removed, linewise: false };
+    return pack("full", true, leavingOnce(next, vim), {
+      type: "splice",
+      from: span.from,
+      to: span.to,
+      text: "",
+      caret: span.from,
+      yank: { text: removed, linewise: false },
+    });
+  }
+  if (id === "s") {
+    if (vim.mode === "visual" || vim.mode === "visual-line") return pack("none", true, clearInput(vim), null);
+    const span = sourceSpan(doc, cursor, repeatOf(vim), false);
+    next.mode = "insert";
+    next.once = false;
+    if (span.from === span.to) return pack("full", true, next, null);
+    const removed = doc.slice(span.from, span.to);
+    return pack("full", true, next, {
+      type: "splice",
+      from: span.from,
+      to: span.to,
+      text: "",
+      caret: span.from,
+      yank: { text: removed, linewise: false },
+    });
+  }
+  if (id === "S") {
+    if (vim.mode === "visual" || vim.mode === "visual-line") return pack("none", true, clearInput(vim), null);
+    return repeatedLine(vim, doc, cursor, raw, "c");
   }
   if (id === "v" || id === "V") {
     const line = id === "V";
