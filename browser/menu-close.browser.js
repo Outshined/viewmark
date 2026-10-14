@@ -53,7 +53,9 @@ test("a press anywhere else closes the ticket filter menu", async (t) => {
     "the editor text": async () => page.eval(`window.__qaClickPoint(2)`),
     "the files pane": async () => centerOf(page, ".file-block .md-pane-head"),
     "a file name": async () => page.eval(`(() => { const b = [...document.querySelectorAll(".file-block button.md-file")].find((x) => x.textContent.includes("other")); const r = b.getBoundingClientRect(); return { x: r.left + 10, y: r.top + r.height / 2 }; })()`),
-    "the comments column": async () => page.eval(`(() => { const a = document.querySelector("aside.comments") || document.querySelector(".comments"); const r = a.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.bottom - 20 }; })()`),
+    // With no comments the column has no height, so the press goes halfway down the window, in
+    // the column's band. A press outside the window is refused by Firefox.
+    "the comments column": async () => page.eval(`(() => { const a = document.querySelector("aside.comments") || document.querySelector(".comments"); const r = a.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.height > 40 ? r.bottom - 20 : innerHeight / 2 }; })()`),
   };
   for (const [name, where] of Object.entries(places)) {
     await page.open("note.md");
