@@ -21,7 +21,7 @@ import {
   selectedSlice,
   cut,
   findSpans,
-  moveCommentMarker,
+  commentDragPreview,
   commentThreads,
   parseCommentNotes,
   splitCommentNote,
@@ -2962,7 +2962,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onSelectionChange() {
-    if (closed || placingCaret || composing || gestureHold) return;
+    if (closed || placingCaret || composing || gestureHold || handleDrag) return;
     // Chrome reports the selectionchange from placeCaret after placingCaret is
     // already false. That echo still names state, so it must not drop the column.
     const keptX = goalX;
@@ -3985,6 +3985,169 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     setStyle(handleDrag.handle, "top", `${event.clientY}px`);
   }
 
+  // The drawn comment is the one a release at this offset would store. The bytes
+  // stay until mouseup, so a refused release can put the stored range back.
+  function commentCoveringRange(spans, start, end) {
+    let best = null;
+    let bestSize = Infinity;
+    let bestAt = Infinity;
+    for (const span of spans) {
+      if (!(start >= span.interiorStart && end <= span.interiorEnd)) continue;
+      if (!(span.interiorStart < span.interiorEnd)) continue;
+      const size = span.interiorEnd - span.interiorStart;
+      if (size < bestSize || (size === bestSize && span.interiorStart < bestAt)) {
+        best = span;
+        bestSize = size;
+        bestAt = span.interiorStart;
+      }
+    }
+    return best ? best.id : null;
+  }
+
+  function setRunComment(el, id) {
+    if (!el || !el.classList) return;
+    el.classList.remove("md-comment-current");
+    el.classList.remove("md-comment-editing");
+    if (id) {
+      el.classList.add("md-comment");
+      if (el.dataset) el.dataset.comment = id;
+      return;
+    }
+    el.classList.remove("md-comment");
+    if (el.dataset && el.dataset.comment) delete el.dataset.comment;
+  }
+
+  function dragLeaves() {
+    const out = [];
+    const skip = (node) => hasClass(node, "md-comment-handle")
+      || hasClass(node, "md-comment-marker")
+      || hasClass(node, "md-view-toggle")
+      || hasClass(node, "md-doc-menu")
+      || hasClass(node, "md-doc-menu-panel")
+      || hasClass(node, "md-lock");
+    const walk = (node) => {
+      if (!node || node.nodeType !== 1 || skip(node)) return;
+      if (hasClass(node, "md-atom")) {
+        out.push(node);
+        return;
+      }
+      const children = childArray(node);
+      const start = node.dataset && node.dataset.start != null && node.dataset.start !== "" ? Number(node.dataset.start) : NaN;
+      const end = node.dataset && node.dataset.end != null && node.dataset.end !== "" ? Number(node.dataset.end) : NaN;
+      if (Number.isFinite(start) && end > start && children.length === 1 && children[0].nodeType === 3) {
+        const text = String(children[0].textContent || "");
+        if (text.length === end - start) {
+          out.push(node);
+          return;
+        }
+      }
+      for (const child of children) walk(child);
+    };
+    for (const child of childArray(root)) walk(child);
+    return out;
+  }
+
+  function retintLeaf(el, spans, mapOffset) {
+    if (hasClass(el, "md-atom")) {
+      const start = Number(el.dataset.start);
+      const end = Number(el.dataset.end);
+      if (!(end > start)) return;
+      const from = mapOffset(start);
+      const to = mapOffset(end);
+      if (to - from !== end - start) return;
+      setRunComment(el, commentCoveringRange(spans, from, to));
+      return;
+    }
+    const start = Number(el.dataset.start);
+    const end = Number(el.dataset.end);
+    if (!(end > start)) return;
+    const parts = [];
+    let at = start;
+    while (at < end) {
+      const id = commentCoveringRange(spans, mapOffset(at), mapOffset(at) + 1);
+      let next = at + 1;
+      while (next < end && commentCoveringRange(spans, mapOffset(next), mapOffset(next) + 1) === id) next += 1;
+      parts.push({ at, next, id });
+      at = next;
+    }
+    if (parts.length === 1) {
+      setRunComment(el, parts[0].id);
+      return;
+    }
+    let node = el;
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i];
+      if (i === parts.length - 1) {
+        setRunComment(node, part.id);
+        break;
+      }
+      const head = splitMarkerRun(node, part.next - part.at);
+      placeNodeBefore(node.parentElement, head, node);
+      setRunComment(head, part.id);
+    }
+  }
+
+  function paintCommentDrag(drag, shift) {
+    if (!drag) return;
+    const doc = shift ? shift.preview : state.doc;
+    const mapOffset = shift ? (offset) => shift.storedToPreview(offset) : (offset) => offset;
+    const spans = findSpans(doc);
+    // The marker stays where it was drawn. It has no width, and moving that
+    // element shifts the caret hit onto the previous character.
+    for (const leaf of dragLeaves()) retintLeaf(leaf, spans, mapOffset);
+    markEditingHighlights();
+    markCurrentHighlights();
+  }
+
+  function refreshDragHighlight(event) {
+    if (!handleDrag) return;
+    if (!handleDragMoved(handleDrag, event)) {
+      if (handleDrag.paintKey) {
+        handleDrag.paintKey = "";
+        paintCommentDrag(handleDrag, null);
+      }
+      return;
+    }
+    const glyph = offsetAtDragGlyph(event);
+    const dest = glyph != null ? glyph : pointOffset(event);
+    const shift = dest == null ? null : commentDragPreview(state.doc, handleDrag.id, handleDrag.edge, dest);
+    const key = shift ? `${shift.move.from}\0${shift.move.to}\0${shift.move.text}` : "";
+    handleDrag.paintX = event.clientX;
+    handleDrag.paintY = event.clientY;
+    handleDrag.paintShift = shift;
+    if (key === handleDrag.paintKey) return;
+    handleDrag.paintKey = key;
+    paintCommentDrag(handleDrag, shift);
+  }
+
+  // Splitting a run for the preview moves the caret hit onto the previous
+  // character. The boxes are the glyphs from when the drag began.
+  function offsetAtDragGlyph(event) {
+    const slots = handleDrag && handleDrag.slots;
+    if (!slots || !event || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return null;
+    let best = null;
+    let bestDy = Infinity;
+    for (const slot of slots) {
+      if (!slot || slot.bare) continue;
+      if (event.clientX < slot.left || event.clientX >= slot.right) continue;
+      const dy = Math.abs(event.clientY - slot.mid);
+      if (dy >= bestDy) continue;
+      best = slot;
+      bestDy = dy;
+    }
+    if (!best || bestDy > 12) return null;
+    return best.offset;
+  }
+
+  // The preview split can put the release on the previous character. The edit is
+  // the range already drawn at this pointer.
+  function drawnDragShift(drag, event) {
+    if (!drag || !event || !Number.isFinite(drag.paintX) || !Number.isFinite(drag.paintY)) return undefined;
+    if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return undefined;
+    if (Math.abs(event.clientX - drag.paintX) >= 1 || Math.abs(event.clientY - drag.paintY) >= 1) return undefined;
+    return drag.paintShift || null;
+  }
+
   function handleDragMoved(drag, event) {
     if (!drag || !event || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return true;
     if (!Number.isFinite(drag.x) || !Number.isFinite(drag.y)) return true;
@@ -4002,6 +4165,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // preventDefault on the press stops the click, so a press that stays put
     // places the caret here. The handle covers the boundary the click aimed at.
     if (!handleDragMoved(drag, event)) {
+      if (drag && drag.paintKey) paintCommentDrag(drag, null);
       if (typeof root.focus === "function") root.focus();
       didDrag = true;
       gestureArmed = false;
@@ -4019,12 +4183,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     didDrag = true;
-    const move = drag && dest != null ? moveCommentMarker(state.doc, drag.id, drag.edge, dest) : null;
-    if (!move) {
+    const drawn = drawnDragShift(drag, event);
+    const shift = drawn !== undefined ? drawn : (drag && dest != null ? commentDragPreview(state.doc, drag.id, drag.edge, dest) : null);
+    if (drag && drawn === undefined) paintCommentDrag(drag, shift);
+    if (!shift) {
       if (hoverCommentId) showCommentHandles(hoverCommentId);
       return;
     }
-    emitEdit({ op: "insert", text: move.text, anchor: move.from, cursor: move.to });
+    emitEdit({ op: "insert", text: shift.move.text, anchor: shift.move.from, cursor: shift.move.to });
   }
 
   function pressedCommentMarker(event) {
@@ -4066,7 +4232,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     cancelGestureRender();
     gestureArmed = false;
     gestureOffset = null;
-    handleDrag = { id, edge, handle, x: event.clientX, y: event.clientY };
+    const slots = rawLayoutSlots();
+    handleDrag = { id, edge, handle, x: event.clientX, y: event.clientY, paintKey: "", slots: slots.length ? slots : null };
     handle.classList.add("md-comment-handle-dragging");
     setStyle(handle, "pointer-events", "none");
     return true;
@@ -4076,6 +4243,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (handleDrag) {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       moveDraggedHandle(event);
+      refreshDragHighlight(event);
       return;
     }
     if (pointer) return;
@@ -4099,7 +4267,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function onDocumentMouseMove(event) {
     if (handleDrag) {
+      const node = event && event.target;
+      if (node && root.contains(node)) return;
       moveDraggedHandle(event);
+      refreshDragHighlight(event);
       return;
     }
     if (pointer) return;

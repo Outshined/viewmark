@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
+import { commentDragPreview } from "../src/doc.js";
 import { OTHER, launchBrowser, Page, startHub } from "./harness.js";
 
 // A comment highlight grows a handle at each end. Dragging one handle moves
@@ -293,4 +294,198 @@ test("a handle dragged into a block another session holds is refused with that u
   );
   const named = await A.eval(`[...document.querySelectorAll("#editor .md-lock")].some((label) => label.textContent.includes(${JSON.stringify(OTHER)}))`);
   assert.equal(named, true);
+});
+
+async function place(page, offset) {
+  assert.ok(await page.clickOffset(offset), `no point for offset ${offset}`);
+  await page.quiet();
+}
+
+function editCount(page) {
+  return page.frames.filter((frame) => frame.dir === "out" && frame.data && frame.data.type === "edit").length;
+}
+
+function drawnInterior(doc, edge, offset) {
+  const shift = commentDragPreview(doc, "c1", edge, offset);
+  if (!shift) return doc.slice(doc.indexOf("{c1}") + 4, doc.indexOf("{/c1}"));
+  return shift.preview.slice(shift.span.interiorStart, shift.span.interiorEnd);
+}
+
+async function highlightText(page) {
+  return page.eval(`(() => {
+    const nodes = [...document.querySelectorAll("#editor .md-comment")].filter((el) => {
+      if (!el.dataset || el.dataset.comment !== "c1") return false;
+      return ![...el.children].some((child) => child.classList && child.classList.contains("md-comment") && child.dataset && child.dataset.comment === "c1");
+    });
+    return nodes.map((el) => el.textContent).join("");
+  })()`);
+}
+
+async function pointAt(page, offset) {
+  const point = await page.eval(`window.__qaClickPoint(${offset})`);
+  assert.ok(point, `no point at ${offset}`);
+  return point;
+}
+
+async function pressHandle(page, edge) {
+  const from = await page.eval(`(() => {
+    const el = document.querySelector('#editor .md-comment-handle[data-edge="${edge}"]');
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`);
+  assert.ok(from, `no ${edge} handle`);
+  await page.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: from.x, y: from.y });
+  await page.session.send("Input.dispatchMouseEvent", { type: "mousePressed", x: from.x, y: from.y, button: "left", clickCount: 1, buttons: 1 });
+  return from;
+}
+
+async function moveTo(page, point) {
+  await page.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "left", buttons: 1 });
+  await page.frame();
+}
+
+async function releaseAt(page, point) {
+  await page.session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1, buttons: 0 });
+  await page.quiet();
+}
+
+test("arh58dxz: dragging a handle redraws the highlight, and release stores that range", async (t) => {
+  const lead = "Other line.\n\n";
+  const body = "See {c1}this{/c1} now.";
+  const doc = lead + body + CM("c1");
+  const crossed = lead + "See {c1}this{/c1} and {c2}that{/c2}." + CM("c1") + CM("c2").slice(1);
+  const plain = "See this now.\n";
+  const gapDoc = body + CM("c1");
+  const docs = { "plain.md": plain, "gap.md": gapDoc, "cross.md": crossed, "back.md": doc, "empty.md": doc };
+  for (const raw of [false, true]) {
+    for (const edge of ["end", "start"]) docs[`${raw ? "raw" : "rend"}-${edge}.md`] = doc;
+  }
+  const { hub, page } = await setup(t, docs);
+  const inside = doc.indexOf("this") + 1;
+
+  for (const raw of [false, true]) {
+    for (const edge of ["end", "start"]) {
+      const file = `${raw ? "raw" : "rend"}-${edge}.md`;
+      const label = `${raw ? "raw" : "rendered"} ${edge}`;
+      await open(page, file);
+      await place(page, raw ? inside : 3);
+      const isRaw = await page.eval(`(() => {
+        const line = [...document.querySelectorAll("#editor .md-line")].find((el) => el.textContent.includes("now"));
+        return !!(line && line.classList.contains("md-raw"));
+      })()`);
+      assert.equal(isRaw, raw, `${label}: the block is ${isRaw ? "raw" : "rendered"}`);
+      await hover(page, inside);
+      // The period in the other line is not the period this sentence ends on.
+      const dot = doc.indexOf("now") + 3;
+      const offsets = edge === "end" ? [doc.indexOf("now"), dot] : [doc.indexOf("See"), doc.indexOf("See") + 2];
+      const points = [];
+      for (const offset of offsets) points.push(await pointAt(page, offset));
+      const before = editCount(page);
+      await pressHandle(page, edge);
+      const seen = [];
+      for (let i = 0; i < offsets.length; i += 1) {
+        await moveTo(page, points[i]);
+        const text = await highlightText(page);
+        seen.push(text);
+        assert.equal(text, drawnInterior(doc, edge, offsets[i]), `${label}: highlight at ${offsets[i]} is ${JSON.stringify(text)}`);
+        assert.equal(editCount(page), before, `${label}: an edit went out at ${offsets[i]}`);
+        assert.equal((await hub.show(file)).text, doc, `${label}: the bytes changed at ${offsets[i]}`);
+      }
+      assert.notEqual(seen[0], seen[1], `${label}: the two positions drew the same highlight`);
+      const shift = commentDragPreview(doc, "c1", edge, offsets[1]);
+      await releaseAt(page, points[1]);
+      const afterHighlight = await highlightText(page);
+      const afterBytes = (await hub.show(file)).text;
+      assert.equal(editCount(page), before + 1, `${label}: release sent ${editCount(page) - before} edits, highlight ${JSON.stringify(afterHighlight)}, bytes ${JSON.stringify(afterBytes.slice(0, 60))}`);
+      assert.equal((await hub.show(file)).text, shift.preview, `${label}: release stored a different range`);
+      whole((await hub.show(file)).text, label);
+    }
+  }
+
+  await open(page, "back.md");
+  await place(page, 3);
+  await hover(page, inside);
+  const backFrom = await pressHandle(page, "end");
+  const away = await pointAt(page, doc.indexOf("now") + 3);
+  const beforeBack = editCount(page);
+  await moveTo(page, away);
+  assert.equal(await highlightText(page), "this now");
+  assert.equal(editCount(page), beforeBack);
+  await moveTo(page, backFrom);
+  assert.equal(await highlightText(page), "this", "the highlight did not return when the pointer did");
+  await releaseAt(page, backFrom);
+  assert.equal(editCount(page), beforeBack, "a drag released where it started wrote");
+  assert.equal((await hub.show("back.md")).text, doc);
+  assert.equal(await highlightText(page), "this");
+
+  await open(page, "empty.md");
+  await place(page, 3);
+  await hover(page, inside);
+  const startHandle = (await handles(page)).find((handle) => handle.edge === "start");
+  assert.ok(startHandle, "no start handle");
+  const beforeEmpty = editCount(page);
+  await pressHandle(page, "end");
+  await moveTo(page, { x: startHandle.x, y: startHandle.y });
+  assert.equal(await highlightText(page), "this", "an empty drag redrew the highlight");
+  assert.equal(editCount(page), beforeEmpty);
+  await releaseAt(page, { x: startHandle.x, y: startHandle.y });
+  assert.equal(editCount(page), beforeEmpty, "an empty drag wrote");
+  assert.equal((await hub.show("empty.md")).text, doc);
+
+  await open(page, "cross.md");
+  await place(page, 3);
+  await hover(page, crossed.indexOf("this") + 1);
+  const andAt = crossed.indexOf("and");
+  const thatAt = crossed.indexOf("that") + 1;
+  const andPoint = await pointAt(page, andAt);
+  const thatPoint = await pointAt(page, thatAt);
+  const beforeCross = editCount(page);
+  await pressHandle(page, "end");
+  await moveTo(page, andPoint);
+  assert.equal(await highlightText(page), drawnInterior(crossed, "end", andAt), "crossing preview");
+  assert.notEqual(await highlightText(page), "this");
+  assert.equal(editCount(page), beforeCross);
+  await moveTo(page, thatPoint);
+  assert.equal(await highlightText(page), "this", "a cross kept a preview");
+  assert.equal(editCount(page), beforeCross);
+  await releaseAt(page, thatPoint);
+  assert.equal(editCount(page), beforeCross, "a cross wrote");
+  assert.equal((await hub.show("cross.md")).text, crossed);
+
+  await open(page, "plain.md");
+  await place(page, 2);
+  const plainGaps = await page.eval(`(() => {
+    const box = (offset) => window.__qaGlyph(offset);
+    const before = box(3);
+    const first = box(4);
+    const last = box(7);
+    const next = box(8);
+    return { lead: first.left - before.right, tail: next.left - last.right };
+  })()`);
+  await open(page, "gap.md");
+  // A click on the highlight makes that comment current, and the current
+  // border is 2 px. The caret stays in the paragraph, off the highlight.
+  await place(page, gapDoc.indexOf("now"));
+  const gaps = await page.eval(`(() => {
+    const box = (offset) => window.__qaGlyph(offset);
+    const before = box(${gapDoc.indexOf("See") + 3});
+    const first = box(${gapDoc.indexOf("this")});
+    const last = box(${gapDoc.indexOf("this") + 3});
+    const next = box(${gapDoc.indexOf(" now")});
+    const widths = [...document.querySelectorAll("#editor .md-comment-marker")].map((el) => el.getBoundingClientRect().width);
+    const line = document.querySelector("#editor .md-line");
+    if (!before || !first || !last || !next) return { missing: true, raw: !!(line && line.classList.contains("md-raw")), widths };
+    return {
+      raw: !!(line && line.classList.contains("md-raw")),
+      lead: first.left - before.right,
+      tail: next.left - last.right,
+      widths,
+      missing: false,
+    };
+  })()`);
+  assert.equal(gaps.missing, false, "a glyph in the raw comment was missing");
+  assert.equal(gaps.raw, true, "the gap was not measured on the raw block");
+  assert.ok(Math.abs(gaps.lead - plainGaps.lead) <= 1, `gap before the highlight is ${gaps.lead} (markers ${gaps.widths}), plain is ${plainGaps.lead}`);
+  assert.ok(Math.abs(gaps.tail - plainGaps.tail) <= 1, `gap after the highlight is ${gaps.tail} (markers ${gaps.widths}), plain is ${plainGaps.tail}`);
 });

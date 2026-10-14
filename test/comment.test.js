@@ -12,6 +12,7 @@ import {
   parseCommentNotes,
   reviseCommentNote,
   splitCommentNote,
+  commentDragPreview,
 } from "../src/doc.js";
 
 const GROK_AT = "@2026-10-05T04:14:24.392Z Grok";
@@ -445,4 +446,44 @@ test("a comment range that is only a list marker returns null", () => {
   assert.equal(addComment("> - ", 0, 4), null);
   assert.equal(addComment("+ ", 0, 2), null);
   assert.equal(addComment("* ", 0, 2), null);
+});
+
+function visibleHighlight(doc, shift) {
+  let text = "";
+  const mark = /\{(\/?)[A-Za-z][A-Za-z0-9_-]*\}/y;
+  for (let i = 0; i < doc.length; i += 1) {
+    mark.lastIndex = i;
+    const hit = mark.exec(doc);
+    if (hit && hit.index === i) {
+      i += hit[0].length - 1;
+      continue;
+    }
+    const at = shift.storedToPreview(i);
+    if (at >= shift.span.interiorStart && at < shift.span.interiorEnd) text += doc[i];
+  }
+  return text;
+}
+
+test("a comment drag preview is the release range and maps every byte back", () => {
+  const fence = "\n\n```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Grok\nNote.\n```\n";
+  const prose = "See {c1}this{/c1} now.";
+  const doc = prose + fence;
+  const end = commentDragPreview(doc, "c1", "end", prose.indexOf("."));
+  assert.equal(end.preview, "See {c1}this now{/c1}." + fence);
+  assert.equal(visibleHighlight(doc, end), "this now");
+  const start = commentDragPreview(doc, "c1", "start", 0);
+  assert.equal(start.preview, "{c1}See this{/c1} now." + fence);
+  assert.equal(visibleHighlight(doc, start), "See this");
+  for (const shift of [end, start]) {
+    for (let i = 0; i < doc.length; i += 1) {
+      assert.equal(shift.previewToStored(shift.storedToPreview(i)), i, `byte ${i}`);
+    }
+  }
+  assert.equal(commentDragPreview(doc, "c1", "end", prose.indexOf("t")), null);
+  assert.equal(commentDragPreview(doc, "c1", "end", prose.indexOf("{/")), null);
+  const crossedProse = "See {c1}this{/c1} and {c2}that{/c2}.";
+  const crossed = crossedProse + fence + "```comment c2\n:: 0\n@2026-10-05T16:00:00.000Z Grok\nNote.\n```\n";
+  assert.equal(commentDragPreview(crossed, "c1", "end", crossedProse.indexOf("that") + 1), null);
+  const widened = commentDragPreview(crossed, "c1", "end", crossedProse.indexOf("and"));
+  assert.equal(visibleHighlight(crossed, widened), "this ");
 });

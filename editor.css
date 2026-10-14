@@ -1212,8 +1212,13 @@ a.md-link {
 
 .md-comment-marker {
   display: inline-block;
-  width: 8px;
+  width: 0;
+  min-width: 0;
+  max-width: 0;
   height: 1em;
+  margin: 0;
+  padding: 0;
+  border: 0;
   vertical-align: text-bottom;
   overflow: hidden;
 }

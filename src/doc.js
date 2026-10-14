@@ -1246,6 +1246,46 @@ export function moveCommentMarker(doc, id, edge, offset) {
   return { from, to, text: inserted };
 }
 
+// The range a release at offset would store, plus maps across that same-length
+// splice. Null means the release would write nothing, so the drawn range stays.
+export function commentDragPreview(doc, id, edge, offset) {
+  const text = typeof doc === "string" ? doc : "";
+  const move = moveCommentMarker(text, id, edge, offset);
+  if (!move) return null;
+  const spans = findSpans(text).filter((span) => span.id === id);
+  if (spans.length !== 1) return null;
+  const span = spans[0];
+  const markerStart = edge === "start" ? span.openStart : span.closeStart;
+  const markerEnd = edge === "start" ? span.openEnd : span.closeEnd;
+  const markerLen = markerEnd - markerStart;
+  const forward = move.from === markerStart;
+  const preview = text.slice(0, move.from) + move.text + text.slice(move.to);
+  const nextSpans = findSpans(preview).filter((item) => item.id === id);
+  if (nextSpans.length !== 1) return null;
+  const previewToStored = (offsetInPreview) => {
+    const at = Math.trunc(offsetInPreview);
+    if (at < move.from || at >= move.to) return at;
+    if (forward) {
+      const midLen = move.text.length - markerLen;
+      if (at < move.from + midLen) return markerEnd + (at - move.from);
+      return markerStart + (at - move.from - midLen);
+    }
+    if (at < move.from + markerLen) return markerStart + (at - move.from);
+    return at - markerLen;
+  };
+  const storedToPreview = (offsetInStored) => {
+    const at = Math.trunc(offsetInStored);
+    if (at < move.from || at >= move.to) return at;
+    if (forward) {
+      if (at >= markerStart && at < markerEnd) return move.to - markerLen + (at - markerStart);
+      return move.from + (at - markerEnd);
+    }
+    if (at >= markerStart && at < markerEnd) return move.from + (at - markerStart);
+    return move.from + markerLen + (at - move.from);
+  };
+  return { move, preview, span: nextSpans[0], previewToStored, storedToPreview };
+}
+
 function isDelimiterRow(text) {
   let body = text.trim();
   if (!body.includes("-")) return false;
