@@ -952,3 +952,171 @@ test("insert none", () => {
   assert.equal(arrow.steps[0].consumed, false);
   assert.equal(arrow.steps[0].effect, null);
 });
+
+test("VB.1", () => {
+  const inner = run("alpha b‸eta gamma\n", ["d", "i", "w"]);
+  assert.equal(inner.steps[1].match, "partial");
+  assert.equal(inner.steps[1].vim.input.operator, "d");
+  assert.equal(inner.steps[1].vim.input.keyBuffer, "i");
+  assert.equal(inner.show, "alpha ‸ gamma\n");
+  assert.equal(inner.vim.mode, "normal");
+  assert.equal(inner.vim.input.operator, null);
+  assert.equal(inner.vim.input.keyBuffer, "");
+  assert.equal(oneSplice(inner).text, "");
+  const around = run("alpha b‸eta gamma\n", ["d", "a", "w"]);
+  assert.equal(around.show, "alpha ‸gamma\n");
+  assert.equal(oneSplice(around).text, "");
+});
+
+test("VB.2", () => {
+  const out = run("alpha be‸ta", ["d", "a", "w"]);
+  assert.equal(out.show, "alpha‸");
+  assert.equal(out.doc, "alpha");
+  assert.equal(oneSplice(out).text, "");
+});
+
+test("VB.3", () => {
+  const out = run("alpha ‸ beta\n", ["d", "i", "w"]);
+  assert.equal(out.show, "alpha  ‸\n");
+  assert.equal(out.doc, "alpha  \n");
+  assert.equal(oneSplice(out).text, "");
+});
+
+test("VB.4", () => {
+  const changed = run("alpha b‸eta gamma\n", ["c", "i", "w"]);
+  assert.equal(changed.show, "alpha ‸ gamma\n");
+  assert.equal(changed.vim.mode, "insert");
+  assert.equal(oneSplice(changed).text, "");
+  const yanked = run("alpha b‸eta gamma\n", ["y", "i", "w", "0", "P"]);
+  const yank = yanked.steps[2];
+  assert.equal(yank.match, "full");
+  assert.equal(yank.consumed, true);
+  assert.equal(yank.effect.type, "splice");
+  assert.equal(Object.hasOwn(yank.effect, "group"), false);
+  assert.equal(yank.effect.text, "beta");
+  assert.equal(yank.effect.from, 6);
+  assert.equal(yank.effect.to, 10);
+  assert.equal(yank.vim.register.text, "beta");
+  assert.equal(yank.vim.register.linewise, false);
+  assert.equal(yanked.doc, "betaalpha beta gamma\n");
+  assert.equal(yanked.show, "‸betaalpha beta gamma\n");
+  assert.equal(yanked.vim.mode, "normal");
+});
+
+test("VB.5", () => {
+  const inner = run('say "he‸llo" now\n', ["d", "i", '"']);
+  assert.equal(inner.show, 'say "‸" now\n');
+  assert.equal(oneSplice(inner).text, "");
+  const around = run('say "he‸llo" now\n', ["d", "a", '"']);
+  assert.equal(around.show, "say ‸ now\n");
+  assert.equal(oneSplice(around).text, "");
+  const open = run('say "he‸llo now\n', ["d", "i", '"']);
+  assert.equal(open.show, 'say "he‸llo now\n');
+  assert.equal(open.doc, 'say "hello now\n');
+  assert.equal(last(open).effect, null);
+  assert.equal(open.vim.input.operator, null);
+  assert.equal(open.vim.input.keyBuffer, "");
+  const split = run('say "he‸llo\nnow" ok\n', ["d", "i", '"']);
+  assert.equal(split.show, 'say "he‸llo\nnow" ok\n');
+  assert.equal(split.doc, 'say "hello\nnow" ok\n');
+  assert.equal(last(split).effect, null);
+});
+
+test("VB.6", () => {
+  const tick = "`";
+  const sample = "a " + tick + "co" + CARET + "de" + tick + " b\n";
+  const inner = run(sample, ["d", "i", tick]);
+  assert.equal(inner.show, "a " + tick + CARET + tick + " b\n");
+  assert.equal(inner.doc, "a " + tick + tick + " b\n");
+  assert.equal(oneSplice(inner).text, "");
+  const around = run(sample, ["d", "a", tick]);
+  assert.equal(around.show, "a ‸ b\n");
+  assert.equal(around.doc, "a  b\n");
+  assert.equal(oneSplice(around).text, "");
+  const outside = run(CARET + "a " + tick + "code" + tick + " b\n", ["d", "i", tick]);
+  assert.equal(outside.show, CARET + "a " + tick + "code" + tick + " b\n");
+  assert.equal(outside.doc, "a " + tick + "code" + tick + " b\n");
+  assert.equal(last(outside).effect, null);
+  assert.equal(last(outside).match, "none");
+});
+
+test("VB.7", () => {
+  const doc = "see [te‸xt](https://x.test/p) now\n";
+  const inner = run(doc, ["d", "i", "["]);
+  assert.equal(inner.show, "see [‸](https://x.test/p) now\n");
+  assert.equal(oneSplice(inner).text, "");
+  const around = run(doc, ["d", "a", "["]);
+  assert.equal(around.show, "see ‸(https://x.test/p) now\n");
+  assert.equal(oneSplice(around).text, "");
+  const close = run(doc, ["d", "i", "]"]);
+  assert.equal(close.show, inner.show);
+  assert.equal(close.doc, inner.doc);
+  const bare = run("see [te‸xt] now\n", ["d", "i", "["]);
+  assert.equal(bare.show, "see [te‸xt] now\n");
+  assert.equal(bare.doc, "see [text] now\n");
+  assert.equal(last(bare).effect, null);
+  assert.equal(bare.vim.input.operator, null);
+});
+
+test("VB.8", () => {
+  const inner = run("one\n\nal‸pha\nbeta\n\ntwo\n", ["d", "i", "p"]);
+  assert.equal(inner.show, "one\n\n‸\n\ntwo\n");
+  assert.equal(inner.doc, "one\n\n\n\ntwo\n");
+  assert.equal(oneSplice(inner).text, "");
+  const around = run("one\n\nal‸pha\nbeta\n\ntwo\n", ["d", "a", "p"]);
+  assert.equal(around.show, "one\n\n‸two\n");
+  assert.equal(around.doc, "one\n\ntwo\n");
+  assert.equal(oneSplice(around).text, "");
+});
+
+test("VB.9", () => {
+  const out = run("say ‸hello\n", ["d", "i", '"']);
+  assert.equal(out.show, "say ‸hello\n");
+  assert.equal(out.doc, "say hello\n");
+  assert.equal(last(out).match, "none");
+  assert.equal(last(out).consumed, true);
+  assert.equal(last(out).effect, null);
+  assert.deepEqual(out.vim.input, {
+    prefixRepeat: "",
+    operator: null,
+    motionRepeat: "",
+    motion: null,
+    keyBuffer: "",
+  });
+});
+
+test("VB.10", () => {
+  for (const ch of ["(", "{", "<", "t", "*", "_"]) {
+    const out = run("al‸pha\n", ["d", "i", ch]);
+    assert.equal(out.doc, "alpha\n", ch);
+    assert.equal(out.show, "al‸pha\n", ch);
+    assert.equal(last(out).match, "none", ch);
+    assert.equal(last(out).consumed, true, ch);
+    assert.equal(last(out).effect, null, ch);
+    assert.equal(out.vim.input.operator, null, ch);
+    assert.equal(out.vim.input.keyBuffer, "", ch);
+  }
+});
+
+test("VB.11", () => {
+  const out = run("‸alpha\n", ["i", "w"]);
+  assert.equal(out.steps[0].vim.mode, "insert");
+  assert.equal(out.steps[0].match, "full");
+  assert.equal(out.steps[1].match, "none");
+  assert.equal(out.steps[1].consumed, false);
+  assert.equal(out.steps[1].effect, null);
+  assert.equal(out.doc, "alpha\n");
+  assert.equal(out.show, "‸alpha\n");
+  const append = run("‸alpha\n", ["a", "w"]);
+  assert.equal(append.steps[0].vim.mode, "insert");
+  assert.equal(append.steps[1].match, "none");
+  assert.equal(append.steps[1].consumed, false);
+  assert.equal(append.doc, "alpha\n");
+  const visual = run("alp‸ha\n", ["i", "w"], { mode: "visual" });
+  assert.equal(visual.steps[0].match, "partial");
+  assert.equal(visual.steps[0].vim.mode, "visual");
+  assert.equal(visual.steps[0].vim.input.keyBuffer, "i");
+  assert.equal(visual.vim.mode, "visual");
+  assert.equal(visual.show, "«alpha‸\n");
+  assert.equal(visual.doc, "alpha\n");
+});

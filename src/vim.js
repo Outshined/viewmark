@@ -1,5 +1,5 @@
 // Pure key match. The page applies the effect. This module does not touch the editor.
-import { createState, deleteForward, endBeforeTail, lineCaret, lockSpans, markerSplice, plan, skipHidden, sourceLine, wordStop } from "./doc.js";
+import { codeSpanAt, createState, deleteForward, endBeforeTail, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, sourceLine, wordStop } from "./doc.js";
 
 const REPEAT_CAP = 10000;
 const PAGE = 20;
@@ -848,6 +848,9 @@ function dispatchResolved(vim, doc, anchor, cursor, raw, layout, id, extra) {
     next.input = { ...next.input, operator: operatorOf(id), keyBuffer: "", motion: null };
     return pack("full", true, next, null);
   }
+  if ((id === "i" || id === "a") && (operator || vim.mode === "visual" || vim.mode === "visual-line")) {
+    return startPrefix(vim, id);
+  }
   if (MOTIONS.has(id) || id === "f" || id === "F" || id === "t" || id === "T") {
     const motion = runMotion(id, {
       doc,
@@ -1230,8 +1233,153 @@ function finishZ(vim, doc, anchor, cursor, raw, layout, key) {
   return pack("full", true, leavingOnce(next, vim), effect);
 }
 
-function finishObject(vim) {
-  return pack("none", true, clearInput(vim), null);
+// aw takes the spaces after the word. A word with none, as at the end of a line,
+// takes the spaces before it instead. The range starts at the word, not the caret.
+function wordObject(doc, cursor, around) {
+  const runs = words(doc);
+  let word = null;
+  for (const item of runs) {
+    if (cursor >= item.start && cursor < item.end) {
+      word = item;
+      break;
+    }
+  }
+  if (!word) {
+    for (const item of runs) {
+      if (item.start > cursor) {
+        word = item;
+        break;
+      }
+    }
+  }
+  if (!word) {
+    for (let i = runs.length - 1; i >= 0; i -= 1) {
+      if (runs[i].end <= cursor) {
+        word = runs[i];
+        break;
+      }
+    }
+  }
+  if (!word) return null;
+  const from = word.start;
+  const to = word.end;
+  if (!around) return { from, to };
+  let trail = to;
+  while (trail < doc.length && (doc[trail] === " " || doc[trail] === "\t")) trail += 1;
+  if (trail > to) return { from, to: trail };
+  let lead = from;
+  while (lead > 0 && (doc[lead - 1] === " " || doc[lead - 1] === "\t")) lead -= 1;
+  return { from: lead, to };
+}
+
+// A quote that does not close on this source line is not the object.
+function quoteObject(doc, cursor, quote, around) {
+  const line = sourceLine(doc, cursor);
+  let open = -1;
+  for (let i = line.start; i < line.end; i += 1) {
+    if (doc[i] !== quote) continue;
+    if (open < 0) {
+      open = i;
+      continue;
+    }
+    if (cursor >= open && cursor <= i) {
+      return around ? { from: open, to: i + 1 } : { from: open + 1, to: i };
+    }
+    open = -1;
+  }
+  return null;
+}
+
+function codeObject(doc, cursor, around) {
+  const line = sourceLine(doc, cursor);
+  const span = codeSpanAt(line.text, cursor - line.start);
+  if (!span) return null;
+  const base = line.start;
+  if (around) return { from: base + span.open, to: base + span.close + 1 };
+  return { from: base + span.start, to: base + span.end };
+}
+
+function linkObject(doc, cursor, around) {
+  const line = sourceLine(doc, cursor);
+  const span = linkSpanAt(line.text, cursor - line.start);
+  if (!span) return null;
+  const base = line.start;
+  if (around) return { from: base + span.labelStart - 1, to: base + span.labelEnd + 1 };
+  return { from: base + span.labelStart, to: base + span.labelEnd };
+}
+
+function blankLock(span) {
+  return span.start === span.end;
+}
+
+// ip stops before the block's own newline. ap also takes the blank lines after
+// it, and the blank lines before it when nothing follows.
+function paragraphObject(doc, cursor, around) {
+  const spans = lockSpans(doc);
+  let index = -1;
+  for (let i = 0; i < spans.length; i += 1) {
+    if (cursor >= spans[i].start && cursor <= spans[i].end) {
+      index = i;
+      break;
+    }
+  }
+  if (index < 0) return null;
+  const span = spans[index];
+  if (!around) {
+    if (span.start >= span.end) return null;
+    return { from: span.start, to: span.end };
+  }
+  let next = index + 1;
+  while (next < spans.length && blankLock(spans[next])) next += 1;
+  if (next > index + 1) {
+    const to = next < spans.length ? spans[next].start : doc.length;
+    if (span.start >= to) return null;
+    return { from: span.start, to };
+  }
+  let prev = index;
+  while (prev > 0 && blankLock(spans[prev - 1])) prev -= 1;
+  const from = spans[prev].start;
+  let to = span.end;
+  if (to < doc.length && doc[to] === "\n") to += 1;
+  if (from >= to) return null;
+  return { from, to };
+}
+
+function objectSpan(doc, cursor, ch, around) {
+  if (ch === "w" || ch === "W") return wordObject(doc, cursor, around);
+  if (ch === "`") return codeObject(doc, cursor, around);
+  if (ch === '"' || ch === "'") return quoteObject(doc, cursor, ch, around);
+  if (ch === "[" || ch === "]") return linkObject(doc, cursor, around);
+  if (ch === "p") return paragraphObject(doc, cursor, around);
+  return null;
+}
+
+function finishObject(vim, doc, anchor, cursor, key) {
+  if (isEscape(key)) return doEscape(vim, anchor, cursor);
+  const ch = key.key;
+  if (key.ctrl || key.meta || key.alt || ch.length !== 1) return pack("none", true, clearInput(vim), null);
+  const span = objectSpan(doc, cursor, ch, vim.input.keyBuffer === "a");
+  if (!span || !(span.from < span.to)) return pack("none", true, clearInput(vim), null);
+  const { from, to } = span;
+  const operator = vim.input.operator;
+  if (!operator && (vim.mode === "visual" || vim.mode === "visual-line")) {
+    const next = clearInput(vim);
+    next.mode = "visual";
+    return pack("full", true, next, { type: "caret", anchor: from, cursor: to });
+  }
+  if (operator !== "d" && operator !== "c" && operator !== "y") return pack("none", true, clearInput(vim), null);
+  const motion = { cursor, origin: cursor, linewise: false, inclusive: false, past: false, word: false };
+  const applied = applyRange(operator, doc, { from, to, originCaret: cursor }, motion, vim);
+  const next = clearInput(vim);
+  if (!applied) return pack("none", true, next, null);
+  next.mode = applied.mode;
+  if (applied.register) next.register = applied.register;
+  else next.register = { text: doc.slice(from, to), linewise: false };
+  if (operator === "c" || vim.once) {
+    next.once = false;
+    next.mode = "insert";
+  }
+  return pack("full", true, next, applied.effect);
 }
 
 function doEscape(vim, anchor, cursor) {
@@ -1314,7 +1462,7 @@ export function vimKey(input) {
   if (vim.input.keyBuffer === '"') return finishQuote(vim, anchor, cursor, key);
   if (vim.input.keyBuffer === "g") return finishG(vim, doc, anchor, cursor, raw, layout, key);
   if (vim.input.keyBuffer === "z") return finishZ(vim, doc, anchor, cursor, raw, layout, key);
-  if (vim.input.keyBuffer === "i" || vim.input.keyBuffer === "a") return finishObject(vim);
+  if (vim.input.keyBuffer === "i" || vim.input.keyBuffer === "a") return finishObject(vim, doc, anchor, cursor, key);
 
   const ready = commitDigits(vim);
   const cmd = commandFromKey(key);
