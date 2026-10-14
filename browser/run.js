@@ -719,6 +719,10 @@ export async function runCell(suite, cell, routeName, serial) {
     if (err instanceof NotAutomated || err?.unsupported) return { ...result, status: "BLOCKED", failed: [`not automated: ${err.message}`] };
     return { ...result, status: "FAIL", failed: [`keys: ${err.message}`] };
   }
+  // Firefox brings a tab to the front for its keys and clicks, so after page B acts last, page A
+  // is behind it and its document has no focus. Chromium emulates focus in every tab. Page A is
+  // brought back to the front before it is read, as a person returns to it.
+  if (suite.hasOther() && page.session.bringForward) await page.session.bringForward();
   const caret = await page.caret();
   const shown = sent(page, file);
   result.observed = { ...result.observed, bytes: shown.text, rev: shown.rev - revBefore, caret };
