@@ -353,32 +353,66 @@ cell("VS.11", async (t) => {
   await expectState(hub, page, gN, "one ‸two« one\n", "V", gNRev);
 });
 
+function matchBoxes(page) {
+  return page.eval(`(() => {
+    const hits = [];
+    for (const el of document.querySelectorAll("span.md-vim-match")) {
+      const box = el.getBoundingClientRect();
+      hits.push({
+        start: el.dataset.start,
+        end: el.dataset.end,
+        width: box.width,
+        height: box.height,
+      });
+    }
+    return hits;
+  })()`);
+}
+
+// k38q42bt paints the matches and recalls the pattern on this page.
 cell("VS.12", async (t) => {
   const file = "a.md";
   const { hub, page } = await boot(t, { [file]: marked("‸alpha beta\n").bytes });
   await page.open(file);
   await at(page, 0);
   const rev = (await hub.show(file)).rev;
-  await find(page, "/", "beta");
+  await openPrompt(page, "/");
+  await page.key("b");
+  await page.quiet();
+  const typing = await matchBoxes(page);
+  assert.ok(typing.some((mark) => mark.start === "6" && mark.end === "7" && mark.width > 0 && mark.height > 0));
+  await span(page, "eta");
+  await page.key("Enter");
+  await page.quiet();
   await expectState(hub, page, file, "alpha ‸beta\n", "N", rev);
-  const marks = await page.eval(`(() => {
-    const hits = [];
-    for (const el of document.querySelectorAll("*")) {
-      const cls = typeof el.className === "string" ? el.className : "";
-      if (el.tagName === "MARK") hits.push("MARK");
-      if (/(^|\\s)(md-search|md-find|md-match|md-vim-match|hlsearch|vim-hit)(\\s|$)/.test(cls)) hits.push(cls);
-      if (el.dataset && (Object.hasOwn(el.dataset, "match") || Object.hasOwn(el.dataset, "search"))) hits.push(el.tagName);
-    }
-    return hits;
-  })()`);
-  assert.deepEqual(marks, []);
+  const marks = await matchBoxes(page);
+  assert.ok(marks.some((mark) => mark.start === "6" && mark.end === "10" && mark.width > 0 && mark.height > 0));
   await openPrompt(page, "/");
   assert.equal((await line(page)).value, "/");
+  const held = await matchBoxes(page);
+  assert.ok(held.some((mark) => mark.start === "6" && mark.end === "10"));
   await page.key("↑");
   await page.quiet();
   const field = await line(page);
   assert.ok(field, "ArrowUp closed the prompt");
-  assert.equal(field.value, "/");
+  assert.equal(field.value, "/beta");
+  await page.key("Escape");
+  await page.quiet();
+  assert.equal(await line(page), null);
+  await page.key(":");
+  await page.quiet();
+  await span(page, "noh");
+  await page.key("Enter");
+  await page.quiet();
+  assert.deepEqual(await matchBoxes(page), []);
+  await expectState(hub, page, file, "alpha ‸beta\n", "N", rev);
+  await press(page, "n");
+  await expectState(hub, page, file, "alpha ‸beta\n", "N", rev);
+  assert.deepEqual(await matchBoxes(page), []);
+  await openPrompt(page, "/");
+  await page.key("↑");
+  await page.quiet();
+  assert.equal((await line(page)).value, "/beta");
   const shown = await hub.show(file);
   assert.equal(shown.text, "alpha beta\n");
   assert.equal(shown.rev, rev);
