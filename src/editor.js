@@ -2344,10 +2344,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   };
   listen("scroll", () => {
     syncVimMatchPaint();
+    syncVimBlockMark();
   });
   if (typeof window !== "undefined" && window && typeof window.addEventListener === "function") {
     window.addEventListener("scroll", () => {
       syncVimMatchPaint();
+      syncVimBlockMark();
     }, { capture: true, signal: ac.signal });
   }
   const commentsAside = commentsAsideOf(root);
@@ -2944,6 +2946,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       rect = range.getBoundingClientRect();
     }
     if (!rect || !Number.isFinite(rect.top)) return null;
+    // A br's collapsed range is a 0×0 box at the origin. That is not the caret.
+    const height = Number.isFinite(rect.height) ? rect.height : (Number.isFinite(rect.bottom) ? rect.bottom - rect.top : 0);
+    const width = Number.isFinite(rect.width) ? rect.width : 0;
+    if (!(height > 0) && !(width > 0)) return null;
     return rect;
   }
 
@@ -2964,6 +2970,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return rect.top >= 0 && bottom <= height && left >= 0 && right <= width;
   }
 
+  function domSelectionMatches() {
+    const view = typeof window !== "undefined" ? window : null;
+    const sel = view && typeof view.getSelection === "function" ? view.getSelection() : null;
+    if (!sel || !sel.rangeCount) return false;
+    const mapped = selectionFromDom(sel);
+    return !!mapped && mapped.anchor === state.anchor && mapped.cursor === state.cursor;
+  }
+
   // priorTop is the caret before this render replaced the line. A rebuild that
   // keeps the same visual line, or a caret already in view, stays put.
   function placeCaret(priorTop) {
@@ -2971,19 +2985,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     let node = null;
     try {
       node = placeCaretFromState();
-    } finally {
-      placingCaret = false;
-    }
-    try {
-      if (!node) return;
-      if (vimKeepScroll) return;
+      if (!node || vimKeepScroll) return;
       if (priorTop !== undefined) {
         const after = caretRect();
         if (after && caretInView(after)) return;
         if (priorTop != null && after && Number.isFinite(after.top) && Math.abs(after.top - priorTop) <= 3) return;
       }
       scrollCaret(node);
+      // Firefox can drop the range while the line scrolls. Put it back before
+      // selectionchange is allowed to adopt that drop.
+      if (!domSelectionMatches()) placeCaretFromState();
     } finally {
+      placingCaret = false;
       // selectionchange does not run while the caret is placed. An arrow-key
       // selection still has to move the button under the highlight it just drew.
       updateCommentButton();
@@ -2991,11 +3004,30 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
+  function bringRectIntoView(rect) {
+    const view = typeof window !== "undefined" ? window : null;
+    if (!rect || !view || typeof view.scrollBy !== "function") return;
+    const height = view.innerHeight;
+    const width = view.innerWidth;
+    if (!(height > 0) || !(width > 0) || !(rect.height > 0) || rect.height > height) return;
+    const bottom = rect.top + rect.height;
+    const right = rect.left + (rect.width > 0 ? rect.width : 0);
+    let dy = 0;
+    let dx = 0;
+    if (rect.top < 0) dy = rect.top;
+    else if (bottom > height) dy = bottom - height;
+    if (rect.left < 0) dx = rect.left;
+    else if (right > width) dx = right - width;
+    if (dx !== 0 || dy !== 0) view.scrollBy(dx, dy);
+  }
+
   function scrollCaret(node) {
     const host = (node && node.parentElement) || root;
     if (host && typeof host.scrollIntoView === "function") {
       host.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
+    // scrollIntoView leaves a line that overflows a fixed grid row where it was.
+    bringRectIntoView(elementBox(host));
   }
 
   function focusEditor() {
@@ -5089,7 +5121,29 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!rect || !Number.isFinite(rect.left) || !Number.isFinite(rect.top)) return null;
     const width = Number.isFinite(rect.width) ? rect.width : 0;
     const height = Number.isFinite(rect.height) ? rect.height : 0;
+    if (!(height > 0) && !(width > 0)) return null;
     return { left: rect.left, top: rect.top, width, height };
+  }
+
+  function elementBox(node) {
+    const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    if (!el || typeof el.getBoundingClientRect !== "function") return null;
+    try {
+      return rangeBox({ getBoundingClientRect: () => el.getBoundingClientRect() });
+    } catch {
+      return null;
+    }
+  }
+
+  // Firefox reports no client rect for a caret on a br. The empty line's box is that caret.
+  // A wrapped block is many rows; its top is not the caret, so a tall box is not used.
+  function hostBox(node) {
+    if (!node) return null;
+    const boxed = isBreak(node)
+      ? elementBox(lineBox(node) || node.parentElement)
+      : elementBox(node.parentElement);
+    if (!boxed || !(boxed.height > 0) || boxed.height > 80) return null;
+    return boxed;
   }
 
   // The drawn selection is the Visual span. The block covers the cursor's next glyph.
@@ -5117,7 +5171,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     } catch {
       return null;
     }
-    const box = rangeBox(range);
+    const box = rangeBox(range) || hostBox(node);
     if (!box) return null;
     let width = box.width;
     let height = box.height;
