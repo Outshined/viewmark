@@ -3473,15 +3473,16 @@ function omitCopiedMarkers(doc, text, from, to) {
   });
 }
 
-export function insert(state, text, paste, raw) {
+export function insert(state, text, paste, raw, exact) {
   const nl = fileNewline(state.doc);
   let value = (typeof text === "string" ? text : "").replace(/\r\n|\n|\r/g, nl);
   const from = Math.min(state.anchor, state.cursor);
   const to = Math.max(state.anchor, state.cursor);
   value = omitCopiedMarkers(state.doc, value, from, to);
   // A raw insert is the source line. The leading break is for the formatted
-  // line, which would otherwise draw the letter on the block above.
-  if (from === to && raw !== true && joinedLineBreak(state.doc, from, value, nl, paste === true)) value = nl + value;
+  // line, which would otherwise draw the letter on the block above. exact
+  // already names its bytes, so that break is not added.
+  if (from === to && raw !== true && exact !== true && joinedLineBreak(state.doc, from, value, nl, paste === true)) value = nl + value;
   if (value === "" && from === to) return state;
   return applySplice(state, from, to, value, from + value.length);
 }

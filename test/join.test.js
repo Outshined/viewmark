@@ -11,6 +11,10 @@ test("typing on the line under a paragraph stays on that line", () => {
   assert.notEqual(hello, world);
 });
 
+test("an exact insert under a paragraph keeps the chosen bytes", () => {
+  assert.equal(insert(createState("  alpha\n", 8), "  alpha\n", false, false, true).doc, "  alpha\n  alpha\n");
+});
+
 test("typing inside a paragraph does not split it", () => {
   const next = insert(createState("hello\n\n", 2), "X");
   assert.equal(next.doc, "heXllo\n\n");

@@ -494,8 +494,9 @@ function runOp(text, cursor, anchor, msg) {
     let next = state;
     if (msg.op === "insert") {
       const typed = typeof msg.text === "string" ? msg.text : "";
-      next = insert(state, typed, msg.paste === true, msg.raw === true);
-      if (next === null && msg.raw === true) next = insertLiteral(state, typed);
+      next = insert(state, typed, msg.paste === true, msg.raw === true, msg.exact === true);
+      // exact names the bytes. A refusal is not rewritten as a raw insert.
+      if (next === null && msg.raw === true && msg.exact !== true) next = insertLiteral(state, typed);
       if (next && next !== state && Array.isArray(next.changes) && next.changes.length === 1
         && typeof msg.caret === "number" && Number.isFinite(msg.caret)) {
         const caret = Math.max(0, Math.min(next.doc.length, Math.trunc(msg.caret)));

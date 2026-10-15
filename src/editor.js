@@ -6881,7 +6881,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const forward = command === "l";
       for (let n = 0; n < repeat; n += 1) {
         if (sourceMode) moveRawCaret(forward ? "ArrowRight" : "ArrowLeft", extend, false);
-        else moveCaret(forward ? "forward" : "backward", "character", extend);
+        else {
+          // Leaving the block puts the next letter on the line under it.
+          const before = state.cursor;
+          moveCaret(forward ? "forward" : "backward", "character", extend);
+          const [start, end] = blockSpan(state.doc, before);
+          if (state.cursor < start || state.cursor > end) {
+            const at = forward ? end : start;
+            moveVimCaret(extend ? state.anchor : at, at);
+          }
+        }
       }
       return;
     }
@@ -6922,6 +6931,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         text,
         anchor: effect.from,
         cursor: effect.to,
+        exact: true,
       };
       if (Number.isInteger(effect.caret)) partial.caret = effect.caret;
       // The range is the splice. u restores the caret from before the command.
