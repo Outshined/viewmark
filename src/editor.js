@@ -41,6 +41,7 @@ import {
   gapCaretStops,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
+import { vimKey } from "./vim.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES, isTicketToken, parseTicketToken } from "./ticket.js";
 import { MAX_PAYLOAD } from "./ws.js";
 
@@ -2275,6 +2276,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let vimStatus = null;
   let vimMode = "normal";
   let vimInput = emptyVimInput();
+  let vimRegister = { text: "", linewise: false };
+  let vimSearch = null;
+  let vimFind = null;
+  let vimColumn = null;
+  let vimOnce = false;
   // The flag is this page's memory. Storage is read once here and written on toggle.
   let vimOn = readVimOn();
   // Create is answered by its own error or by the file from onOpen.
@@ -4679,6 +4685,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     vimOn = on;
     vimMode = "normal";
     vimInput = emptyVimInput();
+    vimRegister = { text: "", linewise: false };
+    vimSearch = null;
+    vimFind = null;
+    vimColumn = null;
+    vimOnce = false;
     if (!on && state.anchor !== state.cursor) state = { ...state, anchor: state.cursor };
     writeVimOn(on);
     syncVimItem();
@@ -6652,10 +6663,203 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
   });
 
+  function vimSnapshot() {
+    return {
+      mode: vimMode,
+      input: {
+        prefixRepeat: vimInput.prefixRepeat || "",
+        operator: vimInput.operator || null,
+        motionRepeat: vimInput.motionRepeat || "",
+        motion: null,
+        keyBuffer: vimInput.keyBuffer || "",
+      },
+      register: {
+        text: vimRegister && typeof vimRegister.text === "string" ? vimRegister.text : "",
+        linewise: !!(vimRegister && vimRegister.linewise),
+      },
+      search: vimSearch,
+      find: vimFind,
+      column: vimColumn,
+      once: vimOnce === true,
+    };
+  }
+
+  function rememberVim(vim) {
+    const next = vim || {};
+    vimMode = typeof next.mode === "string" && next.mode ? next.mode : "normal";
+    const input = next.input || {};
+    vimInput = {
+      prefixRepeat: typeof input.prefixRepeat === "string" ? input.prefixRepeat : "",
+      operator: input.operator || null,
+      motionRepeat: typeof input.motionRepeat === "string" ? input.motionRepeat : "",
+      keyBuffer: typeof input.keyBuffer === "string" ? input.keyBuffer : "",
+    };
+    const register = next.register || {};
+    vimRegister = {
+      text: typeof register.text === "string" ? register.text : "",
+      linewise: register.linewise === true,
+    };
+    vimSearch = next.search || null;
+    vimFind = next.find || null;
+    vimColumn = Number.isInteger(next.column) ? next.column : null;
+    vimOnce = next.once === true;
+    syncVimCaret();
+    if (vimStatus) vimStatus.textContent = vimStatusText(vimMode, vimInput);
+  }
+
+  function vimInsertKeys() {
+    return vimMode === "insert" && vimOnce !== true;
+  }
+
+  // No bytes changed, so the destination is claimed the way an arrow claims its line.
+  function moveVimCaret(nextAnchor, nextCursor) {
+    const length = state.doc.length;
+    const anchor = Math.max(0, Math.min(length, Number.isFinite(nextAnchor) ? Math.trunc(nextAnchor) : 0));
+    const cursor = Math.max(0, Math.min(length, Number.isFinite(nextCursor) ? Math.trunc(nextCursor) : anchor));
+    const before = lineIndexAt(state.doc, state.cursor);
+    state = { ...state, anchor, cursor };
+    if (!claimLines(anchor, cursor)) return;
+    if (before !== lineIndexAt(state.doc, state.cursor)) render();
+    else placeCaret();
+  }
+
+  function applyVimWordDelete() {
+    if (state.anchor !== state.cursor) {
+      if (sourceMode) rawErase(-1);
+      else emitEdit({ op: "delete" });
+      return;
+    }
+    if (sourceMode) {
+      rawEraseWord(-1);
+      return;
+    }
+    const [start, end] = lineSpan(state.doc, state.cursor);
+    if (start === end) {
+      emitEdit({ op: "backspace" });
+      return;
+    }
+    const edges = wordEdges(state.doc, state.cursor, -1);
+    const [from, to] = expandAtoms(state.doc, edges[0], edges[1], state.cursor);
+    if (from !== to) emitEdit({ op: "delete", anchor: from, cursor: to });
+  }
+
+  function applyVimView(effect) {
+    const command = typeof effect.command === "string" ? effect.command : "";
+    const repeat = Number.isInteger(effect.repeat) && effect.repeat > 0 ? effect.repeat : 1;
+    const extend = vimMode === "visual" || vimMode === "visual-line";
+    if (command === "h" || command === "l") {
+      const forward = command === "l";
+      for (let n = 0; n < repeat; n += 1) {
+        if (sourceMode) moveRawCaret(forward ? "ArrowRight" : "ArrowLeft", extend, false);
+        else moveCaret(forward ? "forward" : "backward", "character", extend);
+      }
+      return;
+    }
+    if (command === "gj" || command === "gk") {
+      const forward = command === "gj";
+      for (let n = 0; n < repeat; n += 1) moveCaret(forward ? "forward" : "backward", "line", extend);
+    }
+  }
+
+  function applyVimEffect(effect) {
+    if (!effect || typeof effect.type !== "string") return;
+    if (effect.type === "caret") {
+      moveVimCaret(effect.anchor, effect.cursor);
+      return;
+    }
+    if (effect.type === "scroll") {
+      if (Number.isInteger(effect.cursor)) {
+        const anchor = Number.isInteger(effect.anchor) ? effect.anchor : effect.cursor;
+        moveVimCaret(anchor, effect.cursor);
+      }
+      return;
+    }
+    if (effect.type === "splice") {
+      const partial = {
+        op: "insert",
+        text: typeof effect.text === "string" ? effect.text : "",
+        anchor: effect.from,
+        cursor: effect.to,
+      };
+      if (Number.isInteger(effect.caret)) partial.caret = effect.caret;
+      emitEdit(partial);
+      return;
+    }
+    if (effect.type === "forward-delete") {
+      if (sourceMode) rawErase(1);
+      else emitEdit({ op: "delete" });
+      return;
+    }
+    if (effect.type === "backspace") {
+      if (sourceMode) rawErase(-1);
+      else if (prepareBackwardDelete()) emitEdit({ op: "backspace" });
+      return;
+    }
+    if (effect.type === "word-delete") {
+      applyVimWordDelete();
+      return;
+    }
+    if (effect.type === "history") {
+      emitHistory(effect.direction === "redo" ? "redo" : "undo");
+      return;
+    }
+    if (effect.type === "view-motion") applyVimView(effect);
+  }
+
+  // keydown is the only caller. A consumed key never reaches beforeinput.
+  function dispatchVimKey(key) {
+    const result = vimKey({
+      key,
+      vim: vimSnapshot(),
+      doc: state.doc,
+      cursor: state.cursor,
+      anchor: state.anchor,
+      raw: sourceMode === true,
+      flag: true,
+    });
+    if (!result || result.consumed !== true) return false;
+    rememberVim(result.vim);
+    applyVimEffect(result.effect);
+    return true;
+  }
+
+  function vimLineShift(operator) {
+    const key = { key: operator, ctrl: false, meta: false, alt: false, shift: false };
+    if (!dispatchVimKey(key)) return;
+    dispatchVimKey(key);
+  }
+
+  function insertTabChar() {
+    if (sourceMode) {
+      if (!adoptDomSelection()) return;
+      emitEdit({ op: "insert", text: "\t" });
+      return;
+    }
+    if (!adoptDomSelection()) return;
+    const indent = listIndent(state.doc, state.anchor, state.cursor);
+    if (indent && live) keptCaret = { text: indent.text, anchor: indent.anchor, cursor: indent.cursor };
+    if (indent) emitEdit({ op: "insert", text: indent.insert, anchor: indent.spliceFrom, cursor: indent.spliceTo });
+    else if (!quotedListSelection(state.doc, state.anchor, state.cursor)) emitEdit({ op: "insert", text: "\t" });
+  }
+
   listen("keydown", (event) => {
     if (keyEndsRun(event)) endTypingRunLater();
     gestureHold = false;
     commentFocus = null;
+    // Tab is not passed to vimKey. Normal, Visual, and Visual Line shift the line.
+    if (vimOn && event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      if (!vimInsertKeys()) {
+        event.preventDefault();
+        vimLineShift(event.shiftKey ? "<" : ">");
+        return;
+      }
+      // Insert Shift+Tab is that same insert, not the outdent chord.
+      if (event.shiftKey) {
+        event.preventDefault();
+        insertTabChar();
+        return;
+      }
+    }
     if (sourceMode && event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
       if (event.shiftKey) return;
@@ -6694,6 +6898,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       event.preventDefault();
       emitHistory("redo");
       return;
+    }
+    if (vimOn && event.key !== "Tab") {
+      if (dispatchVimKey({
+        key: typeof event.key === "string" ? event.key : "",
+        ctrl: event.ctrlKey === true,
+        meta: event.metaKey === true,
+        alt: event.altKey === true,
+        shift: event.shiftKey === true,
+      })) {
+        event.preventDefault();
+        return;
+      }
     }
     if (mod && !event.shiftKey && !event.altKey && (event.key === "a" || event.key === "A")) {
       event.preventDefault();

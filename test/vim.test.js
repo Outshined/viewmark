@@ -159,7 +159,7 @@ test("vimKey is pure", () => {
   assert.doesNotMatch(src, /editor\.js|codemirror|CodeMirror/);
   assert.doesNotMatch(src, /\bdocument\b|\bwindow\b/);
   const editor = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
-  assert.equal(editor.includes("vimKey"), false);
+  assert.equal(editor.includes("vimKey"), true);
   const vim = {
     mode: "normal",
     input: { prefixRepeat: "2", operator: "d", motionRepeat: "", motion: null, keyBuffer: "" },

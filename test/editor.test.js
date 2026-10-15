@@ -17439,7 +17439,7 @@ test("vim keys checkbox, status, and caret", () => {
   assert.equal(editorRule.includes("caret-shape"), false);
   assert.match(css, /\.editor\.md-vim-block\s*\{[^}]*caret-shape:\s*block/);
   assert.equal(css.split("caret-shape").length, 2);
-  assert.equal(src.includes("vimKey"), false);
+  assert.equal(src.includes("vimKey"), true);
   assert.match(src, /typedAt - typingRun\.at <= 1000/);
 
   const previousLocal = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
@@ -17482,7 +17482,7 @@ test("vim keys checkbox, status, and caret", () => {
       metaKey: false,
       preventDefault() { prevented = true; },
     });
-    assert.equal(prevented, false);
+    if (prevented) return;
     input(mounted, "insertText", key);
   };
   try {
@@ -17526,8 +17526,8 @@ test("vim keys checkbox, status, and caret", () => {
     assert.equal(statuses()[0].textContent, "N");
     assert.equal(mounted.root.classList.contains("md-vim-block"), true);
     letter("x");
-    assert.equal(again.getState().doc, "xalpha\n");
-    assert.equal(again.getState().cursor, 1);
+    assert.equal(again.getState().doc, "lpha\n");
+    assert.equal(again.getState().cursor, 0);
     assert.equal(statuses().length, 1);
     assert.equal(statuses()[0].getAttribute("contenteditable"), "false");
     assert.equal(statuses()[0].textContent, "N");
@@ -17649,6 +17649,151 @@ test("vim keys checkbox, status, and caret", () => {
     if (previousLocal) Object.defineProperty(globalThis, "localStorage", previousLocal);
     else delete globalThis.localStorage;
     delete globalThis.window.innerWidth;
+    mounted.restore();
+  }
+});
+
+test("vim flag wires keydown and leaves typing alone when it is off", () => {
+  const mounted = mountEditor();
+  const now = Date.now;
+  let clock = 20_000;
+  Date.now = () => clock;
+  const previousLocal = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const useLocal = (value) => {
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value });
+  };
+  const storage = (initial = {}) => {
+    const data = { ...initial };
+    return {
+      getItem(key) {
+        return Object.prototype.hasOwnProperty.call(data, key) ? data[key] : null;
+      },
+      setItem(key, value) {
+        data[key] = String(value);
+      },
+      removeItem(key) {
+        delete data[key];
+      },
+    };
+  };
+  const typeKey = (key, extra = {}) => {
+    let prevented = false;
+    mounted.listeners.keydown({
+      key,
+      shiftKey: false,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      ...extra,
+      preventDefault() { prevented = true; },
+    });
+    if (!prevented && key.length === 1) {
+      mounted.listeners.beforeinput({
+        inputType: "insertText",
+        data: key,
+        preventDefault() {},
+      });
+    }
+    return prevented;
+  };
+  const statusText = () => {
+    const found = byClass(mounted.root, "md-vim-status");
+    return found.length === 0 ? "" : found[0].textContent;
+  };
+  const editCount = (transport) => transport.sent.filter((message) => message.type === "edit").length;
+  try {
+    useLocal(storage());
+    const off = createEditor(mounted.root, "", 0);
+    assert.equal(typeKey("a"), false);
+    assert.equal(off.getState().doc, "a");
+    clock += 1001;
+    assert.equal(typeKey("b"), false);
+    assert.equal(off.getState().doc, "ab");
+    undoKey(mounted);
+    assert.equal(off.getState().doc, "a");
+    off.destroy();
+
+    useLocal(storage({ "viewmark.vim": "1" }));
+    const normal = createEditor(mounted.root, "alpha\n", 0);
+    assert.equal(statusText(), "N");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), true);
+    assert.equal(typeKey("a"), true);
+    assert.equal(normal.getState().doc, "alpha\n");
+    normal.destroy();
+
+    const inserted = createEditor(mounted.root, "", 0);
+    assert.equal(typeKey("i"), true);
+    assert.equal(statusText(), "I");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), false);
+    assert.equal(inserted.getState().doc, "");
+    assert.equal(typeKey("a"), false);
+    assert.equal(inserted.getState().doc, "a");
+    const caret = inserted.getState().cursor;
+    typeKey("Escape");
+    assert.equal(statusText(), "N");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), true);
+    assert.equal(inserted.getState().cursor, caret);
+    assert.equal(typeKey("a"), true);
+    assert.equal(inserted.getState().doc, "a");
+    inserted.destroy();
+
+    const transport = holdingTransport();
+    const rendered = createEditor(mounted.root, "alpha\n\nbeta", 0, transport);
+    const before = editCount(transport);
+    typeKey("j");
+    assert.equal(rendered.getState().doc, "alpha\n\nbeta");
+    assert.equal(rendered.getState().cursor, 7);
+    assert.equal(rendered.getState().doc.slice(7, 11), "beta");
+    assert.equal(editCount(transport), before);
+    const lock = transport.sent.filter((message) => message.type === "lock").at(-1);
+    assert.equal(lock.cursor, 7);
+    assert.equal(lock.anchor, 7);
+    rendered.destroy();
+
+    const rawTransport = holdingTransport();
+    const raw = createEditor(mounted.root, "alpha\n\nbeta", 0, rawTransport);
+    pressViewToggle(mounted.root);
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    const rawBefore = editCount(rawTransport);
+    typeKey("j");
+    assert.equal(raw.getState().doc, "alpha\n\nbeta");
+    assert.equal(raw.getState().cursor, 6);
+    assert.equal(raw.getState().doc[6], "\n");
+    assert.equal(editCount(rawTransport), rawBefore);
+    const rawLock = rawTransport.sent.filter((message) => message.type === "lock").at(-1);
+    assert.equal(rawLock.cursor, 6);
+    raw.destroy();
+
+    const base = createMemoryTransport("alpha\n", 0);
+    const edits = [];
+    const send = base.send.bind(base);
+    base.send = (message) => {
+      if (message && message.type === "edit") edits.push(message);
+      send(message);
+    };
+    const tabbed = createEditor(mounted.root, "alpha\n", 0, base);
+    typeKey("Tab");
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].group, undefined);
+    assert.equal(edits[0].text, "\talpha");
+    assert.equal(tabbed.getState().doc, "\talpha\n");
+    tabbed.destroy();
+
+    const typing = createEditor(mounted.root, "alpha\n", 2);
+    typeKey("i");
+    typeKey("Tab");
+    assert.equal(typing.getState().doc, "al\tpha\n");
+    typing.destroy();
+
+    const shifted = createEditor(mounted.root, "alpha\n", 2);
+    typeKey("i");
+    typeKey("Tab", { shiftKey: true });
+    assert.equal(shifted.getState().doc, "al\tpha\n");
+    shifted.destroy();
+  } finally {
+    Date.now = now;
+    if (previousLocal) Object.defineProperty(globalThis, "localStorage", previousLocal);
+    else delete globalThis.localStorage;
     mounted.restore();
   }
 });
