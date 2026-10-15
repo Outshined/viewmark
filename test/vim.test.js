@@ -2240,6 +2240,68 @@ test("VV.10", () => {
   assert.equal(alone.doc, "alpha\n\nbeta\n\ngamma\n");
 });
 
+function noCommentAdd(out) {
+  assert.equal(out.steps.some((step) => step.effect && step.effect.type === "comment-add"), false);
+}
+
+test("visual gc adds a comment", () => {
+  const visual = run("«alp‸ha", ["g", "c"], { mode: "visual" });
+  assert.equal(visual.doc, "alpha");
+  assert.equal(visual.anchor, 0);
+  assert.equal(visual.cursor, 3);
+  assert.equal(visual.show, "«alp‸ha");
+  assert.equal(visual.vim.mode, "visual");
+  assert.equal(visual.vim.input.keyBuffer, "");
+  assert.equal(visual.vim.input.operator, null);
+  assert.equal(last(visual).match, "full");
+  assert.equal(last(visual).consumed, true);
+  assert.equal(last(visual).effect.type, "comment-add");
+
+  const line = run("«alp‸ha", ["g", "c"], { mode: "visual-line" });
+  assert.equal(line.doc, "alpha");
+  assert.equal(line.anchor, 0);
+  assert.equal(line.cursor, 3);
+  assert.equal(line.vim.mode, "visual-line");
+  assert.equal(last(line).effect.type, "comment-add");
+
+  const normal = run("alp‸ha", ["g", "c"]);
+  assert.equal(normal.doc, "alpha");
+  assert.equal(normal.show, "alp‸ha");
+  assert.equal(normal.vim.mode, "normal");
+  noCommentAdd(normal);
+
+  const pending = run("alp‸ha", ["d", "g", "c"]);
+  assert.equal(pending.doc, "alpha");
+  assert.equal(pending.show, "alp‸ha");
+  noCommentAdd(pending);
+
+  const upper = run("«alp‸ha", ["g", "C"], { mode: "visual" });
+  assert.equal(upper.doc, "alpha");
+  assert.equal(upper.anchor, 0);
+  assert.equal(upper.cursor, 3);
+  assert.equal(upper.show, "«alp‸ha");
+  assert.equal(upper.vim.mode, "visual");
+  noCommentAdd(upper);
+
+  const empty = run("alp‸ha", ["g", "c"], { mode: "visual" });
+  assert.equal(empty.doc, "alpha");
+  assert.equal(empty.anchor, empty.cursor);
+  assert.equal(empty.vim.mode, "visual");
+  noCommentAdd(empty);
+
+  const alt = run("«alp‸ha", ["g", { key: "c", alt: true }], { mode: "visual" });
+  assert.equal(alt.doc, "alpha");
+  assert.equal(alt.show, "«alp‸ha");
+  assert.equal(alt.vim.mode, "visual");
+  noCommentAdd(alt);
+
+  const off = run("«alp‸ha", ["g", "c"], { mode: "visual", flag: false });
+  assert.equal(off.doc, "alpha");
+  assert.equal(off.anchor, 0);
+  assert.equal(off.cursor, 3);
+  noCommentAdd(off);
+});
+
 function insertedSplice(out) {
   const splices = out.steps.filter((step) => step.effect && step.effect.type === "splice" && step.effect.from === step.effect.to);
   assert.equal(splices.length, 1);

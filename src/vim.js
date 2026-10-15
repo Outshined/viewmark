@@ -2271,6 +2271,12 @@ function finishG(vim, doc, anchor, cursor, raw, layout, key) {
     const at = motion.cursor;
     return pack("full", true, next, { type: "caret", anchor: at, cursor: at });
   }
+  // c stays the change operator. Visual gc comments on the highlight, and the
+  // mode stays so a refusal still has that highlight when the range is checked.
+  if (!key.ctrl && !key.meta && !key.alt && key.key === "c" && !vim.input.operator
+    && (vim.mode === "visual" || vim.mode === "visual-line") && anchor !== cursor) {
+    return pack("full", true, clearInput(vim), { type: "comment-add" });
+  }
   if (!id) return pack("none", true, clearInput(vim), null);
   return dispatchResolved(ready, doc, anchor, cursor, raw, layout, id, null);
 }

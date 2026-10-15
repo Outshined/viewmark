@@ -3846,6 +3846,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return left;
   }
 
+  function addSelectionComment() {
+    const result = addComment(state.doc, state.anchor, state.cursor);
+    if (!result) return;
+    expectNewComment = true;
+    const before = state.doc;
+    emitEdit({ op: "comment.add", anchor: state.anchor, cursor: state.cursor });
+    // A socket holds the edit until its doc message. Memory applies first,
+    // so an unchanged mirror there means the add never happened.
+    if (state.doc === before && (active.memory === true || !live)) expectNewComment = false;
+  }
+
   function updateCommentButton() {
     if (closed || state.anchor === state.cursor) {
       hideCommentButton();
@@ -3870,14 +3881,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         // drops the paste, and only the primary button adds a comment.
         if (!event || event.button !== 0) return;
         event.preventDefault();
-        const result = addComment(state.doc, state.anchor, state.cursor);
-        if (!result) return;
-        expectNewComment = true;
-        const before = state.doc;
-        emitEdit({ op: "comment.add", anchor: state.anchor, cursor: state.cursor });
-        // A socket holds the edit until its doc message. Memory applies first,
-        // so an unchanged mirror there means the add never happened.
-        if (state.doc === before && (active.memory === true || !live)) expectNewComment = false;
+        addSelectionComment();
       }, { signal: ac.signal });
     }
     const sel = typeof window !== "undefined" && window.getSelection ? window.getSelection() : null;
@@ -7528,6 +7532,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function applyVimEffect(effect) {
     if (!effect || typeof effect.type !== "string") return;
+    if (effect.type === "comment-add") {
+      addSelectionComment();
+      return;
+    }
     if (effect.type === "prompt") {
       openVimLine(effect);
       return;
