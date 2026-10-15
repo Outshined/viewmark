@@ -130,6 +130,13 @@ async function follow(page, hub, file, keys, expect, rev, status = "N") {
   return expectMove(page, hub, file, expect, rev, status);
 }
 
+// Opening the same path leaves the previous socket subscribed to it. A visual
+// range that includes that line is refused, so another file drops the socket first.
+async function reopen(page) {
+  await page.open("y.md");
+  await page.open(FILE);
+}
+
 function cell(id) {
   return `${id} (ticket ${TICKET})`;
 }
@@ -208,15 +215,19 @@ test(cell("VN.4"), async (t) => {
   await press(off, [CTRL_P]);
   await expectMove(off, hub, FILE, start, rev, false);
 
-  await page.open(FILE);
+  await hub.create("z.md", "z\n");
+  await off.open("z.md");
+  await hub.create("y.md", "y\n");
+
+  await reopen(page);
   await runMove(page, hub, FILE, start, ["v"], shown(body, 6, 5), rev, "V");
   await follow(page, hub, FILE, ["j"], shown(body, nextEnd, 5), rev, "V");
   await follow(page, hub, FILE, ["k"], shown(body, 6, 5), rev, "V");
-  await page.open(FILE);
+  await reopen(page);
   await runMove(page, hub, FILE, start, ["v"], shown(body, 6, 5), rev, "V");
   await follow(page, hub, FILE, ["↓"], shown(body, nextEnd, 5), rev, "V");
   await follow(page, hub, FILE, ["↑"], shown(body, 6, 5), rev, "V");
-  await page.open(FILE);
+  await reopen(page);
   await runMove(page, hub, FILE, start, ["v"], shown(body, 6, 5), rev, "V");
   await follow(page, hub, FILE, [CTRL_N], shown(body, nextEnd, 5), rev, "V");
   await follow(page, hub, FILE, [CTRL_P], shown(body, 6, 5), rev, "V");
