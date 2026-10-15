@@ -702,6 +702,20 @@ input.md-vim-line {
   border-radius: 0.35rem;
 }
 
+div.md-vim-matches {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+span.md-vim-match {
+  position: fixed;
+  z-index: 1;
+  pointer-events: none;
+  background: rgba(138, 109, 59, 0.55);
+}
+
 .ticket-form {
   position: relative;
   box-sizing: border-box;

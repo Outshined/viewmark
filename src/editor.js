@@ -41,7 +41,7 @@ import {
   gapCaretStops,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
-import { vimKey, vimSubmit } from "./vim.js";
+import { vimKey, vimMatchStarts, vimSubmit, VIM_SEARCH_LIMIT } from "./vim.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES, isTicketToken, parseTicketToken } from "./ticket.js";
 import { MAX_PAYLOAD } from "./ws.js";
 
@@ -2288,6 +2288,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // The register from before the vim command now inside applyVimEffect.
   let vimSplicePrior = null;
   let vimSearch = null;
+  // Patterns typed at / and ?. This editor is the page session: not the document, not the hub.
+  let vimSearchPast = [];
+  let vimRecall = null;
+  let vimRecallLock = false;
+  let vimPaintHold = null;
+  let vimMatchRoot = null;
   let vimFind = null;
   let vimColumn = null;
   let vimOnce = false;
@@ -2336,6 +2342,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const listen = (type, fn, options = {}) => {
     root.addEventListener(type, fn, { ...options, signal: ac.signal });
   };
+  listen("scroll", () => {
+    syncVimMatchPaint();
+  });
+  if (typeof window !== "undefined" && window && typeof window.addEventListener === "function") {
+    window.addEventListener("scroll", () => {
+      syncVimMatchPaint();
+    }, { capture: true, signal: ac.signal });
+  }
   const commentsAside = commentsAsideOf(root);
   let addCommentButton = null;
   let commentFocus = null;
@@ -5623,6 +5637,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (hoverCommentId && !handleDrag) showCommentHandles(hoverCommentId);
     } finally {
       if (gestureHeld) gestureHold = false;
+      syncVimMatchPaint();
     }
   }
 
@@ -7304,6 +7319,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       linewise: register.linewise === true,
     };
     vimSearch = next.search || null;
+    // A star or hash search replaces the pattern. The prompt paint would be the old one.
+    if (!vimPrompt && vimPaintHold && (!vimSearch || vimSearch.pattern !== vimPaintHold.pattern)) {
+      vimPaintHold = null;
+      syncVimMatchPaint();
+    }
     vimFind = next.find || null;
     vimColumn = Number.isInteger(next.column) ? next.column : null;
     vimOnce = next.once === true;
@@ -7747,6 +7767,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       openVimLine(effect);
       return;
     }
+    if (effect.type === "nohlsearch") {
+      vimPaintHold = null;
+      syncVimMatchPaint();
+      return;
+    }
     if (effect.type === "caret") {
       moveVimCaret(effect.anchor, effect.cursor);
       return;
@@ -7810,6 +7835,171 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (effect.type === "view-motion") applyVimView(effect);
   }
 
+  // Drawn beside the editor. A span inside a line would split the text node pointFor measures.
+  function clearVimMatches() {
+    if (!vimMatchRoot) return;
+    detachNode(vimMatchRoot);
+    vimMatchRoot = null;
+  }
+
+  function rectBox(rect) {
+    if (!rect) return null;
+    const top = rect.top;
+    const left = rect.left;
+    const width = rect.width;
+    const height = rect.height;
+    if (!Number.isFinite(top) || !Number.isFinite(left) || !Number.isFinite(width) || !Number.isFinite(height)) return null;
+    if (!(width > 0) && !(height > 0)) return null;
+    return { top, left, width, height };
+  }
+
+  function matchRects(start, end) {
+    const rects = [];
+    if (typeof document === "undefined" || typeof document.createTreeWalker !== "function" || typeof document.createRange !== "function") return rects;
+    let walker = null;
+    try {
+      const show = typeof NodeFilter === "undefined" ? 4 : NodeFilter.SHOW_TEXT;
+      walker = document.createTreeWalker(root, show);
+    } catch {
+      return rects;
+    }
+    if (!walker || typeof walker.nextNode !== "function") return rects;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.parentElement?.closest?.(".md-atom") || node.parentElement?.closest?.(".md-lock")) continue;
+      const tagged = nearestTagged(node);
+      if (!tagged || !tagged.dataset) continue;
+      const nodeStart = Number(tagged.dataset.start);
+      const nodeEnd = Number(tagged.dataset.end);
+      const len = textLength(node);
+      if (!Number.isFinite(nodeStart) || !Number.isFinite(nodeEnd) || len !== nodeEnd - nodeStart || len <= 0) continue;
+      const lo = Math.max(start, nodeStart);
+      const hi = Math.min(end, nodeEnd);
+      if (lo >= hi) continue;
+      let range = null;
+      try {
+        range = document.createRange();
+        range.setStart(node, lo - nodeStart);
+        range.setEnd(node, hi - nodeStart);
+      } catch {
+        continue;
+      }
+      let list = null;
+      try {
+        if (range && typeof range.getClientRects === "function") list = range.getClientRects();
+      } catch {
+        list = null;
+      }
+      const count = list && typeof list.length === "number" ? list.length : 0;
+      for (let i = 0; i < count; i += 1) {
+        const box = rectBox(list[i]);
+        if (box) rects.push(box);
+      }
+    }
+    return rects;
+  }
+
+  function matchNode(start, end, rect) {
+    const el = document.createElement("span");
+    el.className = "md-vim-match";
+    el.dataset.start = String(start);
+    el.dataset.end = String(end);
+    if (typeof el.setAttribute === "function") el.setAttribute("aria-hidden", "true");
+    if (rect) {
+      setStyle(el, "left", `${rect.left}px`);
+      setStyle(el, "top", `${rect.top}px`);
+      setStyle(el, "width", `${rect.width}px`);
+      setStyle(el, "height", `${rect.height}px`);
+    }
+    return el;
+  }
+
+  function paintPattern() {
+    if (closed || !vimOn) return null;
+    if (vimPrompt && vimPrompt.kind === "search" && vimLine) {
+      const pattern = stripVimPrompt(vimLine.value);
+      if (pattern.length > VIM_SEARCH_LIMIT) return null;
+      if (pattern.length > 0) return pattern;
+    }
+    if (vimPaintHold && (!vimSearch || vimSearch.pattern !== vimPaintHold.pattern)) vimPaintHold = null;
+    return vimPaintHold ? vimPaintHold.pattern : null;
+  }
+
+  function syncVimMatchPaint() {
+    if (closed) {
+      clearVimMatches();
+      return;
+    }
+    const pattern = paintPattern();
+    if (!pattern) {
+      clearVimMatches();
+      return;
+    }
+    const hits = vimMatchStarts(state.doc, pattern, false);
+    const nodes = [];
+    for (const at of hits) {
+      const rects = matchRects(at, at + pattern.length);
+      if (rects.length === 0) nodes.push(matchNode(at, at + pattern.length, null));
+      else for (const rect of rects) nodes.push(matchNode(at, at + pattern.length, rect));
+    }
+    if (nodes.length === 0) {
+      clearVimMatches();
+      return;
+    }
+    const body = typeof document !== "undefined" ? document.body : null;
+    if (!body || typeof body.appendChild !== "function") return;
+    if (!vimMatchRoot || vimMatchRoot.parentElement !== body) {
+      clearVimMatches();
+      const host = document.createElement("div");
+      host.className = "md-vim-matches";
+      if (typeof host.setAttribute === "function") host.setAttribute("aria-hidden", "true");
+      body.appendChild(host);
+      vimMatchRoot = host;
+    }
+    if (typeof vimMatchRoot.replaceChildren === "function") vimMatchRoot.replaceChildren(...nodes);
+    else {
+      while (vimMatchRoot.childNodes && vimMatchRoot.childNodes.length) detachNode(vimMatchRoot.childNodes[0]);
+      for (const node of nodes) vimMatchRoot.appendChild(node);
+    }
+  }
+
+  function noteSearchEdit() {
+    if (vimRecallLock || !vimRecall || !vimPrompt || vimPrompt.kind !== "search" || !vimLine) return;
+    vimRecall.at = vimSearchPast.length;
+    vimRecall.draft = stripVimPrompt(vimLine.value);
+  }
+
+  function recallSearch(delta) {
+    if (!vimPrompt || vimPrompt.kind !== "search" || !vimLine || !vimRecall) return;
+    if (vimSearchPast.length === 0) return;
+    const mark = vimPromptMark(vimPrompt);
+    vimRecallLock = true;
+    try {
+      if (delta < 0) {
+        if (vimRecall.at === vimSearchPast.length) vimRecall.draft = stripVimPrompt(vimLine.value);
+        if (vimRecall.at === 0) return;
+        vimRecall.at -= 1;
+        vimLine.value = mark + vimSearchPast[vimRecall.at];
+      } else {
+        if (vimRecall.at >= vimSearchPast.length) return;
+        vimRecall.at += 1;
+        const text = vimRecall.at === vimSearchPast.length ? vimRecall.draft : vimSearchPast[vimRecall.at];
+        vimLine.value = mark + text;
+      }
+      placeVimLineCaret(vimLine);
+      syncVimMatchPaint();
+    } finally {
+      vimRecallLock = false;
+    }
+  }
+
+  function rememberSearchPattern(pattern) {
+    if (typeof pattern !== "string" || pattern.length === 0 || pattern.length > VIM_SEARCH_LIMIT) return;
+    const at = vimSearchPast.lastIndexOf(pattern);
+    if (at >= 0) vimSearchPast.splice(at, 1);
+    vimSearchPast.push(pattern);
+    vimPaintHold = { pattern };
+  }
+
   // The mark drawn in the line is the prompt. The command is the text after it.
   function stripVimPrompt(text) {
     const value = typeof text === "string" ? text : "";
@@ -7859,6 +8049,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       input.setAttribute("autocorrect", "off");
     }
     input.addEventListener("keydown", onVimLineKey, { signal: ac.signal });
+    input.addEventListener("input", onVimLineInput, { signal: ac.signal });
     vimLine = input;
     return input;
   }
@@ -7869,29 +8060,34 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const input = ensureVimLine();
     if (!input) return;
     vimPrompt = { kind: effect.kind, forward: effect.forward };
+    vimRecall = effect.kind === "search" ? { at: vimSearchPast.length, draft: "" } : null;
     input.value = vimPromptMark(effect);
     parentVimLine(input);
     placeVimLineCaret(input);
     if (typeof input.focus === "function") input.focus();
     placeVimLineCaret(input);
     syncVimBlockMark();
+    syncVimMatchPaint();
   }
 
   function closeVimLine() {
     const wasOpen = vimPrompt != null;
     vimPrompt = null;
+    vimRecall = null;
     if (vimLine && wasOpen) {
       vimLine.value = "";
       detachNode(vimLine);
     }
     if (!wasOpen || closed || !root || typeof root.focus !== "function") return;
+    // Focus clears the DOM selection. A command that does not move the caret,
+    // such as :noh, would otherwise leave it at the start of the document.
     placingCaret = true;
     try {
       root.focus();
     } finally {
       placingCaret = false;
     }
-    syncVimBlockMark();
+    placeCaret();
   }
 
   function submitVimLine() {
@@ -7913,8 +8109,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       raw: sourceMode === true,
       flag: true,
     });
-    if (!result || result.consumed !== true) return;
+    if (!result || result.consumed !== true) {
+      syncVimMatchPaint();
+      return;
+    }
+    if (kind === "search" && result.vim && result.vim.search && result.vim.search.pattern === line) {
+      rememberSearchPattern(line);
+    }
     applyRememberedVim(result.vim, result.effect);
+    syncVimMatchPaint();
+  }
+
+  function onVimLineInput() {
+    if (!vimPrompt || vimPrompt.kind !== "search" || vimRecallLock) return;
+    noteSearchEdit();
+    syncVimMatchPaint();
   }
 
   // Ctrl-W and Meta-W close the browser tab. The line keeps the chord.
@@ -7928,6 +8137,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       stop();
       return;
     }
+    if ((key === "ArrowUp" || key === "ArrowDown") && vimPrompt && vimPrompt.kind === "search" && event.shiftKey !== true && event.altKey !== true && event.ctrlKey !== true && event.metaKey !== true) {
+      stop();
+      recallSearch(key === "ArrowUp" ? -1 : 1);
+      return;
+    }
     if (key === "Enter") {
       stop();
       submitVimLine();
@@ -7936,6 +8150,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (key === "Escape") {
       stop();
       closeVimLine();
+      syncVimMatchPaint();
     }
   }
 
@@ -7949,16 +8164,27 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (key === "Escape") {
       closeVimLine();
+      syncVimMatchPaint();
       return;
     }
     if (event.ctrlKey === true || event.metaKey === true || event.altKey === true) return;
+    if ((key === "ArrowUp" || key === "ArrowDown") && event.shiftKey !== true) {
+      if (vimPrompt && vimPrompt.kind === "search") recallSearch(key === "ArrowUp" ? -1 : 1);
+      return;
+    }
     const field = vimLine;
     if (!field) return;
     if (key === "Backspace") {
       field.value = String(field.value || "").slice(0, -1);
+      noteSearchEdit();
+      syncVimMatchPaint();
       return;
     }
-    if (key.length === 1) field.value = String(field.value || "") + key;
+    if (key.length === 1) {
+      field.value = String(field.value || "") + key;
+      noteSearchEdit();
+      syncVimMatchPaint();
+    }
   }
 
   // keydown is the only caller. A consumed key never reaches beforeinput.
@@ -10869,7 +11095,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     },
     destroy() {
       closed = true;
+      vimPaintHold = null;
       closeVimLine();
+      clearVimMatches();
       hideVimBlockMark();
       cancelGestureRender();
       clearEditTimer();

@@ -19552,3 +19552,196 @@ test("gc on a comment runs that thread from the keyboard", () => {
     else delete globalThis.localStorage;
   }
 });
+
+function vimMatchRanges() {
+  const found = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (node.classList && node.classList.contains("md-vim-match")) {
+      found.push([Number(node.dataset.start), Number(node.dataset.end)]);
+    }
+    for (const child of node.childNodes || []) walk(child);
+  };
+  if (document.body) walk(document.body);
+  const seen = new Set();
+  return found.filter((pair) => {
+    const id = pair.join(":");
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+test("vim search history paints matches and :noh clears them", () => {
+  return withVimFlag(true, (mounted) => {
+    document.body = document.createElement("body");
+    const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    assert.match(css, /span\.md-vim-match\s*\{[^}]*pointer-events:\s*none;/);
+    assert.match(css, /span\.md-vim-match\s*\{[^}]*background:\s*rgba\(138, 109, 59, 0\.55\);/);
+    const doc = "alpha beta alpha\n";
+    const transport = createMemoryTransport(doc, 0);
+    const sent = [];
+    const send = transport.send.bind(transport);
+    transport.send = (message) => {
+      sent.push(message);
+      send(message);
+    };
+    const view = createEditor(mounted.root, doc, 0, transport);
+    const status = () => {
+      const found = byClass(mounted.root, "md-vim-status");
+      return found.length === 0 ? "" : found[0].textContent;
+    };
+    assert.deepEqual(vimMatchRanges(), []);
+    vimType(mounted, "/");
+    assert.equal(vimLineNode().value, "/");
+    vimType(mounted, "b");
+    assert.deepEqual(vimMatchRanges(), [[6, 7]]);
+    vimType(mounted, "e");
+    vimType(mounted, "t");
+    vimType(mounted, "a");
+    assert.equal(vimLineNode().value, "/beta");
+    assert.deepEqual(vimMatchRanges(), [[6, 10]]);
+    vimType(mounted, "Enter");
+    assert.equal(vimLineNode(), null);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, 6);
+    assert.equal(status(), "N");
+    assert.deepEqual(vimMatchRanges(), [[6, 10]]);
+    assert.equal(sent.some((message) => Object.hasOwn(message, "search") || Object.hasOwn(message, "history") || Object.hasOwn(message, "pattern")), false);
+    assert.equal(localStorage.getItem("viewmark.vim"), "1");
+    assert.equal(localStorage.getItem("viewmark.vim.search"), null);
+
+    vimType(mounted, "/");
+    assert.equal(vimLineNode().value, "/");
+    assert.deepEqual(vimMatchRanges(), [[6, 10]]);
+    vimType(mounted, "z");
+    assert.deepEqual(vimMatchRanges(), []);
+    vimType(mounted, "Escape");
+    assert.equal(vimLineNode(), null);
+    assert.deepEqual(vimMatchRanges(), [[6, 10]]);
+    assert.equal(view.getState().cursor, 6);
+
+    vimType(mounted, "/");
+    const recalled = vimLineNode();
+    assert.equal(vimFieldKey(recalled, "ArrowUp"), true);
+    assert.equal(recalled.value, "/beta");
+    assert.deepEqual(vimMatchRanges(), [[6, 10]]);
+    vimType(mounted, "ArrowDown");
+    assert.equal(vimLineNode().value, "/");
+    vimType(mounted, "ArrowUp");
+    assert.equal(vimLineNode().value, "/beta");
+    vimType(mounted, "Enter");
+    assert.equal(view.getState().cursor, 6);
+
+    vimType(mounted, "/");
+    vimType(mounted, "a");
+    vimType(mounted, "l");
+    vimType(mounted, "p");
+    vimType(mounted, "h");
+    vimType(mounted, "a");
+    assert.deepEqual(vimMatchRanges(), [[0, 5], [11, 16]]);
+    vimType(mounted, "Enter");
+    assert.equal(view.getState().cursor, 11);
+    assert.deepEqual(vimMatchRanges(), [[0, 5], [11, 16]]);
+
+    vimType(mounted, "/");
+    vimType(mounted, "ArrowUp");
+    assert.equal(vimLineNode().value, "/alpha");
+    vimType(mounted, "ArrowUp");
+    assert.equal(vimLineNode().value, "/beta");
+    vimType(mounted, "ArrowUp");
+    assert.equal(vimLineNode().value, "/beta");
+    vimType(mounted, "ArrowDown");
+    assert.equal(vimLineNode().value, "/alpha");
+    vimType(mounted, "ArrowDown");
+    assert.equal(vimLineNode().value, "/");
+    vimType(mounted, "Escape");
+
+    vimType(mounted, "?");
+    assert.equal(vimLineNode().value, "?");
+    vimType(mounted, "ArrowUp");
+    assert.equal(vimLineNode().value, "?alpha");
+    vimType(mounted, "Enter");
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(view.getState().doc, doc);
+
+    vimType(mounted, ":");
+    vimType(mounted, "n");
+    vimType(mounted, "o");
+    vimType(mounted, "h");
+    assert.equal(vimLineNode().value, ":noh");
+    vimType(mounted, "Enter");
+    assert.equal(vimLineNode(), null);
+    assert.equal(status(), "N");
+    assert.deepEqual(vimMatchRanges(), []);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, 0);
+    vimType(mounted, "n");
+    assert.equal(view.getState().cursor, 11);
+    assert.deepEqual(vimMatchRanges(), []);
+    vimType(mounted, "/");
+    vimType(mounted, "ArrowUp");
+    assert.equal(vimLineNode().value, "/alpha");
+    vimType(mounted, "Escape");
+
+    vimType(mounted, "/");
+    vimType(mounted, "b");
+    vimType(mounted, "e");
+    vimType(mounted, "t");
+    vimType(mounted, "a");
+    vimType(mounted, "Enter");
+    assert.deepEqual(vimMatchRanges(), [[6, 10]]);
+    vimType(mounted, "0");
+    assert.equal(view.getState().cursor, 0);
+    assert.deepEqual(vimMatchRanges(), [[6, 10]]);
+    vimType(mounted, "*");
+    assert.equal(view.getState().doc, doc);
+    assert.deepEqual(vimMatchRanges(), []);
+    vimType(mounted, "/");
+    vimType(mounted, "ArrowUp");
+    assert.equal(vimLineNode().value, "/beta");
+    vimType(mounted, "Escape");
+
+    vimType(mounted, ":");
+    vimType(mounted, "w");
+    vimType(mounted, "ArrowUp");
+    assert.equal(vimLineNode().value, ":w");
+    vimType(mounted, "Escape");
+
+    vimType(mounted, "/");
+    const field = vimLineNode();
+    field.value = `/${"z".repeat(1001)}`;
+    field.listeners.input();
+    assert.deepEqual(vimMatchRanges(), []);
+    assert.equal(vimFieldKey(field, "Enter"), true);
+    assert.equal(view.getState().cursor, 11);
+    vimType(mounted, "/");
+    vimType(mounted, "ArrowUp");
+    assert.equal(vimLineNode().value, "/beta");
+    vimType(mounted, "Escape");
+
+    view.destroy();
+    assert.equal(vimLineNode(), null);
+    assert.deepEqual(vimMatchRanges(), []);
+
+    const fresh = createEditor(mounted.root, doc, 0, transport);
+    vimType(mounted, "/");
+    assert.equal(vimLineNode().value, "/");
+    vimType(mounted, "ArrowUp");
+    assert.equal(vimLineNode().value, "/");
+    vimType(mounted, "Escape");
+    fresh.destroy();
+  });
+});
+
+test("flag off, search paint is not drawn", () => {
+  return withVimFlag(false, (mounted) => {
+    document.body = document.createElement("body");
+    const view = createEditor(mounted.root, "alpha beta\n", 0);
+    vimType(mounted, "/");
+    assert.equal(view.getState().doc, "/alpha beta\n");
+    assert.deepEqual(vimMatchRanges(), []);
+    assert.equal(vimLineNode(), null);
+    view.destroy();
+  });
+});

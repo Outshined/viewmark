@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { vimKey, vimSubmit } from "../src/vim.js";
+import { vimKey, vimMatchStarts, vimSubmit, VIM_SEARCH_LIMIT } from "../src/vim.js";
 import { codeSpanAt, createState, deleteForward, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
 
 const CARET = "‸";
@@ -1914,9 +1914,34 @@ test("VE.1", () => {
   ]) {
     const out = ex("‸banana\nalpha\n", line);
     assert.equal(out.doc, "banana\nalpha\n", line);
-    assert.equal(out.effect, null, line);
     assert.equal(out.vim.mode, "normal", line);
+    if (line === "noh") {
+      assert.equal(out.effect && out.effect.type, "nohlsearch", line);
+      continue;
+    }
+    assert.equal(out.effect, null, line);
   }
+
+  const found = submit("‸alpha beta\n", { line: "beta", kind: "search", forward: true });
+  for (const name of ["noh", "nohl", "nohls", "nohlsearch"]) {
+    const cleared = submit(found.show, { line: name, kind: "ex" }, { from: found });
+    assert.equal(cleared.effect && cleared.effect.type, "nohlsearch", name);
+    assert.equal(cleared.doc, found.doc, name);
+    assert.equal(cleared.show, found.show, name);
+    assert.equal(cleared.vim.search.pattern, "beta", name);
+    assert.equal(cleared.vim.mode, "normal", name);
+  }
+  assert.equal(ex("‸alpha\n", "no").effect, null);
+  assert.equal(ex("‸alpha\n", "nohlsearch x").effect, null);
+  assert.equal(ex("‸alpha\n", "%noh").effect, null);
+  assert.equal(VIM_SEARCH_LIMIT, 1000);
+  assert.deepEqual(vimMatchStarts("alpha beta\n", "beta", false), [6]);
+  assert.deepEqual(vimMatchStarts("alpha beta\n", "a", false), [0, 4, 9]);
+  assert.deepEqual(vimMatchStarts("alpha beta\n", "a.c", false), []);
+  assert.deepEqual(vimMatchStarts("a.c\n", "a.c", false), [0]);
+  assert.deepEqual(vimMatchStarts("alpha\n", "", false), []);
+  assert.deepEqual(vimMatchStarts("alpha\n", "a".repeat(1001), false), []);
+  assert.deepEqual(vimMatchStarts("alpha alphabet alpha\n", "alpha", true), [0, 15]);
 
   const rendered = ex("alpha\nbe‸ta\ngamma\n", "d");
   const dd = run("alpha\nbe‸ta\ngamma\n", ["d", "d"]);

@@ -1644,6 +1644,7 @@ function joinLines(vim, doc, cursor, raw, glue) {
 }
 
 const SEARCH_LIMIT = 1000;
+export const VIM_SEARCH_LIMIT = SEARCH_LIMIT;
 
 // Spaces separate the run, the same way wordStop does, so a comma stays on it.
 function runUnder(doc, cursor) {
@@ -1675,6 +1676,13 @@ function matchesOf(doc, pattern, whole) {
     index = at + 1;
   }
   return hits;
+}
+
+// Literal offsets, the same matches / and ? use. The page paints these.
+export function vimMatchStarts(doc, pattern, whole) {
+  const text = typeof doc === "string" ? doc : "";
+  if (typeof pattern !== "string" || pattern.length === 0 || pattern.length > SEARCH_LIMIT) return [];
+  return matchesOf(text, pattern, whole === true);
 }
 
 // Forward starts at origin, or just after it when the caret is already on a hit.
@@ -1921,6 +1929,15 @@ function submitEx(vim, doc, cursor, raw, line) {
   }
   if (matchesEx(name, "undo", "u") && rest === "" && range === "") return exHistory(vim, "undo");
   if (matchesEx(name, "redo", "red") && rest === "" && range === "") return exHistory(vim, "redo");
+  // Paint is page state. The pattern stays, so n still repeats.
+  if (matchesEx(name, "nohlsearch", "noh") && rest === "" && range === "") {
+    const next = clearInput(vim);
+    if (vim.once) {
+      next.once = false;
+      next.mode = "insert";
+    } else next.mode = "normal";
+    return pack("full", true, next, { type: "nohlsearch" });
+  }
   if (matchesEx(name, "substitute", "s")) {
     const parsed = parseSubstitute(rest);
     if (!parsed) return exIdle(vim);
