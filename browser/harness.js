@@ -704,6 +704,7 @@ const KEYS = {
   "↓": { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
   Home: { key: "Home", code: "Home", windowsVirtualKeyCode: 36 },
   End: { key: "End", code: "End", windowsVirtualKeyCode: 35 },
+  PageUp: { key: "PageUp", code: "PageUp", windowsVirtualKeyCode: 33 },
   PageDown: { key: "PageDown", code: "PageDown", windowsVirtualKeyCode: 34 },
 };
 const MODIFIERS = { Alt: 1, Ctrl: 2, Meta: 4, Shift: 8 };
