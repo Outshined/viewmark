@@ -164,6 +164,7 @@ cell("VW.4", {
     start: "‸one\n\n\n\ntwo\n",
     steps: [
       { span: "j", expect: "one\n\n‸\n\ntwo\n" },
+      { span: "j", expect: "one\n\n\n‸\ntwo\n" },
       { span: "j", expect: "one\n\n\n\n‸two\n" },
     ],
   },
@@ -184,8 +185,17 @@ cell("VW.6", {
 });
 
 cell("VW.7", {
-  "a.md": {
+  "joined.md": {
+    start: "abcdef‸\nred  \nblue\n",
+    steps: [{ span: "j", expect: "abcdef‸\nred  \nblue\n" }],
+  },
+  "raw.md": {
+    raw: true,
     start: "abcdef‸\nred  \nblue\n",
     steps: [{ span: "j", expect: "abcdef\nred‸  \nblue\n" }],
+  },
+  "apart.md": {
+    start: "abcdef‸\n\nred  \n",
+    steps: [{ span: "j", expect: "abcdef\n\nred‸  \n" }],
   },
 });
