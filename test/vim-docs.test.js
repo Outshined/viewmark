@@ -13,7 +13,19 @@ const VIM_FACTS = [
   "stores it as `viewmark.vim`",
   "A vim line in the formatted view is a rendered block.",
   "`gc` comments the highlight.",
-  "Ctrl-Enter or Command-Enter saves the note and returns to normal.",
+  "In visual or visual line, `gc` on a highlight that is not already a comment adds one and opens an empty note.",
+  "The mode stays visual or visual line until Ctrl-Enter or Command-Enter saves the note and returns to normal.",
+  "A refused range, such as a highlight that is only a list marker, writes nothing and leaves the highlight.",
+  "`gc` with the caret on an existing comment makes that thread current",
+  "when the highlight is already inside that comment",
+  "Then `r` replies, `R` resolves or reopens for the author of the first note, `X` deletes for that author, `Y` copies the link, and `i` opens the earliest note this session authored.",
+  "Escape deselects the thread, discards an unsaved reply or revision, and normal navigation resumes.",
+  "Normal `gc` off a comment does nothing.",
+  "`c` is still change.",
+  "In visual line, `R` still changes the highlighted lines.",
+  "While a thread is current, `R` resolves or reopens for the first note's author instead.",
+  "Elsewhere `R` is not replace mode.",
+  "In visual line, `R` and `S` change the highlighted lines.",
   "`y` and `p` use one unnamed register, which is not the clipboard.",
   "Ctrl-V pastes the clipboard.",
   "Search text is literal, and the hits are not drawn.",
@@ -30,9 +42,18 @@ async function read(rel) {
   return fs.readFile(path.join(root, rel), "utf8");
 }
 
+const STALE_GC = [
+  "`gc` in normal does nothing",
+  "there is no command that comments a motion",
+  "and elsewhere `R` changes nothing",
+];
+
 function assertFacts(rel, text) {
   for (const fact of VIM_FACTS) {
     assert.ok(text.includes(fact), `${rel} is missing ${JSON.stringify(fact)}`);
+  }
+  for (const stale of STALE_GC) {
+    assert.equal(text.includes(stale), false, `${rel} still says ${JSON.stringify(stale)}`);
   }
 }
 
@@ -82,6 +103,7 @@ test("starter docs, project docs, and the README cover vim keys", async () => {
     "`viewmark.vim`",
     "`src/vim.js`",
     "`gc` comments the highlight.",
+    "`gc` on an existing comment makes that thread current.",
     "A vim line in the formatted view is a rendered block.",
     "`y` and `p` use one unnamed register, which is not the clipboard.",
     "Ctrl-V pastes the clipboard.",
@@ -96,4 +118,5 @@ test("starter docs, project docs, and the README cover vim keys", async () => {
 
   assert.ok(agents.includes("`src/vim.js`"), "AGENTS.md does not name vim.js");
   assert.ok(agents.includes("`gc` comments the highlight."), "AGENTS.md does not cover gc");
+  assert.ok(agents.includes("`gc` on an existing comment makes that thread current."), "AGENTS.md does not cover gc on a comment");
 });
