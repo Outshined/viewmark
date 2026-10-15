@@ -12572,6 +12572,8 @@ test("ctrl-enter saves a comment body and enter does not", () => {
     assert.equal(saves()[0].rev, 0);
     assert.equal(view.getState().doc, doc);
     assert.equal(transport.sent.some((message) => message.op === "comment.save" || message.type === "lock"), false);
+    assert.equal(mounted.root.focused, true);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-comment-current")).length, 0);
     view.destroy();
 
     const again = holdingTransport();
@@ -12601,8 +12603,93 @@ test("ctrl-enter saves a comment body and enter does not", () => {
     assert.equal(metaSaves[0].text, "via meta");
     assert.equal(metaSaves[0].rev, 0);
     assert.equal(meta.getState().doc, doc);
+    assert.equal(mounted.root.focused, true);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-comment-current")).length, 0);
     meta.destroy();
   } finally {
+    mounted.restore();
+  }
+});
+
+test("ctrl-enter after visual gc returns to normal", () => {
+  const mounted = mountSheet();
+  const previousLocal = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    writable: true,
+    value: {
+      getItem(key) { return key === "viewmark.vim" ? "1" : null; },
+      setItem() {},
+      removeItem() {},
+    },
+  });
+  const press = (key, extra = {}) => {
+    mounted.listeners.keydown({
+      key,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+      ...extra,
+    });
+  };
+  const status = () => {
+    const found = mounted.findAll((node) => node.classList && node.classList.contains("md-vim-status"));
+    return found.length === 0 ? "" : found[0].textContent;
+  };
+  const current = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-current"));
+  const saveNote = (text) => {
+    const box = mounted.findAll((node) => node.tagName === "TEXTAREA")[0];
+    assert.ok(box, "the note is not open");
+    box.value = text;
+    mounted.aside.listeners.keydown({
+      key: "Enter",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      target: box,
+      preventDefault() {},
+    });
+  };
+  try {
+    const memory = createMemoryTransport("alpha beta gamma\n", 0);
+    memory.username = "qa-bot";
+    const view = createEditor(mounted.root, "alpha beta gamma\n", 0, memory);
+    assert.equal(status(), "N");
+    press("v");
+    press("e");
+    press("g");
+    press("c");
+    assert.equal(status(), "V");
+    assert.match(view.getState().doc, /\{c1\}alpha\{\/c1\}/);
+    saveNote("one");
+    assert.match(view.getState().doc, /\none\n/);
+    assert.equal(status(), "N");
+    assert.equal(view.getState().anchor, view.getState().cursor);
+    assert.equal(mounted.root.focused, true);
+    assert.equal(current().length, 0);
+    const afterOne = view.getState().cursor;
+    press("w");
+    assert.notEqual(view.getState().cursor, afterOne);
+    press("v");
+    press("e");
+    press("g");
+    press("c");
+    saveNote("two");
+    assert.match(view.getState().doc, /\ntwo\n/);
+    assert.equal(status(), "N");
+    assert.equal(view.getState().anchor, view.getState().cursor);
+    assert.equal(mounted.root.focused, true);
+    assert.equal(current().length, 0);
+    const afterTwo = view.getState().cursor;
+    press("w");
+    assert.notEqual(view.getState().cursor, afterTwo);
+    view.destroy();
+  } finally {
+    if (previousLocal) Object.defineProperty(globalThis, "localStorage", previousLocal);
+    else delete globalThis.localStorage;
     mounted.restore();
   }
 });

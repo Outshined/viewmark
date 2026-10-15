@@ -3366,6 +3366,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (state.doc === before) render();
   }
 
+  // gc stays Visual until the note is saved. Ctrl-Enter and Meta-Enter are what leave it.
+  function returnFromCommentSave() {
+    clearCurrentComment();
+    restoreEditorFocus = true;
+    focusEditor();
+    if (vimOn && (vimMode === "visual" || vimMode === "visual-line")) {
+      state = { ...state, anchor: state.cursor };
+      useVimSelection("normal");
+    }
+  }
+
   function onCancel(box) {
     endTypingRunLater();
     const id = box.dataset.comment;
@@ -8447,6 +8458,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (mod && !event.altKey && event.key === "Enter") {
         event.preventDefault();
         onSave(box);
+        returnFromCommentSave();
         return;
       }
       if (!mod || event.altKey) return;

@@ -140,3 +140,56 @@ test("visual gc adds a comment", async (t) => {
   assert.equal(item.rev, rev, detail(item));
   assert.equal(item.status, "V", detail(item));
 });
+
+async function editorFocused(page) {
+  const focused = await page.eval(`document.activeElement === document.getElementById("editor")`);
+  assert.equal(focused, true, "the editor is not focused");
+}
+
+async function noCurrentCard(page) {
+  const current = await page.eval(`!!document.querySelector(".md-comment-current")`);
+  assert.equal(current, false, "a comment card is current");
+}
+
+async function wordMoves(page) {
+  const before = await page.caret();
+  assert.equal(Number.isInteger(before && before.focus), true, `no caret before w ${JSON.stringify(before)}`);
+  await page.key("w");
+  await page.quiet();
+  const after = await page.caret();
+  assert.equal(Number.isInteger(after && after.focus), true, `no caret after w ${JSON.stringify(after)}`);
+  assert.notEqual(after.focus, before.focus, `w left the caret at ${before.focus}`);
+}
+
+test("ctrl-enter after visual gc returns to the editor", async (t) => {
+  const { hub, page } = await setup(t, "alpha beta gamma\n");
+  await begin(page, hub, "a.md", "‸alpha beta gamma\n");
+  await keys(page, "v, e, g, c");
+  await emptyNoteFocused(page);
+  const drafting = await snap(page, hub, "a.md");
+  assert.equal(drafting.status, "V", detail(drafting));
+  await page.type("one");
+  await page.quiet();
+  await page.key("Enter", ["Ctrl"]);
+  await page.quiet();
+  await editorFocused(page);
+  await noCurrentCard(page);
+  const saved = await snap(page, hub, "a.md");
+  assert.equal(saved.status, "N", detail(saved));
+  assert.match(saved.text, /\none\n/);
+  await wordMoves(page);
+
+  await keys(page, "v, e, g, c");
+  await emptyNoteFocused(page);
+  await page.type("two");
+  await page.quiet();
+  await page.key("Enter", ["Ctrl"]);
+  await page.quiet();
+  const both = await snap(page, hub, "a.md");
+  assert.equal(both.status, "N", detail(both));
+  assert.match(both.text, /\none\n/);
+  assert.match(both.text, /\ntwo\n/);
+  await editorFocused(page);
+  await noCurrentCard(page);
+  await wordMoves(page);
+});
