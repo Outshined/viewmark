@@ -1386,8 +1386,10 @@ test("T-create", async () => {
       assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
       assert.equal(await readDoc(dir, "exists.md"), "keep");
       a.send({ type: "create", username: "A", path: "out/x.md" });
-      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 404 });
-      await assert.rejects(() => fs.lstat(path.join(outside, "x.md")));
+      const outsideFile = await a.next((msg) => (msg.type === "file" && msg.path === "out/x.md") || msg.type === "error");
+      assert.equal(outsideFile.type, "file");
+      assert.equal(outsideFile.text, "");
+      assert.equal(await fs.readFile(path.join(outside, "x.md"), "utf8"), "");
       a.send({ type: "create", username: "A", path: "notes/body.md", text: "Body\n" });
       const bodyFile = await a.next((msg) => msg.type === "file" && msg.path === "notes/body.md");
       assert.equal(bodyFile.text, "Body\n");
@@ -1422,6 +1424,110 @@ test("T-create", async () => {
       assert.equal(await readDoc(dir, "notes/idea.md"), "Hi");
       assert.equal(await readDoc(dir, "exists.md"), "keep");
       b.ws.close();
+    });
+  } finally {
+    await fs.rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("a directory symlink outside the root is part of the document tree", { timeout: 20000 }, async () => {
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "viewmark-link-"));
+  try {
+    await withDocs(async ({ port, dir }) => {
+      await fs.writeFile(path.join(outside, "note.md"), "# Note\noutside\n");
+      await fs.writeFile(path.join(outside, "stay.md"), "stay\n");
+      await fs.writeFile(path.join(outside, "note.txt"), "nope\n");
+      await fs.writeFile(path.join(outside, "plain.md"), "plain\n");
+      await fs.mkdir(path.join(outside, ".git"));
+      await fs.writeFile(path.join(outside, ".git", "secret.md"), "secret\n");
+      await fs.symlink(".", path.join(outside, "spin"));
+      await fs.symlink(outside, path.join(dir, "out"));
+      await fs.symlink(path.join(outside, "plain.md"), path.join(dir, "linked.md"));
+      await fs.mkdir(path.join(dir, "inner"));
+      await fs.writeFile(path.join(dir, "inner", "page.md"), "# Page\ninner\n");
+      await fs.symlink("inner", path.join(dir, "alias"));
+      await fs.mkdir(path.join(dir, "box"));
+      await fs.writeFile(path.join(dir, "box", "note.md"), "boxed\n");
+      await fs.symlink(".", path.join(dir, "box", "again"));
+      await fs.symlink(".", path.join(dir, "loop"));
+      await fs.mkdir(path.join(dir, "archive"));
+      await fs.writeFile(path.join(dir, "archive", "keep.md"), "keep\n");
+
+      const a = await hello(port, "A");
+      a.send({ type: "list", username: "A" });
+      const listed = await a.next((msg) => msg.type === "docs");
+      for (const rel of ["out/note.md", "out/stay.md", "out/plain.md", "alias/page.md", "inner/page.md", "box/note.md", "archive/keep.md", "welcome.md"]) {
+        assert.equal(listed.files.includes(rel), true, rel);
+      }
+      for (const rel of ["linked.md", "out/.git/secret.md", "out/spin/note.md", "out/spin/stay.md", "box/again/note.md", "loop/welcome.md", "out/note.txt"]) {
+        assert.equal(listed.files.includes(rel), false, rel);
+      }
+      assert.equal(listed.files.filter((file) => file === "out/note.md").length, 1);
+      assert.equal(listed.titles["out/note.md"], "Note");
+      assert.equal(listed.titles["alias/page.md"], "Page");
+
+      const shown = await openDoc(a, "A", "out/note.md");
+      assert.equal(shown.text, "# Note\noutside\n");
+      assert.equal(shown.text, await fs.readFile(path.join(outside, "note.md"), "utf8"));
+      const aliasShown = await openDoc(a, "A", "alias/page.md");
+      assert.equal(aliasShown.text, "# Page\ninner\n");
+      a.send({ type: "open", username: "A", path: "linked.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+      assert.equal((await fs.lstat(path.join(dir, "linked.md"))).isSymbolicLink(), true);
+      assert.equal(await fs.readFile(path.join(outside, "plain.md"), "utf8"), "plain\n");
+
+      a.send({ type: "open", username: "A", path: "out/note.md" });
+      const editing = await a.next((msg) => msg.type === "file" && msg.path === "out/note.md");
+      const end = editing.text.length;
+      a.send({ type: "edit", username: "A", path: "out/note.md", rev: editing.rev, anchor: end, cursor: end, op: "insert", text: "Z" });
+      const edited = await takeDoc(a);
+      assert.notEqual(edited.text, "# Note\noutside\n");
+      assert.ok(edited.text.startsWith("# Note\n"));
+      assert.ok(edited.text.includes("Z"));
+      assert.equal(await fs.readFile(path.join(outside, "note.md"), "utf8"), edited.text);
+
+      a.send({ type: "create", username: "A", path: "out/made.md", text: "made\n" });
+      const made = await a.next((msg) => (msg.type === "file" && msg.path === "out/made.md") || msg.type === "error");
+      assert.equal(made.type, "file");
+      assert.equal(made.text, "made\n");
+      assert.equal(await fs.readFile(path.join(outside, "made.md"), "utf8"), "made\n");
+      assert.equal((await fs.lstat(path.join(dir, "out"))).isSymbolicLink(), true);
+      const madeDocs = await a.next((msg) => msg.type === "docs");
+      assert.equal(madeDocs.files.includes("out/made.md"), true);
+
+      a.send({ type: "delete", username: "A", path: "out/made.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "deleted" || msg.type === "error"), { type: "deleted", path: "out/made.md" });
+      await assert.rejects(() => fs.lstat(path.join(outside, "made.md")));
+      assert.equal((await fs.lstat(path.join(dir, "out"))).isSymbolicLink(), true);
+      const deletedDocs = await a.next((msg) => msg.type === "docs");
+      assert.equal(deletedDocs.files.includes("out/made.md"), false);
+      assert.equal(deletedDocs.files.includes("out/note.md"), true);
+
+      a.send({ type: "move", username: "A", path: "out/note.md", dir: "archive" });
+      const movedDocs = await a.next((msg) => msg.type === "docs" || msg.type === "error");
+      assert.equal(movedDocs.type, "docs");
+      assert.equal(movedDocs.files.includes("archive/note.md"), true);
+      assert.equal(movedDocs.files.includes("out/note.md"), false);
+      const moved = await a.next((msg) => msg.type === "moved" || msg.type === "error");
+      assert.equal(moved.type, "moved");
+      assert.equal(await fs.readFile(path.join(dir, "archive", "note.md"), "utf8"), edited.text);
+      await assert.rejects(() => fs.lstat(path.join(outside, "note.md")));
+
+      a.send({ type: "move", username: "A", path: "archive/note.md", dir: "out" });
+      const backDocs = await a.next((msg) => msg.type === "docs" || msg.type === "error");
+      assert.equal(backDocs.type, "docs");
+      assert.equal(backDocs.files.includes("out/note.md"), true);
+      assert.equal(backDocs.files.includes("archive/note.md"), false);
+      const back = await a.next((msg) => msg.type === "moved" || msg.type === "error");
+      assert.equal(back.type, "moved");
+      assert.equal(await fs.readFile(path.join(outside, "note.md"), "utf8"), edited.text);
+      await assert.rejects(() => fs.lstat(path.join(dir, "archive", "note.md")));
+
+      a.send({ type: "delete", username: "A", path: "out/stay.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "deleted" || msg.type === "error"), { type: "deleted", path: "out/stay.md" });
+      await assert.rejects(() => fs.lstat(path.join(outside, "stay.md")));
+
+      a.ws.close();
     });
   } finally {
     await fs.rm(outside, { recursive: true, force: true });

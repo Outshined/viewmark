@@ -110,15 +110,125 @@ function inside(rootDir, candidate) {
   return rel === "" || (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel));
 }
 
-async function resolveInside(rootDir, rel) {
-  let real;
+// A directory symlink is part of the tree, including one whose target is outside
+// the root. The path inside the root is the document path. A cycle ends that
+// descent. A symlink that is not a directory is not a document.
+async function directoryReal(full, stack) {
+  let info;
   try {
-    real = await fs.realpath(path.resolve(rootDir, rel));
+    info = await fs.stat(full);
   } catch {
     return null;
   }
-  if (!inside(rootDir, real)) return null;
+  if (!info.isDirectory()) return null;
+  let real;
+  try {
+    real = await fs.realpath(full);
+  } catch {
+    return null;
+  }
+  if (stack.includes(real)) return null;
   return real;
+}
+
+function realInTicketStore(rootReal, candidate) {
+  const rel = path.relative(rootReal, candidate);
+  return rel === "tickets" || rel.startsWith(`tickets${path.sep}`);
+}
+
+// The literal tickets/ store stays reachable. Another path whose real
+// directory is that store is not a document path.
+function storeStepAllowed(rootDir, rootReal, next, real) {
+  if (!realInTicketStore(rootReal, real)) return true;
+  const walked = path.relative(rootDir, next).split(path.sep).join("/");
+  return walked === "tickets" || walked.startsWith("tickets/");
+}
+
+async function descend(rootDir, parts) {
+  let rootReal;
+  try {
+    rootReal = await fs.realpath(rootDir);
+  } catch {
+    return null;
+  }
+  const stack = [rootReal];
+  let logical = rootDir;
+  for (let i = 0; i < parts.length; i += 1) {
+    const next = path.join(logical, parts[i]);
+    let listed;
+    try {
+      listed = await fs.lstat(next);
+    } catch (err) {
+      if (err && err.code === "ENOENT") return { logical, stack, rootReal, index: i, missing: true };
+      return null;
+    }
+    if (!listed.isDirectory() && !listed.isSymbolicLink()) return null;
+    const real = await directoryReal(next, stack);
+    if (!real || !storeStepAllowed(rootDir, rootReal, next, real)) return null;
+    stack.push(real);
+    logical = next;
+  }
+  return { logical, stack, rootReal, index: parts.length, missing: false };
+}
+
+async function walkTree(rootDir, rel) {
+  const parts = rel.split("/");
+  const base = parts.pop();
+  const descended = await descend(rootDir, parts);
+  if (!descended || descended.missing) return null;
+  const next = path.join(descended.logical, base);
+  let listed;
+  try {
+    listed = await fs.lstat(next);
+  } catch {
+    return null;
+  }
+  if (listed.isDirectory() || listed.isSymbolicLink()) {
+    const real = await directoryReal(next, descended.stack);
+    if (!real || !storeStepAllowed(rootDir, descended.rootReal, next, real)) return null;
+    return { logical: next, real, kind: listed.isSymbolicLink() ? "dir-link" : "dir" };
+  }
+  if (!listed.isFile()) return null;
+  let real;
+  try {
+    real = await fs.realpath(next);
+  } catch {
+    return null;
+  }
+  if (realInTicketStore(descended.rootReal, real) && ticketIdFromRel(rel) == null) return null;
+  return { logical: next, real, kind: "file" };
+}
+
+async function createDest(rootDir, rel) {
+  const parts = rel.split("/");
+  const base = parts.pop();
+  const descended = await descend(rootDir, parts);
+  if (!descended) return null;
+  let logical = descended.logical;
+  if (descended.missing) {
+    logical = path.join(logical, ...parts.slice(descended.index));
+    try {
+      await fs.mkdir(logical, { recursive: true });
+    } catch {
+      return null;
+    }
+  }
+  let parentReal;
+  try {
+    parentReal = await fs.realpath(logical);
+  } catch {
+    return null;
+  }
+  if (!storeStepAllowed(rootDir, descended.rootReal, logical, parentReal)) return null;
+  return path.join(parentReal, base);
+}
+
+async function resolveInside(rootDir, rel) {
+  const found = await walkTree(rootDir, rel);
+  if (!found) return null;
+  // The name inside the root is what moves. A file under a directory link is
+  // renamed through that link, so the bytes land on the real file.
+  return found.logical;
 }
 
 async function placedFull(rootDir, dir, name) {
@@ -545,16 +655,38 @@ function runOp(text, cursor, anchor, msg) {
   return producedFrom(next, state);
 }
 
-async function listMarkdown(dir, prefix) {
+async function listMarkdown(dir, prefix = "", stack = null) {
+  if (stack == null) {
+    let rootReal;
+    try {
+      rootReal = await fs.realpath(dir);
+    } catch {
+      return [];
+    }
+    // The root is already on the descent, so a link back to it ends there.
+    stack = [rootReal];
+  }
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const out = [];
+  const rootReal = stack[0];
   for (const entry of entries) {
-    if (entry.name === ".git" || entry.isSymbolicLink()) continue;
-    // tickets/ is the ticket store, not a document tree.
-    if (prefix === "" && entry.name === "tickets" && entry.isDirectory()) continue;
+    if (entry.name === ".git") continue;
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) out.push(...await listMarkdown(path.join(dir, entry.name), rel));
-    else if (entry.isFile() && (rel.endsWith(".md") || rel.endsWith(".markdown"))) out.push(rel);
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory() || entry.isSymbolicLink()) {
+      // tickets/ is the ticket store, not a document tree. A link of that name is the store too.
+      if (prefix === "" && entry.name === "tickets") continue;
+      const real = await directoryReal(full, stack);
+      if (!real || realInTicketStore(rootReal, real)) continue;
+      stack.push(real);
+      try {
+        out.push(...await listMarkdown(full, rel, stack));
+      } finally {
+        stack.pop();
+      }
+      continue;
+    }
+    if (entry.isFile() && isMarkdownPath(rel)) out.push(rel);
   }
   out.sort();
   return out;
@@ -1309,20 +1441,9 @@ export async function createHub(stateDir, sourceRoot) {
   }
 
   async function prepareAssetDir(repo, dirRel) {
-    const full = path.resolve(repo.path, dirRel);
-    try {
-      await fs.mkdir(full, { recursive: true });
-    } catch {
-      return null;
-    }
-    let real;
-    try {
-      real = await fs.realpath(full);
-    } catch {
-      return null;
-    }
-    if (!inside(repo.path, real)) return null;
-    return real;
+    const dest = await createDest(repo.path, `${dirRel}/x`);
+    if (!dest) return null;
+    return path.dirname(dest);
   }
 
   async function claimImageFile(repo, dir, ext, text) {
@@ -1363,14 +1484,9 @@ export async function createHub(stateDir, sourceRoot) {
     const docsDir = repo.path;
     const cached = files.get(rel);
     if (cached) return cached;
-    const full = path.resolve(docsDir, rel);
-    let real;
-    try {
-      real = await fs.realpath(full);
-    } catch {
-      return null;
-    }
-    if (!inside(docsDir, real)) return null;
+    const found = await walkTree(docsDir, rel);
+    if (!found || found.kind !== "file") return null;
+    const real = found.real;
     let info;
     try {
       info = await fs.stat(real);
@@ -1598,16 +1714,9 @@ export async function createHub(stateDir, sourceRoot) {
     let bytes;
     if (cached) bytes = Buffer.from(cached.text, "utf8");
     else {
-      const full = path.resolve(repo.path, rel);
-      let real;
-      try { real = await fs.realpath(full); }
-      catch { return fail(socket, 404); }
-      if (!inside(repo.path, real)) return fail(socket, 404);
-      let info;
-      try { info = await fs.stat(real); }
-      catch { return fail(socket, 404); }
-      if (!info.isFile()) return fail(socket, 404);
-      bytes = await fs.readFile(real);
+      const found = await walkTree(repo.path, rel);
+      if (!found || found.kind !== "file") return fail(socket, 404);
+      bytes = await fs.readFile(found.real);
     }
     send(socket, { type: "rev", path: rel, sha256: createHash("sha256").update(bytes).digest("hex") });
   }
@@ -1804,22 +1913,8 @@ export async function createHub(stateDir, sourceRoot) {
     if (files.has(rel)) return fail(socket, 409);
     const full = path.resolve(docsDir, rel);
     if (await existsPath(full)) return fail(socket, 409);
-    const parent = path.dirname(full);
-    try {
-      await fs.mkdir(parent, { recursive: true });
-    } catch {
-      return fail(socket, 404);
-    }
-    let parentReal;
-    try {
-      parentReal = await fs.realpath(parent);
-    } catch {
-      return fail(socket, 404);
-    }
-    // A parent symlink can resolve outside the docs repo. Refuse before writing.
-    if (!inside(docsDir, parentReal)) return fail(socket, 404);
-    const dest = path.join(parentReal, path.basename(rel));
-    if (!inside(docsDir, dest)) return fail(socket, 404);
+    const dest = await createDest(docsDir, rel);
+    if (!dest) return fail(socket, 404);
     if (await existsPath(dest)) return fail(socket, 409);
     await writeAtomic(dest, text);
     files.set(rel, { rel, full: dest, rev: 0, text, subscribers: new Set(), locks: new Map() });
@@ -2787,7 +2882,7 @@ export async function createHub(stateDir, sourceRoot) {
     const dirReal = await prepareAssetDir(repo, dir);
     if (!dirReal) return fail(socket, 404);
     const imageFull = path.join(dirReal, named.file);
-    if (!inside(repo.path, imageFull) || (await existsPath(imageFull))) return fail(socket, 500);
+    if (await existsPath(imageFull)) return fail(socket, 500);
     await writeAtomic(imageFull, bytes);
 
     const prior = session.docPath === file.rel
