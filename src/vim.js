@@ -33,7 +33,9 @@ function cloneVim(vim) {
       text: src.register && typeof src.register.text === "string" ? src.register.text : "",
       linewise: !!(src.register && src.register.linewise),
     },
-    search: src.search ? { pattern: src.search.pattern, forward: src.search.forward !== false } : null,
+    search: src.search && typeof src.search.pattern === "string"
+      ? { pattern: src.search.pattern, forward: src.search.forward !== false, whole: src.search.whole === true }
+      : null,
     find: src.find ? { ch: src.find.ch, forward: src.find.forward !== false, till: src.find.till === true } : null,
     column: Number.isInteger(src.column) ? src.column : null,
     once: src.once === true,
@@ -1478,6 +1480,302 @@ function joinLines(vim, doc, cursor, raw, glue) {
   });
 }
 
+const SEARCH_LIMIT = 1000;
+
+// Spaces separate the run, the same way wordStop does, so a comma stays on it.
+function runUnder(doc, cursor) {
+  if (cursor < 0 || cursor >= doc.length) return null;
+  if (/\s/.test(doc[cursor])) return null;
+  let start = cursor;
+  while (start > 0 && !/\s/.test(doc[start - 1])) start -= 1;
+  let end = cursor + 1;
+  while (end < doc.length && !/\s/.test(doc[end])) end += 1;
+  if (start >= end) return null;
+  return { start, end, text: doc.slice(start, end) };
+}
+
+function wholeRun(doc, at, length) {
+  if (at > 0 && !/\s/.test(doc[at - 1])) return false;
+  const after = at + length;
+  if (after < doc.length && !/\s/.test(doc[after])) return false;
+  return true;
+}
+
+function matchesOf(doc, pattern, whole) {
+  const hits = [];
+  if (!pattern) return hits;
+  let index = 0;
+  while (index <= doc.length - pattern.length) {
+    const at = doc.indexOf(pattern, index);
+    if (at < 0) break;
+    if (!whole || wholeRun(doc, at, pattern.length)) hits.push(at);
+    index = at + 1;
+  }
+  return hits;
+}
+
+// Forward starts at origin, or just after it when the caret is already on a hit.
+// Backward takes the nearest start before origin. Either side wraps once.
+function nextHit(hits, origin, forward, skipStart) {
+  if (hits.length === 0) return null;
+  if (forward) {
+    const min = skipStart ? origin + 1 : origin;
+    for (let i = 0; i < hits.length; i += 1) {
+      if (hits[i] >= min) return hits[i];
+    }
+    for (let i = 0; i < hits.length; i += 1) {
+      if (hits[i] < min) return hits[i];
+    }
+    return null;
+  }
+  let best = null;
+  for (let i = 0; i < hits.length; i += 1) {
+    if (hits[i] < origin) best = hits[i];
+  }
+  if (best != null) return best;
+  return hits[hits.length - 1];
+}
+
+function nthHit(hits, origin, forward, skipStart, count) {
+  let at = origin;
+  let skip = skipStart;
+  const steps = count < 1 ? 1 : count;
+  for (let n = 0; n < steps; n += 1) {
+    const hit = nextHit(hits, at, forward, skip);
+    if (hit == null) return null;
+    at = hit;
+    skip = true;
+  }
+  return at;
+}
+
+function placeSearch(vim, doc, origin, scanForward, stored, count, skipStart) {
+  const pattern = stored.pattern;
+  if (typeof pattern !== "string" || pattern.length === 0 || pattern.length > SEARCH_LIMIT) {
+    return pack("full", true, clearInput(vim), null);
+  }
+  const whole = stored.whole === true;
+  const hits = matchesOf(doc, pattern, whole);
+  const at = nthHit(hits, origin, scanForward, skipStart, count);
+  const next = clearInput(vim);
+  next.search = { pattern, forward: stored.forward !== false, whole };
+  if (at == null) return pack("full", true, next, null);
+  next.column = null;
+  return pack("full", true, leavingOnce(next, vim), { type: "caret", anchor: at, cursor: at });
+}
+
+function repeatSearch(vim, doc, cursor, flip) {
+  const stored = vim.search;
+  if (!stored || typeof stored.pattern !== "string" || stored.pattern.length === 0) {
+    return pack("full", true, clearInput(vim), null);
+  }
+  const scanForward = flip ? stored.forward === false : stored.forward !== false;
+  return placeSearch(vim, doc, cursor, scanForward, stored, repeatOf(vim), scanForward);
+}
+
+function starSearch(vim, doc, cursor, forward, whole) {
+  const word = runUnder(doc, cursor);
+  if (!word || word.text.length > SEARCH_LIMIT) return pack("full", true, clearInput(vim), null);
+  const origin = forward ? word.end : word.start;
+  const stored = { pattern: word.text, forward, whole };
+  return placeSearch(vim, doc, origin, forward, stored, repeatOf(vim), false);
+}
+
+// gn puts the caret at the match's end. gN puts it at the start, so the selection runs backward.
+function selectSearch(vim, doc, cursor, backward) {
+  const stored = vim.search;
+  if (!stored || typeof stored.pattern !== "string" || stored.pattern.length === 0 || stored.pattern.length > SEARCH_LIMIT) {
+    return pack("full", true, clearInput(vim), null);
+  }
+  const scanForward = !backward;
+  const hits = matchesOf(doc, stored.pattern, stored.whole === true);
+  const at = nthHit(hits, cursor, scanForward, scanForward, repeatOf(vim));
+  if (at == null) return pack("full", true, clearInput(vim), null);
+  const end = at + stored.pattern.length;
+  const next = clearInput(vim);
+  next.mode = "visual";
+  next.column = null;
+  next.search = { pattern: stored.pattern, forward: stored.forward !== false, whole: stored.whole === true };
+  const anchor = backward ? end : at;
+  const caret = backward ? at : end;
+  return pack("full", true, leavingOnce(next, vim), { type: "caret", anchor, cursor: caret });
+}
+
+function submitSearch(vim, doc, cursor, pattern, forward) {
+  if (typeof pattern !== "string" || pattern.length === 0 || pattern.length > SEARCH_LIMIT) {
+    return pack("full", true, clearInput(vim), null);
+  }
+  const stored = { pattern, forward: forward !== false, whole: false };
+  return placeSearch(vim, doc, cursor, stored.forward, stored, 1, false);
+}
+
+function exIdle(vim) {
+  const next = clearInput(vim);
+  if (vim.once) {
+    next.once = false;
+    next.mode = "insert";
+  } else next.mode = "normal";
+  return pack("full", true, next, null);
+}
+
+function exHistory(vim, direction) {
+  const next = clearInput(vim);
+  if (vim.once) {
+    next.once = false;
+    next.mode = "insert";
+  } else next.mode = "normal";
+  return pack("full", true, next, { type: "history", direction });
+}
+
+function deleteAll(vim, doc) {
+  const next = clearInput(vim);
+  next.column = null;
+  if (vim.once) {
+    next.once = false;
+    next.mode = "insert";
+  } else next.mode = "normal";
+  if (doc.length === 0) return pack("full", true, next, null);
+  next.register = { text: doc, linewise: true };
+  return pack("full", true, next, {
+    type: "splice",
+    from: 0,
+    to: doc.length,
+    text: "",
+    caret: 0,
+    yank: { text: doc, linewise: true },
+  });
+}
+
+function sourceTextRange(doc, cursor) {
+  const line = sourceLine(doc, cursor);
+  return { from: line.start, to: line.start + line.text.length };
+}
+
+// The first non-blank of the line that holds offset. A blank line stays at its start.
+function lineNonBlank(text, offset) {
+  const from = Math.max(0, Math.min(text.length, offset));
+  let start = 0;
+  for (let i = from; i > 0; i -= 1) {
+    if (text[i - 1] === "\n") {
+      start = i;
+      break;
+    }
+  }
+  let limit = text.length;
+  for (let i = start; i < text.length; i += 1) {
+    if (text[i] === "\n") {
+      limit = i;
+      break;
+    }
+  }
+  let index = start;
+  while (index < limit && (text[index] === " " || text[index] === "\t")) index += 1;
+  if (index >= limit) return start;
+  return index;
+}
+
+// A slash in the field is written \/. Any other backslash stays in the text.
+function readDelimited(text, start) {
+  let out = "";
+  for (let i = start; i < text.length; i += 1) {
+    if (text[i] === "\\" && i + 1 < text.length && text[i + 1] === "/") {
+      out += "/";
+      i += 1;
+      continue;
+    }
+    if (text[i] === "/") return { text: out, next: i + 1 };
+    out += text[i];
+  }
+  return null;
+}
+
+function parseSubstitute(rest) {
+  let i = 0;
+  while (i < rest.length && (rest[i] === " " || rest[i] === "\t")) i += 1;
+  if (rest[i] !== "/") return null;
+  const pattern = readDelimited(rest, i + 1);
+  if (!pattern || pattern.text.length === 0) return null;
+  const replacement = readDelimited(rest, pattern.next);
+  if (!replacement) return null;
+  const flags = rest.slice(replacement.next);
+  if (flags !== "" && flags !== "g") return null;
+  return { pattern: pattern.text, replacement: replacement.text, all: flags === "g" };
+}
+
+function applySubstitute(doc, from, to, pattern, replacement, all) {
+  const slice = doc.slice(from, to);
+  let built = "";
+  let index = 0;
+  let touch = -1;
+  let count = 0;
+  while (index <= slice.length - pattern.length) {
+    const at = slice.indexOf(pattern, index);
+    if (at < 0) break;
+    built += slice.slice(index, at);
+    const start = built.length;
+    built += replacement;
+    touch = replacement.length === 0 ? start : built.length - 1;
+    count += 1;
+    index = at + pattern.length;
+    if (!all) break;
+  }
+  if (count === 0) return null;
+  built += slice.slice(index);
+  if (built === slice) return null;
+  return { from, to, text: built, caret: from + lineNonBlank(built, touch < 0 ? 0 : touch) };
+}
+
+function submitEx(vim, doc, cursor, raw, line) {
+  const text = String(line || "").replace(/^\s+/, "").replace(/\s+$/, "");
+  if (text === "") return exIdle(vim);
+  let i = 0;
+  let range = "";
+  if (text[0] === "%") {
+    range = "%";
+    i = 1;
+    while (i < text.length && (text[i] === " " || text[i] === "\t")) i += 1;
+  } else if (/[0-9.$',+\-]/.test(text[0])) return exIdle(vim);
+  let j = i;
+  while (j < text.length && /[A-Za-z]/.test(text[j])) j += 1;
+  const name = text.slice(i, j);
+  const rest = text.slice(j);
+  if (!name) return exIdle(vim);
+  if (name === "d" && rest === "") {
+    if (range === "%") return deleteAll(vim, doc);
+    if (range) return exIdle(vim);
+    return repeatedLine(clearInput(vim), doc, cursor, raw, "d");
+  }
+  if ((name === "j" || name === "y") && rest === "" && range === "") {
+    const blank = clearInput(vim);
+    if (name === "j") return joinLines(blank, doc, cursor, raw, true);
+    return repeatedLine(blank, doc, cursor, raw, "y");
+  }
+  if ((name === "u" || name === "undo") && rest === "" && range === "") return exHistory(vim, "undo");
+  if ((name === "red" || name === "redo") && rest === "" && range === "") return exHistory(vim, "redo");
+  if ("substitute".startsWith(name)) {
+    const parsed = parseSubstitute(rest);
+    if (!parsed) return exIdle(vim);
+    const span = range === "%" ? { from: 0, to: doc.length } : sourceTextRange(doc, cursor);
+    const applied = applySubstitute(doc, span.from, span.to, parsed.pattern, parsed.replacement, parsed.all);
+    if (!applied) return exIdle(vim);
+    const next = clearInput(vim);
+    next.column = null;
+    if (vim.once) {
+      next.once = false;
+      next.mode = "insert";
+    } else next.mode = "normal";
+    return pack("full", true, next, {
+      type: "splice",
+      from: applied.from,
+      to: applied.to,
+      text: applied.text,
+      caret: applied.caret,
+      yank: null,
+    });
+  }
+  return exIdle(vim);
+}
+
 function runAction(vim, doc, anchor, cursor, raw, layout, id) {
   if (id === "D" || id === "C") {
     const motion = runMotion("$", {
@@ -1610,10 +1908,16 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
     return pack("full", true, next, { type: "prompt", kind: "search", forward: id === "/" });
   }
   if (id === ":") {
-    if (vim.mode === "visual" || vim.mode === "visual-line") return pack("full", true, next, null);
+    // Visual has no ex line. The command returns to Normal and writes nothing.
+    if (vim.mode === "visual" || vim.mode === "visual-line") {
+      next.mode = "normal";
+      next.once = false;
+      return pack("full", true, next, { type: "caret", anchor: cursor, cursor });
+    }
     return pack("full", true, next, { type: "prompt", kind: "ex" });
   }
-  if (id === "n" || id === "N" || id === "*" || id === "#") return pack("full", true, next, null);
+  if (id === "n" || id === "N") return repeatSearch(vim, doc, cursor, id === "N");
+  if (id === "*" || id === "#") return starSearch(vim, doc, cursor, id === "*", true);
   if ((vim.mode === "visual" || vim.mode === "visual-line") && (id === "o" || id === "O")) {
     return pack("full", true, vim.mode === "visual" || vim.mode === "visual-line" ? { ...next, mode: vim.mode, once: vim.once } : next, {
       type: "caret",
@@ -1746,6 +2050,13 @@ function finishQuote(vim, anchor, cursor, key) {
 
 function finishG(vim, doc, anchor, cursor, raw, layout, key) {
   if (isEscape(key)) return doEscape(vim, anchor, cursor);
+  if (!key.ctrl && !key.meta && !key.alt && (key.key === "n" || key.key === "N" || key.key === "*" || key.key === "#")) {
+    // An operator is not a search motion. dgn writes nothing.
+    if (vim.input.operator) return pack("none", true, clearInput(vim), null);
+    const ready = { ...vim, input: { ...vim.input, keyBuffer: "" } };
+    if (key.key === "n" || key.key === "N") return selectSearch(ready, doc, cursor, key.key === "N");
+    return starSearch(ready, doc, cursor, key.key === "*", false);
+  }
   const id = key.key === "ArrowDown" || key.key === "j" ? "gj"
     : key.key === "ArrowUp" || key.key === "k" ? "gk"
       : key.key === "g" ? "gg"
@@ -2045,4 +2356,17 @@ export function vimKey(input) {
   if (cmd.kind === "motion") return dispatchResolved(ready, doc, anchor, cursor, raw, layout, cmd.id, null);
   if (cmd.kind === "action") return dispatchResolved(ready, doc, anchor, cursor, raw, layout, cmd.id, null);
   return pack("none", true, clearInput(ready), null);
+}
+
+export function vimSubmit(input) {
+  const src = input || {};
+  if (src.flag === false) return pack("none", false, cloneVim(src.vim), null);
+  const vim = cloneVim(src.vim);
+  const doc = typeof src.doc === "string" ? src.doc : "";
+  const cursor = clamp(src.cursor, doc.length);
+  const raw = src.raw === true;
+  const line = typeof src.line === "string" ? src.line : "";
+  if (src.kind === "search") return submitSearch(vim, doc, cursor, line, src.forward !== false);
+  if (src.kind === "ex") return submitEx(vim, doc, cursor, raw, line);
+  return pack("none", true, vim, null);
 }

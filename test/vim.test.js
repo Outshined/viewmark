@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { vimKey } from "../src/vim.js";
+import { vimKey, vimSubmit } from "../src/vim.js";
 import { codeSpanAt, createState, deleteForward, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
 
 const CARET = "‸";
@@ -1593,4 +1593,339 @@ test("VR.7", () => {
   assert.equal(effect.to, "straße\n".length);
   assert.equal(effect.caret, 0);
   assert.equal(effect.yank, null);
+});
+
+function taken(state, result) {
+  let doc = state.doc;
+  let cursor = state.cursor;
+  let anchor = state.anchor;
+  const effect = result.effect;
+  if (effect && effect.type === "caret") {
+    anchor = effect.anchor;
+    cursor = effect.cursor;
+  } else if (effect && effect.type === "splice") {
+    doc = doc.slice(0, effect.from) + effect.text + doc.slice(effect.to);
+    cursor = effect.caret;
+    anchor = cursor;
+  }
+  return { doc, cursor, anchor, vim: result.vim, effect, result, show: show(doc, cursor, anchor) };
+}
+
+function submit(start, fields, opts = {}) {
+  const base = opts.from || run(start, opts.keys || [], opts);
+  const vim = base.vim;
+  const snapshot = structuredClone(vim);
+  const result = vimSubmit({
+    line: fields.line,
+    kind: fields.kind,
+    forward: fields.forward,
+    vim,
+    doc: base.doc,
+    cursor: base.cursor,
+    anchor: base.anchor,
+    raw: opts.raw === true,
+    flag: fields.flag,
+  });
+  assert.deepEqual(vim, snapshot);
+  return taken(base, result);
+}
+
+test("VS.1", () => {
+  const slash = run("‸alpha beta\n", ["/"]);
+  assert.equal(slash.steps[0].match, "full");
+  assert.equal(slash.steps[0].consumed, true);
+  assert.equal(slash.steps[0].effect.type, "prompt");
+  assert.equal(slash.steps[0].effect.kind, "search");
+  assert.equal(slash.steps[0].effect.forward, true);
+  assert.equal(slash.show, "‸alpha beta\n");
+  assert.equal(slash.doc, "alpha beta\n");
+  assert.equal(slash.vim.mode, "normal");
+  assert.equal(slash.steps.filter((step) => step.effect && step.effect.type === "splice").length, 0);
+
+  const asked = run("alpha beta gam‸ma\n", ["?"]);
+  assert.equal(asked.steps[0].effect.type, "prompt");
+  assert.equal(asked.steps[0].effect.kind, "search");
+  assert.equal(asked.steps[0].effect.forward, false);
+  assert.equal(asked.show, "alpha beta gam‸ma\n");
+  assert.equal(asked.doc, "alpha beta gamma\n");
+
+  const beta = submit("‸alpha beta\n", { line: "beta", kind: "search", forward: true }, { from: slash });
+  assert.equal(beta.result.match, "full");
+  assert.equal(beta.result.consumed, true);
+  assert.equal(beta.effect.type, "caret");
+  assert.equal(beta.effect.anchor, beta.effect.cursor);
+  assert.equal(beta.show, "alpha ‸beta\n");
+  assert.equal(beta.doc, "alpha beta\n");
+  assert.equal(beta.vim.mode, "normal");
+  assert.equal(beta.vim.search.pattern, "beta");
+  assert.equal(beta.vim.search.forward, true);
+  assert.equal(beta.vim.search.whole, false);
+
+  const wrapped = submit("alpha be‸ta\n", { line: "alpha", kind: "search", forward: true });
+  assert.equal(wrapped.show, "‸alpha beta\n");
+  assert.equal(wrapped.doc, "alpha beta\n");
+
+  const backward = submit("alpha beta gam‸ma\n", { line: "alpha", kind: "search", forward: false }, { from: asked });
+  assert.equal(backward.show, "‸alpha beta gamma\n");
+  assert.equal(backward.vim.search.forward, false);
+
+  const miss = submit("‸alpha\n", { line: "zeta", kind: "search", forward: true });
+  assert.equal(miss.show, "‸alpha\n");
+  assert.equal(miss.effect, null);
+  assert.equal(miss.vim.mode, "normal");
+  assert.equal(miss.vim.search.pattern, "zeta");
+  assert.equal(run(miss.show, ["n"], { vim: miss.vim }).show, "‸alpha\n");
+
+  const empty = submit("‸alpha beta\n", { line: "", kind: "search", forward: true }, { from: slash });
+  assert.equal(empty.show, "‸alpha beta\n");
+  assert.equal(empty.vim.search, null);
+
+  const kept = submit("‸alpha\n", { line: "z".repeat(1001), kind: "search", forward: true }, { from: miss });
+  assert.equal(kept.show, "‸alpha\n");
+  assert.equal(kept.effect, null);
+  assert.equal(kept.vim.search.pattern, "zeta");
+
+  const pattern = "x".repeat(1000);
+  const body = `y${pattern}\n`;
+  const accepted = submit(`‸${body}`, { line: pattern, kind: "search", forward: true });
+  assert.equal(accepted.cursor, 1);
+  assert.equal(accepted.doc, body);
+  assert.equal(accepted.vim.search.pattern.length, 1000);
+  const refused = submit(`‸${"x".repeat(1001)}`, { line: "x".repeat(1001), kind: "search", forward: true });
+  assert.equal(refused.cursor, 0);
+  assert.equal(refused.effect, null);
+  assert.equal(refused.vim.search, null);
+
+  let state = submit("‸a x b x c x\n", { line: "x", kind: "search", forward: true });
+  assert.equal(state.show, "a ‸x b x c x\n");
+  state = run(state.show, ["n"], { vim: state.vim });
+  assert.equal(state.steps[0].effect.type, "caret");
+  assert.equal(state.show, "a x b ‸x c x\n");
+  state = run(state.show, ["N"], { vim: state.vim });
+  assert.equal(state.show, "a ‸x b x c x\n");
+  assert.equal(state.vim.search.forward, true);
+  state = run(state.show, ["n", "n", "n"], { vim: state.vim });
+  assert.equal(state.show, "a ‸x b x c x\n");
+  assert.equal(state.doc, "a x b x c x\n");
+  assert.equal(state.steps.filter((step) => step.effect && step.effect.type === "splice").length, 0);
+
+  let back = submit("x a x a ‸z\n", { line: "a", kind: "search", forward: false });
+  assert.equal(back.show, "x a x ‸a z\n");
+  back = run(back.show, ["n"], { vim: back.vim });
+  assert.equal(back.show, "x ‸a x a z\n");
+  back = run(back.show, ["n"], { vim: back.vim });
+  assert.equal(back.show, "x a x ‸a z\n");
+  assert.equal(back.vim.search.forward, false);
+  back = run(back.show, ["N"], { vim: back.vim });
+  assert.equal(back.show, "x ‸a x a z\n");
+
+  const off = vimSubmit({
+    flag: false,
+    kind: "search",
+    line: "beta",
+    forward: true,
+    vim: slash.vim,
+    doc: slash.doc,
+    cursor: 0,
+    anchor: 0,
+  });
+  assert.equal(off.match, "none");
+  assert.equal(off.consumed, false);
+  assert.equal(off.effect, null);
+});
+
+test("VS.5", () => {
+  const dot = submit("‸abc a.c\n", { line: "a.c", kind: "search", forward: true });
+  assert.equal(dot.show, "abc ‸a.c\n");
+  assert.equal(dot.doc, "abc a.c\n");
+  const upper = submit("‸alpha Alpha\n", { line: "Alpha", kind: "search", forward: true });
+  assert.equal(upper.show, "alpha ‸Alpha\n");
+  const lower = submit("‸alpha Alpha\n", { line: "alpha", kind: "search", forward: true });
+  assert.equal(lower.show, "‸alpha Alpha\n");
+
+  const star = run("‸alpha alphabet alpha\n", ["*"]);
+  assert.equal(star.steps[0].effect.type, "caret");
+  assert.equal(star.show, "alpha alphabet ‸alpha\n");
+  assert.equal(star.doc, "alpha alphabet alpha\n");
+  assert.equal(star.vim.search.whole, true);
+  assert.equal(star.vim.search.forward, true);
+  const hash = run(star.show, ["#"], { vim: star.vim });
+  assert.equal(hash.show, "‸alpha alphabet alpha\n");
+  assert.equal(hash.doc, star.doc);
+  assert.equal(hash.vim.search.forward, false);
+  const gsub = run("‸alpha alphabet alpha\n", ["g", "*"]);
+  assert.equal(gsub.show, "alpha ‸alphabet alpha\n");
+  assert.equal(gsub.vim.search.whole, false);
+  const ghash = run("alpha alphabet ‸alpha\n", ["g", "#"]);
+  assert.equal(ghash.show, "alpha ‸alphabet alpha\n");
+  const comma = run("‸alpha, alpha alpha,\n", ["*"]);
+  assert.equal(comma.show, "alpha, alpha ‸alpha,\n");
+  assert.equal(comma.doc, "alpha, alpha alpha,\n");
+
+  const only = run("‸alpha alphabet\n", ["*"]);
+  assert.equal(only.show, "‸alpha alphabet\n");
+  const repeated = run(only.show, ["n"], { vim: only.vim });
+  assert.equal(repeated.show, "‸alpha alphabet\n");
+  assert.equal(repeated.doc, "alpha alphabet\n");
+
+  for (const keys of [["n"], ["N"], ["*"], ["#"], ["d", "*"], ["d", "n"]]) {
+    const out = run("‸alpha alphabet alpha\n", keys);
+    assert.equal(out.doc, "alpha alphabet alpha\n", keys.join(""));
+    assert.equal(out.steps.filter((step) => step.effect && step.effect.type === "splice").length, 0, keys.join(""));
+  }
+  const operator = run("‸alpha alphabet alpha\n", ["d", "*"]);
+  assert.equal(operator.steps[1].match, "none");
+  assert.equal(operator.vim.input.operator, null);
+});
+
+test("VS.11", () => {
+  const searched = submit("‸one two one\n", { line: "two", kind: "search", forward: true });
+  assert.equal(searched.show, "one ‸two one\n");
+  const zeroed = run(searched.show, ["0"], { vim: searched.vim });
+  assert.equal(zeroed.show, "‸one two one\n");
+  const gn = run(zeroed.show, ["g", "n"], { vim: zeroed.vim });
+  assert.equal(gn.show, "one «two‸ one\n");
+  assert.equal(gn.vim.mode, "visual");
+  assert.equal(gn.doc, "one two one\n");
+  assert.equal(gn.anchor, 4);
+  assert.equal(gn.cursor, 7);
+  assert.equal(gn.steps.filter((step) => step.effect && step.effect.type === "splice").length, 0);
+
+  const dgn = run(zeroed.show, ["d", "g", "n"], { vim: zeroed.vim });
+  assert.equal(dgn.steps[2].match, "none");
+  assert.equal(dgn.steps[2].consumed, true);
+  assert.equal(dgn.steps[2].effect, null);
+  assert.equal(dgn.show, "‸one two one\n");
+  assert.equal(dgn.doc, "one two one\n");
+  assert.equal(dgn.vim.mode, "normal");
+  assert.equal(dgn.vim.input.operator, null);
+  assert.equal(dgn.steps.filter((step) => step.effect && step.effect.type === "splice").length, 0);
+
+  const missed = submit("‸one two one\n", { line: "zeta", kind: "search", forward: true });
+  const stay = run(missed.show, ["g", "n"], { vim: missed.vim });
+  assert.equal(stay.show, "‸one two one\n");
+  assert.equal(stay.vim.mode, "normal");
+  assert.equal(stay.doc, "one two one\n");
+
+  const visual = run("«one two‸ one\n", ["g", "n"], { mode: "visual" });
+  assert.equal(visual.vim.mode, "visual");
+  assert.equal(visual.show, "«one two‸ one\n");
+  assert.equal(visual.doc, "one two one\n");
+
+  const end = run(searched.show, ["$"], { vim: searched.vim });
+  assert.equal(end.show, "one two one‸\n");
+  const backward = run(end.show, ["g", "N"], { vim: end.vim });
+  assert.equal(backward.show, "one ‸two« one\n");
+  assert.equal(backward.vim.mode, "visual");
+  assert.equal(backward.cursor, 4);
+  assert.equal(backward.anchor, 7);
+  assert.equal(backward.doc, "one two one\n");
+});
+
+function ex(start, line, opts = {}) {
+  const base = run(start, [":"], opts);
+  assert.equal(base.steps[0].effect.type, "prompt");
+  assert.equal(base.steps[0].effect.kind, "ex");
+  assert.equal(base.show, start);
+  return submit(start, { line, kind: "ex" }, { from: base, raw: opts.raw === true });
+}
+
+test("VE.1", () => {
+  const once = ex("‸banana\nalpha\n", "s/a/o/");
+  assert.equal(once.doc, "bonana\nalpha\n");
+  assert.equal(once.vim.mode, "normal");
+  assert.equal(once.effect.type, "splice");
+  assert.equal(once.effect.yank, null);
+  assert.equal(Object.hasOwn(once.effect, "group"), false);
+  assert.equal(ex("‸banana\nalpha\n", "s/a/o/g").doc, "bonono\nalpha\n");
+  assert.equal(ex("‸banana\nalpha\n", "%s/a/o/g").doc, "bonono\nolpho\n");
+  assert.equal(ex("‸banana\nalpha\n", "%s/a/o/").doc, "bonana\nalpha\n");
+  assert.equal(ex("‸banana\nalpha\n", "su/a/o/").doc, "bonana\nalpha\n");
+  assert.equal(ex("‸banana\nalpha\n", "substitute/a/o/").doc, "bonana\nalpha\n");
+
+  assert.equal(ex("‸a/xb\n", "s/\\/x/y/").doc, "ayb\n");
+  assert.equal(ex("‸a\\%b\n", "s/\\%/y/").doc, "ayb\n");
+  assert.equal(ex("‸ab\n", "s/a/$1&\\1/").doc, "$1&\\1b\n");
+
+  for (const line of [
+    "s/a/b/\\%", "s/a/b", "s//b/", "2,3s/a/b/", ".,$s/a/b/",
+    "set", "sort", "start", "w", "q", "q!", "wq", "e",
+    "g/a/d", "v/a/d", "norm x", "noh", "map", "reg", "delm a", "!ls", "re",
+  ]) {
+    const out = ex("‸banana\nalpha\n", line);
+    assert.equal(out.doc, "banana\nalpha\n", line);
+    assert.equal(out.effect, null, line);
+    assert.equal(out.vim.mode, "normal", line);
+  }
+
+  const rendered = ex("alpha\nbe‸ta\ngamma\n", "d");
+  const dd = run("alpha\nbe‸ta\ngamma\n", ["d", "d"]);
+  assert.equal(rendered.doc, dd.doc);
+  assert.equal(rendered.show, dd.show);
+  const raw = ex("alpha\nbe‸ta\ngamma\n", "d", { raw: true });
+  const rawDd = run("alpha\nbe‸ta\ngamma\n", ["d", "d"], { raw: true });
+  assert.equal(raw.doc, rawDd.doc);
+  assert.equal(raw.show, rawDd.show);
+  assert.equal(raw.show, "alpha\n‸gamma\n");
+  const emptied = ex("alpha\nbe‸ta\ngamma\n", "%d");
+  assert.equal(emptied.doc, "");
+  assert.equal(emptied.show, "‸");
+  assert.equal(emptied.effect.type, "splice");
+  assert.equal(emptied.effect.from, 0);
+  assert.equal(emptied.effect.to, "alpha\nbeta\ngamma\n".length);
+
+  const joined = ex("al‸pha\nbeta\n", "j");
+  const jay = run("al‸pha\nbeta\n", ["J"]);
+  assert.equal(joined.doc, jay.doc);
+  assert.equal(joined.show, jay.show);
+  assert.equal(joined.doc, "alpha beta\n");
+
+  const yanked = ex("‸alpha\n", "y");
+  assert.equal(yanked.doc, "alpha\n");
+  assert.equal(yanked.vim.register.text, "alpha\n");
+  assert.equal(yanked.vim.register.linewise, true);
+  assert.equal(run(yanked.show, ["p"], { vim: yanked.vim }).show, "alpha\n‸alpha\n");
+
+  assert.equal(ex("‸alpha\n", "u").effect.direction, "undo");
+  assert.equal(ex("‸alpha\n", "undo").effect.direction, "undo");
+  assert.equal(ex("‸alpha\n", "red").effect.direction, "redo");
+  assert.equal(ex("‸alpha\n", "redo").effect.direction, "redo");
+  assert.equal(ex("‸alpha\n", "u").effect.type, "history");
+  assert.equal(ex("‸alpha\n", "re").effect, null);
+
+  const visual = run("«alpha‸ beta\n", [":"], { mode: "visual" });
+  assert.equal(visual.steps[0].effect.type, "caret");
+  assert.equal(visual.vim.mode, "normal");
+  assert.equal(visual.doc, "alpha beta\n");
+  assert.equal(visual.show, "alpha‸ beta\n");
+});
+
+test("VE.10", () => {
+  const indent = ex("  ‸banana\n", "s/a/o/");
+  assert.equal(indent.doc, "  bonana\n");
+  assert.equal(indent.show, "  ‸bonana\n");
+  assert.equal(indent.cursor, 2);
+  assert.equal(indent.vim.mode, "normal");
+  assert.equal(indent.vim.column, null);
+
+  const every = ex("  ‸banana\n", "s/a/o/g");
+  assert.equal(every.show, "  ‸bonono\n");
+  assert.equal(every.doc, "  bonono\n");
+
+  const second = ex("banana\n  ‸alpha\n", "s/a/o/");
+  assert.equal(second.doc, "banana\n  olpha\n");
+  assert.equal(second.show, "banana\n  ‸olpha\n");
+
+  const last = ex("  banana\n  ‸alpha\n", "%s/a/o/g");
+  assert.equal(last.doc, "  bonono\n  olpho\n");
+  assert.equal(last.show, "  bonono\n  ‸olpho\n");
+
+  const only = ex("  ‸banana\nalpha\n", "%s/b/c/");
+  assert.equal(only.doc, "  canana\nalpha\n");
+  assert.equal(only.show, "  ‸canana\nalpha\n");
+
+  const none = ex("  ‸banana\n", "s/z/o/");
+  assert.equal(none.show, "  ‸banana\n");
+  assert.equal(none.effect, null);
+  assert.equal(none.doc, "  banana\n");
 });
