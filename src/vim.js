@@ -1074,7 +1074,13 @@ function finishMotion(vim, doc, anchor, cursor, raw, motion, operator) {
   }
   if (operator) return pack("full", true, next, null);
   if (vim.mode === "visual" || vim.mode === "visual-line") {
-    return pack("full", true, leavingOnce(next, vim), { type: "caret", anchor, cursor: at });
+    let landed = at;
+    // e and w stop on the character the selection includes. The caret is the
+    // exclusive end, so it sits one unit later. $ is already past that character.
+    if (motion.word && at > cursor && at < doc.length && doc[at] !== "\n" && doc[at] !== "\r") {
+      landed = at + unitLen(doc, at);
+    }
+    return pack("full", true, leavingOnce(next, vim), { type: "caret", anchor, cursor: landed });
   }
   return pack("full", true, leavingOnce(next, vim), { type: "caret", anchor: at, cursor: at });
 }
@@ -1125,6 +1131,7 @@ function spliceCase(vim, doc, from, to, mode) {
   const next = clearInput(vim);
   next.once = false;
   if (vim.once) next.mode = "insert";
+  else if (vim.mode === "visual" || vim.mode === "visual-line") next.mode = "normal";
   return pack("full", true, next, {
     type: "splice",
     from,
@@ -1135,39 +1142,73 @@ function spliceCase(vim, doc, from, to, mode) {
   });
 }
 
-function deleteVisual(vim, doc, anchor, cursor, raw) {
+function selectionSpan(doc, anchor, cursor, raw, linewise) {
+  const lo = Math.min(anchor, cursor);
+  const hi = Math.max(anchor, cursor);
+  if (!linewise) return { from: lo, to: hi, linewise: false };
+  const range = linewiseRange(doc, lo, hi, raw);
+  return { from: range.from, to: range.to, linewise: true };
+}
+
+// The selection is the range. A rendered linewise delete also takes the blank
+// under the paragraph. A change leaves that blank and opens one empty line.
+function operateVisual(vim, doc, anchor, cursor, raw, op) {
+  const linewise = vim.mode === "visual-line";
+  let span = selectionSpan(doc, anchor, cursor, raw, linewise);
+  if (op === "d" && linewise && !raw) span = { ...span, to: throughGap(doc, span.to) };
   const next = clearInput(vim);
   next.once = false;
-  next.mode = vim.once ? "insert" : "normal";
-  let from = Math.min(anchor, cursor);
-  let to = Math.max(anchor, cursor);
-  let linewise = false;
-  if (vim.mode === "visual-line") {
-    const range = linewiseRange(doc, from, to, raw);
-    from = range.from;
-    to = range.to;
-    linewise = true;
+  next.mode = op === "c" || vim.once ? "insert" : "normal";
+  if (caseOp(op)) {
+    if (span.from === span.to) return pack("full", true, next, null);
+    const cased = spliceCase(vim, doc, span.from, span.to, op);
+    cased.vim.mode = next.mode;
+    cased.vim.once = false;
+    return cased;
   }
-  if (from === to) return pack("full", true, next, null);
-  const removed = doc.slice(from, to);
-  const kept = keptMarker(doc, from, to);
+  if (indentOp(op)) {
+    const result = applyIndent(vim, doc, span.from, span.to, op);
+    result.vim.mode = next.mode;
+    result.vim.once = false;
+    return result;
+  }
+  if (span.from === span.to) return pack("full", true, next, null);
+  const removed = doc.slice(span.from, span.to);
+  if (op === "y") {
+    next.register = { text: removed, linewise: span.linewise };
+    return pack("full", true, next, {
+      type: "splice",
+      from: span.from,
+      to: span.to,
+      text: removed,
+      caret: span.linewise ? span.from : anchor,
+      yank: { text: removed, linewise: span.linewise },
+    });
+  }
+  if (op !== "d" && op !== "c") return pack("none", true, clearInput(vim), null);
+  const kept = keptMarker(doc, span.from, span.to);
+  let text = kept ? kept.text : "";
+  let caret = kept ? kept.caret : legal(doc, span.from, 1, raw);
+  if (op === "c" && span.linewise && !kept) {
+    text = removed.includes("\r\n") ? "\r\n" : "\n";
+    caret = span.from;
+  }
   return pack("full", true, next, {
     type: "splice",
-    from,
-    to,
-    text: kept ? kept.text : "",
-    caret: kept ? kept.caret : legal(doc, from, 1, raw),
-    yank: { text: removed, linewise },
+    from: span.from,
+    to: span.to,
+    text,
+    caret,
+    yank: { text: removed, linewise: span.linewise },
   });
 }
 
 function dispatchResolved(vim, doc, anchor, cursor, raw, layout, id, extra) {
   const operator = vim.input.operator;
-  if (!operator && (vim.mode === "visual" || vim.mode === "visual-line") && id === "d") {
-    return deleteVisual(vim, doc, anchor, cursor, raw);
-  }
+  const visual = vim.mode === "visual" || vim.mode === "visual-line";
   if (operator && doubled(operator, id)) return repeatedLine(vim, doc, cursor, raw, operator);
   if (operator && operatorOf(id) && !doubled(operator, id)) return pack("none", true, clearInput(vim), null);
+  if (!operator && visual && operatorOf(id)) return operateVisual(vim, doc, anchor, cursor, raw, operatorOf(id));
   if (!operator && operatorOf(id)) {
     const next = commitDigits(vim);
     next.input = { ...next.input, operator: operatorOf(id), keyBuffer: "", motion: null };
@@ -1268,9 +1309,20 @@ function forwardCut(doc, cursor) {
 function isActionId(id) {
   return id === "x" || id === "X" || id === "v" || id === "V" || id === "u" || id === "U" || id === "ctrl-r"
     || id === "i" || id === "a" || id === "I" || id === "A" || id === "o" || id === "O"
-    || id === "ctrl-w" || id === "." || id === "p" || id === "P" || id === "r" || id === "~"
+    || id === "ctrl-w" || id === "." || id === "p" || id === "P" || id === "r" || id === "R" || id === "~"
     || id === "J" || id === "gJ" || id === "s" || id === "S" || id === "/" || id === "?" || id === "n" || id === "N"
     || id === "*" || id === "#" || id === ":" || id === "D" || id === "C";
+}
+
+// v selects the character after the caret. A line break is not that character.
+function charAfter(doc, cursor, raw) {
+  if (cursor < 0 || cursor >= doc.length) return cursor;
+  if (doc[cursor] === "\n" || doc[cursor] === "\r") return cursor;
+  const line = lineBounds(doc, cursor, raw);
+  if (cursor < line.start || cursor >= line.end) return cursor;
+  const next = cursor + unitLen(doc, cursor);
+  if (next > line.end || next > doc.length) return cursor;
+  return next;
 }
 
 // A rendered block joins the next source line, and a list copies its marker,
@@ -1836,7 +1888,7 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
     });
   }
   if (id === "s") {
-    if (vim.mode === "visual" || vim.mode === "visual-line") return pack("none", true, clearInput(vim), null);
+    if (vim.mode === "visual" || vim.mode === "visual-line") return operateVisual(vim, doc, anchor, cursor, raw, "c");
     const span = sourceSpan(doc, cursor, repeatOf(vim), false);
     next.mode = "insert";
     next.once = false;
@@ -1851,8 +1903,9 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
       yank: { text: removed, linewise: false },
     });
   }
-  if (id === "S") {
-    if (vim.mode === "visual" || vim.mode === "visual-line") return pack("none", true, clearInput(vim), null);
+  if (id === "S" || id === "R") {
+    if (vim.mode === "visual-line") return operateVisual(vim, doc, anchor, cursor, raw, "c");
+    if (id === "R" || vim.mode === "visual") return pack("none", true, clearInput(vim), null);
     return repeatedLine(vim, doc, cursor, raw, "c");
   }
   if (id === "v" || id === "V") {
@@ -1868,7 +1921,14 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
       nextAnchor = cursor;
     } else if (vim.mode === "visual" && line) mode = "visual-line";
     else if (vim.mode === "visual-line" && !line) mode = "visual";
-    else nextAnchor = cursor;
+    else if (line) {
+      const bounds = lineBounds(doc, cursor, raw);
+      nextAnchor = bounds.start;
+      nextCursor = bounds.end;
+    } else {
+      nextAnchor = cursor;
+      nextCursor = charAfter(doc, cursor, raw);
+    }
     next.mode = mode;
     if (mode === "visual" || mode === "visual-line") next.once = vim.once;
     else if (vim.once) {
@@ -1878,13 +1938,12 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
     return pack("full", true, next, { type: "caret", anchor: nextAnchor, cursor: nextCursor });
   }
   if (id === "u") {
-    if (vim.mode === "visual" || vim.mode === "visual-line") {
-      const from = Math.min(anchor, cursor);
-      const to = Math.max(anchor, cursor);
-      if (from === to) return pack("full", true, next, null);
-      return spliceCase({ ...vim, once: false }, doc, from, to, "gu");
-    }
+    if (vim.mode === "visual" || vim.mode === "visual-line") return operateVisual(vim, doc, anchor, cursor, raw, "gu");
     return pack("full", true, leavingOnce(next, vim), { type: "history", direction: "undo" });
+  }
+  if (id === "U") {
+    if (vim.mode === "visual" || vim.mode === "visual-line") return operateVisual(vim, doc, anchor, cursor, raw, "gU");
+    return pack("none", true, clearInput(vim), null);
   }
   if (id === "ctrl-r") {
     if (vim.mode === "visual" || vim.mode === "visual-line") return pack("none", true, clearInput(vim), null);
