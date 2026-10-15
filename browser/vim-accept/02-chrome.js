@@ -467,13 +467,81 @@ test("VC.9 (ticket 7vdep2z4)", async (t) => {
   assert.equal(shown.rev, before.rev);
 });
 
+const BLOCK = `(() => {
+  const editor = document.getElementById("editor");
+  const marks = [...document.querySelectorAll(".md-vim-block-mark")];
+  const mark = marks[0] || null;
+  const style = getComputedStyle(editor);
+  const markStyle = mark ? getComputedStyle(mark) : null;
+  const box = mark ? mark.getBoundingClientRect() : null;
+  const color = String(style.caretColor || "");
+  const flat = color.split(" ").join("").toLowerCase();
+  const css = window.CSS;
+  const active = document.activeElement;
+  return {
+    supports: !!(css && typeof css.supports === "function" && css.supports("caret-shape", "block")),
+    marks: marks.length,
+    shape: style.caretShape || "",
+    caretColor: color,
+    transparent: flat === "transparent" || flat === "rgba(0,0,0,0)",
+    width: box ? box.width : 0,
+    height: box ? box.height : 0,
+    inside: !!(mark && editor.contains(mark)),
+    parent: mark && mark.parentElement ? mark.parentElement.tagName : null,
+    aria: mark ? mark.getAttribute("aria-hidden") : null,
+    position: markStyle ? markStyle.position : null,
+    pointer: markStyle ? markStyle.pointerEvents : null,
+    blend: markStyle ? markStyle.mixBlendMode : null,
+    background: markStyle ? markStyle.backgroundColor : null,
+    focused: active === editor || !!(active && editor.contains(active)),
+    block: editor.classList.contains("md-vim-block"),
+  };
+})()`;
+
+function assertBlockCaret(probe, block, shown) {
+  assert.equal(probe.block, block, JSON.stringify(probe));
+  if (probe.supports) {
+    assert.equal(probe.marks, 0, JSON.stringify(probe));
+    if (block) assert.equal(probe.shape, "block", JSON.stringify(probe));
+    assert.equal(probe.transparent, false, JSON.stringify(probe));
+    return;
+  }
+  if (!shown) {
+    assert.equal(probe.marks, 0, JSON.stringify(probe));
+    assert.equal(probe.transparent, false, JSON.stringify(probe));
+    return;
+  }
+  assert.equal(probe.focused, true, JSON.stringify(probe));
+  assert.equal(probe.marks, 1, JSON.stringify(probe));
+  assert.equal(probe.inside, false, JSON.stringify(probe));
+  assert.equal(probe.parent, "BODY", JSON.stringify(probe));
+  assert.equal(probe.aria, "true", JSON.stringify(probe));
+  assert.equal(probe.position, "fixed", JSON.stringify(probe));
+  assert.equal(probe.pointer, "none", JSON.stringify(probe));
+  assert.equal(probe.blend, "difference", JSON.stringify(probe));
+  assert.equal(String(probe.background || "").split(" ").join("").toLowerCase(), "rgb(231,226,216)", JSON.stringify(probe));
+  assert.ok(probe.width >= 2, JSON.stringify(probe));
+  assert.ok(probe.height >= 2, JSON.stringify(probe));
+  assert.equal(probe.transparent, true, JSON.stringify(probe));
+}
+
 test("VC.10 (ticket 7vdep2z4)", async (t) => {
   const { page } = await setup(t);
   await place(page, 0);
   const block = () => page.eval(`document.getElementById("editor").classList.contains("md-vim-block")`);
   assert.equal(await block(), true);
+  assertBlockCaret(await page.eval(BLOCK), true, true);
   await press(page, "i");
   assert.equal(await block(), false);
+  assertBlockCaret(await page.eval(BLOCK), false, false);
   await press(page, "Escape");
   assert.equal(await block(), true);
+  assertBlockCaret(await page.eval(BLOCK), true, true);
+  await press(page, "/");
+  assertPrompt(await page.eval(PROMPT), "/");
+  assertBlockCaret(await page.eval(BLOCK), true, false);
+  await press(page, "Escape");
+  await assertEditorFocus(page);
+  assert.equal(await block(), true);
+  assertBlockCaret(await page.eval(BLOCK), true, true);
 });

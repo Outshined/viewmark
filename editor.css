@@ -977,6 +977,16 @@ button.md-ticket-filter-all:hover,
   caret-shape: block;
 }
 
+.md-vim-block-mark {
+  position: fixed;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  pointer-events: none;
+  background: #e7e2d8;
+  mix-blend-mode: difference;
+}
+
 #editor.md-source {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   overflow-x: hidden;

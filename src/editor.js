@@ -2275,6 +2275,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let vimStatus = null;
   let vimLine = null;
   let vimPrompt = null;
+  let vimBlockMark = null;
+  let vimBlockCaretHidden = false;
+  let vimBlockSyncing = false;
   let vimMode = "normal";
   let vimInput = emptyVimInput();
   let vimRegister = { text: "", linewise: false };
@@ -2928,6 +2931,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       // selectionchange does not run while the caret is placed. An arrow-key
       // selection still has to move the button under the highlight it just drew.
       updateCommentButton();
+      syncVimBlockMark();
     }
   }
 
@@ -4738,6 +4742,213 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!root || !root.classList) return;
     if (vimOn && vimDrawsBlockCaret(vimMode)) root.classList.add("md-vim-block");
     else root.classList.remove("md-vim-block");
+    syncVimBlockMark();
+  }
+
+  // Firefox does not implement caret-shape, so the native caret stays a bar.
+  function caretShapeBlockSupported() {
+    try {
+      const css = globalThis.CSS;
+      return !!(css && typeof css.supports === "function" && css.supports("caret-shape", "block") === true);
+    } catch {
+      return false;
+    }
+  }
+
+  function editorHasFocus() {
+    if (vimPrompt != null) return false;
+    try {
+      if (typeof document === "undefined" || !document || !root) return false;
+      const active = document.activeElement;
+      if (!active) return false;
+      if (active === root) return true;
+      return typeof root.contains === "function" && root.contains(active) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function vimBlockFallback() {
+    if (closed || !root || !root.classList || !root.classList.contains("md-vim-block")) return false;
+    if (caretShapeBlockSupported()) return false;
+    return editorHasFocus();
+  }
+
+  function clearVimBlockCaret() {
+    if (!vimBlockCaretHidden) return;
+    vimBlockCaretHidden = false;
+    if (!root || !root.style) return;
+    if (typeof root.style.removeProperty === "function") {
+      try {
+        root.style.removeProperty("caret-color");
+      } catch {
+        // The inline color is already gone. The stylesheet caret shows.
+      }
+    }
+    if (root.styleProps) delete root.styleProps["caret-color"];
+  }
+
+  function hideVimBlockMark() {
+    clearVimBlockCaret();
+    if (vimBlockMark) detachNode(vimBlockMark);
+  }
+
+  // replaceChildren drops anything parked in the editor, so the mark lives on the body.
+  function ensureVimBlockMark() {
+    const body = typeof document !== "undefined" && document ? document.body : null;
+    if (!body || typeof body.appendChild !== "function" || typeof document.createElement !== "function") return null;
+    if (!vimBlockMark) {
+      const mark = document.createElement("div");
+      if (!mark) return null;
+      mark.className = "md-vim-block-mark";
+      if (typeof mark.setAttribute === "function") mark.setAttribute("aria-hidden", "true");
+      vimBlockMark = mark;
+    }
+    if (vimBlockMark.parentElement !== body) {
+      try {
+        body.appendChild(vimBlockMark);
+      } catch {
+        return null;
+      }
+    }
+    return vimBlockMark;
+  }
+
+  function measureCh(node) {
+    const host = (node && node.parentElement) || root;
+    if (!host || typeof host.appendChild !== "function" || typeof document === "undefined" || typeof document.createElement !== "function") return 0;
+    let probe = null;
+    try {
+      probe = document.createElement("span");
+      if (!probe) return 0;
+      setStyle(probe, "display", "inline-block");
+      setStyle(probe, "width", "1ch");
+      setStyle(probe, "padding", "0");
+      setStyle(probe, "border", "0");
+      setStyle(probe, "margin", "0");
+      host.appendChild(probe);
+      if (typeof probe.getBoundingClientRect !== "function") return 0;
+      const rect = probe.getBoundingClientRect();
+      const width = rect && rect.width;
+      return typeof width === "number" && Number.isFinite(width) && width > 0 ? width : 0;
+    } catch {
+      return 0;
+    } finally {
+      if (probe) detachNode(probe);
+    }
+  }
+
+  function lineBox(node) {
+    let el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    while (el && el !== root) {
+      if (el.classList && el.classList.contains("md-line")) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function lineBoxHeight(node) {
+    const line = lineBox(node) || (node && node.parentElement) || root;
+    if (!line || typeof line.getBoundingClientRect !== "function") return 0;
+    try {
+      const rect = line.getBoundingClientRect();
+      const height = rect && rect.height;
+      return typeof height === "number" && Number.isFinite(height) && height > 0 ? height : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function rangeBox(range) {
+    if (!range) return null;
+    let rect = null;
+    try {
+      if (typeof range.getClientRects === "function") {
+        const rects = range.getClientRects();
+        if (rects && rects.length > 0) rect = rects[0];
+      }
+      if ((!rect || !Number.isFinite(rect.top) || !Number.isFinite(rect.left)) && typeof range.getBoundingClientRect === "function") {
+        rect = range.getBoundingClientRect();
+      }
+    } catch {
+      return null;
+    }
+    if (!rect || !Number.isFinite(rect.left) || !Number.isFinite(rect.top)) return null;
+    const width = Number.isFinite(rect.width) ? rect.width : 0;
+    const height = Number.isFinite(rect.height) ? rect.height : 0;
+    return { left: rect.left, top: rect.top, width, height };
+  }
+
+  // The drawn selection is the Visual span. The block covers the cursor's next glyph.
+  function vimBlockBox() {
+    if (typeof document === "undefined" || typeof document.createRange !== "function") return null;
+    const point = pointFor(state.cursor);
+    if (!point || !point.node) return null;
+    const node = point.node;
+    const offset = point.offset || 0;
+    const text = node.nodeType === 3;
+    const len = text && typeof node.length === "number" ? node.length : 0;
+    const cover = text && offset >= 0 && offset < len;
+    let range = null;
+    try {
+      range = document.createRange();
+      if (!range || typeof range.setStart !== "function") return null;
+      if (cover && typeof range.setEnd === "function") {
+        range.setStart(node, offset);
+        range.setEnd(node, offset + 1);
+      } else {
+        const at = text ? Math.max(0, Math.min(len, offset)) : offset;
+        range.setStart(node, at);
+        if (typeof range.collapse === "function") range.collapse(true);
+      }
+    } catch {
+      return null;
+    }
+    const box = rangeBox(range);
+    if (!box) return null;
+    let width = box.width;
+    let height = box.height;
+    if (!cover || !(width > 0)) {
+      const ch = measureCh(node);
+      if (ch > 0) width = ch;
+    }
+    if (!(height > 0)) height = lineBoxHeight(node);
+    if (!(width > 0) || !(height > 0)) return null;
+    return { left: box.left, top: box.top, width, height };
+  }
+
+  function syncVimBlockMark() {
+    if (vimBlockSyncing) return;
+    vimBlockSyncing = true;
+    try {
+      if (!vimBlockFallback()) {
+        hideVimBlockMark();
+        return;
+      }
+      const box = vimBlockBox();
+      if (!box) {
+        hideVimBlockMark();
+        return;
+      }
+      const mark = ensureVimBlockMark();
+      if (!mark) {
+        hideVimBlockMark();
+        return;
+      }
+      setStyle(mark, "position", "fixed");
+      setStyle(mark, "left", `${box.left}px`);
+      setStyle(mark, "top", `${box.top}px`);
+      setStyle(mark, "width", `${box.width}px`);
+      setStyle(mark, "height", `${box.height}px`);
+      if (root && root.style) {
+        setStyle(root, "caret-color", "transparent");
+        vimBlockCaretHidden = true;
+      }
+    } catch {
+      hideVimBlockMark();
+    } finally {
+      vimBlockSyncing = false;
+    }
   }
 
   // localStorage wins when it exists. The session object is not that store.
@@ -7448,6 +7659,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     placeVimLineCaret(input);
     if (typeof input.focus === "function") input.focus();
     placeVimLineCaret(input);
+    syncVimBlockMark();
   }
 
   function closeVimLine() {
@@ -7464,6 +7676,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     } finally {
       placingCaret = false;
     }
+    syncVimBlockMark();
   }
 
   function submitVimLine() {
@@ -8126,13 +8339,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
     document.addEventListener("selectionchange", onSelectionChange, { signal: ac.signal });
+    document.addEventListener("focusin", syncVimBlockMark, { signal: ac.signal });
   }
   // The sheet tests store root and document listeners in one map. Window keeps
   // a release outside the editor from replacing the root mouseup handler.
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     window.addEventListener("mousemove", onDocumentMouseMove, { signal: ac.signal });
     window.addEventListener("mouseup", onDocumentMouseUp, { signal: ac.signal });
+    window.addEventListener("scroll", syncVimBlockMark, { capture: true, signal: ac.signal });
   }
+  listen("scroll", syncVimBlockMark);
 
   if (commentsAside && typeof commentsAside.addEventListener === "function") {
     commentsAside.addEventListener("click", (event) => {
@@ -10387,6 +10603,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     destroy() {
       closed = true;
       closeVimLine();
+      hideVimBlockMark();
       cancelGestureRender();
       clearEditTimer();
       clearRefusal();
