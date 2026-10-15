@@ -28,7 +28,14 @@ const VIM_FACTS = [
   "In visual line, `R` and `S` change the highlighted lines.",
   "`y` and `p` use one unnamed register, which is not the clipboard.",
   "Ctrl-V pastes the clipboard.",
-  "Search text is literal, and the hits are not drawn.",
+  "Search text is literal.",
+  "`/` and `?` remember earlier patterns for the life of the page.",
+  "That history is page memory.",
+  "It is not stored in the document and it is not sent to the hub.",
+  "Up-arrow recalls the previous pattern.",
+  "Down-arrow walks back to the draft.",
+  "Matches are painted while the pattern is typed and after Enter.",
+  "`:noh` clears that paint and leaves the pattern, so `n` still repeats.",
   "There is no visual-block mode.",
   "`.` does not repeat a change.",
   "In normal, `U` changes nothing.",
@@ -48,11 +55,18 @@ const STALE_GC = [
   "and elsewhere `R` changes nothing",
 ];
 
+const STALE_SEARCH = [
+  "the hits are not drawn",
+];
+
 function assertFacts(rel, text) {
   for (const fact of VIM_FACTS) {
     assert.ok(text.includes(fact), `${rel} is missing ${JSON.stringify(fact)}`);
   }
   for (const stale of STALE_GC) {
+    assert.equal(text.includes(stale), false, `${rel} still says ${JSON.stringify(stale)}`);
+  }
+  for (const stale of STALE_SEARCH) {
     assert.equal(text.includes(stale), false, `${rel} still says ${JSON.stringify(stale)}`);
   }
 }
@@ -107,10 +121,14 @@ test("starter docs, project docs, and the README cover vim keys", async () => {
     "A vim line in the formatted view is a rendered block.",
     "`y` and `p` use one unnamed register, which is not the clipboard.",
     "Ctrl-V pastes the clipboard.",
-    "Search text is literal, and the hits are not drawn.",
+    "Search text is literal, and the hits are painted.",
+    "`:noh` clears that paint.",
     "editing.md",
   ]) {
     assert.ok(architecture.includes(fact), `ARCHITECTURE.md is missing ${JSON.stringify(fact)}`);
+  }
+  for (const stale of STALE_SEARCH) {
+    assert.equal(architecture.includes(stale), false, `ARCHITECTURE.md still says ${JSON.stringify(stale)}`);
   }
   assert.equal(commentThreads(architecture).map((item) => item.id).join(","), "c1");
   assert.equal(fenceCount(architecture) % 2, 0);
