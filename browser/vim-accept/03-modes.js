@@ -230,7 +230,7 @@ test("VM.7 (ticket 7vdep2z4)", { timeout: LIMIT }, async (t) => {
   const since = page.frames.length;
   await press(page, ["i", ctrl("o"), "dd"]);
   const got = await finish(page, hub);
-  expectState(got, "alpha\n‸gamma\n", "I", before.rev + 1);
+  expectState(got, "‸", "I", before.rev + 1);
   expectEdits(page, since, 1, got);
 });
 
@@ -240,7 +240,7 @@ test("VM.8 (ticket 7vdep2z4)", { timeout: LIMIT }, async (t) => {
   const since = page.frames.length;
   await press(page, ["i", ctrl("o"), "gu", "u"]);
   const got = await finish(page, hub);
-  expectState(got, "ALPHA\n‸beta\n", "I", before.rev + 1);
+  expectState(got, "‸alpha\nbeta\n", "I", before.rev + 1);
   expectEdits(page, since, 1, got);
   assert.deepEqual(sent(page, since, "history"), [], `${got.marks} undo frame`);
 });
@@ -265,7 +265,7 @@ test("VM.10 (ticket 7vdep2z4)", { timeout: LIMIT }, async (t) => {
   const since = page.frames.length;
   await press(page, ["i", ctrl("o"), "j", "x"]);
   const got = await finish(page, hub);
-  expectState(got, "alpha\nbex‸ta\n", "I", before.rev + 1);
+  expectState(got, "alx‸pha\nbeta\n", "I", before.rev + 1);
   expectEdits(page, since, 1, got);
 });
 

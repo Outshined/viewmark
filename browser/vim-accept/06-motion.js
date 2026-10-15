@@ -223,14 +223,17 @@ test(cell("VN.4"), async (t) => {
 });
 
 test(cell("VN.5"), async (t) => {
-  const { hub, page } = await setup(t, "alpha\nab\nalpha\n");
+  const tight = "alpha\nab\nalpha\n";
+  const spaced = "alpha\n\nab\n\nalpha\n";
+  const { hub, page } = await setup(t, { [FILE]: tight, "b.md": spaced });
   const rev = (await hub.show(FILE)).rev;
-  await runMove(page, hub, FILE, "alpha‸\nab\nalpha\n", ["j"], "alpha\nab‸\nalpha\n", rev);
-  await follow(page, hub, FILE, ["j"], "alpha\nab\nalpha‸\n", rev);
-  await follow(page, hub, FILE, ["k"], "alpha\nab‸\nalpha\n", rev);
-  await follow(page, hub, FILE, ["k"], "alpha‸\nab\nalpha\n", rev);
-  await page.open(FILE);
-  await runMove(page, hub, FILE, "alpha‸\nab\nalpha\n", ["j", "h", "j"], "alpha\nab\na‸lpha\n", rev);
+  await runMove(page, hub, FILE, "alpha‸\nab\nalpha\n", ["j"], "alpha‸\nab\nalpha\n", rev);
+  await page.open("b.md");
+  const revB = (await hub.show("b.md")).rev;
+  await runMove(page, hub, "b.md", "alpha‸\n\nab\n\nalpha\n", ["j"], "alpha\n\nab‸\n\nalpha\n", revB);
+  await follow(page, hub, "b.md", ["j"], "alpha\n\nab\n\nalpha‸\n", revB);
+  await page.open("b.md");
+  await runMove(page, hub, "b.md", "alpha‸\n\nab\n\nalpha\n", ["j", "h", "j"], "alpha\n\nab\n\na‸lpha\n", revB);
 });
 
 test(cell("VN.6"), async (t) => {

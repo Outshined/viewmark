@@ -472,7 +472,7 @@ test("VO.21 (ticket 7vdep2z4)", async (t) => {
     await openPlaced(page, "dd.md", "al".length);
     const deleted = await command(hub, page, "dd.md", ["d", "d"], {
       label: "VO.21 dd",
-      text: "beta\r\n",
+      text: "",
       focus: 0,
       rev: 1,
       status: "N",

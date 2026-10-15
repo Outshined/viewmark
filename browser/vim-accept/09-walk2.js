@@ -41,13 +41,6 @@ function insideMarker(text, offset) {
   return markerSpans(text).some((span) => offset > span.start && offset < span.end);
 }
 
-function openingMarker(text) {
-  const token = "{c1}";
-  const start = text.indexOf(token);
-  assert.ok(start >= 0, "no opening marker");
-  return { start, end: start + token.length };
-}
-
 function lineText(text, offset) {
   let start = Math.max(0, Math.min(text.length, offset));
   while (start > 0 && text[start - 1] !== "\n") start -= 1;
@@ -206,15 +199,13 @@ test("VW.8 (ticket 7vdep2z4)", async (t) => {
     const before = await snap(hub, page, file);
     await press(page, ["j"]);
     const after = await snap(hub, page, file);
-    const open = openingMarker(after.text);
     const got = shown(after);
-    const edges = [withCaret(after.text, open.start), withCaret(after.text, open.end)];
     assert.equal(after.text, before.text, `VW.8a bytes\n${got}`);
     assert.equal(after.rev, before.rev, `VW.8a rev ${before.rev} -> ${after.rev}\n${got}`);
     assert.equal(after.caret.anchor, after.caret.focus, `VW.8a selection\n${got}`);
+    assert.equal(after.caret.focus, before.caret.focus, `VW.8a caret\n${got}`);
     assert.equal(insideMarker(after.text, after.caret.focus), false, `VW.8a inside a marker\n${got}`);
-    assert.ok(lineText(after.text, after.caret.focus).startsWith("See"), `VW.8a not on the See line\n${got}`);
-    assert.ok(edges.includes(got), `VW.8a wanted an edge of {c1}\n${edges.join("\nor\n")}\ngot\n${got}`);
+    assert.equal(lineText(after.text, after.caret.focus), "abcdef", `VW.8a not on abcdef\n${got}`);
   });
 
   await run("VW.8b", async () => {

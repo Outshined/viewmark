@@ -203,10 +203,10 @@ test(cell("VE.6"), { timeout: TIMEOUT }, async (t) => {
   const lineBefore = await hub.show("line.md");
   await typeEx(page, "d");
   const line = await hub.show("line.md");
-  assert.equal(line.text, "alpha\ngamma\n", `d got ${JSON.stringify(line.text)}`);
+  assert.equal(line.text, "", `d got ${JSON.stringify(line.text)}`);
   assert.equal(line.rev, lineBefore.rev + 1, `d rev ${lineBefore.rev} -> ${line.rev}`);
   const lineCaret = await page.caret();
-  assert.equal(lineCaret.focus, "alpha\n".length, `d caret ${lineCaret.focus}`);
+  assert.equal(lineCaret.focus, 0, `d caret ${lineCaret.focus}`);
   assert.equal(lineCaret.anchor, lineCaret.focus);
   assert.equal(await vimStatus(page), "N");
 

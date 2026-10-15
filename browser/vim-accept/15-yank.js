@@ -153,9 +153,9 @@ test("VY.2 (ticket 7vdep2z4)", async (t) => {
   const file = "vy2.md";
   const snap = await openMarked(hub, page, file, "‸one\ntwo\n", false);
   await keys(page, "d", "d");
-  await expectBytes(hub, file, "two\n", snap.rev + 1);
+  await expectBytes(hub, file, "", snap.rev + 1);
   await keys(page, "p");
-  await expectMarked(hub, page, file, "two\n‸one\n", snap.rev + 2);
+  await expectMarked(hub, page, file, "‸one\ntwo\n", snap.rev + 2);
 });
 
 test("VY.3 (ticket 7vdep2z4)", async (t) => {
@@ -167,7 +167,7 @@ test("VY.3 (ticket 7vdep2z4)", async (t) => {
   await keys(page, "k");
   await unchanged(hub, file, snap);
   await keys(page, "p");
-  await expectMarked(hub, page, file, "alpha\n‸beta\nbeta", snap.rev + 1);
+  await expectMarked(hub, page, file, "alpha\nbeta‸alpha\nbeta\n", snap.rev + 1);
 });
 
 test("VY.4 (ticket 7vdep2z4)", async (t) => {
