@@ -2170,7 +2170,7 @@ test("VY.1", () => {
   assert.equal(insertedSplice(crlf).text, "alpha\r\n\r\n");
 });
 
-test("VD.5", () => {
+test("VD.7", () => {
   const after = run("- a\n- ‸b\n", ["y", "y", "]", "p"]);
   assert.equal(after.steps[2].match, "partial");
   assert.equal(after.steps[2].vim.input.keyBuffer, "]");
@@ -2210,7 +2210,7 @@ test("VD.5", () => {
   assert.equal(miss.show, "- a\n- ‸b\n");
 });
 
-test("VD.7", () => {
+test("VD.5", () => {
   const indent = run("al‸pha\n", ["i", { key: "t", ctrl: true }]);
   assert.equal(indent.show, "\tal‸pha\n");
   assert.equal(indent.doc, "\talpha\n");
