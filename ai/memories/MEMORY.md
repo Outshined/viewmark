@@ -9,3 +9,4 @@
 - [No operator quotes](no-operator-quotes.md) — never quote the operator anywhere; state the owner's decision in QA's words, every point kept
 - [American spelling](american-spelling.md) — center, color, behavior; never British forms, in any written text
 - [Docs hold reader material](docs-hold-reader-material.md) — no QA tracking, findings, run records, pass status, or decision history in hub docs; that goes on tickets
+- [Targeted hub edits](targeted-hub-edits.md) — a diff names only the text it changes, with nearby words as context; never remove and re-add existing text or send a body whole
