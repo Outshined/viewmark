@@ -3465,7 +3465,7 @@ test("a closed holder reconnects with its token and the file message carries its
   });
 });
 
-test("a second live socket with that token gets 409 naming the holder", async () => {
+test("a second live socket with that token takes the held line and a later hello adopts the caret", async () => {
   await withDocs(async ({ port, dir }) => {
     const text = "alpha\n\nbeta\n";
     await fs.writeFile(path.join(dir, "a.md"), text);
@@ -3479,7 +3479,10 @@ test("a second live socket with that token gets 409 naming the holder", async ()
     assert.equal(Object.hasOwn(opened, "cursor"), false);
     assert.equal(Object.hasOwn(opened, "anchor"), false);
     b.send({ type: "lock", username: "B", path: "a.md", anchor: caret, cursor: caret, rev });
-    assert.deepEqual(await b.next((msg) => msg.type === "error"), { type: "error", status: 409, heldBy: "A" });
+    const took = await b.next((msg) => msg.type === "locks" || msg.type === "error");
+    assert.equal(took.type, "locks");
+    assert.equal(took.lines.some((line) => line.username === "A"), false);
+    await a.next((msg) => msg.type === "locks" && msg.path === "a.md");
     const other = await syncLock(b, [a], "B", "a.md", 0, rev);
     assert.deepEqual(
       other.lines.find((line) => line.username === "B"),
@@ -3784,6 +3787,40 @@ test("a live socket with the same token does not hold a paste, and opening anoth
     assert.equal(holder.ws.readyState, WebSocket.OPEN);
     holder.ws.close();
     later.ws.close();
+  });
+});
+
+test("a live socket with the same token takes the line the previous socket holds", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "one\n\ntwo\n\nthree\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const token = "same-token";
+    const caret = text.indexOf("three");
+    const index = lockIndexAt(text, caret);
+    const first = await hello(port, "Ada", "docs", token);
+    const second = await hello(port, "Ada", "docs", token);
+    const rev = (await openDoc(first, "Ada", "a.md")).rev;
+    await openDoc(second, "Ada", "a.md");
+    await syncLock(first, [second], "Ada", "a.md", caret, rev);
+    second.send({ type: "lock", username: "Ada", path: "a.md", anchor: caret, cursor: caret, rev });
+    const took = await second.next((msg) => msg.type === "locks" || msg.type === "error");
+    assert.equal(took.type, "locks");
+    assert.deepEqual(took.lines.filter((line) => line.index === index), [{ index, username: "Ada", token }]);
+    await first.next((msg) => msg.type === "locks" && msg.path === "a.md");
+    const other = await hello(port, "Bea", "docs", "other-token");
+    await openDoc(other, "Bea", "a.md");
+    other.send({ type: "lock", username: "Bea", path: "a.md", anchor: caret, cursor: caret, rev });
+    assert.deepEqual(await other.next((msg) => msg.type === "error" || msg.type === "locks"), {
+      type: "error",
+      status: 409,
+      heldBy: "Ada",
+    });
+    // The second socket left the line. It stays unlisted only if the first socket dropped it.
+    const moved = await syncLock(second, [first], "Ada", "a.md", 0, rev);
+    assert.equal(moved.lines.some((line) => line.index === index), false);
+    first.ws.close();
+    second.ws.close();
+    other.ws.close();
   });
 });
 

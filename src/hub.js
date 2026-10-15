@@ -2079,7 +2079,12 @@ export async function createHub(stateDir, sourceRoot) {
     const nextLines = new Set(touchedLines(file.text, Math.min(anchor, cursor), Math.max(anchor, cursor)));
     for (const index of nextLines) {
       const owner = file.locks.get(index);
-      if (owner && owner !== socket) return fail(socket, 409, { heldBy: owner.session.username });
+      if (owner && !sameSession(owner, socket)) return fail(socket, 409, { heldBy: owner.session.username });
+    }
+    // Opening this path leaves the previous socket subscribed. The same token takes its lines.
+    for (const sock of file.subscribers) {
+      if (sock === socket || !sameSession(sock, socket)) continue;
+      for (const index of nextLines) sock.session.lines.delete(index);
     }
     session.lines = nextLines;
     session.anchor = anchor;
