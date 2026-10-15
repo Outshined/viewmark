@@ -2073,6 +2073,13 @@ export async function createHub(stateDir, sourceRoot) {
     const file = files.get(session.docPath);
     if (!file || msg.path !== file.rel) return fail(socket, 409);
     if (typeof msg.rev !== "number" || msg.rev !== file.rev) return fail(socket, 409);
+    // The caret left the body. This page no longer holds the lines it had locked.
+    if (msg.release === true) {
+      session.lines = new Set();
+      syncLocks(file);
+      broadcast(file, { type: "locks", path: file.rel, rev: file.rev, lines: lockSnapshot(file) });
+      return;
+    }
     const anchor = clampOffset(msg.anchor, file.text.length);
     const cursor = clampOffset(msg.cursor, file.text.length);
     if (anchor == null || cursor == null) return fail(socket, 400);

@@ -19073,3 +19073,193 @@ test("vim screen motions use the drawn row and the pane", () => {
     raw.destroy();
   });
 });
+
+test("moving focus from a ticket body to a ticket field drops the caret and releases its locks", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  transport.username = "Ada";
+  const body = "one\n\ntwo\n";
+  const from = lockIndexAt(body, 0);
+  const to = lockIndexAt(body, body.length);
+  assert.ok(to > from);
+  const parent = ticketFixture("bbbbbbbb", "Parent", "new", T0);
+  const dep = ticketFixture("cccccccc", "Dep", "new", T1);
+  const child = ticketFixture("dddddddd", "Child", "new", T2, "aaaaaaaa");
+  const blocker = ticketFixture("eeeeeeee", "Blocker", "new", T2, "", ["aaaaaaaa"]);
+  const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T3, "bbbbbbbb", ["cccccccc"]);
+  const selection = {
+    rangeCount: 0,
+    anchorNode: null,
+    anchorOffset: 0,
+    focusNode: null,
+    focusOffset: 0,
+    cleared: false,
+    added: 0,
+    removeAllRanges() {
+      this.cleared = true;
+      this.rangeCount = 0;
+      this.anchorNode = null;
+      this.focusNode = null;
+    },
+    addRange() {
+      this.added += 1;
+      this.rangeCount = 1;
+    },
+    getRangeAt() {
+      const node = selection.anchorNode;
+      return {
+        startContainer: node,
+        startOffset: 0,
+        endContainer: node,
+        endOffset: 0,
+        collapsed: this.rangeCount === 0,
+        commonAncestorContainer: node,
+      };
+    },
+  };
+  try {
+    globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+    const view = createEditor(mounted.root, "x", 0, transport);
+    transport.deliver({ type: "tickets", tickets: [parent, dep, child, blocker, alpha] });
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 4,
+      text: body,
+      cursor: body.length,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    const text = textNode(mounted.root, "one");
+    assert.ok(text);
+    assert.ok(form.listeners.focusin);
+    mounted.setSelection(selection);
+    const locks = () => transport.sent.filter((message) => message.type === "lock");
+    const held = locks().at(-1);
+    assert.equal(held.anchor, 0);
+    assert.equal(held.cursor, body.length);
+    assert.equal(held.release, undefined);
+    assert.equal(held.path, "tickets/aaaaaaaa.md");
+    assert.equal(held.rev, 4);
+    assert.equal(held.username, "Ada");
+    const indexes = [];
+    for (let index = from; index <= to; index += 1) indexes.push({ index, username: "Ada" });
+    function armSelection() {
+      selection.cleared = false;
+      selection.rangeCount = 1;
+      selection.anchorNode = text;
+      selection.focusNode = text;
+    }
+    function ackLock() {
+      transport.deliver({ type: "locks", path: "tickets/aaaaaaaa.md", rev: 4, lines: indexes });
+    }
+    function restoreCaret() {
+      document.activeElement = mounted.root;
+      armSelection();
+      const before = locks().length;
+      view.focus();
+      assert.equal(locks().length, before + 1);
+      const claim = locks().at(-1);
+      assert.equal(claim.release, undefined);
+      assert.equal(claim.anchor, view.getState().anchor);
+      assert.equal(claim.cursor, view.getState().cursor);
+      ackLock();
+    }
+    function focusField(el) {
+      assert.ok(el);
+      if (el.classList.contains("md-ticket-title-input")) {
+        const heading = byClass(form, "md-ticket-heading")[0];
+        if (heading && heading.hidden !== true) heading.listeners.click();
+      }
+      document.activeElement = el;
+      armSelection();
+      const before = locks().length;
+      form.listeners.focusin({ target: el });
+      assert.equal(selection.cleared, true);
+      assert.equal(selection.rangeCount, 0);
+      assert.equal(locks().length, before + 1);
+      const release = locks().at(-1);
+      assert.equal(release.type, "lock");
+      assert.equal(release.release, true);
+      assert.equal(release.path, "tickets/aaaaaaaa.md");
+      assert.equal(release.rev, 4);
+      assert.equal(release.username, "Ada");
+      assert.equal(Object.hasOwn(release, "anchor"), false);
+      assert.equal(Object.hasOwn(release, "cursor"), false);
+    }
+    const fields = [
+      () => byClass(form, "md-ticket-title-input")[0],
+      () => byClass(form, "md-ticket-state")[0],
+      () => byClass(form, "md-ticket-type")[0],
+      () => byClass(form, "md-ticket-priority")[0],
+      () => byClass(form, "md-ticket-assignee")[0],
+      () => byClass(byClass(form, "md-ticket-parent")[0], "md-ticket-match")[0],
+      () => byClass(byClass(form, "md-ticket-depends")[0], "md-ticket-link")[0],
+      () => byClass(byClass(form, "md-ticket-depends")[0], "md-ticket-match")[0],
+    ];
+    fields.forEach((pick, index) => {
+      if (index > 0) restoreCaret();
+      const el = pick();
+      focusField(el);
+      if (!el.classList.contains("md-ticket-state")) return;
+      el.value = "closed";
+      el.listeners.change();
+      assert.equal(transport.sent.filter((message) => message.type === "ticket.set").at(-1).state, "closed");
+      transport.deliver({ type: "error", status: 409 });
+      assert.equal(byClass(form, "md-ticket-state")[0].value, "new");
+      assert.equal(selection.rangeCount, 0);
+    });
+    function keepCaret(el) {
+      assert.ok(el);
+      if (locks().at(-1).release === true) restoreCaret();
+      document.activeElement = el;
+      armSelection();
+      const before = transport.sent.length;
+      form.listeners.focusin({ target: el });
+      assert.equal(selection.cleared, false);
+      assert.equal(selection.rangeCount, 1);
+      assert.equal(transport.sent.length, before);
+    }
+    keepCaret(byClass(byClass(form, "md-ticket-children")[0], "md-ticket-link")[0]);
+    keepCaret(byClass(byClass(form, "md-ticket-blocks")[0], "md-ticket-link")[0]);
+    keepCaret(byClass(form, "md-ticket-pane-menu")[0]);
+    keepCaret(byClass(form, "md-ticket-copy-id")[0]);
+    focusField(byClass(form, "md-ticket-assignee")[0]);
+    document.activeElement = mounted.root;
+    armSelection();
+    view.focus();
+    const flight = byClass(form, "md-ticket-state")[0];
+    focusField(flight);
+    flight.value = "closed";
+    flight.listeners.change();
+    assert.equal(transport.sent.filter((message) => message.type === "ticket.set").at(-1).state, "closed");
+    transport.deliver({ type: "locks", path: "tickets/aaaaaaaa.md", rev: 4, lines: [] });
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(byClass(form, "md-ticket-state")[0].value, "new");
+    assert.equal(selection.rangeCount, 0);
+    const added = selection.added;
+    const sent = transport.sent.length;
+    transport.deliver({
+      type: "doc",
+      path: "tickets/aaaaaaaa.md",
+      rev: 5,
+      text: "one\n\ntwo!\n",
+      from: body.length - 1,
+      to: body.length - 1,
+      inserted: "!",
+      changes: [{ from: body.length - 1, to: body.length - 1, inserted: "!" }],
+      actor: "Bea",
+      cursor: body.length,
+      anchor: body.length,
+    });
+    assert.equal(view.getState().doc, "one\n\ntwo!\n");
+    assert.equal(transport.sent.slice(sent).some((message) => message.type === "lock"), false);
+    assert.equal(selection.added, added);
+    assert.equal(selection.rangeCount, 0);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});

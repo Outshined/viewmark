@@ -2225,6 +2225,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let ticketMenuOpen = false;
   const expandedTickets = new Set();
   let ticketForm = null;
+  let ticketFocusBound = false;
   let ticketFormKey = "";
   let rebuildingTicketForm = false;
   // Server value last written into a field. A focused field whose text differs is unsaved.
@@ -2329,6 +2330,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let expectNewComment = false;
   let unsubscribe = () => {};
   let sentLines = [];
+  // Focus moved from the body to a ticket field. Snapshots must not lock those lines again.
+  let bodyCaretReleased = false;
   const ac = new AbortController();
   const listen = (type, fn, options = {}) => {
     root.addEventListener(type, fn, { ...options, signal: ac.signal });
@@ -2791,9 +2794,48 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return best;
   }
 
+  function bodySelection() {
+    const view = typeof window !== "undefined" ? window : null;
+    const sel = view && typeof view.getSelection === "function" ? view.getSelection() : null;
+    if (!sel || !root || typeof root.contains !== "function") return null;
+    const nodes = [];
+    if (sel.anchorNode) nodes.push(sel.anchorNode);
+    if (sel.focusNode) nodes.push(sel.focusNode);
+    if (sel.rangeCount && typeof sel.getRangeAt === "function") {
+      let range = null;
+      try {
+        range = sel.getRangeAt(0);
+      } catch {
+        range = null;
+      }
+      if (range) {
+        if (range.startContainer) nodes.push(range.startContainer);
+        if (range.endContainer) nodes.push(range.endContainer);
+        if (range.commonAncestorContainer) nodes.push(range.commonAncestorContainer);
+      }
+    }
+    for (const node of nodes) {
+      if (node && root.contains(node)) return sel;
+    }
+    return null;
+  }
+
+  // The caret left the body for a ticket field, so the lines it held are free.
+  function dismissBodyCaret() {
+    bodyCaretReleased = true;
+    const sel = bodySelection();
+    if (sel && typeof sel.removeAllRanges === "function") sel.removeAllRanges();
+    if (sentLines.length === 0 && !outstandingLock) return;
+    outstandingLock = null;
+    sentLines = [];
+    if (!live || !openPath) return;
+    emit({ type: "lock", release: true }, false);
+  }
+
   // The line set is granted when this user already holds it, or when the memory
   // transport accepts the lock before send returns. A 409 puts the caret back.
   function claimLines(anchor, cursor) {
+    bodyCaretReleased = false;
     const lines = lineSet(anchor, cursor);
     if (!live) {
       sentLines = lines;
@@ -5986,6 +6028,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       redo: Array.isArray(message.redo) ? message.redo : [],
     };
     if (message.type === "file") {
+      bodyCaretReleased = false;
       releaseRaw(message.path);
       const nextRev = Number(message.rev);
       rev = Number.isFinite(nextRev) ? nextRev : 0;
@@ -6000,14 +6043,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     outstandingLock = null;
     granted = { anchor: state.anchor, cursor: state.cursor };
     const lines = lineSet(state.anchor, state.cursor);
-    sentLines = lines;
+    sentLines = bodyCaretReleased ? [] : lines;
     noteFreshComment(previousDoc, message);
     if (message.type === "file") focusHashedComment(message.path, text);
     render();
     if (message.type === "file") publishHash();
     const claim = vimForceClaim;
     vimForceClaim = false;
-    if (!live) return;
+    if (!live || bodyCaretReleased) return;
     if (message.type === "file" || claim || !sameLines(lines, previousLines)) {
       emit({ type: "lock", anchor: state.anchor, cursor: state.cursor }, false);
     }
@@ -6114,6 +6157,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       openPath = "";
       dropRaw();
       state = createState("");
+      bodyCaretReleased = false;
       sentLines = lineSet(state.anchor, state.cursor);
       outstandingLock = null;
       granted = { anchor: state.anchor, cursor: state.cursor };
@@ -6141,6 +6185,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           const index = conflictWaiters.indexOf("lock");
           if (index >= 0) conflictWaiters.splice(index, 1);
         }
+      } else if (bodyCaretReleased) {
+        // The claim was dropped when the caret left. Its reply must not stay in front of a field write.
+        const index = conflictWaiters.indexOf("lock");
+        if (index >= 0) conflictWaiters.splice(index, 1);
       }
       refreshLockMarks();
       return;
@@ -6209,6 +6257,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           armRefusal(message);
         }
         expectNewComment = false;
+        // The caret has already left the body, so this refused claim must not put it back.
+        if (waiter === "lock" && bodyCaretReleased) return;
         restoreGrantedCaret();
       }
       return;
@@ -7950,7 +8000,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   });
 
   listen("keyup", () => {
-    if (closed || composing || pointer) return;
+    if (closed || composing || pointer || bodyCaretReleased) return;
     claimLines(state.anchor, state.cursor);
   });
 
@@ -9699,6 +9749,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     dropRaw();
     clearHashForActiveRepo();
     state = createState("");
+    bodyCaretReleased = false;
     sentLines = lineSet(state.anchor, state.cursor);
     outstandingLock = null;
     granted = { anchor: state.anchor, cursor: state.cursor };
@@ -9790,6 +9841,36 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     hideElement(form);
     if (typeof form.replaceChildren === "function") form.replaceChildren();
     ticketForm = form;
+    if (!ticketFocusBound && typeof form.addEventListener === "function") {
+      form.addEventListener("focusin", onTicketFieldFocus, { signal: ac.signal });
+      ticketFocusBound = true;
+    }
+  }
+
+  function ancestorClass(node, className) {
+    let current = node && node.nodeType === 1 ? node : node && node.parentElement;
+    while (current && current !== ticketForm) {
+      if (current.classList && current.classList.contains(className)) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function focusReleasesBodyCaret(node) {
+    if (!ticketForm || !node || !nodeWithin(ticketForm, node)) return false;
+    if (ancestorClass(node, "md-ticket-title-input")) return true;
+    if (ancestorClass(node, "md-ticket-state")) return true;
+    if (ancestorClass(node, "md-ticket-type")) return true;
+    if (ancestorClass(node, "md-ticket-priority")) return true;
+    if (ancestorClass(node, "md-ticket-assignee")) return true;
+    if (ancestorClass(node, "md-ticket-parent")) return true;
+    if (ancestorClass(node, "md-ticket-depends")) return true;
+    return false;
+  }
+
+  function onTicketFieldFocus(event) {
+    if (!focusReleasesBodyCaret(event && event.target)) return;
+    dismissBodyCaret();
   }
 
   function clearTicketBinding(binding) {
@@ -10139,6 +10220,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     inboundList = [];
     linkPresent = null;
     state = createState("");
+    bodyCaretReleased = false;
     sentLines = lineSet(state.anchor, state.cursor);
     outstandingLock = null;
     granted = { anchor: state.anchor, cursor: state.cursor };
@@ -10602,8 +10684,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     },
     focus() {
       commentFocus = null;
+      const released = bodyCaretReleased;
+      bodyCaretReleased = false;
       root.focus();
       placeCaret();
+      if (released) claimLines(state.anchor, state.cursor);
     },
     moveCaret(direction, granularity, extend) {
       moveCaret(direction, granularity, extend);

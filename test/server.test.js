@@ -5071,3 +5071,92 @@ test("T-ticket-cross-repo", async () => {
     await fs.rm(ghostDir, { recursive: true, force: true });
   }
 });
+
+test("a released ticket caret no longer blocks another socket", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const body = "one\n\ntwo\n";
+    const id = "aaaaaaaa";
+    const rel = `tickets/${id}.md`;
+    await writeTicket(dir, {
+      id,
+      title: "Alpha",
+      state: "new",
+      created: "2026-10-01T00:00:00.000Z",
+      body,
+    });
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    try {
+      const opened = await openDoc(a, "A", rel);
+      assert.equal(opened.text, body);
+      await openDoc(b, "B", rel);
+      const from = lockIndexAt(body, 0);
+      const to = lockIndexAt(body, body.length);
+      assert.ok(to > from);
+      const locked = await syncLock(a, [b], "A", rel, 0, opened.rev, body.length);
+      const indexes = [];
+      for (let index = from; index <= to; index += 1) indexes.push(index);
+      assert.deepEqual(locked.lines.map((line) => line.index), indexes);
+      assert.equal(locked.lines.every((line) => line.username === "A"), true);
+      const refuse = async (cursor) => {
+        b.send({
+          type: "edit",
+          username: "B",
+          path: rel,
+          rev: opened.rev,
+          op: "insert",
+          text: "Q",
+          anchor: cursor,
+          cursor,
+        });
+        const error = await b.next((msg) => msg.type === "error" || msg.type === "doc");
+        assert.equal(error.type, "error");
+        assert.equal(error.status, 409);
+        assert.equal(error.heldBy, "A");
+      };
+      await refuse(0);
+      await refuse(body.indexOf("two"));
+      a.send({ type: "lock", username: "A", path: rel, rev: opened.rev + 1, release: true });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+      await refuse(body.indexOf("two"));
+      a.send({ type: "lock", username: "A", path: rel, rev: opened.rev, release: true });
+      const freedA = await a.next((msg) => msg.type === "locks" && msg.path === rel);
+      const freedB = await b.next((msg) => msg.type === "locks" && msg.path === rel);
+      assert.deepEqual(freedA.lines, []);
+      assert.deepEqual(freedB.lines, []);
+      b.send({
+        type: "edit",
+        username: "B",
+        path: rel,
+        rev: opened.rev,
+        op: "insert",
+        text: "Q",
+        anchor: 0,
+        cursor: 0,
+      });
+      const doc = await takeDoc(b);
+      await takeDoc(a);
+      assert.equal(doc.text, "Qone\n\ntwo\n");
+      const twoAt = doc.text.indexOf("two");
+      b.send({
+        type: "edit",
+        username: "B",
+        path: rel,
+        rev: doc.rev,
+        op: "insert",
+        text: "Z",
+        anchor: twoAt,
+        cursor: twoAt,
+      });
+      const second = await takeDoc(b);
+      await takeDoc(a);
+      assert.equal(second.text, "Qone\n\nZtwo\n");
+      const disk = await readDoc(dir, rel);
+      assert.equal(disk.includes("Qone"), true);
+      assert.equal(disk.includes("Ztwo"), true);
+    } finally {
+      a.ws.close();
+      b.ws.close();
+    }
+  });
+});
