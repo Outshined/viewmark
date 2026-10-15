@@ -18691,3 +18691,381 @@ test("flag off, pointer gestures and Ctrl-A do not draw a vim status", () => {
     }
   });
 });
+
+function vimPress(mounted, key, extra = {}) {
+  mounted.listeners.keydown({
+    key,
+    shiftKey: false,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    preventDefault() {},
+    ...extra,
+  });
+}
+
+function sourceStartsOf(text) {
+  const starts = [];
+  let start = 0;
+  for (let i = 0; i <= text.length; i += 1) {
+    if (i === text.length || text[i] === "\n") {
+      starts.push(start);
+      start = i + 1;
+      if (i === text.length) break;
+    }
+  }
+  if (starts.length === 0) starts.push(0);
+  return starts;
+}
+
+function glyphRect(top) {
+  return { top, bottom: top + 16, left: 8, right: 16, width: 8, height: 16 };
+}
+
+// The walker and the range are the drawn glyphs. Each text node is one source span.
+function installGlyphs(nodes, rectFor) {
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const list = nodes.filter(Boolean);
+  globalThis.document.createTreeWalker = () => {
+    let index = 0;
+    return {
+      nextNode() {
+        if (index >= list.length) return null;
+        const node = list[index];
+        index += 1;
+        return node;
+      },
+    };
+  };
+  globalThis.document.createRange = () => {
+    let node = null;
+    let start = 0;
+    return {
+      setStart(next, index) {
+        node = next;
+        start = index;
+      },
+      setEnd() {},
+      collapse() {},
+      selectNode() {},
+      setStartAfter() {},
+      setStartBefore() {},
+      getClientRects() {
+        const rect = node ? rectFor(node, start) : null;
+        return rect ? [rect] : [];
+      },
+      getBoundingClientRect() {
+        const rects = this.getClientRects();
+        return rects[0] || { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 };
+      },
+    };
+  };
+}
+
+function taggedSpan(node) {
+  let el = node && node.parentElement;
+  while (el) {
+    if (el.dataset && el.dataset.start != null && el.dataset.start !== "") return el;
+    el = el.parentElement;
+  }
+  return null;
+}
+
+test("vim normal drops typed text and composition, and insert, paste, copy, and cut stay", () => {
+  return withVimFlag(true, (mounted) => {
+    const view = createEditor(mounted.root, "alpha\n", 0);
+    const status = () => vimStatusOf(mounted.root);
+    assert.equal(status(), "N");
+    let prevented = false;
+    mounted.listeners.beforeinput({
+      inputType: "insertText",
+      data: "Z",
+      preventDefault() { prevented = true; },
+    });
+    mounted.listeners.beforeinput({
+      inputType: "insertParagraph",
+      data: null,
+      preventDefault() {},
+    });
+    mounted.listeners.beforeinput({
+      inputType: "insertLineBreak",
+      data: null,
+      preventDefault() {},
+    });
+    assert.equal(prevented, true);
+    assert.equal(view.getState().doc, "alpha\n");
+    mounted.listeners.compositionstart();
+    mounted.listeners.compositionend({ data: "é" });
+    assert.equal(view.getState().doc, "alpha\n");
+    assert.equal(status(), "N");
+
+    vimType(mounted, "i");
+    assert.equal(status(), "I");
+    vimType(mounted, "Z");
+    assert.equal(view.getState().doc, "Zalpha\n");
+    mounted.listeners.compositionstart();
+    mounted.listeners.compositionend({ data: "é" });
+    assert.equal(view.getState().doc, "Zéalpha\n");
+    vimType(mounted, "Escape");
+    assert.equal(status(), "N");
+    const beforePaste = view.getState().doc;
+    const pasteAt = view.getState().cursor;
+    mounted.listeners.beforeinput({
+      inputType: "insertFromPaste",
+      data: "Q",
+      preventDefault() {},
+    });
+    assert.equal(view.getState().doc, `${beforePaste.slice(0, pasteAt)}Q${beforePaste.slice(pasteAt)}`);
+    let copied = null;
+    mounted.listeners.copy({
+      preventDefault() {},
+      clipboardData: { setData(_type, text) { copied = text; } },
+    });
+    assert.equal(copied, "");
+    let cut = null;
+    const beforeCut = view.getState().doc;
+    mounted.listeners.cut({
+      preventDefault() {},
+      clipboardData: { setData(_type, text) { cut = text; } },
+    });
+    assert.equal(cut, "");
+    assert.equal(view.getState().doc, beforeCut);
+    const beforeX = view.getState().doc;
+    vimType(mounted, "x");
+    assert.equal(view.getState().doc.length, beforeX.length - 1);
+    view.destroy();
+  });
+});
+
+test("flag off, insertText still types", () => {
+  return withVimFlag(false, (mounted) => {
+    const view = createEditor(mounted.root, "alpha\n", 0);
+    mounted.listeners.beforeinput({
+      inputType: "insertText",
+      data: "Z",
+      preventDefault() {},
+    });
+    assert.equal(view.getState().doc, "Zalpha\n");
+    view.destroy();
+  });
+});
+
+test("a remote doc clears pending vim input and an own doc does not", () => {
+  return withVimFlag(true, (mounted) => {
+    const status = () => vimStatusOf(mounted.root);
+    const transport = holdingTransport();
+    const view = createEditor(mounted.root, "alpha\n", 0, transport);
+    vimType(mounted, "y");
+    vimType(mounted, "y");
+    assert.equal(status(), "N");
+    vimType(mounted, "d");
+    assert.equal(status(), "d");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), true);
+    transport.deliver({
+      type: "doc",
+      rev: 1,
+      text: "alpha!\n",
+      from: 5,
+      to: 5,
+      inserted: "!",
+      actor: "other",
+      cursor: 6,
+      anchor: 6,
+    });
+    assert.equal(status(), "N");
+    assert.equal(view.getState().doc, "alpha!\n");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), true);
+    vimType(mounted, "p");
+    const pasted = transport.sent.filter((message) => message.type === "edit").at(-1);
+    assert.ok(pasted);
+    assert.equal(pasted.text.includes("alpha"), true);
+    view.destroy();
+
+    const typing = holdingTransport();
+    const inserted = createEditor(mounted.root, "beta\n", 0, typing);
+    vimType(mounted, "i");
+    assert.equal(status(), "I");
+    typing.deliver({
+      type: "doc",
+      rev: 1,
+      text: "beta?\n",
+      from: 4,
+      to: 4,
+      inserted: "?",
+      actor: "other",
+      cursor: 5,
+      anchor: 5,
+    });
+    assert.equal(status(), "I");
+    assert.equal(inserted.getState().doc, "beta?\n");
+    vimType(mounted, "Z");
+    assert.equal(typing.sent.filter((message) => message.type === "edit").at(-1).text, "Z");
+    inserted.destroy();
+
+    const owned = holdingTransport();
+    const kept = createEditor(mounted.root, "gamma\n", 0, owned);
+    vimType(mounted, "4");
+    assert.equal(status(), "4");
+    owned.deliver({
+      type: "doc",
+      rev: 1,
+      text: "gamma\n",
+      from: 0,
+      to: 0,
+      inserted: "",
+      actor: "",
+      cursor: 0,
+      anchor: 0,
+    });
+    assert.equal(status(), "4");
+    assert.equal(kept.getState().doc, "gamma\n");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), true);
+    kept.destroy();
+  });
+});
+
+test("vim scroll places the caret line at the named edge", () => {
+  return withVimFlag(true, (mounted) => {
+    const view = createEditor(mounted.root, "  alpha\n", 5);
+    const calls = [];
+    const lines = byClass(mounted.root, "md-line");
+    assert.ok(lines.length > 0);
+    for (const line of lines) {
+      line.scrollIntoView = (opts) => {
+        calls.push(opts && opts.block);
+      };
+    }
+    vimType(mounted, "z");
+    vimType(mounted, "t");
+    assert.deepEqual(calls, ["start"]);
+    assert.equal(view.getState().cursor, 5);
+    vimType(mounted, "z");
+    vimType(mounted, "z");
+    assert.deepEqual(calls, ["start", "center"]);
+    vimType(mounted, "z");
+    vimType(mounted, "b");
+    assert.deepEqual(calls, ["start", "center", "end"]);
+    vimType(mounted, "z");
+    vimType(mounted, ".");
+    assert.equal(view.getState().cursor, 2);
+    assert.equal(view.getState().doc, "  alpha\n");
+    assert.equal(calls.at(-1), "center");
+    assert.equal(calls.length, 4);
+    view.destroy();
+  });
+});
+
+test("vim screen motions use the drawn row and the pane", () => {
+  return withVimFlag(true, (mounted) => {
+    globalThis.window.innerHeight = 220;
+    globalThis.window.innerWidth = 800;
+    mounted.root.getBoundingClientRect = () => ({
+      top: 0, left: 0, right: 640, bottom: 220, width: 640, height: 220,
+    });
+    const wrapped = "  abcdefghXXXXXXXXXX\n";
+    const wide = createEditor(mounted.root, wrapped, 15);
+    const wideNodes = mounted.findAll((node) => node.nodeType === 3 && String(node.textContent).includes("X"));
+    assert.equal(wideNodes.length, 1, wideNodes.map((node) => node.textContent).join(" | "));
+    const wideNode = wideNodes[0];
+    const wideTag = taggedSpan(wideNode);
+    assert.ok(wideTag);
+    assert.equal(wideNode.length, Number(wideTag.dataset.end) - Number(wideTag.dataset.start));
+    const wideStart = Number(wideTag.dataset.start);
+    installGlyphs([wideNode], (_node, index) => glyphRect(wideStart + index < 10 ? 10 : 40));
+    vimType(mounted, "g");
+    vimType(mounted, "0");
+    assert.equal(wide.getState().cursor, wideStart + 10);
+    vimType(mounted, "g");
+    vimType(mounted, "^");
+    assert.equal(wide.getState().cursor, wideStart + 10);
+    vimType(mounted, "g");
+    vimType(mounted, "$");
+    assert.equal(wide.getState().cursor, wideStart + wideNode.length);
+    wide.destroy();
+
+    const head = createEditor(mounted.root, wrapped, 5);
+    const headNode = mounted.findAll((node) => node.nodeType === 3 && String(node.textContent).includes("X"))[0];
+    assert.ok(headNode);
+    const headStart = Number(taggedSpan(headNode).dataset.start);
+    installGlyphs([headNode], (_node, index) => glyphRect(headStart + index < 10 ? 10 : 40));
+    vimType(mounted, "g");
+    vimType(mounted, "0");
+    assert.equal(head.getState().cursor, headStart);
+    vimType(mounted, "g");
+    vimType(mounted, "^");
+    assert.equal(head.getState().cursor, headStart + 2);
+    head.destroy();
+
+    const tail = createEditor(mounted.root, wrapped, 5);
+    const tailNode = mounted.findAll((node) => node.nodeType === 3 && String(node.textContent).includes("X"))[0];
+    const tailStart = Number(taggedSpan(tailNode).dataset.start);
+    installGlyphs([tailNode], (_node, index) => glyphRect(tailStart + index < 10 ? 10 : 40));
+    vimType(mounted, "g");
+    vimType(mounted, "$");
+    assert.equal(tail.getState().cursor, tailStart + 10);
+    tail.destroy();
+
+    const body = "aaa\n\nbbb\n\nccc\n";
+    const pane = createEditor(mounted.root, body, 0);
+    const aaa = textNode(mounted.root, "aaa");
+    const bbb = textNode(mounted.root, "bbb");
+    const ccc = textNode(mounted.root, "ccc");
+    assert.ok(aaa && bbb && ccc);
+    const at = (node) => Number(taggedSpan(node).dataset.start);
+    const tops = new Map([[aaa, 20], [bbb, 100], [ccc, 180]]);
+    installGlyphs([aaa, bbb, ccc], (node) => glyphRect(tops.get(node)));
+    const aaaAt = at(aaa);
+    const bbbAt = at(bbb);
+    const cccAt = at(ccc);
+    vimPress(mounted, "L");
+    assert.equal(pane.getState().cursor, cccAt);
+    vimPress(mounted, "H");
+    assert.equal(pane.getState().cursor, aaaAt);
+    vimPress(mounted, "M");
+    assert.equal(pane.getState().cursor, bbbAt);
+    vimType(mounted, "9");
+    vimPress(mounted, "M");
+    assert.equal(pane.getState().cursor, bbbAt);
+    vimPress(mounted, "H");
+    vimType(mounted, "2");
+    vimPress(mounted, "H");
+    assert.equal(pane.getState().cursor, bbbAt);
+    vimPress(mounted, "H");
+    vimPress(mounted, "f", { ctrlKey: true });
+    assert.equal(pane.getState().cursor, cccAt);
+    vimPress(mounted, "PageDown");
+    assert.equal(pane.getState().cursor, cccAt);
+    vimPress(mounted, "b", { ctrlKey: true });
+    assert.equal(pane.getState().cursor, aaaAt);
+    vimPress(mounted, "PageUp");
+    assert.equal(pane.getState().cursor, aaaAt);
+    vimPress(mounted, "d", { ctrlKey: true });
+    assert.equal(pane.getState().cursor, bbbAt);
+    vimPress(mounted, "u", { ctrlKey: true });
+    assert.equal(pane.getState().cursor, aaaAt);
+    vimType(mounted, "2");
+    vimPress(mounted, "d", { ctrlKey: true });
+    assert.equal(pane.getState().cursor, cccAt);
+    assert.equal(pane.getState().doc, body);
+    pane.destroy();
+
+    const raw = createEditor(mounted.root, body, 0);
+    pressViewToggle(mounted.root);
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    const rawAaa = textNode(mounted.root, "aaa");
+    const rawBbb = textNode(mounted.root, "bbb");
+    const rawCcc = textNode(mounted.root, "ccc");
+    assert.ok(rawAaa && rawBbb && rawCcc);
+    const rawTops = new Map([[rawAaa, 20], [rawBbb, 100], [rawCcc, 180]]);
+    installGlyphs([rawAaa, rawBbb, rawCcc], (node) => glyphRect(rawTops.get(node)));
+    const starts = sourceStartsOf(body);
+    vimPress(mounted, "f", { ctrlKey: true });
+    assert.equal(raw.getState().cursor, starts[Math.min(starts.length - 1, 3)]);
+    vimPress(mounted, "b", { ctrlKey: true });
+    assert.equal(raw.getState().cursor, starts[0]);
+    vimPress(mounted, "d", { ctrlKey: true });
+    assert.equal(raw.getState().cursor, starts[1]);
+    assert.notEqual(starts[1], bbbAt);
+    raw.destroy();
+  });
+});

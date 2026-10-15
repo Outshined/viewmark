@@ -2284,6 +2284,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let vimOnce = false;
   // The flag is this page's memory. Storage is read once here and written on toggle.
   let vimOn = readVimOn();
+  // A screen page is the rows already drawn. Pulling the caret into view would
+  // add the next row to that count.
+  let vimKeepScroll = false;
   // Create is answered by its own error or by the file from onOpen.
   // A 409 for that create is not a rejected caret grant.
   const conflictWaiters = [];
@@ -2359,6 +2362,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // True from the click's state write through placeCaret. selectionchange in
   // that window still describes the DOM replaceChildren just tore down.
   let gestureHold = false;
+  // Chromium moves the selection back a frame after a click replaces the lines.
+  let retainedCaret = null;
   let pasteSeen = false;
   let pendingAttach = false;
   let noticeTimer = null;
@@ -2885,6 +2890,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     try {
       if (!node) return;
+      if (vimKeepScroll) return;
       if (priorTop !== undefined) {
         const after = caretRect();
         if (after && caretInView(after)) return;
@@ -3092,6 +3098,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const snapped = sourceMode || pointer ? mapped : homeSnap(mapped);
     const next = sourceMode ? snapped : withMarkerEdges(state.doc, state, snapped);
     if (sourceMode || (next.anchor === state.anchor && next.cursor === state.cursor)) goalX = keptX;
+    if (retainedCaret && (next.cursor !== retainedCaret.cursor || next.anchor !== retainedCaret.anchor)) {
+      state = { ...state, anchor: retainedCaret.anchor, cursor: retainedCaret.cursor };
+      placeCaret();
+      return;
+    }
     state = { ...state, anchor: next.anchor, cursor: next.cursor };
     if (snapped.anchor !== mapped.anchor || snapped.cursor !== mapped.cursor) placeCaret();
     // A shift-click changes the selection with no drag mouseup. Arrow keys place
@@ -5978,6 +5989,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     let ownEdit = false;
     if (message.type === "doc") {
       clearEditTimer();
+      // A remote splice invalidates a half-typed count or operator. This socket's
+      // own doc is the echo of a command that may already have typed the next one.
+      if (vimOn && !ownActor(message)) clearVimPending();
       if (waitingForFile) {
         keptCaret = null;
         typingRun = null;
@@ -6638,6 +6652,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     event.preventDefault();
     if (composing) return;
     const type = event.inputType;
+    // Normal and Visual are keys. A browser that still delivers the character
+    // after a consumed keydown must not insert it. Paste, cut, and copy stay.
+    // The status pins on a paint; dropping the character still places it once
+    // the pane has a box.
+    if (vimOn && !vimInsertKeys() && (type === "insertText" || type === "insertParagraph" || type === "insertLineBreak")) {
+      pinViewToggle();
+      return;
+    }
     const edits = type === "insertText"
       || type === "insertParagraph"
       || type === "insertLineBreak"
@@ -6768,6 +6790,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     composing = false;
     composed = event.data || "";
     if (origin) state = { ...state, anchor: origin.anchor, cursor: origin.cursor };
+    if (vimOn && !vimInsertKeys()) {
+      composed = "";
+      render();
+      return;
+    }
     if (composed && claimLines(state.anchor, state.cursor)) {
       if (typedText(composed)) emitTyping({ op: "insert", text: composed });
       else emitEdit({ op: "insert", text: composed });
@@ -6873,6 +6900,298 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (from !== to) emitEdit({ op: "delete", anchor: from, cursor: to });
   }
 
+  function clearVimPending() {
+    vimInput = emptyVimInput();
+    if (vimStatus) vimStatus.textContent = vimStatusText(vimMode, vimInput);
+  }
+
+  function elementsWithClass(className) {
+    const found = [];
+    const walk = (node) => {
+      if (!node || node.nodeType !== 1) return;
+      if (hasClass(node, className)) found.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    for (const child of root.childNodes || []) walk(child);
+    return found;
+  }
+
+  function lineSourceSpan(line) {
+    let start = null;
+    let end = null;
+    const take = (el) => {
+      if (!el || el.nodeType !== 1 || !el.dataset) return;
+      if (el.dataset.start == null || el.dataset.start === "") return;
+      const s = Number(el.dataset.start);
+      const e = el.dataset.end == null || el.dataset.end === "" ? s : Number(el.dataset.end);
+      if (!Number.isFinite(s)) return;
+      if (start == null || s < start) start = s;
+      if (Number.isFinite(e) && (end == null || e > end)) end = e;
+    };
+    const walk = (el) => {
+      take(el);
+      for (const child of el.childNodes || []) {
+        if (child && child.nodeType === 1) walk(child);
+      }
+    };
+    walk(line);
+    if (start == null) return null;
+    return { start, end: end == null ? start : end };
+  }
+
+  function glyphLive(box) {
+    return !!box && Number.isFinite(box.top) && Number.isFinite(box.bottom) && box.bottom > box.top;
+  }
+
+  // One pass. Screen motions ask for every drawn glyph, and a walk per offset
+  // would reread the tree for each of them.
+  function vimGlyphs() {
+    const glyphs = new Map();
+    if (typeof document === "undefined" || typeof document.createTreeWalker !== "function" || typeof document.createRange !== "function") return glyphs;
+    let walker = null;
+    try {
+      const show = typeof NodeFilter === "undefined" ? 4 : NodeFilter.SHOW_TEXT;
+      walker = document.createTreeWalker(root, show);
+    } catch {
+      return glyphs;
+    }
+    if (!walker) return glyphs;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const parent = node.parentElement;
+      if (parent && typeof parent.closest === "function" && (parent.closest(".md-atom") || parent.closest(".md-lock"))) continue;
+      const tagged = nearestTagged(node);
+      if (!tagged || (typeof tagged.closest === "function" && tagged.closest(".md-lock"))) continue;
+      const start = Number(tagged.dataset.start);
+      const end = Number(tagged.dataset.end);
+      const len = textLength(node);
+      if (!Number.isFinite(start) || len !== end - start || len <= 0) continue;
+      for (let i = 0; i < len; i += 1) {
+        const rect = rawCharRect(node, i);
+        if (!glyphLive(rect)) continue;
+        glyphs.set(start + i, rect);
+      }
+    }
+    return glyphs;
+  }
+
+  // The caret sits on the glyph after it. At a newline that glyph is missing,
+  // and the row is the one that ends there.
+  function vimCaretGlyph(glyphs, cursor) {
+    const here = glyphs.get(cursor);
+    if (glyphLive(here)) return here;
+    if (cursor > 0) {
+      const prev = glyphs.get(cursor - 1);
+      if (glyphLive(prev)) return prev;
+    }
+    return null;
+  }
+
+  // Subpixel rounding puts one glyph a pixel off its row. Two pixels is a new row.
+  function vimDisplayRow(glyphs, doc, cursor) {
+    const glyph = vimCaretGlyph(glyphs, cursor);
+    if (!glyph) return null;
+    const mid = (box) => (box.top + box.bottom) / 2;
+    const slack = 2;
+    let from = cursor;
+    for (; from > 0; from -= 1) {
+      const prev = glyphs.get(from - 1);
+      if (!glyphLive(prev) || mid(prev) < glyph.top - slack) break;
+    }
+    let to = cursor;
+    for (; to < doc.length; to += 1) {
+      const next = glyphs.get(to);
+      if (glyphLive(next)) {
+        if (mid(next) > glyph.bottom + slack) break;
+      } else if (doc[to] === "\n") break;
+    }
+    return { from, to };
+  }
+
+  function vimPane() {
+    const view = typeof window !== "undefined" ? window : null;
+    if (!view || !root) return null;
+    const box = elementRect(root);
+    if (!box) return null;
+    const height = view.innerHeight;
+    if (!Number.isFinite(height) || !(height > 0)) return null;
+    const top = Number(box.top);
+    const bottom = Number(box.bottom);
+    if (!Number.isFinite(top) || !Number.isFinite(bottom)) return null;
+    const paneTop = Math.max(top, 0);
+    const paneBottom = Math.min(bottom, height);
+    if (!(paneBottom > paneTop)) return null;
+    return { paneTop, paneBottom };
+  }
+
+  function vimPaneRows(glyphs) {
+    const pane = vimPane();
+    if (!pane) return null;
+    const rows = [];
+    for (const line of elementsWithClass("md-line")) {
+      if (hasClass(line, "md-paragraph-gap")) continue;
+      const span = lineSourceSpan(line);
+      if (!span) continue;
+      const seen = new Map();
+      for (let i = span.start; i < span.end; i += 1) {
+        const g = glyphs.get(i);
+        if (!glyphLive(g)) continue;
+        const gmid = (g.top + g.bottom) / 2;
+        if (gmid < pane.paneTop || gmid >= pane.paneBottom) continue;
+        const key = Math.round(g.top);
+        if (!seen.has(key)) seen.set(key, { at: i, top: g.top, bottom: g.bottom, end: span.end });
+      }
+      if (seen.size === 0) {
+        const rect = elementRect(line);
+        if (!rect || !(rect.height > 0)) continue;
+        const mid = (rect.top + rect.bottom) / 2;
+        if (!Number.isFinite(mid) || mid < pane.paneTop || mid >= pane.paneBottom) continue;
+        rows.push({ at: span.start, top: rect.top, bottom: rect.bottom, end: span.end });
+        continue;
+      }
+      for (const row of seen.values()) rows.push(row);
+    }
+    rows.sort((a, b) => a.top - b.top || a.at - b.at);
+    return { rows, paneTop: pane.paneTop, paneBottom: pane.paneBottom };
+  }
+
+  function vimFirstNonBlank(doc, at, end) {
+    let i = at;
+    const limit = Math.min(doc.length, end);
+    while (i < limit && (doc[i] === " " || doc[i] === "\t")) i += 1;
+    return i < limit ? i : at;
+  }
+
+  function vimRenderedStarts() {
+    const starts = [];
+    for (const line of elementsWithClass("md-line")) {
+      if (hasClass(line, "md-paragraph-gap")) continue;
+      const span = lineSourceSpan(line);
+      if (span) starts.push(span.start);
+    }
+    return starts;
+  }
+
+  function vimSourceStarts(doc) {
+    const starts = [];
+    let start = 0;
+    for (let i = 0; i <= doc.length; i += 1) {
+      if (i === doc.length || doc[i] === "\n") {
+        starts.push(start);
+        start = i + 1;
+        if (i === doc.length) break;
+      }
+    }
+    if (starts.length === 0) starts.push(0);
+    return starts;
+  }
+
+  function vimStepTo(starts, offset, delta) {
+    if (starts.length === 0) return offset;
+    let index = 0;
+    for (let i = 0; i < starts.length; i += 1) {
+      if (starts[i] <= offset) index = i;
+      else break;
+    }
+    const next = Math.max(0, Math.min(starts.length - 1, index + delta));
+    return starts[next];
+  }
+
+  function landVim(at) {
+    const extend = vimMode === "visual" || vimMode === "visual-line";
+    const pos = Math.max(0, Math.min(state.doc.length, at));
+    moveVimCaret(extend ? state.anchor : pos, pos);
+  }
+
+  function vimCaretLine() {
+    const view = typeof window !== "undefined" ? window : null;
+    const sel = view && typeof view.getSelection === "function" ? view.getSelection() : null;
+    const painted = lineElementOf(sel && sel.focusNode);
+    if (painted) return painted;
+    let best = null;
+    let bestStart = -1;
+    for (const line of elementsWithClass("md-line")) {
+      const span = lineSourceSpan(line);
+      if (!span) continue;
+      if (state.cursor < span.start || state.cursor > span.end) continue;
+      if (!best || span.start >= bestStart) {
+        best = line;
+        bestStart = span.start;
+      }
+    }
+    return best;
+  }
+
+  function scrollVimCaretLine(edge) {
+    const block = edge === "top" ? "start" : edge === "bottom" ? "end" : "center";
+    const line = vimCaretLine();
+    if (!line || typeof line.scrollIntoView !== "function") return;
+    line.scrollIntoView({ block });
+  }
+
+  function captureScroll() {
+    const saved = [];
+    const remember = (el) => {
+      if (!el) return;
+      for (const item of saved) if (item.el === el) return;
+      try {
+        const top = el.scrollTop;
+        const left = el.scrollLeft;
+        if (typeof top !== "number" || typeof left !== "number") return;
+        saved.push({ el, top, left });
+      } catch {
+        // A node without a scroll box has nothing to put back.
+      }
+    };
+    if (typeof document !== "undefined" && document) {
+      remember(document.scrollingElement);
+      remember(document.documentElement);
+      remember(document.body);
+    }
+    let node = root;
+    while (node) {
+      remember(node);
+      node = node.parentElement;
+    }
+    const view = typeof window !== "undefined" ? window : null;
+    const x = view && typeof view.scrollX === "number" ? view.scrollX : null;
+    const y = view && typeof view.scrollY === "number" ? view.scrollY : null;
+    return { saved, view, x, y };
+  }
+
+  function restoreScroll(shot) {
+    if (!shot) return;
+    for (const item of shot.saved) {
+      try {
+        item.el.scrollTop = item.top;
+        item.el.scrollLeft = item.left;
+      } catch {
+        // The node was replaced with the paint. The window scroll is the other copy.
+      }
+    }
+    const view = shot.view;
+    if (view && shot.x != null && shot.y != null && typeof view.scrollTo === "function") view.scrollTo(shot.x, shot.y);
+  }
+
+  // The selection paints the caret and the host scrolls it into view. The page
+  // command already chose its rows, so that scroll is put back, including the
+  // one the browser applies on the next frame.
+  function landVimKeepingScroll(at) {
+    const shot = captureScroll();
+    vimKeepScroll = true;
+    try {
+      landVim(at);
+    } finally {
+      vimKeepScroll = false;
+      restoreScroll(shot);
+    }
+    const view = shot.view;
+    if (view && typeof view.requestAnimationFrame === "function") {
+      view.requestAnimationFrame(() => {
+        if (!closed) restoreScroll(shot);
+      });
+    }
+  }
+
   function applyVimView(effect) {
     const command = typeof effect.command === "string" ? effect.command : "";
     const repeat = Number.isInteger(effect.repeat) && effect.repeat > 0 ? effect.repeat : 1;
@@ -6897,6 +7216,59 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (command === "gj" || command === "gk") {
       const forward = command === "gj";
       for (let n = 0; n < repeat; n += 1) moveCaret(forward ? "forward" : "backward", "line", extend);
+      return;
+    }
+    if (command === "g0" || command === "g^" || command === "g$") {
+      const row = vimDisplayRow(vimGlyphs(), state.doc, state.cursor);
+      if (!row) return;
+      if (command === "g0") {
+        landVim(row.from);
+        return;
+      }
+      if (command === "g$") {
+        landVim(row.to);
+        return;
+      }
+      let at = row.from;
+      const limit = Math.min(state.doc.length, row.to);
+      while (at < limit && (state.doc[at] === " " || state.doc[at] === "\t")) at += 1;
+      landVim(at < limit ? at : row.from);
+      return;
+    }
+    if (command === "H" || command === "M" || command === "L") {
+      const seen = vimPaneRows(vimGlyphs());
+      if (!seen || seen.rows.length === 0) return;
+      const rows = seen.rows;
+      let target = rows[0];
+      if (command === "M") {
+        const paneMid = (seen.paneTop + seen.paneBottom) / 2;
+        let best = Infinity;
+        for (const row of rows) {
+          const dist = Math.abs((row.top + row.bottom) / 2 - paneMid);
+          if (dist < best) {
+            best = dist;
+            target = row;
+          }
+        }
+      } else {
+        const index = command === "H"
+          ? Math.min(rows.length - 1, repeat - 1)
+          : Math.max(0, rows.length - repeat);
+        target = rows[index];
+      }
+      landVim(vimFirstNonBlank(state.doc, target.at, target.end));
+      return;
+    }
+    if (command === "ctrl-f" || command === "ctrl-b" || command === "ctrl-d" || command === "ctrl-u") {
+      const seen = vimPaneRows(vimGlyphs());
+      if (!seen || seen.rows.length === 0) return;
+      const span = command === "ctrl-d" || command === "ctrl-u"
+        ? Math.max(1, Math.floor(seen.rows.length / 2))
+        : seen.rows.length;
+      const steps = span * repeat;
+      const delta = command === "ctrl-f" || command === "ctrl-d" ? steps : -steps;
+      const starts = sourceMode ? vimSourceStarts(state.doc) : vimRenderedStarts();
+      landVimKeepingScroll(vimStepTo(starts, state.cursor, delta));
     }
   }
 
@@ -6915,6 +7287,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         const anchor = Number.isInteger(effect.anchor) ? effect.anchor : effect.cursor;
         moveVimCaret(anchor, effect.cursor);
       }
+      scrollVimCaretLine(effect.edge);
       return;
     }
     if (effect.type === "splice") {
@@ -7126,6 +7499,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       anchor: state.anchor,
       raw: sourceMode === true,
       flag: true,
+      layout: true,
     });
     if (!result || result.consumed !== true) return false;
     rememberVim(result.vim);
@@ -7160,6 +7534,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       anchor: state.cursor,
       raw: sourceMode === true,
       flag: true,
+      layout: true,
     });
     if (result && result.consumed === true) {
       rememberVim({ ...(result.vim || {}), mode: "insert", once: false });
@@ -7182,6 +7557,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   listen("keydown", (event) => {
+    retainedCaret = null;
     if (keyEndsRun(event)) endTypingRunLater();
     gestureHold = false;
     commentFocus = null;
@@ -7663,6 +8039,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     render();
+    // Replacing the lines drops the node the caret was on. Chromium then
+    // puts the selection back on the next frame, so place it again.
+    retainCaret();
+  }
+
+  function retainCaret() {
+    const anchor = state.anchor;
+    const cursor = state.cursor;
+    retainedCaret = { anchor, cursor };
+    const view = typeof window !== "undefined" ? window : null;
+    if (!view || typeof view.setTimeout !== "function") return;
+    view.setTimeout(() => {
+      if (closed) return;
+      if (retainedCaret && retainedCaret.anchor === anchor && retainedCaret.cursor === cursor) retainedCaret = null;
+    }, 200);
   }
 
   listen("auxclick", (event) => {
