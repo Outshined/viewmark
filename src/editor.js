@@ -6768,7 +6768,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   listen("cut", (event) => {
     endTypingRunLater();
     event.preventDefault();
-    if (!adoptDomSelection()) return;
+    // A block caret collapses the DOM range. Visual already stores its span.
+    const visualCut = vimOn && (vimMode === "visual" || vimMode === "visual-line");
+    if (!visualCut && !adoptDomSelection()) return;
     const text = selectedSlice(state);
     event.clipboardData.setData("text/plain", text);
     if (state.anchor === state.cursor) return;
@@ -6862,6 +6864,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function useVimSelection(mode) {
     if (!vimOn) return;
     rememberVim({ ...vimSnapshot(), mode });
+  }
+
+  // v from Visual Line keeps the current span. A click has already collapsed it,
+  // so the mode has to leave or that v would select nothing.
+  function caretClickLeavesVisual() {
+    if (vimMode !== "visual" && vimMode !== "visual-line") return;
+    useVimSelection("normal");
   }
 
   function vimInsertKeys() {
@@ -7973,6 +7982,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (event.detail === 1) gestureHold = false;
         return;
       }
+      caretClickLeavesVisual();
       render();
       return;
     }
@@ -8003,6 +8013,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           if (detail === 1) gestureHold = false;
           return;
         }
+        caretClickLeavesVisual();
         render();
         return;
       }
@@ -8026,6 +8037,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (detail === 1) gestureHold = false;
         return;
       }
+      caretClickLeavesVisual();
       render();
       return;
     }
@@ -8038,6 +8050,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (detail === 1) gestureHold = false;
       return;
     }
+    caretClickLeavesVisual();
     render();
     // Replacing the lines drops the node the caret was on. Chromium then
     // puts the selection back on the next frame, so place it again.
