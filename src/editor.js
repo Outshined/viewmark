@@ -6752,6 +6752,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (state.anchor === state.cursor) return;
     if (sourceMode) rawErase(1);
     else emitEdit({ op: "delete" });
+    useVimSelection("normal");
   });
 
   listen("compositionstart", () => {
@@ -6827,6 +6828,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     vimOnce = next.once === true;
     syncVimCaret();
     if (vimStatus) vimStatus.textContent = vimStatusText(vimMode, vimInput);
+  }
+
+  // The gesture already stored the selection. The snapshot keeps the register,
+  // and the block caret follows the mode. Nothing here splices.
+  function useVimSelection(mode) {
+    if (!vimOn) return;
+    rememberVim({ ...vimSnapshot(), mode });
   }
 
   function vimInsertKeys() {
@@ -7245,6 +7253,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       event.preventDefault();
       state = { ...state, anchor: 0, cursor: state.doc.length };
       if (!claimLines(0, state.doc.length)) return;
+      useVimSelection("visual-line");
       render();
       return;
     }
@@ -7454,6 +7463,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           const before = lineIndexAt(state.doc, state.cursor);
           state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
           if (!claimLines(mapped.anchor, mapped.cursor)) return;
+          if (state.anchor !== state.cursor) useVimSelection("visual");
           const after = lineIndexAt(state.doc, state.cursor);
           if (before !== after) render();
           else updateCommentButton();
@@ -7562,7 +7572,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const detail = event.detail;
     if (event.shiftKey && detail === 1) {
       gestureHold = false;
-      adoptDomSelection();
+      const claimed = adoptDomSelection();
+      if (claimed && state.anchor !== state.cursor) useVimSelection("visual");
       // gestureHold kept selectionchange from placing the button for this click.
       updateCommentButton();
       return;
@@ -7589,6 +7600,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const span = detail === 2 ? wordSpan(state.doc, offset) : blockSpan(state.doc, offset);
       state = { ...state, anchor: span[0], cursor: span[1] };
       if (!claimLines(span[0], span[1])) return;
+      if (span[0] !== span[1]) useVimSelection(detail === 3 ? "visual-line" : "visual");
       render();
       return;
     }

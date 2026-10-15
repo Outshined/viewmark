@@ -689,7 +689,7 @@ input.md-vim-line {
   position: fixed;
   left: 0.35rem;
   right: 0.35rem;
-  bottom: 0.35rem;
+  top: calc(0.35rem + 1.75rem);
   z-index: 4;
   box-sizing: border-box;
   margin: 0;

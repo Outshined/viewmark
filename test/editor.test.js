@@ -18270,8 +18270,14 @@ test("vim prompt line submits search and ex", () => {
     const rule = css.match(/input\.md-vim-line\s*\{[^}]*\}/);
     assert.ok(rule);
     assert.match(rule[0], /position:\s*fixed/);
+    assert.match(rule[0], /top:\s*calc\(0\.35rem \+ 1\.75rem\)/);
+    assert.equal(/bottom\s*:/.test(rule[0]), false);
     assert.match(rule[0], /background:\s*#1c1b19/);
     assert.equal(rule[0].includes("svg"), false);
+    const statusRule = css.match(/span\.md-vim-status\s*\{[^}]*\}/);
+    assert.ok(statusRule);
+    assert.match(statusRule[0], /top:\s*0\.35rem/);
+    assert.match(statusRule[0], /line-height:\s*1\.75rem/);
     const status = () => {
       const found = byClass(mounted.root, "md-vim-status");
       return found.length === 0 ? "" : found[0].textContent;
@@ -18399,5 +18405,289 @@ test("flag off, a slash inserts and draws no vim line", () => {
     assert.equal(vimLineNode(), null);
     assert.equal(byClass(mounted.root, "md-vim-status").length, 0);
     view.destroy();
+  });
+});
+
+function vimStatusOf(root) {
+  const found = byClass(root, "md-vim-status");
+  return found.length === 0 ? "" : found[0].textContent;
+}
+
+function vimChord(mounted, key, extra = {}) {
+  mounted.listeners.keydown({
+    key,
+    shiftKey: false,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    preventDefault() {},
+    ...extra,
+  });
+}
+
+function vimText(mounted, sample) {
+  return mounted.findAll((node) => node.nodeType === 3 && String(node.textContent).includes(sample))[0];
+}
+
+function armCaretPoint(node, offset) {
+  globalThis.document.caretPositionFromPoint = () => ({ offsetNode: node, offset });
+}
+
+function pressEditor(mounted, node, detail, extra = {}) {
+  const event = {
+    target: node,
+    clientX: 8,
+    clientY: 8,
+    detail,
+    button: 0,
+    shiftKey: false,
+    preventDefault() {},
+    ...extra,
+  };
+  mounted.listeners.mousedown(event);
+  mounted.listeners.mouseup(event);
+  mounted.listeners.click(event);
+}
+
+function showDomRange(node, anchor, cursor) {
+  globalThis.window.getSelection = () => ({
+    rangeCount: 1,
+    anchorNode: node,
+    anchorOffset: anchor,
+    focusNode: node,
+    focusOffset: cursor,
+    isCollapsed: anchor === cursor,
+    getRangeAt() {
+      return {
+        collapsed: anchor === cursor,
+        commonAncestorContainer: node,
+        startContainer: node,
+        startOffset: Math.min(anchor, cursor),
+        endContainer: node,
+        endOffset: Math.max(anchor, cursor),
+      };
+    },
+  });
+}
+
+test("vim gestures enter visual and Ctrl-A deletes with d", () => {
+  return withVimFlag(true, (mounted) => {
+    const status = () => vimStatusOf(mounted.root);
+    const block = () => mounted.root.classList.contains("md-vim-block");
+    globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+    try {
+      const doc = "alpha beta\n";
+      const selected = watchVimEdits(doc, 0);
+      const view = createEditor(mounted.root, doc, 0, selected.transport);
+      assert.equal(status(), "N");
+      assert.equal(block(), true);
+      vimType(mounted, "i");
+      assert.equal(status(), "I");
+      assert.equal(block(), false);
+      vimChord(mounted, "a", { ctrlKey: true });
+      assert.equal(status(), "VL");
+      assert.equal(block(), true);
+      assert.equal(view.getState().anchor, 0);
+      assert.equal(view.getState().cursor, doc.length);
+      assert.equal(view.getState().doc, doc);
+      assert.equal(selected.edits.length, 0);
+      vimType(mounted, "d");
+      assert.equal(view.getState().doc, "");
+      assert.equal(status(), "N");
+      assert.equal(block(), true);
+      view.destroy();
+
+      const yanked = watchVimEdits("alpha\n", 0);
+      const kept = createEditor(mounted.root, "alpha\n", 0, yanked.transport);
+      vimType(mounted, "y");
+      vimType(mounted, "y");
+      assert.equal(yanked.edits.length, 0);
+      vimChord(mounted, "a", { ctrlKey: true });
+      assert.equal(status(), "VL");
+      assert.equal(kept.getState().doc, "alpha\n");
+      assert.equal(yanked.edits.length, 0);
+      vimType(mounted, "p");
+      assert.equal(kept.getState().doc, "alpha\n\nalpha\n");
+      kept.destroy();
+
+      const pointerDoc = "alpha beta\n\ngamma\n";
+      const pointed = watchVimEdits(pointerDoc, 0);
+      const pointer = createEditor(mounted.root, pointerDoc, 0, pointed.transport);
+      const alpha = vimText(mounted, "alpha");
+      assert.ok(alpha);
+      const alphaAt = alpha.textContent.indexOf("alpha");
+      armCaretPoint(alpha, alphaAt);
+      vimType(mounted, "i");
+      assert.equal(status(), "I");
+      assert.equal(block(), false);
+      pressEditor(mounted, alpha, 1);
+      assert.equal(status(), "I");
+      assert.equal(block(), false);
+      assert.equal(pointer.getState().anchor, pointer.getState().cursor);
+      assert.equal(pointer.getState().doc, pointerDoc);
+      pressEditor(mounted, alpha, 2);
+      assert.equal(selectedSlice(pointer.getState()), "alpha");
+      assert.equal(status(), "V");
+      assert.equal(block(), true);
+      assert.equal(pointed.edits.length, 0);
+      vimType(mounted, "d");
+      assert.equal(pointer.getState().doc.includes("alpha"), false);
+      assert.equal(pointer.getState().doc.includes("beta"), true);
+      assert.equal(status(), "N");
+      pointer.destroy();
+
+      const blocked = watchVimEdits(pointerDoc, 0);
+      const triple = createEditor(mounted.root, pointerDoc, 0, blocked.transport);
+      const beta = vimText(mounted, "beta");
+      assert.ok(beta);
+      armCaretPoint(beta, beta.textContent.indexOf("beta"));
+      pressEditor(mounted, beta, 1);
+      assert.equal(status(), "N");
+      pressEditor(mounted, beta, 3);
+      assert.equal(selectedSlice(triple.getState()), "alpha beta");
+      assert.equal(status(), "VL");
+      assert.equal(block(), true);
+      assert.equal(triple.getState().doc, pointerDoc);
+      assert.equal(blocked.edits.length, 0);
+      vimType(mounted, "d");
+      assert.equal(triple.getState().doc.includes("alpha"), false);
+      assert.equal(triple.getState().doc.includes("gamma"), true);
+      assert.equal(status(), "N");
+      triple.destroy();
+
+      const dragged = watchVimEdits(doc, 0);
+      const drag = createEditor(mounted.root, doc, 0, dragged.transport);
+      const line = vimText(mounted, "alpha");
+      const betaAt = line.textContent.indexOf("beta");
+      mounted.listeners.mousedown({ clientX: 0, clientY: 0, button: 0, detail: 1, target: line });
+      showDomRange(line, betaAt, betaAt + 4);
+      mounted.listeners.mouseup({ clientX: 40, clientY: 16, button: 0, detail: 1, target: line });
+      assert.equal(selectedSlice(drag.getState()), "beta");
+      assert.equal(status(), "V");
+      assert.equal(drag.getState().doc, doc);
+      assert.equal(dragged.edits.length, 0);
+      drag.destroy();
+
+      globalThis.window.getSelection = () => null;
+      const stayed = createEditor(mounted.root, doc, 0);
+      const still = vimText(mounted, "alpha");
+      mounted.listeners.mousedown({ clientX: 0, clientY: 0, button: 0, detail: 1, target: still });
+      showDomRange(still, 1, 1);
+      mounted.listeners.mouseup({ clientX: 40, clientY: 16, button: 0, detail: 1, target: still });
+      assert.equal(status(), "N");
+      assert.equal(stayed.getState().anchor, stayed.getState().cursor);
+      stayed.destroy();
+
+      globalThis.window.getSelection = () => null;
+      const shifted = watchVimEdits(doc, 0);
+      const shift = createEditor(mounted.root, doc, 0, shifted.transport);
+      const shiftLine = vimText(mounted, "alpha");
+      const shiftAt = shiftLine.textContent.indexOf("beta");
+      showDomRange(shiftLine, shiftAt, shiftAt + 4);
+      mounted.listeners.click({
+        target: shiftLine,
+        button: 0,
+        shiftKey: true,
+        detail: 1,
+        clientX: 20,
+        clientY: 8,
+        preventDefault() {},
+      });
+      assert.equal(selectedSlice(shift.getState()), "beta");
+      assert.equal(status(), "V");
+      assert.equal(shift.getState().doc, doc);
+      assert.equal(shifted.edits.length, 0);
+      shift.destroy();
+
+      globalThis.window.getSelection = () => null;
+      const cutDoc = "alpha beta\n";
+      const cutWatch = watchVimEdits(cutDoc, 0);
+      const cutView = createEditor(mounted.root, cutDoc, 0, cutWatch.transport);
+      vimChord(mounted, "a", { ctrlKey: true });
+      assert.equal(status(), "VL");
+      const clip = [];
+      mounted.listeners.cut({
+        preventDefault() {},
+        clipboardData: { setData(_type, text) { clip.push(text); } },
+      });
+      assert.deepEqual(clip, [cutDoc]);
+      assert.equal(cutView.getState().doc, "");
+      assert.equal(status(), "N");
+      assert.equal(block(), true);
+      cutView.destroy();
+    } finally {
+      delete globalThis.document.caretPositionFromPoint;
+      globalThis.window.getSelection = () => null;
+    }
+  });
+});
+
+test("flag off, pointer gestures and Ctrl-A do not draw a vim status", () => {
+  return withVimFlag(false, (mounted) => {
+    const quiet = () => {
+      assert.equal(byClass(mounted.root, "md-vim-status").length, 0);
+      assert.equal(mounted.root.classList.contains("md-vim-block"), false);
+    };
+    globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+    try {
+      const doc = "alpha beta\n";
+      const view = createEditor(mounted.root, doc, 2);
+      quiet();
+      vimChord(mounted, "a", { ctrlKey: true });
+      assert.equal(view.getState().anchor, 0);
+      assert.equal(view.getState().cursor, doc.length);
+      assert.equal(view.getState().doc, doc);
+      quiet();
+      view.destroy();
+
+      const pointer = createEditor(mounted.root, doc, 0);
+      const line = vimText(mounted, "alpha");
+      assert.ok(line);
+      armCaretPoint(line, line.textContent.indexOf("alpha"));
+      pressEditor(mounted, line, 1);
+      assert.equal(pointer.getState().anchor, pointer.getState().cursor);
+      quiet();
+      pressEditor(mounted, line, 2);
+      assert.equal(selectedSlice(pointer.getState()), "alpha");
+      assert.equal(pointer.getState().doc, doc);
+      quiet();
+      pressEditor(mounted, line, 3);
+      assert.equal(selectedSlice(pointer.getState()), "alpha beta");
+      quiet();
+      pointer.destroy();
+
+      const drag = createEditor(mounted.root, doc, 0);
+      const dragLine = vimText(mounted, "alpha");
+      const at = dragLine.textContent.indexOf("beta");
+      mounted.listeners.mousedown({ clientX: 0, clientY: 0, button: 0, detail: 1, target: dragLine });
+      showDomRange(dragLine, at, at + 4);
+      mounted.listeners.mouseup({ clientX: 40, clientY: 16, button: 0, detail: 1, target: dragLine });
+      assert.equal(selectedSlice(drag.getState()), "beta");
+      assert.equal(drag.getState().doc, doc);
+      quiet();
+      drag.destroy();
+
+      globalThis.window.getSelection = () => null;
+      const shift = createEditor(mounted.root, doc, 0);
+      const shiftLine = vimText(mounted, "alpha");
+      const shiftAt = shiftLine.textContent.indexOf("beta");
+      showDomRange(shiftLine, shiftAt, shiftAt + 4);
+      mounted.listeners.click({
+        target: shiftLine,
+        button: 0,
+        shiftKey: true,
+        detail: 1,
+        clientX: 20,
+        clientY: 8,
+        preventDefault() {},
+      });
+      assert.equal(selectedSlice(shift.getState()), "beta");
+      assert.equal(shift.getState().doc, doc);
+      quiet();
+      shift.destroy();
+    } finally {
+      delete globalThis.document.caretPositionFromPoint;
+      globalThis.window.getSelection = () => null;
+    }
   });
 });
