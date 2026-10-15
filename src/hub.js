@@ -392,6 +392,14 @@ function canFoldTyping(entry, changes) {
   return next.from === at && next.to === at;
 }
 
+// group means this splice belongs to the open entry, even when it is not an append.
+function canFoldGroup(entry, changes) {
+  if (!entry || entry.poison) return false;
+  if (!Array.isArray(entry.changes) || entry.changes.length === 0) return false;
+  if (!Array.isArray(changes) || changes.length === 0) return false;
+  return true;
+}
+
 function rebaseRedoChanges(entry, ext) {
   let eFrom = ext.from;
   let eTo = ext.to;
@@ -2216,8 +2224,12 @@ export async function createHub(stateDir, sourceRoot) {
       ? "comment"
       : "edit";
     // group folds after publish. The caret this entry restores stays where the run began.
+    // Do not rebase the entry this splice joins: undo inverts the new splice first.
+    // An append still lengthens the one insert. Anything else stays its own splice.
     const prior = session.undo.length > 0 ? session.undo[session.undo.length - 1] : null;
-    const folding = msg.group === true && msg.op === "insert" && canFoldTyping(prior, changes);
+    const foldOp = msg.op === "insert" || msg.op === "backspace" || msg.op === "delete";
+    const appendFold = msg.group === true && msg.op === "insert" && canFoldTyping(prior, changes);
+    const folding = msg.group === true && foldOp && canFoldGroup(prior, changes);
     const keptCursor = prior ? prior.cursor : 0;
     const keptAnchor = prior ? prior.anchor : 0;
     const wrote = await publish(
@@ -2226,7 +2238,7 @@ export async function createHub(stateDir, sourceRoot) {
       file.text,
       changes,
       { cursor: produced.cursor, anchor: produced.anchor },
-      null,
+      folding ? prior : entry,
       mode,
     );
     if (wrote !== true) {
@@ -2236,7 +2248,8 @@ export async function createHub(stateDir, sourceRoot) {
     }
     session.redo = [];
     if (folding && prior && !prior.poison) {
-      prior.changes[0].inserted += changes[0].inserted;
+      if (appendFold) prior.changes[0].inserted += changes[0].inserted;
+      else prior.changes.push(...copyChanges(changes));
       prior.cursor = keptCursor;
       prior.anchor = keptAnchor;
       prior.cursorAfter = produced.cursor;

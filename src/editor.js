@@ -2294,6 +2294,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const pendingEdits = [];
   // This page's typing run. The hub still publishes each key; only undo groups.
   let typingRun = null;
+  // Insert, from the command that entered it until Escape, is one undo.
+  // The first splice opens the entry. A pause, an arrow, Backspace, or Enter
+  // ends an ordinary typing run, so those stay on this flag instead.
+  let vimInsertOpen = false;
   let editTimer = null;
   let refusalTimer = null;
   // The refused edit stays marked for one second. render builds new nodes, so the mark is applied there.
@@ -2476,6 +2480,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     resumeAfterFile = false;
     clearEditTimer();
     typingRun = null;
+    vimInsertOpen = false;
   }
 
   function clearEditTimer() {
@@ -2612,6 +2617,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     goalX = null;
     rawColumn = null;
     if (!live) return;
+    // Stamp group before the queue. Escape can leave Insert while a splice is still waiting.
+    const vimSplice = partial.op === "insert" || partial.op === "backspace" || partial.op === "delete";
+    if (vimOn && vimMode === "insert" && vimSplice) {
+      if (vimInsertOpen) partial = { ...partial, group: true };
+      vimInsertOpen = true;
+    }
     if (!editHeld()) drainEndRuns();
     if (editHeld()) {
       pendingEdits.push({ edit: partial });
@@ -4690,6 +4701,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     vimFind = null;
     vimColumn = null;
     vimOnce = false;
+    vimInsertOpen = false;
+    typingRun = null;
     if (!on && state.anchor !== state.cursor) state = { ...state, anchor: state.cursor };
     writeVimOn(on);
     syncVimItem();
@@ -6686,7 +6699,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function rememberVim(vim) {
     const next = vim || {};
+    const wasInsert = vimMode === "insert";
     vimMode = typeof next.mode === "string" && next.mode ? next.mode : "normal";
+    // The one-second window must not attach a new Insert session to the previous run.
+    // The splice that entered, such as cw's delete, is the first and stays ungrouped.
+    if (vimMode === "insert" && !wasInsert) {
+      vimInsertOpen = false;
+      typingRun = null;
+    } else if (vimMode !== "insert") {
+      vimInsertOpen = false;
+    }
     const input = next.input || {};
     vimInput = {
       prefixRepeat: typeof input.prefixRepeat === "string" ? input.prefixRepeat : "",

@@ -17797,3 +17797,226 @@ test("vim flag wires keydown and leaves typing alone when it is off", () => {
     mounted.restore();
   }
 });
+
+function vimStorage(on) {
+  const data = on ? { "viewmark.vim": "1" } : {};
+  return {
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(data, key) ? data[key] : null;
+    },
+    setItem(key, value) {
+      data[key] = String(value);
+    },
+    removeItem(key) {
+      delete data[key];
+    },
+  };
+}
+
+function recordingTransport(doc, cursor) {
+  const transport = createMemoryTransport(doc, cursor);
+  const edits = [];
+  const send = transport.send.bind(transport);
+  transport.send = (message) => {
+    if (message && message.type === "edit") {
+      edits.push({ op: message.op, text: message.text, group: message.group });
+    }
+    send(message);
+  };
+  return { transport, edits };
+}
+
+// Keydown, then the input the browser would fire when vim does not consume the key.
+function vimType(mounted, key) {
+  let prevented = false;
+  mounted.listeners.keydown({
+    key,
+    shiftKey: false,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    preventDefault() { prevented = true; },
+  });
+  if (prevented) return;
+  if (key === "Enter") {
+    mounted.listeners.beforeinput({ inputType: "insertParagraph", data: null, preventDefault() {} });
+    return;
+  }
+  if (key === "Backspace") {
+    mounted.listeners.beforeinput({ inputType: "deleteContentBackward", data: null, preventDefault() {} });
+    return;
+  }
+  if (key.length === 1) {
+    mounted.listeners.beforeinput({ inputType: "insertText", data: key, preventDefault() {} });
+  }
+}
+
+function withVimFlag(on, fn) {
+  const previousLocal = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    writable: true,
+    value: vimStorage(on),
+  });
+  const mounted = mountEditor();
+  return Promise.resolve()
+    .then(() => fn(mounted))
+    .finally(() => {
+      mounted.restore();
+      if (previousLocal) Object.defineProperty(globalThis, "localStorage", previousLocal);
+      else delete globalThis.localStorage;
+    });
+}
+
+test("vim insert groups a pause, an arrow, Enter, and Backspace into one undo", () => {
+  const now = Date.now;
+  let clock = 50_000;
+  Date.now = () => clock;
+  const run = (mounted) => {
+    const opened = recordingTransport("alpha\n", 5);
+    const view = createEditor(mounted.root, "alpha\n", 5, opened.transport);
+    const status = () => {
+      const found = byClass(mounted.root, "md-vim-status");
+      return found.length === 0 ? "" : found[0].textContent;
+    };
+    vimType(mounted, "i");
+    assert.equal(status(), "I");
+    vimType(mounted, "x");
+    vimType(mounted, "y");
+    clock += 2000;
+    vimType(mounted, "z");
+    vimType(mounted, "Escape");
+    assert.equal(status(), "N");
+    assert.equal(view.getState().doc, "alphaxyz\n");
+    assert.deepEqual(opened.edits.map((edit) => edit.group), [undefined, true, true]);
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, "alpha\n");
+    assert.equal(view.getState().cursor, 5);
+
+    opened.edits.length = 0;
+    vimType(mounted, "i");
+    vimType(mounted, "x");
+    vimType(mounted, "y");
+    globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+    const typed = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "alphaxy")[0];
+    assert.ok(typed);
+    const leftSel = {
+      rangeCount: 1,
+      collapse() {},
+      modify() {},
+      getRangeAt() {
+        return { startContainer: typed, startOffset: typed.length - 1, collapsed: true };
+      },
+    };
+    globalThis.window.getSelection = () => leftSel;
+    assert.equal(view.getState().cursor, 7);
+    vimType(mounted, "ArrowLeft");
+    assert.equal(view.getState().cursor, 6);
+    vimType(mounted, "z");
+    vimType(mounted, "Escape");
+    globalThis.window.getSelection = () => null;
+    assert.equal(view.getState().doc, "alphaxzy\n");
+    assert.deepEqual(opened.edits.map((edit) => edit.group), [undefined, true, true]);
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, "alpha\n");
+
+    opened.edits.length = 0;
+    vimType(mounted, "i");
+    vimType(mounted, "x");
+    vimType(mounted, "Enter");
+    vimType(mounted, "y");
+    vimType(mounted, "Escape");
+    assert.notEqual(view.getState().doc, "alpha\n");
+    assert.equal(view.getState().doc.includes("x"), true);
+    assert.equal(view.getState().doc.includes("y"), true);
+    assert.equal(opened.edits[0].group, undefined);
+    assert.equal(opened.edits[0].text, "x");
+    assert.equal(opened.edits.length >= 3, true);
+    assert.equal(opened.edits.slice(1).every((edit) => edit.group === true), true);
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, "alpha\n");
+
+    opened.edits.length = 0;
+    vimType(mounted, "i");
+    vimType(mounted, "x");
+    vimType(mounted, "Backspace");
+    vimType(mounted, "y");
+    vimType(mounted, "Escape");
+    assert.equal(view.getState().doc, "alphay\n");
+    assert.equal(opened.edits[0].group, undefined);
+    assert.equal(opened.edits[1].op, "backspace");
+    assert.equal(opened.edits[1].group, true);
+    assert.equal(opened.edits[2].group, true);
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, "alpha\n");
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, "alpha\n");
+
+    vimType(mounted, "i");
+    vimType(mounted, "x");
+    vimType(mounted, "Escape");
+    vimType(mounted, "i");
+    vimType(mounted, "y");
+    vimType(mounted, "Escape");
+    assert.equal(view.getState().doc, "alphaxy\n");
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, "alphax\n");
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, "alpha\n");
+    view.destroy();
+
+    const changed = recordingTransport("alpha\n", 0);
+    const word = createEditor(mounted.root, "alpha\n", 0, changed.transport);
+    vimType(mounted, "c");
+    vimType(mounted, "w");
+    assert.equal(status(), "I");
+    vimType(mounted, "z");
+    vimType(mounted, "Escape");
+    assert.notEqual(word.getState().doc, "alpha\n");
+    assert.equal(word.getState().doc.includes("z"), true);
+    assert.equal(word.getState().doc.includes("alpha"), false);
+    assert.equal(changed.edits[0].group, undefined);
+    assert.equal(changed.edits.slice(1).every((edit) => edit.group === true), true);
+    vimType(mounted, "u");
+    assert.equal(word.getState().doc, "alpha\n");
+    word.destroy();
+  };
+  return withVimFlag(true, run).finally(() => {
+    Date.now = now;
+  });
+});
+
+test("flag off, a pause over one second still splits the typing run", () => {
+  const now = Date.now;
+  let clock = 80_000;
+  Date.now = () => clock;
+  const run = (mounted) => {
+    const view = createEditor(mounted.root, "alpha\n", 5);
+    const typeKey = (key) => {
+      let prevented = false;
+      mounted.listeners.keydown({
+        key,
+        shiftKey: false,
+        ctrlKey: false,
+        altKey: false,
+        metaKey: false,
+        preventDefault() { prevented = true; },
+      });
+      if (!prevented && key.length === 1) {
+        mounted.listeners.beforeinput({ inputType: "insertText", data: key, preventDefault() {} });
+      }
+    };
+    typeKey("x");
+    clock += 1001;
+    typeKey("y");
+    assert.equal(view.getState().doc, "alphaxy\n");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alphax\n");
+    undoKey(mounted);
+    assert.equal(view.getState().doc, "alpha\n");
+    view.destroy();
+  };
+  return withVimFlag(false, run).finally(() => {
+    Date.now = now;
+  });
+});
