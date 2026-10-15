@@ -168,8 +168,8 @@ function assertInsertFrame(data, before, after, caret, label) {
   assert.equal(Number.isInteger(data.anchor), true, `${label} anchor`);
   assert.equal(Number.isInteger(data.cursor), true, `${label} cursor`);
   assert.equal(Number.isInteger(data.caret), true, `${label} caret`);
-  // The hub's insert, not a raw splice: a formatted line break gains a leading newline.
-  const next = insert(createState(before, data.cursor, data.anchor), data.text, data.paste === true, data.raw === true);
+  // The hub's insert, not a raw splice. exact already names its bytes, so no leading break is added.
+  const next = insert(createState(before, data.cursor, data.anchor), data.text, data.paste === true, data.raw === true, data.exact === true);
   assert.ok(next && next.doc !== before, `${label} ${seen(after, caret)}`);
   assert.equal(next.doc, after, `${label} ${seen(after, caret)}`);
   assert.equal(caret.focus, data.caret, `${label} ${seen(after, caret)}`);

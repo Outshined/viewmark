@@ -332,17 +332,22 @@ test("VL.6 (ticket 7vdep2z4)", async (t) => {
   await placeCaret(A, cursor);
   const rev0 = await revOf(hub);
   await span(A, "dw");
-  assert.equal(await revOf(hub), rev0 + 1, "dw did not edit once");
-  const current = (await hub.show(FILE)).text;
-  await agentEdit(hub, `${current}T`);
-  await A.until(() => mirror(A) === `${current}T`, `append, page has ${JSON.stringify(mirror(A))}`);
-  await A.quiet();
-  assert.equal(await revOf(hub), rev0 + 2);
+  const dw = await hub.show(FILE);
+  assert.equal(dw.rev, rev0 + 1, "dw did not edit once");
+  assert.equal(dw.text, "albeta\n");
+  // This page holds the only block, so the append is refused.
+  const done = await hub.edit(FILE, wholeDiff(dw.text, `${dw.text}T`));
+  assert.notEqual(done.code, 0, `${done.stderr}${done.stdout}`);
+  assert.match(done.stderr, /conflict/, done.stderr);
+  assert.match(done.stderr, new RegExp(`held by ${USER}`), done.stderr);
+  const stayed = await hub.show(FILE);
+  assert.equal(stayed.text, dw.text);
+  assert.equal(stayed.rev, dw.rev);
   await tap(A, "u");
   const seen = await view(A, hub);
-  assert.equal(seen.bytes, "alpha beta\nT", got("VL.6", seen));
-  assert.equal(seen.show, "al‸pha beta\nT", got("VL.6", seen));
-  assert.equal(await revOf(hub), rev0 + 3);
+  assert.equal(seen.bytes, "alpha beta\n", got("VL.6", seen));
+  assert.equal(seen.show, "al‸pha beta\n", got("VL.6", seen));
+  assert.equal(await revOf(hub), dw.rev + 1);
   assert.equal(await status(A), "N");
 });
 
