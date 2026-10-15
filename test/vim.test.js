@@ -2125,3 +2125,148 @@ test("VV.10", () => {
   assert.equal(alone.show, "alpha\n\n«beta‸\n\ngamma\n");
   assert.equal(alone.doc, "alpha\n\nbeta\n\ngamma\n");
 });
+
+function insertedSplice(out) {
+  const splices = out.steps.filter((step) => step.effect && step.effect.type === "splice" && step.effect.from === step.effect.to);
+  assert.equal(splices.length, 1);
+  assert.equal(splices[0].match, "full");
+  assert.equal(splices[0].consumed, true);
+  assert.equal(Object.hasOwn(splices[0].effect, "group"), false);
+  return splices[0].effect;
+}
+
+test("VY.1", () => {
+  const put = run("‸alpha\n\nbeta\n", ["y", "y", "p"]);
+  assert.equal(put.show, "alpha\n\n‸alpha\n\nbeta\n");
+  assert.equal(put.doc, "alpha\n\nalpha\n\nbeta\n");
+  assert.equal(put.vim.mode, "normal");
+  assert.equal(put.vim.register.text, "alpha\n");
+  assert.equal(put.vim.register.linewise, true);
+  const effect = insertedSplice(put);
+  assert.equal(effect.text, "alpha\n\n");
+  assert.equal(effect.caret, "alpha\n\n".length);
+  assert.equal(effect.yank, null);
+
+  const spaced = run("  ‸alpha\n\nbeta\n", ["y", "y", "p"]);
+  assert.equal(spaced.show, "  alpha\n\n  ‸alpha\n\nbeta\n");
+  assert.equal(insertedSplice(spaced).text, "  alpha\n\n");
+  assert.equal(insertedSplice(spaced).caret, "  alpha\n\n  ".length);
+
+  const before = run("‸alpha\n\nbeta\n", ["y", "y", "P"]);
+  assert.equal(before.show, "‸alpha\nalpha\n\nbeta\n");
+  assert.equal(insertedSplice(before).text, "alpha\n");
+
+  const end = run("‸alpha\n", ["y", "y", "p"]);
+  assert.equal(end.show, "alpha\n‸alpha\n");
+  assert.equal(insertedSplice(end).text, "alpha\n");
+
+  const raw = run("‸alpha\nbeta\n", ["y", "y", "p"], { raw: true });
+  assert.equal(raw.show, "alpha\n‸alpha\nbeta\n");
+  assert.equal(raw.doc, "alpha\nalpha\nbeta\n");
+  assert.equal(insertedSplice(raw).text, "alpha\n");
+
+  const crlf = run("‸alpha\r\n\r\nbeta\r\n", ["y", "y", "p"]);
+  assert.equal(crlf.show, "alpha\r\n\r\n‸alpha\r\n\r\nbeta\r\n");
+  assert.equal(insertedSplice(crlf).text, "alpha\r\n\r\n");
+});
+
+test("VD.5", () => {
+  const after = run("- a\n- ‸b\n", ["y", "y", "]", "p"]);
+  assert.equal(after.steps[2].match, "partial");
+  assert.equal(after.steps[2].vim.input.keyBuffer, "]");
+  assert.equal(after.show, "- a\n- b\n\t‸- b\n");
+  assert.equal(after.doc, "- a\n- b\n\t- b\n");
+  assert.equal(after.vim.mode, "normal");
+  assert.equal(after.vim.input.keyBuffer, "");
+  const effect = insertedSplice(after);
+  assert.equal(effect.text, "\t- b\n");
+  assert.equal(effect.caret, "- a\n- b\n\t".length);
+  assert.equal(effect.yank, null);
+
+  const before = run("- a\n- ‸b\n", ["y", "y", "[", "p"]);
+  assert.equal(before.steps[2].match, "partial");
+  assert.equal(before.show, "- a\n\t‸- b\n- b\n");
+  assert.equal(before.doc, "- a\n\t- b\n- b\n");
+  assert.equal(before.vim.mode, "normal");
+  const above = insertedSplice(before);
+  assert.equal(above.text, "\t- b\n");
+  assert.equal(above.caret, "- a\n\t".length);
+
+  const plain = run("- a\n- ‸b\n", ["y", "y", "p"]);
+  assert.equal(plain.show, "- a\n- b\n‸- b\n");
+  assert.equal(insertedSplice(plain).text, "- b\n");
+
+  const paragraph = run("‸alpha\n\nbeta\n", ["y", "y", "]", "p"]);
+  assert.equal(paragraph.show, "alpha\n\n‸alpha\n\nbeta\n");
+  assert.equal(insertedSplice(paragraph).text, "alpha\n\n");
+
+  const miss = run("- a\n- ‸b\n", ["]", "x"]);
+  assert.equal(miss.steps[0].match, "partial");
+  assert.equal(miss.steps[1].match, "none");
+  assert.equal(miss.steps[1].consumed, true);
+  assert.equal(miss.steps[1].effect, null);
+  assert.equal(miss.doc, "- a\n- b\n");
+  assert.equal(miss.vim.input.keyBuffer, "");
+  assert.equal(miss.show, "- a\n- ‸b\n");
+});
+
+test("VD.7", () => {
+  const indent = run("al‸pha\n", ["i", { key: "t", ctrl: true }]);
+  assert.equal(indent.show, "\tal‸pha\n");
+  assert.equal(indent.doc, "\talpha\n");
+  assert.equal(indent.vim.mode, "insert");
+  assert.equal(indent.steps[0].vim.mode, "insert");
+  const added = indent.steps[1].effect;
+  assert.equal(indent.steps[1].match, "full");
+  assert.equal(indent.steps[1].consumed, true);
+  assert.equal(added.type, "splice");
+  assert.equal(added.from, 0);
+  assert.equal(added.to, 0);
+  assert.equal(added.text, "\t");
+  assert.equal(added.caret, 3);
+  assert.equal(added.yank, null);
+
+  const twice = run("al‸pha\n", ["i", { key: "t", ctrl: true }, { key: "t", ctrl: true }]);
+  assert.equal(twice.show, "\t\tal‸pha\n");
+  assert.equal(twice.vim.mode, "insert");
+
+  const outdent = run("\tal‸pha\n", ["i", { key: "d", ctrl: true }]);
+  assert.equal(outdent.show, "al‸pha\n");
+  assert.equal(outdent.doc, "alpha\n");
+  assert.equal(outdent.vim.mode, "insert");
+  const removed = outdent.steps[1].effect;
+  assert.equal(removed.type, "splice");
+  assert.equal(removed.from, 0);
+  assert.equal(removed.to, 1);
+  assert.equal(removed.text, "");
+  assert.equal(removed.caret, 2);
+
+  const one = run("\t\tal‸pha\n", ["i", { key: "d", ctrl: true }]);
+  assert.equal(one.show, "\tal‸pha\n");
+  assert.equal(one.doc, "\talpha\n");
+  assert.equal(one.vim.mode, "insert");
+
+  const bare = run("al‸pha\n", ["i", { key: "d", ctrl: true }]);
+  assert.equal(bare.show, "al‸pha\n");
+  assert.equal(bare.doc, "alpha\n");
+  assert.equal(bare.vim.mode, "insert");
+  assert.equal(bare.steps[1].match, "full");
+  assert.equal(bare.steps[1].consumed, true);
+  assert.equal(bare.steps[1].effect, null);
+
+  let body = "";
+  for (let i = 0; i < 25; i += 1) {
+    if (i) body += "\n\n";
+    body += `p${i}`;
+  }
+  body += "\n";
+  const start = `${CARET}${body}`;
+  const half = run(start, [{ key: "d", ctrl: true }]);
+  assert.equal(half.vim.mode, "normal");
+  assert.equal(half.show, run(start, ["1", "0", "j"]).show);
+  assert.equal(half.doc, body);
+  const view = run("‸alpha\n", [{ key: "d", ctrl: true }], { layout: true });
+  assertView(view, "ctrl-d", 1);
+  assert.equal(view.vim.mode, "normal");
+  assert.equal(view.doc, "alpha\n");
+});

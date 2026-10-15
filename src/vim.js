@@ -1028,6 +1028,95 @@ function throughGap(doc, to) {
   return end;
 }
 
+// The gap block starts on its break, which is a LF or a CRLF.
+function breakEnd(doc, index) {
+  if (index < doc.length && doc[index] === "\n") return index + 1;
+  if (index + 1 < doc.length && doc[index] === "\r" && doc[index + 1] === "\n") return index + 2;
+  return null;
+}
+
+// A rendered vim line is the block and the gap under it. endPast stops on the
+// block's own newline, which is still inside that line.
+function pastVimLine(doc, at) {
+  const blocks = plan(doc, at).blocks;
+  let end = at;
+  while (end < doc.length) {
+    let gap = false;
+    for (let i = 0; i < blocks.length; i += 1) {
+      const block = blocks[i];
+      if (block && block.start === end && block.classes && block.classes.includes("md-paragraph-gap")) {
+        gap = true;
+        break;
+      }
+    }
+    if (!gap) break;
+    const next = breakEnd(doc, end);
+    if (next == null) break;
+    end = next;
+  }
+  return end;
+}
+
+function putAt(doc, cursor, raw, after) {
+  const line = lineBounds(doc, cursor, raw);
+  if (!after) return line.start;
+  const at = endPast(doc, line);
+  if (raw) return at;
+  return pastVimLine(doc, at);
+}
+
+// Inserting on the far side of the gap still joins a following paragraph
+// unless the splice carries a gap of its own.
+function putJoinsForward(doc, at, text) {
+  const merged = doc.slice(0, at) + text + doc.slice(at);
+  const end = at + text.length;
+  const blocks = plan(merged, at).blocks;
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = blocks[i];
+    if (!block || typeof block.start !== "number" || typeof block.end !== "number") continue;
+    if (block.classes && block.classes.includes("md-paragraph-gap")) continue;
+    if (block.start >= at && block.start < end && block.end > end) return true;
+  }
+  return false;
+}
+
+function linewisePutText(doc, at, text, raw, after) {
+  const body = text.endsWith("\n") ? text : text + "\n";
+  if (raw || !after || body.endsWith("\n\n") || !putJoinsForward(doc, at, body)) return body;
+  return body + (body.endsWith("\r\n") ? "\r\n" : "\n");
+}
+
+// ]p and [p are the linewise put, then =, as the bytes of one splice.
+function shiftInserted(doc, at, text) {
+  const merged = doc.slice(0, at) + text + doc.slice(at);
+  const end = at + text.length;
+  const all = sourceRecords(merged);
+  const lines = [];
+  for (const line of all) {
+    if (line.start >= end) break;
+    if (line.start < at || line.end > end) continue;
+    lines.push(line);
+  }
+  if (lines.length === 0) return text;
+  const rewritten = new Map();
+  let out = "";
+  let prev = at;
+  for (const line of lines) {
+    const shifted = shiftText(all, line, line.text, "=", lines, rewritten);
+    rewritten.set(line.start, shifted);
+    out += merged.slice(prev, line.start) + shifted + (line.cr ? "\r" : "");
+    prev = line.end;
+  }
+  out += merged.slice(prev, end);
+  return out;
+}
+
+function putCaret(at, text) {
+  let skip = 0;
+  while (skip < text.length && (text[skip] === " " || text[skip] === "\t")) skip += 1;
+  return at + skip;
+}
+
 function finishMotion(vim, doc, anchor, cursor, raw, motion, operator) {
   const next = clearInput(vim);
   if (motion.find) next.find = motion.find;
@@ -1369,18 +1458,15 @@ function openLine(vim, doc, cursor, raw, below) {
   return openSplice(vim, at, lead + nl + lines, at + lead.length + nl.length + (count - 1) * nl.length);
 }
 
-function putRegister(vim, doc, cursor, raw, after) {
+function putRegister(vim, doc, cursor, raw, after, adjust) {
   const next = clearInput(vim);
   const reg = vim.register || { text: "", linewise: false };
   if (!reg.text) return pack("full", true, next, null);
-  if (reg.linewise) {
-    const line = lineBounds(doc, cursor, raw);
-    const at = after ? endPast(doc, line) : line.start;
-    let text = reg.text;
-    if (!text.endsWith("\n")) text += "\n";
-    let skip = 0;
-    while (skip < text.length && (text[skip] === " " || text[skip] === "\t")) skip += 1;
-    const caret = at + Math.min(skip, text.length);
+  if (reg.linewise || adjust) {
+    const at = putAt(doc, cursor, raw, after);
+    let text = linewisePutText(doc, at, reg.text, raw, after);
+    if (adjust) text = shiftInserted(doc, at, text);
+    const caret = putCaret(at, text);
     const kept = vim.mode === "visual" || vim.mode === "visual-line" ? "normal" : vim.mode;
     next.mode = kept;
     return pack("full", true, next, { type: "splice", from: at, to: at, text, caret, yank: null });
@@ -2085,7 +2171,9 @@ function commandFromKey(key) {
   if (MOTIONS.has(k)) return { kind: "motion", id: k };
   if (OPERATORS.has(k)) return { kind: "operator", id: k };
   if (isActionId(k)) return { kind: "action", id: k };
-  if (k === "g" || k === "z" || k === "f" || k === "F" || k === "t" || k === "T" || k === '"') return { kind: "prefix", id: k };
+  if (k === "g" || k === "z" || k === "f" || k === "F" || k === "t" || k === "T" || k === '"' || k === "]" || k === "[") {
+    return { kind: "prefix", id: k };
+  }
   return { kind: "none" };
 }
 
@@ -2173,6 +2261,16 @@ function finishZ(vim, doc, anchor, cursor, raw, layout, key) {
     next.column = null;
   }
   return pack("full", true, leavingOnce(next, vim), effect);
+}
+
+// ]p is linewise p and [p is linewise P. The indent shift is the same splice.
+function finishBracket(vim, doc, anchor, cursor, raw, key) {
+  if (isEscape(key)) return doEscape(vim, anchor, cursor);
+  const which = vim.input.keyBuffer;
+  if (key.ctrl || key.meta || key.alt || key.key !== "p" || vim.input.operator) {
+    return pack("none", true, clearInput(vim), null);
+  }
+  return putRegister(vim, doc, cursor, raw, which === "]", true);
 }
 
 // aw takes the spaces after the word. A word with none, as at the end of a line,
@@ -2344,10 +2442,39 @@ function doEscape(vim, anchor, cursor) {
   return pack("full", true, next, { type: "caret", anchor: cursor, cursor });
 }
 
+// The caret was on a character. A tab added or removed at the source start
+// moves that character, and the caret moves with it.
+function insertTab(vim, doc, cursor, add) {
+  const line = sourceLine(doc, cursor);
+  const next = clearInput(vim);
+  next.mode = "insert";
+  if (add) {
+    return pack("full", true, next, {
+      type: "splice",
+      from: line.start,
+      to: line.start,
+      text: "\t",
+      caret: cursor + 1,
+      yank: null,
+    });
+  }
+  if (line.start >= doc.length || doc[line.start] !== "\t") return pack("full", true, next, null);
+  return pack("full", true, next, {
+    type: "splice",
+    from: line.start,
+    to: line.start + 1,
+    text: "",
+    caret: cursor > line.start ? cursor - 1 : cursor,
+    yank: null,
+  });
+}
+
 function insertKey(vim, doc, cursor, key) {
   if (isEscape(key)) return doEscape(vim, cursor, cursor);
   const id = key.key.length === 1 ? key.key.toLowerCase() : key.key;
   if ((key.ctrl || key.meta) && id === "w") return pack("full", true, clearInput(vim), { type: "word-delete" });
+  if (key.ctrl && id === "t") return insertTab(vim, doc, cursor, true);
+  if (key.ctrl && id === "d") return insertTab(vim, doc, cursor, false);
   if (key.ctrl && id === "u") {
     const line = sourceLine(doc, cursor);
     return pack("full", true, clearInput(vim), {
@@ -2406,6 +2533,7 @@ export function vimKey(input) {
   if (vim.input.keyBuffer === '"') return finishQuote(vim, anchor, cursor, key);
   if (vim.input.keyBuffer === "g") return finishG(vim, doc, anchor, cursor, raw, layout, key);
   if (vim.input.keyBuffer === "z") return finishZ(vim, doc, anchor, cursor, raw, layout, key);
+  if (vim.input.keyBuffer === "]" || vim.input.keyBuffer === "[") return finishBracket(vim, doc, anchor, cursor, raw, key);
   if (vim.input.keyBuffer === "i" || vim.input.keyBuffer === "a") return finishObject(vim, doc, anchor, cursor, key);
 
   const ready = commitDigits(vim);
