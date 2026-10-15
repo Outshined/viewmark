@@ -2158,10 +2158,9 @@ function emptyVimInput() {
   return { prefixRepeat: "", operator: null, motionRepeat: "", keyBuffer: "" };
 }
 
-// Normal is a block. Insert keeps the thin caret already drawn for the editor.
-// Visual and Visual Line do not get a caret of their own.
+// Normal, Visual, and Visual Line share the block. Insert keeps the thin caret.
 export function vimDrawsBlockCaret(mode) {
-  return mode === "normal";
+  return mode === "normal" || mode === "visual" || mode === "visual-line";
 }
 
 // Idle is the mode letter. Anything pending is the prefix, the operator, the
@@ -6895,9 +6894,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     if (effect.type === "splice") {
+      const text = typeof effect.text === "string" ? effect.text : "";
+      // A yank writes the same bytes back. The register is already stored, so
+      // publishing it would move rev without changing the document.
+      if (text === state.doc.slice(effect.from, effect.to)) {
+        const at = Number.isInteger(effect.caret) ? effect.caret : state.cursor;
+        moveVimCaret(at, at);
+        return;
+      }
       const partial = {
         op: "insert",
-        text: typeof effect.text === "string" ? effect.text : "",
+        text,
         anchor: effect.from,
         cursor: effect.to,
       };

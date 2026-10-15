@@ -17429,8 +17429,8 @@ test("vim keys checkbox, status, and caret", () => {
   assert.equal(vimStatusText("insert", { operator: "d", keyBuffer: "i" }), "di");
   assert.equal(vimDrawsBlockCaret("normal"), true);
   assert.equal(vimDrawsBlockCaret("insert"), false);
-  assert.equal(vimDrawsBlockCaret("visual"), false);
-  assert.equal(vimDrawsBlockCaret("visual-line"), false);
+  assert.equal(vimDrawsBlockCaret("visual"), true);
+  assert.equal(vimDrawsBlockCaret("visual-line"), true);
 
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
   const src = readFileSync(new URL("../src/editor.js", import.meta.url), "utf8");
@@ -18128,6 +18128,57 @@ test("vim insert arrows stay in insert", () => {
     assert.equal(left.getState().anchor, 2);
     left.destroy();
     globalThis.window.getSelection = () => null;
+  });
+});
+
+test("vim visual and visual-line draw the block caret", () => {
+  return withVimFlag(true, (mounted) => {
+    const view = createEditor(mounted.root, "alpha\n", 0);
+    const status = () => {
+      const found = byClass(mounted.root, "md-vim-status");
+      return found.length === 0 ? "" : found[0].textContent;
+    };
+    assert.equal(mounted.root.classList.contains("md-vim-block"), true);
+    vimType(mounted, "v");
+    assert.equal(status(), "V");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), true);
+    vimType(mounted, "Escape");
+    vimType(mounted, "V");
+    assert.equal(status(), "VL");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), true);
+    vimType(mounted, "Escape");
+    vimType(mounted, "i");
+    assert.equal(status(), "I");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), false);
+    view.destroy();
+  });
+});
+
+test("vim yy sends no edit and the following p sends one", () => {
+  return withVimFlag(true, (mounted) => {
+    const doc = "alpha\n";
+    const transport = createMemoryTransport(doc, 0);
+    const edits = [];
+    const send = transport.send.bind(transport);
+    transport.send = (message) => {
+      if (message && message.type === "edit") edits.push(message);
+      send(message);
+    };
+    const view = createEditor(mounted.root, doc, 0, transport);
+    vimType(mounted, "y");
+    vimType(mounted, "y");
+    assert.equal(edits.length, 0);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, 0);
+    vimType(mounted, "p");
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].op, "insert");
+    assert.equal(edits[0].text, "alpha\n");
+    assert.equal(edits[0].rev, 0);
+    assert.equal(view.getState().doc, "alpha\n\nalpha\n");
+    assert.equal(view.getState().anchor, view.getState().cursor);
+    view.destroy();
   });
 });
 
