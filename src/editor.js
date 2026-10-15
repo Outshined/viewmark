@@ -2298,6 +2298,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // The first splice opens the entry. A pause, an arrow, Backspace, or Enter
   // ends an ordinary typing run, so those stay on this flag instead.
   let vimInsertOpen = false;
+  // A vim splice records anchor and cursor as the range, so undo restores a selection.
+  // These stacks put back the caret from before that command, collapsed.
+  const vimUndoCarets = [];
+  const vimRedoCarets = [];
+  let vimUndoArmed = false;
+  let vimUndoMark = null;
+  let vimGroupCont = false;
+  let vimHistoryPending = null;
+  let vimPlace = null;
+  let vimForceClaim = false;
   let editTimer = null;
   let refusalTimer = null;
   // The refused edit stays marked for one second. render builds new nodes, so the mark is applied there.
@@ -2475,12 +2485,28 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return resumeAfterFile || conflictWaiters.includes("edit");
   }
 
+  function clearVimHistoryFlight() {
+    vimUndoArmed = false;
+    vimUndoMark = null;
+    vimGroupCont = false;
+    vimHistoryPending = null;
+    vimPlace = null;
+    vimForceClaim = false;
+  }
+
+  function resetVimHistory() {
+    vimUndoCarets.length = 0;
+    vimRedoCarets.length = 0;
+    clearVimHistoryFlight();
+  }
+
   function dropPendingEdits() {
     pendingEdits.length = 0;
     resumeAfterFile = false;
     clearEditTimer();
     typingRun = null;
     vimInsertOpen = false;
+    clearVimHistoryFlight();
   }
 
   function clearEditTimer() {
@@ -2582,8 +2608,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return false;
   }
 
+  function editRecordsUndo(body) {
+    const op = body && body.op;
+    return op === "insert" || op === "backspace" || op === "delete" || op === "move"
+      || op === "comment.add" || op === "comment.save" || op === "comment.delete" || op === "comment.resolve";
+  }
+
   function sendEdit(partial) {
     const body = { ...partial };
+    const vimMark = body.vimMark && Number.isFinite(body.vimMark.before) && Number.isFinite(body.vimMark.after)
+      ? { before: body.vimMark.before, after: body.vimMark.after }
+      : null;
+    delete body.vimMark;
     const typing = body.typing === true;
     const typedAt = body.typedAt;
     delete body.typing;
@@ -2595,6 +2631,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         at: Number.isFinite(typedAt) ? typedAt : Date.now(),
         blocks: lineSet(state.anchor, state.cursor),
       };
+    }
+    // Group folds into the open entry. Anything else is a new undo the reply will commit.
+    if (vimOn && editRecordsUndo(body)) {
+      if (body.group === true) vimGroupCont = true;
+      else {
+        vimUndoArmed = true;
+        vimUndoMark = vimMark;
+        vimGroupCont = false;
+      }
     }
     if (body.op === "comment.add" || body.op === "comment.delete" || body.op === "comment.resolve") {
       lockThroughEnd();
@@ -2639,6 +2684,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       pendingEdits.push({ history: type });
       return;
     }
+    if (vimOn) vimHistoryPending = type;
     emit({ type });
   }
 
@@ -2647,8 +2693,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     drainEndRuns();
     if (editHeld() || pendingEdits.length === 0) return;
     const next = pendingEdits.shift();
-    if (next.history) emit({ type: next.history });
-    else if (next.edit) sendEdit(next.edit);
+    if (next.history) {
+      if (vimOn) vimHistoryPending = next.history;
+      emit({ type: next.history });
+    } else if (next.edit) sendEdit(next.edit);
   }
 
   function restoreGrantedCaret() {
@@ -4703,6 +4751,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     vimOnce = false;
     vimInsertOpen = false;
     typingRun = null;
+    resetVimHistory();
     if (!on && state.anchor !== state.cursor) state = { ...state, anchor: state.cursor };
     writeVimOn(on);
     syncVimItem();
@@ -5628,6 +5677,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function caretFor(message) {
     const length = typeof message.text === "string" ? message.text.length : 0;
+    if (message.type === "doc" && vimPlace) {
+      const placed = vimPlace;
+      vimPlace = null;
+      keptCaret = null;
+      return { cursor: clampCaret(placed.cursor, length), anchor: clampCaret(placed.anchor, length) };
+    }
     const kept = keptCaret;
     if (message.type === "doc" && kept && ownActor(message) && message.text === kept.text) {
       keptCaret = null;
@@ -5694,10 +5749,50 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (message.type === "file") focusHashedComment(message.path, text);
     render();
     if (message.type === "file") publishHash();
+    const claim = vimForceClaim;
+    vimForceClaim = false;
     if (!live) return;
-    if (message.type === "file" || !sameLines(lines, previousLines)) {
+    if (message.type === "file" || claim || !sameLines(lines, previousLines)) {
       emit({ type: "lock", anchor: state.anchor, cursor: state.cursor }, false);
     }
+  }
+
+  // The history reply carries the splice range. Place the caret saved with that entry.
+  function stageVimHistory(message) {
+    if (vimHistoryPending) {
+      const dir = vimHistoryPending;
+      vimHistoryPending = null;
+      vimUndoArmed = false;
+      vimUndoMark = null;
+      vimGroupCont = false;
+      const from = dir === "redo" ? vimRedoCarets : vimUndoCarets;
+      const to = dir === "redo" ? vimUndoCarets : vimRedoCarets;
+      const item = from.pop();
+      if (item === undefined) return;
+      to.push(item);
+      if (!vimOn || !item) return;
+      const offset = dir === "redo" ? item.after : item.before;
+      const length = typeof message.text === "string" ? message.text.length : 0;
+      const at = clampCaret(offset, length);
+      vimPlace = { cursor: at, anchor: at };
+      vimForceClaim = true;
+      return;
+    }
+    if (vimUndoArmed) {
+      vimUndoCarets.push(vimUndoMark);
+      vimRedoCarets.length = 0;
+      vimUndoArmed = false;
+      vimUndoMark = null;
+      vimGroupCont = false;
+      return;
+    }
+    if (!vimGroupCont) return;
+    vimGroupCont = false;
+    vimRedoCarets.length = 0;
+    const top = vimUndoCarets.length > 0 ? vimUndoCarets[vimUndoCarets.length - 1] : null;
+    if (!top || !Number.isFinite(message.cursor)) return;
+    const length = typeof message.text === "string" ? message.text.length : 0;
+    top.after = clampCaret(message.cursor, length);
   }
 
   function isConflict(message) {
@@ -5799,6 +5894,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (waitingForFile || resumeAfterFile) return;
       if (typeof message.path !== "string" || message.path !== openPath) return;
       if (Number(message.rev) !== rev) return;
+      clearVimHistoryFlight();
       clearEditTimer();
       const index = conflictWaiters.indexOf("edit");
       if (index >= 0) conflictWaiters.splice(index, 1);
@@ -5883,6 +5979,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (waitingForFile) {
         keptCaret = null;
         typingRun = null;
+        clearVimHistoryFlight();
         return;
       }
       const nextRev = Number(message.rev);
@@ -5919,6 +6016,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     else if (message.type === "doc" && typingRun && !ownActor(message) && changeHits(state.doc, message, typingRun.blocks)) {
       typingRun = null;
     }
+    if (message.type === "doc" && ownActor(message)) stageVimHistory(message);
     if (message.type === "doc" || message.type === "file") applySnapshot(message);
     if (message.type === "doc" && typingRun) typingRun.blocks = lineSet(state.anchor, state.cursor);
     if (message.type === "file") syncFileTicket(message);
@@ -6804,6 +6902,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         cursor: effect.to,
       };
       if (Number.isInteger(effect.caret)) partial.caret = effect.caret;
+      // The range is the splice. u restores the caret from before the command.
+      if (vimOn) {
+        const before = state.cursor;
+        partial.vimMark = {
+          before,
+          after: Number.isInteger(effect.caret) ? effect.caret : before,
+        };
+      }
       emitEdit(partial);
       return;
     }
@@ -6849,6 +6955,35 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const key = { key: operator, ctrl: false, meta: false, alt: false, shift: false };
     if (!dispatchVimKey(key)) return;
     dispatchVimKey(key);
+  }
+
+  // Insert arrows are h, l, k, and j, and they stay in Insert.
+  // With the flag off, arrows keep the selection path below.
+  function vimInsertArrow(event) {
+    if (!event || event.ctrlKey || event.metaKey || event.altKey) return false;
+    const command = event.key === "ArrowLeft" ? "h"
+      : event.key === "ArrowRight" ? "l"
+        : event.key === "ArrowUp" ? "k"
+          : event.key === "ArrowDown" ? "j"
+            : "";
+    if (!command) return false;
+    const snap = vimSnapshot();
+    snap.mode = "normal";
+    snap.once = false;
+    const result = vimKey({
+      key: { key: command, ctrl: false, meta: false, alt: false, shift: false },
+      vim: snap,
+      doc: state.doc,
+      cursor: state.cursor,
+      anchor: state.cursor,
+      raw: sourceMode === true,
+      flag: true,
+    });
+    if (result && result.consumed === true) {
+      rememberVim({ ...(result.vim || {}), mode: "insert", once: false });
+      applyVimEffect(result.effect);
+    }
+    return true;
   }
 
   function insertTabChar() {
@@ -6919,6 +7054,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (mod && !event.altKey && (event.key === "y" || event.key === "Y")) {
       event.preventDefault();
       emitHistory("redo");
+      return;
+    }
+    if (vimOn && vimInsertKeys() && vimInsertArrow(event)) {
+      event.preventDefault();
       return;
     }
     if (vimOn && event.key !== "Tab") {

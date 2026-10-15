@@ -18020,3 +18020,160 @@ test("flag off, a pause over one second still splits the typing run", () => {
     Date.now = now;
   });
 });
+
+test("vim dw undo restores a collapsed caret from before the command", () => {
+  return withVimFlag(true, (mounted) => {
+    const doc = "hello world\n";
+    const transport = createMemoryTransport(doc, 6);
+    const sent = [];
+    const send = transport.send.bind(transport);
+    transport.send = (message) => {
+      sent.push(message);
+      send(message);
+    };
+    const view = createEditor(mounted.root, doc, 6, transport);
+    const status = () => {
+      const found = byClass(mounted.root, "md-vim-status");
+      return found.length === 0 ? "" : found[0].textContent;
+    };
+    vimType(mounted, "d");
+    vimType(mounted, "w");
+    assert.equal(view.getState().doc, "hello \n");
+    assert.equal(view.getState().cursor, 6);
+    assert.equal(view.getState().anchor, 6);
+    assert.equal(status(), "N");
+    const beforeUndo = sent.length;
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, 6);
+    assert.equal(view.getState().anchor, 6);
+    const locks = sent.slice(beforeUndo).filter((message) => message.type === "lock");
+    assert.ok(locks.length >= 1);
+    assert.equal(locks.at(-1).cursor, 6);
+    assert.equal(locks.at(-1).anchor, 6);
+    const beforeRedo = sent.length;
+    mounted.listeners.keydown({
+      key: "r",
+      ctrlKey: true,
+      shiftKey: false,
+      altKey: false,
+      metaKey: false,
+      preventDefault() {},
+    });
+    assert.equal(view.getState().doc, "hello \n");
+    assert.equal(view.getState().cursor, 6);
+    assert.equal(view.getState().anchor, 6);
+    const redoLocks = sent.slice(beforeRedo).filter((message) => message.type === "lock");
+    assert.ok(redoLocks.length >= 1);
+    assert.equal(redoLocks.at(-1).cursor, 6);
+    assert.equal(redoLocks.at(-1).anchor, 6);
+    view.destroy();
+  });
+});
+
+test("vim insert arrows stay in insert", () => {
+  return withVimFlag(true, (mounted) => {
+    const status = () => {
+      const found = byClass(mounted.root, "md-vim-status");
+      return found.length === 0 ? "" : found[0].textContent;
+    };
+    const down = createEditor(mounted.root, "alpha\n\nbeta", 0);
+    vimType(mounted, "i");
+    assert.equal(status(), "I");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), false);
+    vimType(mounted, "ArrowDown");
+    assert.equal(status(), "I");
+    assert.equal(down.getState().doc, "alpha\n\nbeta");
+    assert.equal(down.getState().cursor, 7);
+    assert.equal(down.getState().anchor, 7);
+    vimType(mounted, "ArrowUp");
+    assert.equal(status(), "I");
+    assert.equal(down.getState().cursor, 0);
+    assert.equal(down.getState().anchor, 0);
+    down.destroy();
+
+    const left = createEditor(mounted.root, "alpha\n", 4);
+    const text = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "alpha")[0];
+    assert.ok(text);
+    let offset = 4;
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      collapse() {},
+      modify(_action, direction) {
+        offset += direction === "forward" || direction === "right" ? 1 : -1;
+      },
+      getRangeAt() {
+        return { startContainer: text, startOffset: offset, collapsed: true };
+      },
+    });
+    vimType(mounted, "i");
+    assert.equal(status(), "I");
+    assert.equal(left.getState().cursor, 4);
+    vimType(mounted, "ArrowLeft");
+    assert.equal(status(), "I");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), false);
+    assert.equal(left.getState().doc, "alpha\n");
+    assert.equal(left.getState().cursor, 3);
+    assert.equal(left.getState().anchor, 3);
+    mounted.listeners.keydown({
+      key: "ArrowLeft",
+      shiftKey: true,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      preventDefault() {},
+    });
+    assert.equal(status(), "I");
+    assert.equal(left.getState().cursor, 2);
+    assert.equal(left.getState().anchor, 2);
+    left.destroy();
+    globalThis.window.getSelection = () => null;
+  });
+});
+
+test("flag off, a typed letter still inserts", () => {
+  return withVimFlag(false, (mounted) => {
+    const view = createEditor(mounted.root, "alpha\n", 5);
+    const text = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "alpha")[0];
+    assert.ok(text);
+    let anchorOffset = 5;
+    let focusOffset = 5;
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      collapse(node, offset) {
+        anchorOffset = offset;
+        focusOffset = offset;
+      },
+      modify(action, direction) {
+        if (action === "move" && anchorOffset !== focusOffset) {
+          anchorOffset = focusOffset;
+          return;
+        }
+        const step = direction === "forward" || direction === "right" ? 1 : -1;
+        focusOffset += step;
+        if (action !== "extend") anchorOffset = focusOffset;
+      },
+      getRangeAt() {
+        const start = Math.min(anchorOffset, focusOffset);
+        const end = Math.max(anchorOffset, focusOffset);
+        return { startContainer: text, startOffset: start, endOffset: end, collapsed: start === end };
+      },
+    });
+    vimType(mounted, "z");
+    assert.equal(view.getState().doc, "alphaz\n");
+    assert.equal(view.getState().cursor, 6);
+    assert.equal(view.getState().anchor, 6);
+    mounted.listeners.keydown({
+      key: "ArrowLeft",
+      shiftKey: true,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      preventDefault() {},
+    });
+    assert.equal(view.getState().doc, "alphaz\n");
+    assert.notEqual(view.getState().anchor, view.getState().cursor);
+    view.destroy();
+    globalThis.window.getSelection = () => null;
+  });
+});
