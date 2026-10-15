@@ -226,6 +226,66 @@ test("VK.3", () => {
   assert.equal(out.show, "alpha ‸beta\n");
 });
 
+test("modifier key keeps a pending operator", () => {
+  const held = {
+    mode: "insert",
+    input: { prefixRepeat: "2", operator: "d", motionRepeat: "4", motion: null, keyBuffer: "g" },
+    register: { text: "kept", linewise: true },
+    search: { pattern: "a", forward: false, whole: true },
+    find: { ch: "x", forward: false, till: true },
+    column: 4,
+    once: true,
+  };
+  for (const name of ["Shift", "Control", "Alt", "Meta"]) {
+    for (const ctrl of [false, true]) {
+      const key = { key: name, ctrl, meta: name === "Meta", alt: name === "Alt", shift: name === "Shift" };
+      const out = vimKey({ key, vim: held, doc: "alpha beta\n", cursor: 2, anchor: 2 });
+      assert.equal(out.match, "none", name);
+      assert.equal(out.consumed, false, name);
+      assert.equal(out.effect, null, name);
+      assert.deepEqual(out.vim, held, name);
+    }
+    const cut = run("al‸pha beta\n", ["d", { key: name, ctrl: name === "Control" }, { key: "ArrowRight", ctrl: true }]);
+    const step = cut.steps[1];
+    assert.equal(step.match, "none", name);
+    assert.equal(step.consumed, false, name);
+    assert.equal(step.effect, null, name);
+    assert.equal(step.vim.input.prefixRepeat, "", name);
+    assert.equal(step.vim.input.operator, "d", name);
+    assert.equal(step.vim.input.motionRepeat, "", name);
+    assert.equal(step.vim.input.keyBuffer, "", name);
+    assert.equal(cut.show, "al‸beta\n", name);
+    const effect = oneSplice(cut);
+    assert.equal(effect.caret, 2, name);
+    assert.equal(effect.text, "", name);
+  }
+  const prefix = run("‸a b c d e\n", ["2", "d", { key: "Shift" }, "w"]);
+  assert.equal(prefix.steps[2].vim.input.prefixRepeat, "2");
+  assert.equal(prefix.steps[2].vim.input.operator, "d");
+  assert.equal(prefix.steps[2].consumed, false);
+  assert.equal(prefix.show, "‸c d e\n");
+  const motion = run("‸a b c d e\n", ["d", "3", { key: "Alt", ctrl: true }, "w"]);
+  assert.equal(motion.steps[2].vim.input.operator, "d");
+  assert.equal(motion.steps[2].vim.input.keyBuffer, "3");
+  assert.equal(motion.steps[2].vim.input.motionRepeat, "");
+  assert.equal(motion.show, "‸d e\n");
+  const buffer = run("al‸pha\nbeta\n", ["g", { key: "Meta" }]);
+  assert.equal(buffer.steps[1].match, "none");
+  assert.equal(buffer.steps[1].consumed, false);
+  assert.equal(buffer.steps[1].effect, null);
+  assert.equal(buffer.vim.input.keyBuffer, "g");
+  const other = run("al‸pha beta\n", ["d", "Q", { key: "ArrowRight", ctrl: true }]);
+  assert.equal(other.steps[1].match, "none");
+  assert.equal(other.steps[1].consumed, true);
+  assert.equal(other.steps[1].effect, null);
+  assert.equal(other.steps[1].vim.input.operator, null);
+  assert.equal(other.steps[1].vim.input.keyBuffer, "");
+  assert.equal(other.doc, "alpha beta\n");
+  const lower = run("al‸pha beta\n", ["d", { key: "shift" }]);
+  assert.equal(lower.steps[1].consumed, true);
+  assert.equal(lower.steps[1].vim.input.operator, null);
+});
+
 test("VK.4", () => {
   for (const keys of [["3", "d", "2", "w"], ["2", "d", "3", "w"], ["6", "d", "w"]]) {
     const out = run("‸a b c d e f g h\n", keys);

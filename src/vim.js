@@ -2533,6 +2533,10 @@ export function vimKey(input) {
   if (vim.mode === "insert" && !vim.once) return insertKey(vim, doc, cursor, key);
   if (pageChord(key)) return pack("none", false, vim, null);
   if (isEscape(key)) return doEscape(vim, anchor, cursor);
+  // Firefox sends this keydown before the key it changes. It is not a command.
+  if (key.key === "Shift" || key.key === "Control" || key.key === "Alt" || key.key === "Meta") {
+    return pack("none", false, vim, null);
+  }
   if (countDigit(key, vim)) {
     const next = { ...vim, input: { ...vim.input, keyBuffer: vim.input.keyBuffer + key.key } };
     return pack("partial", true, next, null);
