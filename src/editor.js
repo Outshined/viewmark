@@ -41,7 +41,7 @@ import {
   gapCaretStops,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
-import { vimKey } from "./vim.js";
+import { vimKey, vimSubmit } from "./vim.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES, isTicketToken, parseTicketToken } from "./ticket.js";
 import { MAX_PAYLOAD } from "./ws.js";
 
@@ -2273,6 +2273,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let rawPath = "";
   let viewToggle = null;
   let vimStatus = null;
+  let vimLine = null;
+  let vimPrompt = null;
   let vimMode = "normal";
   let vimInput = emptyVimInput();
   let vimRegister = { text: "", linewise: false };
@@ -4739,6 +4741,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function setVimOn(next) {
+    closeVimLine();
     const on = next === true;
     vimOn = on;
     vimMode = "normal";
@@ -6882,6 +6885,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function applyVimEffect(effect) {
     if (!effect || typeof effect.type !== "string") return;
+    if (effect.type === "prompt") {
+      openVimLine(effect);
+      return;
+    }
     if (effect.type === "caret") {
       moveVimCaret(effect.anchor, effect.cursor);
       return;
@@ -6939,6 +6946,156 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     if (effect.type === "view-motion") applyVimView(effect);
+  }
+
+  // The mark drawn in the line is the prompt. The command is the text after it.
+  function stripVimPrompt(text) {
+    const value = typeof text === "string" ? text : "";
+    if (value.startsWith("/") || value.startsWith("?") || value.startsWith(":")) return value.slice(1);
+    return value;
+  }
+
+  function vimPromptMark(effect) {
+    if (effect && effect.kind === "search") return effect.forward === false ? "?" : "/";
+    return ":";
+  }
+
+  function vimLineOpen() {
+    return vimPrompt != null;
+  }
+
+  function placeVimLineCaret(input) {
+    const end = String(input.value || "").length;
+    try {
+      input.selectionStart = end;
+      input.selectionEnd = end;
+      if (typeof input.setSelectionRange === "function") input.setSelectionRange(end, end);
+    } catch {
+      // A field that is not yet focused refuses the range. The next key still lands after the mark.
+    }
+  }
+
+  function parentVimLine(input) {
+    const body = typeof document !== "undefined" ? document.body : null;
+    if (!body || typeof body.appendChild !== "function" || input.parentElement === body) return;
+    body.appendChild(input);
+  }
+
+  function ensureVimLine() {
+    if (vimLine) return vimLine;
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return null;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "md-vim-line";
+    input.spellcheck = false;
+    input.autocapitalize = "off";
+    if (typeof input.setAttribute === "function") {
+      input.setAttribute("type", "text");
+      input.setAttribute("spellcheck", "false");
+      input.setAttribute("autocapitalize", "off");
+      input.setAttribute("autocomplete", "off");
+      input.setAttribute("autocorrect", "off");
+    }
+    input.addEventListener("keydown", onVimLineKey, { signal: ac.signal });
+    vimLine = input;
+    return input;
+  }
+
+  // Flag off never reaches here. The status keeps the pending keys it already shows.
+  function openVimLine(effect) {
+    if (!vimOn || !effect) return;
+    const input = ensureVimLine();
+    if (!input) return;
+    vimPrompt = { kind: effect.kind, forward: effect.forward };
+    input.value = vimPromptMark(effect);
+    parentVimLine(input);
+    placeVimLineCaret(input);
+    if (typeof input.focus === "function") input.focus();
+    placeVimLineCaret(input);
+  }
+
+  function closeVimLine() {
+    const wasOpen = vimPrompt != null;
+    vimPrompt = null;
+    if (vimLine && wasOpen) {
+      vimLine.value = "";
+      detachNode(vimLine);
+    }
+    if (!wasOpen || closed || !root || typeof root.focus !== "function") return;
+    placingCaret = true;
+    try {
+      root.focus();
+    } finally {
+      placingCaret = false;
+    }
+  }
+
+  function submitVimLine() {
+    const prompt = vimPrompt;
+    const field = vimLine;
+    if (!prompt || !field) return;
+    const line = stripVimPrompt(typeof field.value === "string" ? field.value : "");
+    const kind = prompt.kind;
+    const forward = prompt.forward;
+    closeVimLine();
+    const result = vimSubmit({
+      line,
+      kind,
+      forward,
+      vim: vimSnapshot(),
+      doc: state.doc,
+      anchor: state.anchor,
+      cursor: state.cursor,
+      raw: sourceMode === true,
+      flag: true,
+    });
+    if (!result || result.consumed !== true) return;
+    rememberVim(result.vim);
+    applyVimEffect(result.effect);
+  }
+
+  // Ctrl-W and Meta-W close the browser tab. The line keeps the chord.
+  function onVimLineKey(event) {
+    if (!event) return;
+    const key = typeof event.key === "string" ? event.key : "";
+    const stop = () => {
+      if (typeof event.preventDefault === "function") event.preventDefault();
+    };
+    if ((event.ctrlKey === true || event.metaKey === true) && (key === "w" || key === "W")) {
+      stop();
+      return;
+    }
+    if (key === "Enter") {
+      stop();
+      submitVimLine();
+      return;
+    }
+    if (key === "Escape") {
+      stop();
+      closeVimLine();
+    }
+  }
+
+  // A key that still reaches the editor is typed into the line, not into vimKey.
+  function takeVimLineKey(event) {
+    if (!event) return;
+    const key = typeof event.key === "string" ? event.key : "";
+    if (key === "Enter") {
+      submitVimLine();
+      return;
+    }
+    if (key === "Escape") {
+      closeVimLine();
+      return;
+    }
+    if (event.ctrlKey === true || event.metaKey === true || event.altKey === true) return;
+    const field = vimLine;
+    if (!field) return;
+    if (key === "Backspace") {
+      field.value = String(field.value || "").slice(0, -1);
+      return;
+    }
+    if (key.length === 1) field.value = String(field.value || "") + key;
   }
 
   // keydown is the only caller. A consumed key never reaches beforeinput.
@@ -7010,6 +7167,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (keyEndsRun(event)) endTypingRunLater();
     gestureHold = false;
     commentFocus = null;
+    if (vimLineOpen()) {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      takeVimLineKey(event);
+      return;
+    }
     // Tab is not passed to vimKey. Normal, Visual, and Visual Line shift the line.
     if (vimOn && event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.metaKey) {
       if (!vimInsertKeys()) {
@@ -9748,6 +9910,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     },
     destroy() {
       closed = true;
+      closeVimLine();
       cancelGestureRender();
       clearEditTimer();
       clearRefusal();

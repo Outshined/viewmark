@@ -685,6 +685,23 @@ span.md-vim-status {
   user-select: none;
 }
 
+input.md-vim-line {
+  position: fixed;
+  left: 0.35rem;
+  right: 0.35rem;
+  bottom: 0.35rem;
+  z-index: 4;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0 0.35rem;
+  background: #1c1b19;
+  color: inherit;
+  font: inherit;
+  line-height: 1.75rem;
+  border: 1px solid #c4b8a4;
+  border-radius: 0.35rem;
+}
+
 .ticket-form {
   position: relative;
   box-sizing: border-box;

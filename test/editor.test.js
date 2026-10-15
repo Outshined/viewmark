@@ -18228,3 +18228,176 @@ test("flag off, a typed letter still inserts", () => {
     globalThis.window.getSelection = () => null;
   });
 });
+
+function vimLineNode() {
+  const body = document.body;
+  if (!body || !body.childNodes) return null;
+  for (const node of body.childNodes) {
+    if (node.classList && node.classList.contains("md-vim-line")) return node;
+  }
+  return null;
+}
+
+function vimFieldKey(field, key, extra = {}) {
+  let prevented = false;
+  field.listeners.keydown({
+    key,
+    shiftKey: false,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    ...extra,
+    preventDefault() { prevented = true; },
+  });
+  return prevented;
+}
+
+function watchVimEdits(doc, cursor) {
+  const transport = createMemoryTransport(doc, cursor);
+  const edits = [];
+  const send = transport.send.bind(transport);
+  transport.send = (message) => {
+    if (message && message.type === "edit") edits.push(message);
+    send(message);
+  };
+  return { transport, edits };
+}
+
+test("vim prompt line submits search and ex", () => {
+  return withVimFlag(true, (mounted) => {
+    document.body = document.createElement("body");
+    const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    const rule = css.match(/input\.md-vim-line\s*\{[^}]*\}/);
+    assert.ok(rule);
+    assert.match(rule[0], /position:\s*fixed/);
+    assert.match(rule[0], /background:\s*#1c1b19/);
+    assert.equal(rule[0].includes("svg"), false);
+    const status = () => {
+      const found = byClass(mounted.root, "md-vim-status");
+      return found.length === 0 ? "" : found[0].textContent;
+    };
+
+    const doc = "alpha beta\n";
+    const searched = watchVimEdits(doc, 0);
+    const view = createEditor(mounted.root, doc, 0, searched.transport);
+    assert.equal(vimLineNode(), null);
+    assert.equal(status(), "N");
+    vimType(mounted, "/");
+    const field = vimLineNode();
+    assert.ok(field);
+    assert.equal(field.tagName, "INPUT");
+    assert.equal(field.classList.contains("md-vim-line"), true);
+    assert.equal(field.parentElement, document.body);
+    assert.equal(field.value, "/");
+    assert.equal(Object.keys(field.styleProps).length, 0);
+    assert.equal(walkNodes(field, (node) => node.localName === "svg").length, 0);
+    assert.equal(status(), "N");
+    vimType(mounted, "b");
+    vimType(mounted, "e");
+    vimType(mounted, "t");
+    vimType(mounted, "a");
+    assert.equal(field.value, "/beta");
+    assert.equal(status(), "N");
+    assert.equal(view.getState().doc, doc);
+    assert.equal(searched.edits.length, 0);
+    assert.equal(vimFieldKey(field, "Enter"), true);
+    assert.equal(vimLineNode(), null);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, 6);
+    assert.equal(view.getState().anchor, 6);
+    assert.equal(view.getState().doc.slice(6, 10), "beta");
+    assert.equal(searched.edits.length, 0);
+    assert.equal(status(), "N");
+    view.destroy();
+
+    const backDoc = "beta alpha beta\n";
+    const back = watchVimEdits(backDoc, backDoc.length);
+    const backView = createEditor(mounted.root, backDoc, backDoc.length, back.transport);
+    vimType(mounted, "?");
+    const backField = vimLineNode();
+    assert.equal(backField.value, "?");
+    backField.value = "?beta";
+    assert.equal(vimFieldKey(backField, "Enter"), true);
+    assert.equal(vimLineNode(), null);
+    assert.equal(backView.getState().doc, backDoc);
+    assert.equal(backView.getState().cursor, 11);
+    assert.equal(backView.getState().anchor, 11);
+    assert.equal(back.edits.length, 0);
+    backView.destroy();
+
+    const exDoc = "banana\n";
+    const ex = watchVimEdits(exDoc, 0);
+    const exView = createEditor(mounted.root, exDoc, 0, ex.transport);
+    vimType(mounted, ":");
+    const exField = vimLineNode();
+    assert.equal(exField.value, ":");
+    assert.equal(status(), "N");
+    exField.value = ":s/a/o/";
+    assert.equal(vimFieldKey(exField, "Enter"), true);
+    assert.equal(vimLineNode(), null);
+    assert.equal(exView.getState().doc, "bonana\n");
+    assert.equal(ex.edits.length, 1);
+    assert.equal(ex.edits[0].text, "bonana");
+    exView.destroy();
+
+    const escDoc = "banana\n";
+    const esc = watchVimEdits(escDoc, 0);
+    const escView = createEditor(mounted.root, escDoc, 0, esc.transport);
+    vimType(mounted, ":");
+    const escField = vimLineNode();
+    escField.value = ":d";
+    assert.equal(vimFieldKey(escField, "Escape"), true);
+    assert.equal(vimLineNode(), null);
+    assert.equal(escView.getState().doc, escDoc);
+    assert.equal(esc.edits.length, 0);
+    vimType(mounted, "x");
+    assert.equal(escView.getState().doc, "anana\n");
+    escView.destroy();
+
+    const chordDoc = "alpha beta\n";
+    const chord = watchVimEdits(chordDoc, 0);
+    const chordView = createEditor(mounted.root, chordDoc, 0, chord.transport);
+    vimType(mounted, "/");
+    const chordField = vimLineNode();
+    chordField.value = "/beta";
+    assert.equal(vimFieldKey(chordField, "w", { ctrlKey: true }), true);
+    assert.equal(vimFieldKey(chordField, "W", { metaKey: true }), true);
+    assert.equal(chordField.value, "/beta");
+    assert.equal(vimLineNode(), chordField);
+    assert.equal(chordView.getState().doc, chordDoc);
+    assert.equal(chord.edits.length, 0);
+    assert.equal(status(), "N");
+    vimFieldKey(chordField, "Escape");
+    assert.equal(vimLineNode(), null);
+    assert.equal(chordView.getState().doc, chordDoc);
+    chordView.destroy();
+
+    const visual = createEditor(mounted.root, "alpha\n", 0);
+    vimType(mounted, "v");
+    assert.equal(status(), "V");
+    vimType(mounted, ":");
+    assert.equal(vimLineNode(), null);
+    assert.equal(visual.getState().doc, "alpha\n");
+    assert.equal(status(), "N");
+    visual.destroy();
+
+    const doomed = createEditor(mounted.root, "alpha\n", 0);
+    vimType(mounted, "/");
+    assert.ok(vimLineNode());
+    doomed.destroy();
+    assert.equal(vimLineNode(), null);
+  });
+});
+
+test("flag off, a slash inserts and draws no vim line", () => {
+  return withVimFlag(false, (mounted) => {
+    document.body = document.createElement("body");
+    const view = createEditor(mounted.root, "alpha beta\n", 0);
+    vimType(mounted, "/");
+    assert.equal(view.getState().doc, "/alpha beta\n");
+    assert.equal(view.getState().cursor, 1);
+    assert.equal(vimLineNode(), null);
+    assert.equal(byClass(mounted.root, "md-vim-status").length, 0);
+    view.destroy();
+  });
+});
