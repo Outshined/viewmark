@@ -19350,3 +19350,205 @@ test("moving focus from a ticket body to a ticket field drops the caret and rele
     mounted.restore();
   }
 });
+
+test("gc on a comment runs that thread from the keyboard", () => {
+  const previousLocal = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    writable: true,
+    value: vimStorage(true),
+  });
+  const mounted = mountSheet();
+  const fence = (id, body) => `\n\n\`\`\`comment ${id}\n${body}\n\`\`\`\n`;
+  const doc = [
+    "See {c1}mine{/c1} and {c2}them{/c2} plus {c3}lone{/c3}.",
+    fence("c1", ":: 0\n@2026-10-05T16:00:00.000Z qa-bot\nMine."),
+    fence("c2", ":: 0\n@2026-10-05T16:00:00.000Z qa-two\nTheirs.\n:: 1\n@2026-10-05T16:05:00.000Z qa-bot\nLater.\n:: 2\n@2026-10-05T16:06:00.000Z qa-bot\nsecond."),
+    fence("c3", ":: 0\n@2026-10-05T16:00:00.000Z qa-two\nOnly."),
+  ].join("");
+  const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+  const currentId = () => {
+    const card = cards().find((item) => item.classList.contains("md-comment-current"));
+    return card ? card.dataset.comment : "";
+  };
+  const areas = () => mounted.findAll((node) => node.tagName === "TEXTAREA");
+  const status = () => vimStatusOf(mounted.root);
+  const asideKey = (box, key, extra = {}) => {
+    mounted.aside.listeners.keydown({
+      key,
+      target: box,
+      shiftKey: false,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      preventDefault() {},
+      ...extra,
+    });
+  };
+  const openAt = (text, cursor) => {
+    const transport = createMemoryTransport(text, cursor);
+    transport.username = "qa-bot";
+    return createEditor(mounted.root, text, cursor, transport);
+  };
+  try {
+    const plain = openAt(doc, 0);
+    const plainBefore = plain.getState().doc;
+    vimType(mounted, "g");
+    vimType(mounted, "c");
+    assert.equal(plain.getState().doc, plainBefore);
+    assert.equal(currentId(), "");
+    vimType(mounted, "r");
+    vimType(mounted, "z");
+    assert.equal(plain.getState().doc.startsWith("z"), true);
+    plain.destroy();
+
+    const moved = openAt(doc, doc.indexOf("mine"));
+    vimType(mounted, "g");
+    vimType(mounted, "c");
+    assert.equal(currentId(), "c1");
+    assert.equal(status(), "N");
+    vimType(mounted, "x");
+    assert.equal(moved.getState().doc, doc.replace("{c1}mine{/c1}", "{c1}ine{/c1}"));
+    assert.equal(currentId(), "c1");
+    vimType(mounted, "Escape");
+    assert.equal(currentId(), "");
+    assert.equal(status(), "N");
+    moved.destroy();
+
+    const counted = openAt(doc, doc.indexOf("mine"));
+    vimType(mounted, "g");
+    vimType(mounted, "c");
+    vimType(mounted, "3");
+    vimType(mounted, "r");
+    assert.equal(areas().length, 1);
+    assert.equal(areas()[0].dataset.reply, "true");
+    asideKey(areas()[0], "Escape");
+    assert.equal(areas().length, 0);
+    assert.equal(counted.getState().doc, doc);
+    vimType(mounted, "x");
+    assert.equal(counted.getState().doc, doc.replace("{c1}mine{/c1}", "{c1}ine{/c1}"));
+    counted.destroy();
+
+    const visual = openAt(doc, doc.indexOf("mine"));
+    vimType(mounted, "v");
+    vimType(mounted, "g");
+    vimType(mounted, "c");
+    assert.equal(visual.getState().doc, doc);
+    assert.equal(currentId(), "c1");
+    assert.equal(status(), "V");
+    vimType(mounted, "Escape");
+    assert.equal(currentId(), "");
+    assert.equal(status(), "N");
+    visual.destroy();
+
+    const owned = openAt(doc, doc.indexOf("mine"));
+    vimType(mounted, "g");
+    vimType(mounted, "c");
+    assert.equal(currentId(), "c1");
+    assert.equal(owned.getState().doc, doc);
+    vimType(mounted, "r");
+    assert.equal(areas().length, 1);
+    assert.equal(areas()[0].dataset.reply, "true");
+    assert.equal(areas()[0].value, "");
+    areas()[0].value = "nope";
+    mounted.aside.listeners.input({ target: areas()[0] });
+    asideKey(areas()[0], "Escape");
+    assert.equal(areas().length, 0);
+    assert.equal(owned.getState().doc.includes("nope"), false);
+    assert.equal(owned.getState().doc, doc);
+    assert.equal(currentId(), "");
+    assert.equal(status(), "N");
+
+    vimType(mounted, "g");
+    vimType(mounted, "c");
+    vimType(mounted, "r");
+    areas()[0].value = "hello";
+    asideKey(areas()[0], "Enter", { ctrlKey: true });
+    assert.equal(owned.getState().doc.includes("hello"), true);
+    assert.equal(owned.getState().doc.includes("Mine."), true);
+    assert.equal((owned.getState().doc.match(/```comment c1\b/g) || []).length, 1);
+    assert.equal(status(), "N");
+    vimType(mounted, "Escape");
+    assert.equal(currentId(), "");
+
+    vimType(mounted, "g");
+    vimType(mounted, "c");
+    vimType(mounted, "i");
+    assert.equal(areas().length, 1);
+    assert.equal(areas()[0].dataset.editing, "true");
+    assert.equal(areas()[0].dataset.note, "0");
+    assert.equal(areas()[0].value, "Mine.");
+    areas()[0].value = "Mine.nope";
+    mounted.aside.listeners.input({ target: areas()[0] });
+    asideKey(areas()[0], "Escape");
+    assert.equal(areas().length, 0);
+    assert.equal(owned.getState().doc.includes("Mine.nope"), false);
+    assert.equal(owned.getState().doc.includes("Mine."), true);
+    assert.equal(currentId(), "");
+    assert.equal(status(), "N");
+
+    vimType(mounted, "g");
+    vimType(mounted, "c");
+    vimType(mounted, "R");
+    assert.match(owned.getState().doc, /```comment c1 resolved/);
+    vimType(mounted, "R");
+    assert.equal(owned.getState().doc.includes("```comment c1 resolved"), false);
+    assert.match(owned.getState().doc, /```comment c1\n/);
+    assert.equal(status(), "N");
+    assert.equal(currentId(), "c1");
+    vimType(mounted, "X");
+    assert.equal(owned.getState().doc.includes("{c1}"), false);
+    assert.equal(owned.getState().doc.includes("```comment c1"), false);
+    assert.equal(owned.getState().doc.includes("{c2}"), true);
+    assert.equal(status(), "N");
+    assert.equal(currentId(), "");
+    owned.destroy();
+
+    const other = openAt(doc, doc.indexOf("them"));
+    vimType(mounted, "g");
+    vimType(mounted, "c");
+    assert.equal(currentId(), "c2");
+    const otherBefore = other.getState().doc;
+    vimType(mounted, "R");
+    assert.equal(other.getState().doc, otherBefore);
+    assert.equal(currentId(), "c2");
+    vimType(mounted, "X");
+    assert.equal(other.getState().doc, otherBefore);
+    assert.equal(currentId(), "c2");
+    vimType(mounted, "i");
+    assert.equal(areas().length, 1);
+    assert.equal(areas()[0].dataset.editing, "true");
+    assert.equal(areas()[0].dataset.note, "1");
+    assert.equal(areas()[0].value, "Later.");
+    areas()[0].value = "Later.x";
+    asideKey(areas()[0], "Enter", { ctrlKey: true });
+    assert.equal(other.getState().doc.includes("Later.x"), true);
+    assert.equal(other.getState().doc.includes("Theirs."), true);
+    assert.equal(other.getState().doc.includes("second."), true);
+    assert.equal(status(), "N");
+    other.destroy();
+
+    const lone = openAt(doc, doc.indexOf("lone"));
+    vimType(mounted, "g");
+    vimType(mounted, "c");
+    assert.equal(currentId(), "c3");
+    vimType(mounted, "i");
+    assert.equal(areas().length, 0);
+    assert.equal(lone.getState().doc, doc);
+    assert.equal(status(), "N");
+    assert.equal(currentId(), "c3");
+    lone.destroy();
+
+    const added = openAt("alpha beta\n", 0);
+    vimType(mounted, "v");
+    vimType(mounted, "g");
+    vimType(mounted, "c");
+    assert.match(added.getState().doc, /\{c1\}a\{\/c1\}/);
+    assert.equal(status(), "V");
+    added.destroy();
+  } finally {
+    mounted.restore();
+    if (previousLocal) Object.defineProperty(globalThis, "localStorage", previousLocal);
+    else delete globalThis.localStorage;
+  }
+});
