@@ -776,9 +776,11 @@ div.md-ticket-pane-panel label {
 .ticket-form:not([hidden]) + #editor {
   grid-row: 2;
   border: 1px solid #4a463f;
-  align-self: stretch;
-  min-height: 0;
-  overflow: auto;
+  align-self: start;
+  /* Stretch would pin the box to the row. 100% is that starting size; max-content lets a longer body grow it, and the window scrolls. */
+  min-height: 100%;
+  height: max-content;
+  overflow: visible;
 }
 
 .ticket-form input,

@@ -10639,9 +10639,13 @@ test("T-ticket-rows", () => {
   assert.match(css, /\.ticket-form\s*\{[^}]*grid-row:\s*1/);
   assert.match(css, /\.ticket-form:not\(\[hidden\]\)\s*\+\s*#editor\s*\{[^}]*grid-row:\s*2[^}]*border:\s*1px solid #4a463f/);
   const ticketBody = css.match(/\.ticket-form:not\(\[hidden\]\)\s*\+\s*#editor\s*\{[^}]*\}/)[0];
-  assert.match(ticketBody, /align-self:\s*stretch/);
-  assert.match(ticketBody, /min-height:\s*0/);
-  assert.match(ticketBody, /overflow:\s*auto/);
+  assert.match(ticketBody, /align-self:\s*start/);
+  assert.match(ticketBody, /min-height:\s*100%/);
+  assert.match(ticketBody, /height:\s*max-content/);
+  assert.match(ticketBody, /overflow:\s*visible/);
+  assert.equal(/min-height:\s*0/.test(ticketBody), false);
+  assert.equal(/overflow:\s*(?:auto|scroll)/.test(ticketBody), false);
+  assert.equal(/max-height\s*:/.test(ticketBody), false);
   const sheetHas = css.match(/\.sheet:has\(\.ticket-form:not\(\[hidden\]\)\)\s*\{[^}]*\}/)[0];
   assert.match(sheetHas, /height:\s*calc\(100vh - 2rem\)/);
   assert.match(sheetHas, /grid-template-rows:\s*auto minmax\(0,\s*1fr\)/);
