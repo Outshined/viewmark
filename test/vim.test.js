@@ -2270,3 +2270,35 @@ test("VD.5", () => {
   assert.equal(view.vim.mode, "normal");
   assert.equal(view.doc, "alpha\n");
 });
+
+test("Y yanks the line", () => {
+  const line = run("‸alpha\n\nbeta\n", ["Y", "p"]);
+  const doubled = run("‸alpha\n\nbeta\n", ["y", "y", "p"]);
+  assert.equal(line.show, doubled.show);
+  assert.equal(line.doc, doubled.doc);
+  assert.equal(line.vim.register.text, "alpha\n");
+  assert.equal(line.vim.register.linewise, true);
+});
+
+test("dd stores the line", () => {
+  const out = run("‸one\n\ntwo\n", ["d", "d"]);
+  assert.equal(out.vim.register.text, "one\n");
+  assert.equal(out.vim.register.linewise, true);
+});
+
+test("ctrl-o none clears once", () => {
+  const out = run("al‸pha\n", ["i", { key: "o", ctrl: true }, "Q"]);
+  assert.equal(out.doc, "alpha\n");
+  assert.equal(out.show, "al‸pha\n");
+  assert.equal(out.vim.mode, "insert");
+  assert.equal(out.vim.once, false);
+});
+
+test("ctrl-o visual e keeps once", () => {
+  const moved = run("‸alpha beta\n", ["i", { key: "o", ctrl: true }, "v", "e"]);
+  assert.equal(moved.vim.mode, "visual");
+  assert.equal(moved.vim.once, true);
+  const cut = run("‸alpha beta\n", ["i", { key: "o", ctrl: true }, "v", "e", "d"]);
+  assert.equal(cut.vim.mode, "insert");
+  assert.equal(cut.doc, " beta\n");
+});

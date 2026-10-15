@@ -988,6 +988,7 @@ function applyRange(op, doc, range, motion, vim) {
   if (op === "d") {
     return {
       effect: { type: "splice", from, to, text, caret, yank: { text: removed, linewise } },
+      register: { text: removed, linewise },
       mode: vim.once ? "insert" : "normal",
     };
   }
@@ -1001,6 +1002,7 @@ function applyRange(op, doc, range, motion, vim) {
     }
     return {
       effect: { type: "splice", from, to, text: changeText, caret: changeCaret, yank: { text: removed, linewise } },
+      register: { text: removed, linewise },
       mode: "insert",
     };
   }
@@ -1174,8 +1176,12 @@ function finishMotion(vim, doc, anchor, cursor, raw, motion, operator) {
   return pack("full", true, leavingOnce(next, vim), { type: "caret", anchor: at, cursor: at });
 }
 
+// A motion that stays in Visual has not used the one Normal command.
 function leavingOnce(vim, prior) {
   if (!prior.once) return vim;
+  if (vim.mode === "visual" || vim.mode === "visual-line") {
+    return vim.once ? vim : { ...vim, once: true };
+  }
   const next = { ...vim, once: false };
   if (next.mode === "normal") next.mode = "insert";
   return next;
@@ -1282,6 +1288,7 @@ function operateVisual(vim, doc, anchor, cursor, raw, op) {
     text = removed.includes("\r\n") ? "\r\n" : "\n";
     caret = span.from;
   }
+  next.register = { text: removed, linewise: span.linewise };
   return pack("full", true, next, {
     type: "splice",
     from: span.from,
@@ -1400,7 +1407,7 @@ function isActionId(id) {
     || id === "i" || id === "a" || id === "I" || id === "A" || id === "o" || id === "O"
     || id === "ctrl-w" || id === "." || id === "p" || id === "P" || id === "r" || id === "R" || id === "~"
     || id === "J" || id === "gJ" || id === "s" || id === "S" || id === "/" || id === "?" || id === "n" || id === "N"
-    || id === "*" || id === "#" || id === ":" || id === "D" || id === "C";
+    || id === "*" || id === "#" || id === ":" || id === "D" || id === "C" || id === "Y";
 }
 
 // v selects the character after the caret. A line break is not that character.
@@ -2078,7 +2085,11 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
     return pack("partial", true, { ...vim, input: { ...vim.input, keyBuffer: "r" } }, null);
   }
   if (id === "~") return applyToggle(vim, doc, cursor, raw);
-  return pack("none", true, clearInput(vim), null);
+  if (id === "Y") {
+    if (vim.mode === "visual" || vim.mode === "visual-line") return operateVisual(vim, doc, anchor, cursor, raw, "y");
+    return repeatedLine(vim, doc, cursor, raw, "y");
+  }
+  return pack("none", true, leavingOnce(clearInput(vim), vim), null);
 }
 
 function replacementChar(key) {
@@ -2542,7 +2553,7 @@ export function vimKey(input) {
   if (cmd.kind === "operator") return dispatchResolved(ready, doc, anchor, cursor, raw, layout, cmd.id, null);
   if (cmd.kind === "motion") return dispatchResolved(ready, doc, anchor, cursor, raw, layout, cmd.id, null);
   if (cmd.kind === "action") return dispatchResolved(ready, doc, anchor, cursor, raw, layout, cmd.id, null);
-  return pack("none", true, clearInput(ready), null);
+  return pack("none", true, leavingOnce(clearInput(ready), ready), null);
 }
 
 export function vimSubmit(input) {
