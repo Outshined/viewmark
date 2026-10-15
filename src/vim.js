@@ -1226,7 +1226,7 @@ function isActionId(id) {
   return id === "x" || id === "X" || id === "v" || id === "V" || id === "u" || id === "ctrl-r"
     || id === "i" || id === "a" || id === "I" || id === "A" || id === "o" || id === "O"
     || id === "ctrl-w" || id === "." || id === "p" || id === "P" || id === "r" || id === "~"
-    || id === "J" || id === "s" || id === "S" || id === "/" || id === "?" || id === "n" || id === "N"
+    || id === "J" || id === "gJ" || id === "s" || id === "S" || id === "/" || id === "?" || id === "n" || id === "N"
     || id === "*" || id === "#" || id === ":" || id === "D" || id === "C";
 }
 
@@ -1294,6 +1294,147 @@ function putRegister(vim, doc, cursor, raw, after) {
   if (after && at < doc.length) at += unitLen(doc, at);
   const caret = after ? at + Math.max(0, reg.text.length - unitLen(reg.text, Math.max(0, reg.text.length - 1))) : at;
   return pack("full", true, next, { type: "splice", from: at, to: at, text: reg.text, caret, yank: null });
+}
+
+// A trailing CR belongs to the break, not to the line's text.
+function joinContentEnd(doc, line) {
+  let end = line.end;
+  if (end > line.start && end <= doc.length && doc[end - 1] === "\r" && (end === doc.length || doc[end] === "\n")) end -= 1;
+  return end;
+}
+
+function joinSpaceAt(doc, index) {
+  return index >= 0 && index < doc.length && (doc[index] === " " || doc[index] === "\t");
+}
+
+// Two breaks mean a blank line sits between the units. That pad is not a line.
+function joinPad(doc, from, to) {
+  let breaks = 0;
+  for (let i = from; i < to && breaks < 2; i += 1) {
+    if (doc[i] === "\n") breaks += 1;
+  }
+  return breaks >= 2;
+}
+
+function dropPhantom(doc, lines) {
+  const out = [];
+  for (const line of lines) {
+    if (doc.length > 0 && line.start >= doc.length) continue;
+    out.push(line);
+  }
+  return out;
+}
+
+function sourceLinesInside(doc, block) {
+  const from = block.start;
+  const to = block.end;
+  const found = [];
+  for (const line of dropPhantom(doc, rawLines(doc))) {
+    if (line.start < from) continue;
+    if (line.start > to) break;
+    if (line.start === to && !(from === to && line.end === to)) break;
+    found.push(line);
+  }
+  return found;
+}
+
+// A fence or an atom is one line. A prose block still has a source break inside it.
+function splitsForJoin(block) {
+  if (!block || block.fence) return false;
+  if (block.type && block.type !== "line") return false;
+  return true;
+}
+
+function unitIndex(lines, doc, cursor, raw) {
+  if (lines.length === 0) return -1;
+  const index = lineIndex(lines, doc, cursor, raw);
+  if (index >= lines.length) return -1;
+  const line = lines[index];
+  if (cursor >= line.start && cursor <= line.end) return index;
+  let found = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].start <= cursor) found = i;
+  }
+  return found;
+}
+
+// Raw units are source lines. Rendered, the caret's block contributes each source
+// line from the caret down, and every later block is one unit. A gap is neither.
+function joinUnits(doc, cursor, raw) {
+  if (raw) {
+    const lines = dropPhantom(doc, rawLines(doc));
+    const index = unitIndex(lines, doc, cursor, true);
+    if (index < 0) return [];
+    return lines.slice(index);
+  }
+  const blocks = [];
+  for (const block of plan(doc, cursor).blocks) {
+    if (block.classes && block.classes.includes("md-paragraph-gap")) continue;
+    if (typeof block.start !== "number" || typeof block.end !== "number") continue;
+    blocks.push(block);
+  }
+  const index = unitIndex(blocks, doc, cursor, false);
+  if (index < 0) return [];
+  const block = blocks[index];
+  let head = splitsForJoin(block) ? sourceLinesInside(doc, block) : [block];
+  if (head.length === 0) head = [block];
+  // A caret on the pad under the block still joins that block, from its last source line.
+  let at = head.length - 1;
+  for (let i = 0; i < head.length; i += 1) {
+    if (cursor >= head[i].start && cursor <= head[i].end) at = i;
+  }
+  const units = head.slice(at);
+  for (let i = index + 1; i < blocks.length; i += 1) units.push(blocks[i]);
+  return units;
+}
+
+// The caret marks the last join: before the space J wrote, or on the first
+// character of that line when the join wrote none.
+function buildJoin(doc, lines, glue) {
+  const from = joinContentEnd(doc, lines[0]);
+  const to = lines[lines.length - 1].start;
+  if (from > to) return null;
+  let text = "";
+  let caretAt = 0;
+  for (let i = 1; i < lines.length; i += 1) {
+    const prev = lines[i - 1];
+    const cur = lines[i];
+    const prevEnd = joinContentEnd(doc, prev);
+    const curEnd = joinContentEnd(doc, cur);
+    const pad = joinPad(doc, prevEnd, cur.start);
+    const left = prevEnd > prev.start && joinSpaceAt(doc, prevEnd - 1);
+    const right = cur.start < curEnd && joinSpaceAt(doc, cur.start);
+    const space = glue && !pad && !left && !right;
+    if (i === lines.length - 1) {
+      caretAt = text.length;
+      if (space) text += " ";
+      continue;
+    }
+    if (space) text += " ";
+    text += doc.slice(cur.start, curEnd);
+  }
+  if (from === to && text === "") return null;
+  return { from, to, text, caret: from + caretAt };
+}
+
+function joinLines(vim, doc, cursor, raw, glue) {
+  const count = Math.max(repeatOf(vim), 2);
+  const units = joinUnits(doc, cursor, raw);
+  const lines = units.length < 2 ? [] : units.slice(0, count);
+  const built = lines.length < 2 ? null : buildJoin(doc, lines, glue);
+  if (!built) return pack("full", true, leavingOnce(clearInput(vim), vim), null);
+  let next = clearInput(vim);
+  if (next.mode === "visual" || next.mode === "visual-line") next.mode = "normal";
+  next = leavingOnce(next, vim);
+  next.column = null;
+  return pack("full", true, next, {
+    type: "splice",
+    from: built.from,
+    to: built.to,
+    text: built.text,
+    caret: built.caret,
+    yank: null,
+  });
 }
 
 function runAction(vim, doc, anchor, cursor, raw, layout, id) {
@@ -1440,6 +1581,7 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
     });
   }
   if (id === "o" || id === "O") return openLine(vim, doc, cursor, raw, id === "o");
+  if (id === "J" || id === "gJ") return joinLines(vim, doc, cursor, raw, id === "J");
   return pack("none", true, clearInput(vim), null);
 }
 
@@ -1515,7 +1657,8 @@ function finishG(vim, doc, anchor, cursor, raw, layout, key) {
                     : key.key === "U" ? "gU"
                       : key.key === "~" ? "g~"
                         : key.key === "I" ? "gI"
-                          : null;
+                          : key.key === "J" ? "gJ"
+                            : null;
   const ready = { ...vim, input: { ...vim.input, keyBuffer: "" } };
   if (id === "gu" || id === "gU" || id === "g~") {
     if (ready.input.operator && !doubled(ready.input.operator, id === "gu" ? "u" : id === "gU" ? "U" : "~")) {

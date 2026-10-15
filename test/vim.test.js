@@ -1302,3 +1302,65 @@ test("VI.10", () => {
   assert.equal(aboveInside.show, above.show);
   assert.equal(aboveInside.doc, above.doc);
 });
+
+test("VJ.1", () => {
+  const out = run("al‸pha\nbeta\n", ["J"], { raw: true });
+  assert.equal(out.show, "alpha‸ beta\n");
+  assert.equal(out.doc, "alpha beta\n");
+  assert.equal(out.vim.mode, "normal");
+  const effect = oneSplice(out);
+  assert.equal(effect.text, " ");
+  assert.equal(effect.caret, 5);
+  assert.equal(effect.yank, null);
+});
+
+test("VJ.2", () => {
+  const out = run("al‸pha \nbeta\n", ["J"]);
+  assert.equal(out.show, "alpha ‸beta\n");
+  assert.equal(out.doc, "alpha beta\n");
+  assert.equal(out.vim.mode, "normal");
+  const effect = oneSplice(out);
+  assert.equal(effect.text, "");
+  assert.equal(effect.yank, null);
+});
+
+test("VJ.3", () => {
+  const out = run("on‸e\n\ntwo\n", ["J"]);
+  assert.equal(out.show, "one‸two\n");
+  assert.equal(out.doc, "onetwo\n");
+  assert.equal(out.vim.mode, "normal");
+  const effect = oneSplice(out);
+  assert.equal(effect.text, "");
+  assert.equal(effect.yank, null);
+});
+
+test("VJ.4", () => {
+  const out = run("al‸pha\nbeta\n", ["g", "J"], { raw: true });
+  assert.equal(out.steps[0].match, "partial");
+  assert.equal(out.show, "alpha‸beta\n");
+  assert.equal(out.doc, "alphabeta\n");
+  assert.equal(out.vim.mode, "normal");
+  const effect = oneSplice(out);
+  assert.equal(effect.text, "");
+  assert.equal(effect.caret, 5);
+  assert.equal(effect.yank, null);
+});
+
+test("VJ.5", () => {
+  const raw = run("‸a\nb\nc\nd\n", ["3", "J"], { raw: true });
+  assert.equal(raw.show, "a b‸ c\nd\n");
+  assert.equal(raw.doc, "a b c\nd\n");
+  assert.equal(raw.vim.mode, "normal");
+  const rawEffect = oneSplice(raw);
+  assert.equal(rawEffect.text, " b ");
+  assert.equal(rawEffect.caret, 3);
+  assert.equal(rawEffect.yank, null);
+  const rendered = run("‸a\n\nb\n\nc\n\nd\n", ["3", "J"]);
+  assert.equal(rendered.show, "ab‸c\n\nd\n");
+  assert.equal(rendered.doc, "abc\n\nd\n");
+  assert.equal(rendered.vim.mode, "normal");
+  const renderedEffect = oneSplice(rendered);
+  assert.equal(renderedEffect.text, "b");
+  assert.equal(renderedEffect.caret, 2);
+  assert.equal(renderedEffect.yank, null);
+});
