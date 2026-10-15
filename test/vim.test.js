@@ -1960,6 +1960,60 @@ test("VE.1", () => {
   assert.equal(visual.show, "alpha‸ beta\n");
 });
 
+test("ex command prefixes", () => {
+  const line = "alpha\nbe‸ta\ngamma\n";
+  const brief = ex(line, "d");
+  for (const name of ["delete", "del", "de"]) {
+    const full = ex(line, name);
+    assert.equal(full.doc, brief.doc, name);
+    assert.equal(full.show, brief.show, name);
+    assert.equal(full.vim.register.text, brief.vim.register.text, name);
+    assert.equal(full.vim.register.linewise, brief.vim.register.linewise, name);
+  }
+  for (const name of ["%delete", "%del", "%d"]) {
+    const emptied = ex(line, name);
+    assert.equal(emptied.doc, "", name);
+    assert.equal(emptied.show, "‸", name);
+    assert.equal(emptied.effect.type, "splice", name);
+    assert.equal(emptied.effect.text, "", name);
+    assert.equal(emptied.effect.from, 0, name);
+    assert.equal(emptied.effect.to, "alpha\nbeta\ngamma\n".length, name);
+  }
+  const bare = ex("alpha\nbe‸ta", "%delete");
+  assert.equal(bare.doc, "");
+  assert.equal(bare.effect.text, "");
+  assert.equal(bare.effect.from, 0);
+  assert.equal(bare.effect.to, "alpha\nbeta".length);
+  assert.equal(bare.effect.yank.text, "alpha\nbeta\n");
+  assert.equal(bare.vim.register.text, "alpha\nbeta\n");
+  const joined = ex("al‸pha\nbeta\n", "join");
+  const jay = ex("al‸pha\nbeta\n", "j");
+  assert.equal(joined.doc, jay.doc);
+  assert.equal(joined.show, jay.show);
+  const yanked = ex("‸alpha\n", "yank");
+  const briefY = ex("‸alpha\n", "y");
+  assert.equal(yanked.doc, briefY.doc);
+  assert.equal(yanked.vim.register.text, briefY.vim.register.text);
+  assert.equal(yanked.vim.register.linewise, true);
+  const undone = ex("‸alpha\n", "un");
+  const briefU = ex("‸alpha\n", "u");
+  assert.equal(undone.effect.type, briefU.effect.type);
+  assert.equal(undone.effect.direction, briefU.effect.direction);
+  assert.equal(undone.doc, briefU.doc);
+  assert.equal(ex("‸alpha\n", "re").effect, null);
+  assert.equal(ex("‸alpha\n", "re").doc, "alpha\n");
+  assert.equal(ex(line, "delete x").effect, null);
+  assert.equal(ex(line, "delete x").doc, "alpha\nbeta\ngamma\n");
+  assert.equal(ex("al‸pha\nbeta\n", "%join").effect, null);
+  assert.equal(ex("‸alpha\n", "%yank").effect, null);
+  assert.equal(ex(line, ".,$delete").effect, null);
+  for (const name of ["re", "set", "sort", "start"]) {
+    const idle = ex("‸banana\nalpha\n", name);
+    assert.equal(idle.effect, null, name);
+    assert.equal(idle.doc, "banana\nalpha\n", name);
+  }
+});
+
 test("VE.10", () => {
   const indent = ex("  ‸banana\n", "s/a/o/");
   assert.equal(indent.doc, "  bonana\n");
@@ -2228,6 +2282,70 @@ test("VY.1", () => {
   const crlf = run("‸alpha\r\n\r\nbeta\r\n", ["y", "y", "p"]);
   assert.equal(crlf.show, "alpha\r\n\r\n‸alpha\r\n\r\nbeta\r\n");
   assert.equal(insertedSplice(crlf).text, "alpha\r\n\r\n");
+});
+
+test("linewise yank of an unterminated line", () => {
+  const yanked = run("alpha\n‸beta", ["y", "y"]);
+  assert.equal(yanked.doc, "alpha\nbeta");
+  assert.equal(yanked.vim.register.text, "alpha\nbeta\n");
+  assert.equal(yanked.vim.register.linewise, true);
+  const yank = oneSplice(yanked);
+  assert.equal(yank.text, "alpha\nbeta");
+  assert.equal(yank.from, 0);
+  assert.equal(yank.to, "alpha\nbeta".length);
+  assert.equal(yank.yank.text, "alpha\nbeta\n");
+  assert.equal(yank.yank.linewise, true);
+  const put = run(yanked.show, ["p"], { vim: yanked.vim });
+  assert.equal(put.show, "alpha\nbeta\n‸alpha\nbeta\n");
+  assert.equal(put.doc, "alpha\nbeta\nalpha\nbeta\n");
+  const inserted = insertedSplice(put);
+  assert.equal(inserted.text, "\nalpha\nbeta\n");
+  assert.equal(inserted.from, "alpha\nbeta".length);
+  assert.equal(inserted.to, inserted.from);
+  assert.equal(inserted.yank, null);
+
+  const crlf = run("alpha\r\n‸beta", ["y", "y"]);
+  assert.equal(crlf.doc, "alpha\r\nbeta");
+  assert.equal(crlf.vim.register.text, "alpha\r\nbeta\r\n");
+  assert.equal(oneSplice(crlf).text, "alpha\r\nbeta");
+  assert.equal(oneSplice(crlf).yank.text, "alpha\r\nbeta\r\n");
+  assert.equal(run(crlf.show, ["p"], { vim: crlf.vim }).show, "alpha\r\nbeta\r\n‸alpha\r\nbeta\r\n");
+
+  const visual = run("alpha\n‸beta", ["V", "y"]);
+  assert.equal(visual.doc, "alpha\nbeta");
+  assert.equal(visual.vim.register.text, "alpha\nbeta\n");
+  const visualYank = oneSplice(visual);
+  assert.equal(visualYank.text, "alpha\nbeta");
+  assert.equal(visualYank.yank.text, "alpha\nbeta\n");
+
+  const cut = run("alpha\n‸beta", ["V", "d"]);
+  assert.equal(cut.doc, "");
+  assert.equal(cut.vim.register.text, "alpha\nbeta\n");
+  assert.equal(oneSplice(cut).text, "");
+  assert.equal(oneSplice(cut).yank.text, "alpha\nbeta\n");
+  assert.equal(oneSplice(cut).from, 0);
+  assert.equal(oneSplice(cut).to, "alpha\nbeta".length);
+
+  const exed = run("alpha\n‸beta", ["V", "x"]);
+  assert.equal(exed.doc, "");
+  const exedEffect = oneSplice(exed);
+  assert.equal(exedEffect.text, "");
+  assert.equal(exedEffect.from, 0);
+  assert.equal(exedEffect.to, "alpha\nbeta".length);
+  assert.equal(exedEffect.yank.text, "alpha\nbeta\n");
+  assert.equal(exedEffect.yank.linewise, true);
+
+  const only = run("‸\n", ["y", "y"]);
+  assert.equal(only.doc, "\n");
+  assert.equal(only.vim.register.text, "\n");
+  assert.equal(oneSplice(only).yank.text, "\n");
+  const pasted = run(only.show, ["p"], { vim: only.vim });
+  assert.equal(pasted.steps[0].effect.type, "splice");
+
+  const shifted = run("- a\n- ‸b", ["y", "y", "]", "p"]);
+  assert.equal(shifted.doc, "- a\n- b\n\t- b\n");
+  assert.equal(shifted.show, "- a\n- b\n\t‸- b\n");
+  assert.equal(shifted.vim.register.text, "- b\n");
 });
 
 test("VD.7", () => {

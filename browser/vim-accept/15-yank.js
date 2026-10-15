@@ -167,7 +167,7 @@ test("VY.3 (ticket 7vdep2z4)", async (t) => {
   await keys(page, "k");
   await unchanged(hub, file, snap);
   await keys(page, "p");
-  await expectMarked(hub, page, file, "alpha\nbeta‸alpha\nbeta\n", snap.rev + 1);
+  await expectMarked(hub, page, file, "alpha\nbeta\n‸alpha\nbeta\n", snap.rev + 1);
 });
 
 test("VY.4 (ticket 7vdep2z4)", async (t) => {

@@ -967,6 +967,7 @@ function applyRange(op, doc, range, motion, vim) {
   if (from === to) return null;
   const removed = doc.slice(from, to);
   const linewise = !!(motion && motion.linewise);
+  const stored = linewiseText(doc, removed, linewise);
   if (op === "y") {
     const caret = motion && motion.cursor < (motion.origin == null ? from : motion.origin) ? from : motion && motion.cursor < from ? from : null;
     return {
@@ -976,9 +977,9 @@ function applyRange(op, doc, range, motion, vim) {
         to,
         text: removed,
         caret: caret == null ? (motion && motion.cursor >= (range.originCaret || from) ? range.originCaret : from) : caret,
-        yank: { text: removed, linewise },
+        yank: { text: stored, linewise },
       },
-      register: { text: removed, linewise },
+      register: { text: stored, linewise },
       mode: vim.mode,
     };
   }
@@ -987,8 +988,8 @@ function applyRange(op, doc, range, motion, vim) {
   const caret = kept ? kept.caret : legal(doc, from, 1, false);
   if (op === "d") {
     return {
-      effect: { type: "splice", from, to, text, caret, yank: { text: removed, linewise } },
-      register: { text: removed, linewise },
+      effect: { type: "splice", from, to, text, caret, yank: { text: stored, linewise } },
+      register: { text: stored, linewise },
       mode: vim.once ? "insert" : "normal",
     };
   }
@@ -1001,8 +1002,8 @@ function applyRange(op, doc, range, motion, vim) {
       changeCaret = from;
     }
     return {
-      effect: { type: "splice", from, to, text: changeText, caret: changeCaret, yank: { text: removed, linewise } },
-      register: { text: removed, linewise },
+      effect: { type: "splice", from, to, text: changeText, caret: changeCaret, yank: { text: stored, linewise } },
+      register: { text: stored, linewise },
       mode: "insert",
     };
   }
@@ -1082,8 +1083,16 @@ function putJoinsForward(doc, at, text) {
   return false;
 }
 
+// A vim line can end on the last byte. The put still opens a line there, and a
+// register that is already a newline is not dropped.
+function putLead(doc, at) {
+  if (at > 0 && doc[at - 1] !== "\n") return fileBreak(doc);
+  return "";
+}
+
 function linewisePutText(doc, at, text, raw, after) {
-  const body = text.endsWith("\n") ? text : text + "\n";
+  const headed = putLead(doc, at) + text;
+  const body = headed.endsWith("\n") ? headed : headed + "\n";
   if (raw || !after || body.endsWith("\n\n") || !putJoinsForward(doc, at, body)) return body;
   return body + (body.endsWith("\r\n") ? "\r\n" : "\n");
 }
@@ -1269,15 +1278,16 @@ function operateVisual(vim, doc, anchor, cursor, raw, op) {
   }
   if (span.from === span.to) return pack("full", true, next, null);
   const removed = doc.slice(span.from, span.to);
+  const stored = linewiseText(doc, removed, span.linewise);
   if (op === "y") {
-    next.register = { text: removed, linewise: span.linewise };
+    next.register = { text: stored, linewise: span.linewise };
     return pack("full", true, next, {
       type: "splice",
       from: span.from,
       to: span.to,
       text: removed,
       caret: span.linewise ? span.from : anchor,
-      yank: { text: removed, linewise: span.linewise },
+      yank: { text: stored, linewise: span.linewise },
     });
   }
   if (op !== "d" && op !== "c") return pack("none", true, clearInput(vim), null);
@@ -1288,14 +1298,14 @@ function operateVisual(vim, doc, anchor, cursor, raw, op) {
     text = removed.includes("\r\n") ? "\r\n" : "\n";
     caret = span.from;
   }
-  next.register = { text: removed, linewise: span.linewise };
+  next.register = { text: stored, linewise: span.linewise };
   return pack("full", true, next, {
     type: "splice",
     from: span.from,
     to: span.to,
     text,
     caret,
-    yank: { text: removed, linewise: span.linewise },
+    yank: { text: stored, linewise: span.linewise },
   });
 }
 
@@ -1427,6 +1437,13 @@ function fileBreak(doc) {
   return doc.includes("\r\n") ? "\r\n" : "\n";
 }
 
+// The splice keeps the bytes on the line. A linewise register still ends on a
+// break, and a register that is already a newline stays that newline.
+function linewiseText(doc, text, linewise) {
+  if (!linewise || text.endsWith("\n")) return text;
+  return text + fileBreak(doc);
+}
+
 // An empty rendered line ends on the CR of a CRLF pair.
 function pastBreak(doc, end) {
   if (end < doc.length && doc[end] === "\n") return end + 1;
@@ -1471,9 +1488,10 @@ function putRegister(vim, doc, cursor, raw, after, adjust) {
   if (!reg.text) return pack("full", true, next, null);
   if (reg.linewise || adjust) {
     const at = putAt(doc, cursor, raw, after);
+    const lead = putLead(doc, at);
     let text = linewisePutText(doc, at, reg.text, raw, after);
     if (adjust) text = shiftInserted(doc, at, text);
-    const caret = putCaret(at, text);
+    const caret = putCaret(at + lead.length, text.slice(lead.length));
     const kept = vim.mode === "visual" || vim.mode === "visual-line" ? "normal" : vim.mode;
     next.mode = kept;
     return pack("full", true, next, { type: "splice", from: at, to: at, text, caret, yank: null });
@@ -1754,6 +1772,10 @@ function submitSearch(vim, doc, cursor, pattern, forward) {
   return placeSearch(vim, doc, cursor, stored.forward, stored, 1, false);
 }
 
+function matchesEx(name, full, short) {
+  return full.startsWith(name) && name.length >= short.length;
+}
+
 function exIdle(vim) {
   const next = clearInput(vim);
   if (vim.once) {
@@ -1780,14 +1802,15 @@ function deleteAll(vim, doc) {
     next.mode = "insert";
   } else next.mode = "normal";
   if (doc.length === 0) return pack("full", true, next, null);
-  next.register = { text: doc, linewise: true };
+  const stored = linewiseText(doc, doc, true);
+  next.register = { text: stored, linewise: true };
   return pack("full", true, next, {
     type: "splice",
     from: 0,
     to: doc.length,
     text: "",
     caret: 0,
-    yank: { text: doc, linewise: true },
+    yank: { text: stored, linewise: true },
   });
 }
 
@@ -1885,19 +1908,20 @@ function submitEx(vim, doc, cursor, raw, line) {
   const name = text.slice(i, j);
   const rest = text.slice(j);
   if (!name) return exIdle(vim);
-  if (name === "d" && rest === "") {
+  if (matchesEx(name, "delete", "d") && rest === "") {
     if (range === "%") return deleteAll(vim, doc);
     if (range) return exIdle(vim);
     return repeatedLine(clearInput(vim), doc, cursor, raw, "d");
   }
-  if ((name === "j" || name === "y") && rest === "" && range === "") {
-    const blank = clearInput(vim);
-    if (name === "j") return joinLines(blank, doc, cursor, raw, true);
-    return repeatedLine(blank, doc, cursor, raw, "y");
+  if (matchesEx(name, "join", "j") && rest === "" && range === "") {
+    return joinLines(clearInput(vim), doc, cursor, raw, true);
   }
-  if ((name === "u" || name === "undo") && rest === "" && range === "") return exHistory(vim, "undo");
-  if ((name === "red" || name === "redo") && rest === "" && range === "") return exHistory(vim, "redo");
-  if ("substitute".startsWith(name)) {
+  if (matchesEx(name, "yank", "y") && rest === "" && range === "") {
+    return repeatedLine(clearInput(vim), doc, cursor, raw, "y");
+  }
+  if (matchesEx(name, "undo", "u") && rest === "" && range === "") return exHistory(vim, "undo");
+  if (matchesEx(name, "redo", "red") && rest === "" && range === "") return exHistory(vim, "redo");
+  if (matchesEx(name, "substitute", "s")) {
     const parsed = parseSubstitute(rest);
     if (!parsed) return exIdle(vim);
     const span = range === "%" ? { from: 0, to: doc.length } : sourceTextRange(doc, cursor);
@@ -1951,13 +1975,15 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
       next.once = false;
       if (from === to) return pack("full", true, next, null);
       const removed = doc.slice(from, to);
+      const linewise = vim.mode === "visual-line";
+      const stored = linewiseText(doc, removed, linewise);
       return pack("full", true, next, {
         type: "splice",
         from,
         to,
         text: "",
         caret: legal(doc, from, 1, raw),
-        yank: { text: removed, linewise: vim.mode === "visual-line" },
+        yank: { text: stored, linewise },
       });
     }
     if (n <= 1) {
