@@ -55,6 +55,8 @@ Node is the toolchain. There are no packages. From the repository root, `node --
 
 The page builds the DOM with elements and text nodes. It prevents the browser's own input and applies the change to the string. A newline inserted on top of a newline is published after the following run of newlines. The lock for that edit covers every span the splice touches.
 
+Vim keys are a page mode, matched by `src/vim.js`. The page applies the effect and the hub still decides the edit. `gc` comments the highlight. The README and `editing.md` list the keys, including the parts that are not stock vim.
+
 `index.html` on disk has no build meta. The server inserts `<meta name="viewmark-build">` when it serves the page. A later hello whose build differs from that meta reloads the page.
 
 This repository tracks the program. `docs/` and `state/` are gitignored. A docs directory is registered with the hub. Prism and Mermaid are the files in `vendor/`, loaded by the script tags in `index.html`.

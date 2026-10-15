@@ -5,6 +5,7 @@ Viewmark is a live markdown editor for a shared set of files. A single Node proc
 {c1}The server and the page are plain JavaScript modules. Nothing is loaded from npm.{/c1} Prism and Mermaid are files in `vendor/`, loaded by classic script tags in `index.html`.
 * `src/doc.js` is the document model. It does not refer to `document` or `window`. It plans how each block should look, applies an edit to the string, computes the lock spans, plans a unified diff, and owns the comment rules.
 * `src/editor.js` is the page. It paints that plan and sends edits to the hub. The test suite reaches the model through names this module re-exports. Nodes are built with DOM calls.
+* `src/vim.js` matches a key when vim is on and returns the effect. It does not change the document itself. The page applies that effect and sends the edit to the hub.
 * `src/session.js` is the browser's socket. After `hello` it asks for the repository list. It answers `ping` with `pong`.
 * `src/hub.js` is the server side of a session. Incoming frames are handled one at a time on a single queue. The hub holds the open text, the block locks, and an undo stack and a redo stack for each socket.
 * `src/ws.js` holds the RFC 6455 accept key, frame encoder, and frame parser. `src/ticket.js` is the ticket record, with no I/O. `server.js` listens on `node:http`, serves the page and raw files, and hands the WebSocket upgrade to the hub, which answers it. `cli.js` is a client that exits when its command finishes. `viewmark serve` starts the hub from that same program.
@@ -150,6 +151,11 @@ The page is three columns: a file column of 16rem, the editor, and a comment col
 An eye button at the top right of the editor turns on the raw view, which draws every line as source. A red slash on the eye shows that raw is on. Raw is not stored, and it applies only to the document that was open when it was turned on. A key typed in raw is sent with `raw: true`, and the hub stores it as typed.
 
 File and folder marks are 24 by 24 stroke icons ahead of the row's text. The text of a row is its label. The plus on the Files heading creates a markdown file. The plus on the Tickets heading creates a ticket.
+
+### Vim keys
+The document menu item Vim keys is off until it is checked. The browser stores that choice as `viewmark.vim`. The hub does not store it. While vim is on, the page asks `src/vim.js` which text a key changes, then sends that edit the same way it sends any other key. `src/vim.js` does not change the document itself.
+
+`gc` comments the highlight. A vim line in the formatted view is a rendered block. `y` and `p` use one unnamed register, which is not the clipboard. Ctrl-V pastes the clipboard. Search text is literal, and the hits are not drawn. The modes, the motions, and the rest of the differences from stock vim are the Vim keys section of `editing.md`.
 
 ```comment c1 resolved
 How are syntax highlighting and mermaid diagrams done?
