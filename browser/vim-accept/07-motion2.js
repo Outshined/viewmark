@@ -431,13 +431,13 @@ cell("VN.20", async (t) => {
   });
   await runMoves(page, hub, "word.md", [
     { label: "tb", focus: 0, keys: ["t", "b"], expect: "alpha‸ beta\n" },
-    { label: "Ta", focus: "alpha be".length, keys: ["T", "a"], expect: "alpha ‸beta\n" },
+    { label: "Ta", focus: "alpha be".length, keys: ["T", "a"], expect: "alpha‸ beta\n" },
   ]);
   await openFile(page, "dash.md");
   await place(page, 0);
   const rev = (await hub.show("dash.md")).rev;
   await press(page, ["t", "-", ";"]);
-  await expectAt(page, hub, "dash.md", rev, "a-b‸-c\n", "t-;");
+  await expectAt(page, hub, "dash.md", rev, "a-‸b-c\n", "t-;");
   await press(page, [","]);
   const shown = await hub.show("dash.md");
   const caret = await page.caret();
@@ -636,7 +636,7 @@ cell("VN.24", async (t) => {
 cell("VN.25", async (t) => {
   const { hub, page } = await setup(t, { "a.md": "alpha\n  beta\n" });
   await runMoves(page, hub, "a.md", [
-    { label: "Enter", focus: 2, keys: ["Enter"], expect: "alpha\n  ‸beta\n" },
+    { label: "Enter", focus: 2, keys: ["Enter"], expect: "‸alpha\n  beta\n" },
   ]);
 });
 
@@ -681,6 +681,6 @@ cell("VN.27", async (t) => {
     { label: "3w", focus: 0, keys: ["3", "w"], expect: "a b c ‸d\n" },
   ]);
   await runMoves(page, hub, "lines.md", [
-    { label: "2j", focus: 0, keys: ["2", "j"], expect: "one\ntwo\n‸three\n" },
+    { label: "2j", focus: 0, keys: ["2", "j"], expect: "‸one\ntwo\nthree\n" },
   ]);
 });
