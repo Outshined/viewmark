@@ -310,6 +310,9 @@ test("VL.5 (ticket 7vdep2z4)", async (t) => {
   const before = (await hub.show(FILE)).text;
   await A.until(() => mirror(A) === before, `A did not see ${JSON.stringify(before)}`);
   await A.quiet();
+  // B still holds the line, so A's put is refused until B leaves a.md.
+  await hub.create("z.md", "z\n");
+  await B.open("z.md");
   const revPut = await revOf(hub);
   await tap(A, "p");
   const seen = await view(A, hub);
