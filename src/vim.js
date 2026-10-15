@@ -1,5 +1,5 @@
 // Pure key match. The page applies the effect. This module does not touch the editor.
-import { codeSpanAt, createState, deleteForward, endBeforeTail, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, sourceLine, wordStop } from "./doc.js";
+import { codeSpanAt, createState, deleteForward, endBeforeTail, findSpans, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, sourceLine, wordStop } from "./doc.js";
 
 const REPEAT_CAP = 10000;
 const PAGE = 20;
@@ -2232,6 +2232,31 @@ function finishQuote(vim, anchor, cursor, key) {
   return pack("none", true, clearInput(vim), null);
 }
 
+// The smallest interior is the thread under the caret. A tie keeps the earlier one.
+function innermostComment(spans) {
+  if (spans.length === 0) return null;
+  spans.sort((a, b) =>
+    (a.interiorEnd - a.interiorStart) - (b.interiorEnd - b.interiorStart) || a.interiorStart - b.interiorStart);
+  return spans[0].id;
+}
+
+// A caret on a comment is the glyph inside that interior. The braces are the
+// markers, and the interior's end is the closer.
+function commentUnderCaret(doc, cursor) {
+  if (cursor < 0 || cursor >= doc.length) return null;
+  const hits = findSpans(doc).filter((span) => cursor >= span.interiorStart && cursor < span.interiorEnd);
+  return innermostComment(hits);
+}
+
+// The highlight is already that comment when the whole selection sits in its interior.
+function commentHoldingRange(doc, anchor, cursor) {
+  const from = Math.min(anchor, cursor);
+  const to = Math.max(anchor, cursor);
+  if (!(from < to)) return null;
+  const hits = findSpans(doc).filter((span) => from >= span.interiorStart && to <= span.interiorEnd);
+  return innermostComment(hits);
+}
+
 function finishG(vim, doc, anchor, cursor, raw, layout, key) {
   if (isEscape(key)) return doEscape(vim, anchor, cursor);
   if (!key.ctrl && !key.meta && !key.alt && (key.key === "n" || key.key === "N" || key.key === "*" || key.key === "#")) {
@@ -2271,11 +2296,19 @@ function finishG(vim, doc, anchor, cursor, raw, layout, key) {
     const at = motion.cursor;
     return pack("full", true, next, { type: "caret", anchor: at, cursor: at });
   }
-  // c stays the change operator. Visual gc comments on the highlight, and the
-  // mode stays so a refusal still has that highlight when the range is checked.
-  if (!key.ctrl && !key.meta && !key.alt && key.key === "c" && !vim.input.operator
-    && (vim.mode === "visual" || vim.mode === "visual-line") && anchor !== cursor) {
-    return pack("full", true, clearInput(vim), { type: "comment-add" });
+  // c stays the change operator. Visual gc on a highlight that is not already
+  // a comment adds one and keeps the mode. A caret on an existing comment, or
+  // a highlight already inside one, makes that thread current instead.
+  if (!key.ctrl && !key.meta && !key.alt && key.key === "c" && !vim.input.operator) {
+    const visual = (vim.mode === "visual" || vim.mode === "visual-line") && anchor !== cursor;
+    if (visual) {
+      const held = commentHoldingRange(doc, anchor, cursor);
+      if (!held) return pack("full", true, clearInput(vim), { type: "comment-add" });
+      return pack("full", true, clearInput(vim), { type: "comment-current", id: held });
+    }
+    const id = commentUnderCaret(doc, cursor);
+    if (id) return pack("full", true, clearInput(vim), { type: "comment-current", id });
+    return pack("none", true, clearInput(vim), null);
   }
   if (!id) return pack("none", true, clearInput(vim), null);
   return dispatchResolved(ready, doc, anchor, cursor, raw, layout, id, null);

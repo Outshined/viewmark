@@ -3360,6 +3360,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     editingNotes.delete(draftKey(id, noteId));
     currentCommentId = id;
     commentFocus = null;
+    resumeAfterNote();
     const before = state.doc;
     if (reply) emit({ type: "comment.reply", id, text, path: openPath });
     else emit({ type: "comment.edit", id, note: noteId, rev, text, path: openPath });
@@ -4038,6 +4039,147 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       layoutComments();
     }
     markCurrentHighlights();
+  }
+
+  function showCommentCurrent(id) {
+    if (!id || !threadById(id)) return;
+    const card = findCommentCard(id);
+    if (card) {
+      showCurrentCard(card);
+      return;
+    }
+    // A resolved thread has no card while those stay hidden. The id still has to
+    // stick so the next resolve can reopen it, and the previous card must not stay marked.
+    currentCommentId = id;
+    if (commentsAside) {
+      const walk = (node) => {
+        if (!node) return;
+        if (node.classList && node.classList.contains("md-comment-card")) {
+          node.classList.remove("md-comment-current");
+          setCommentActions(node, false);
+        }
+        for (const child of node.childNodes || []) walk(child);
+      };
+      walk(commentsAside);
+    }
+    markCurrentHighlights();
+  }
+
+  // Resolve and delete belong to note id 0, the same note the hub checks.
+  function firstNoteAuthor(id) {
+    const thread = threadById(id);
+    if (!thread) return "";
+    const notes = parseCommentNotes(thread.body).filter((note) => note.id === 0);
+    if (notes.length !== 1) return "";
+    return splitCommentNote(notes[0].raw).author || "";
+  }
+
+  function sessionOwnsThread(id) {
+    const author = firstNoteAuthor(id);
+    return author !== "" && author === selfName();
+  }
+
+  function findCommentText(id, note) {
+    if (!commentsAside) return null;
+    const walk = (node) => {
+      if (!node) return null;
+      if (node.classList && node.classList.contains("md-comment-text") && node.dataset && node.dataset.comment === id) {
+        if (note == null || String(node.dataset.note) === String(note)) return node;
+      }
+      for (const child of node.childNodes || []) {
+        const found = walk(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    return walk(commentsAside);
+  }
+
+  // A reply or revision is typed in the note, so the document selection collapses.
+  function parkForNote() {
+    if (!vimOn) return;
+    const at = state.cursor;
+    if (state.anchor !== at) {
+      state = { ...state, anchor: at, cursor: at };
+      claimLines(at, at);
+    }
+    rememberVim({ ...vimSnapshot(), mode: "normal", input: emptyVimInput(), once: false });
+  }
+
+  // Ctrl-Enter leaves the note and returns to Normal in the document. The card stays current.
+  function resumeAfterNote() {
+    if (!vimOn) return;
+    const at = state.cursor;
+    if (state.anchor !== at) state = { ...state, anchor: at, cursor: at };
+    rememberVim({ ...vimSnapshot(), mode: "normal", input: emptyVimInput(), once: false });
+    restoreEditorFocus = true;
+  }
+
+  // The earliest note this session wrote. Note 0 is the resolve owner, which can be someone else.
+  function reviseOwnNote(id) {
+    const thread = threadById(id);
+    if (!thread) return false;
+    const me = selfName();
+    if (!me) return false;
+    const record = parseCommentNotes(thread.body).find((item) => splitCommentNote(item.raw).author === me);
+    if (!record) return false;
+    const text = findCommentText(id, record.id);
+    if (!text) return false;
+    parkForNote();
+    openSavedNote(text);
+    return true;
+  }
+
+  function typingCommentNote() {
+    const active = typeof document !== "undefined" && document ? document.activeElement : null;
+    return !!(active && active.classList && active.classList.contains("md-comment-body"));
+  }
+
+  // Letters stay document commands until a thread is current. While it is, and
+  // the caret is not in a note, they are that card's actions.
+  function takeThreadCommand(event) {
+    if (!event || event.ctrlKey || event.metaKey || event.altKey) return false;
+    if (typingCommentNote()) return false;
+    const id = currentCommentId;
+    if (!id || !threadById(id)) return false;
+    const key = event.key;
+    if (key === "r") { parkForNote(); onReply(id); return true; }
+    if (key === "R") { clearVimPending(); if (sessionOwnsThread(id)) onResolve(id); return true; }
+    if (key === "X") {
+      if (!sessionOwnsThread(id)) { clearVimPending(); return true; }
+      parkForNote();
+      onDelete(id);
+      return true;
+    }
+    if (key === "Y") { clearVimPending(); copyCommentLink(id); return true; }
+    if (key === "i") { if (!reviseOwnNote(id)) clearVimPending(); return true; }
+    return false;
+  }
+
+  function leaveCurrentComment() {
+    clearCurrentComment();
+    dispatchVimKey({ key: "Escape", ctrl: false, meta: false, alt: false, shift: false });
+    focusEditor();
+  }
+
+  // Escape drops the unsaved reply or revision. Cancel on a fresh note deletes the thread, so this is not that path.
+  function discardTypedNote(box) {
+    endTypingRunLater();
+    const id = box.dataset.comment;
+    const index = Number(box.dataset.note);
+    if (box.dataset.reply === "true") replyDrafts.delete(id);
+    else {
+      noteDrafts.delete(draftKey(id, index));
+      editingNotes.delete(draftKey(id, index));
+    }
+    commentFocus = null;
+    currentCommentId = null;
+    const at = state.cursor;
+    state = { ...state, anchor: at, cursor: at };
+    if (vimOn) rememberVim({ ...vimSnapshot(), mode: "normal", input: emptyVimInput(), once: false });
+    restoreEditorFocus = true;
+    render();
+    focusEditor();
   }
 
   function lockNames(block) {
@@ -7582,6 +7724,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function applyVimEffect(effect) {
     if (!effect || typeof effect.type !== "string") return;
+    if (effect.type === "comment-current") {
+      showCommentCurrent(effect.id);
+      return;
+    }
     if (effect.type === "comment-add") {
       addSelectionComment();
       return;
@@ -7943,6 +8089,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (mod && !event.altKey && (event.key === "y" || event.key === "Y")) {
       event.preventDefault();
       emitHistory("redo");
+      return;
+    }
+    // Escape deselects the thread and leaves Visual or Insert. A note's own Escape is the aside's.
+    if (vimOn && event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey && currentCommentId && !typingCommentNote()) {
+      event.preventDefault();
+      leaveCurrentComment();
+      return;
+    }
+    if (vimOn && !vimInsertKeys() && currentCommentId && !typingCommentNote() && takeThreadCommand(event)) {
+      event.preventDefault();
       return;
     }
     if (vimOn && vimInsertKeys() && vimInsertArrow(event)) {
@@ -8443,6 +8599,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     commentsAside.addEventListener("keydown", (event) => {
       const box = event.target;
       if (!box || !box.classList || !box.classList.contains("md-comment-body")) return;
+      if (vimOn && event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey
+        && (box.dataset.reply === "true" || box.dataset.editing === "true")) {
+        event.preventDefault();
+        discardTypedNote(box);
+        return;
+      }
       const mod = event.ctrlKey || event.metaKey;
       if (mod && !event.altKey && event.key === "Enter") {
         event.preventDefault();

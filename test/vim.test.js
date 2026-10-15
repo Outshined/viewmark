@@ -2302,6 +2302,93 @@ test("visual gc adds a comment", () => {
   noCommentAdd(off);
 });
 
+function noCommentEffect(out) {
+  for (const step of out.steps) {
+    const type = step.effect && step.effect.type;
+    assert.notEqual(type, "comment-add");
+    assert.notEqual(type, "comment-current");
+  }
+}
+
+function assertCommentCurrent(out, id, mode) {
+  const step = last(out);
+  assert.equal(step.match, "full");
+  assert.equal(step.consumed, true);
+  assert.deepEqual(step.effect, { type: "comment-current", id });
+  assert.equal(out.vim.mode, mode);
+  assert.equal(out.vim.input.keyBuffer, "");
+  assert.equal(out.vim.input.operator, null);
+}
+
+test("gc on a comment makes that thread current", () => {
+  const prose = "See {c1}mine{/c1} now.";
+  const on = run("See {c1}m‸ine{/c1} now.", ["g", "c"]);
+  assert.equal(on.doc, prose);
+  assert.equal(on.show, "See {c1}m‸ine{/c1} now.");
+  assertCommentCurrent(on, "c1", "normal");
+
+  const lastChar = run("See {c1}min‸e{/c1} now.", ["g", "c"]);
+  assert.equal(lastChar.doc, prose);
+  assertCommentCurrent(lastChar, "c1", "normal");
+
+  const off = run("See {c1}mine{/c1} ‸now.", ["g", "c"]);
+  assert.equal(off.doc, prose);
+  assert.equal(off.vim.mode, "normal");
+  noCommentEffect(off);
+
+  const opener = run("See ‸{c1}mine{/c1} now.", ["g", "c"]);
+  assert.equal(opener.doc, prose);
+  noCommentEffect(opener);
+
+  const closer = run("See {c1}mine‸{/c1} now.", ["g", "c"]);
+  assert.equal(closer.doc, prose);
+  noCommentEffect(closer);
+
+  const nested = "{c1}aa{c2}bb{/c2}cc{/c1}";
+  const inner = run("{c1}aa{c2}b‸b{/c2}cc{/c1}", ["g", "c"]);
+  assert.equal(inner.doc, nested);
+  assertCommentCurrent(inner, "c2", "normal");
+  const before = run("{c1}a‸a{c2}bb{/c2}cc{/c1}", ["g", "c"]);
+  assertCommentCurrent(before, "c1", "normal");
+  const after = run("{c1}aa{c2}bb{/c2}c‸c{/c1}", ["g", "c"]);
+  assertCommentCurrent(after, "c1", "normal");
+
+  const held = run("See {c1}«mine‸{/c1} now.", ["g", "c"], { mode: "visual" });
+  assert.equal(held.doc, prose);
+  assert.equal(held.show, "See {c1}«mine‸{/c1} now.");
+  assertCommentCurrent(held, "c1", "visual");
+
+  const heldLine = run("See {c1}«mine‸{/c1} now.", ["g", "c"], { mode: "visual-line" });
+  assert.equal(heldLine.doc, prose);
+  assertCommentCurrent(heldLine, "c1", "visual-line");
+
+  const crossing = run("«See {c1}mi‸ne{/c1} now.", ["g", "c"], { mode: "visual" });
+  assert.equal(crossing.doc, prose);
+  assert.equal(crossing.vim.mode, "visual");
+  assert.equal(last(crossing).effect.type, "comment-add");
+
+  const empty = run("See {c1}m‸ine{/c1} now.", ["g", "c"], { mode: "visual" });
+  assert.equal(empty.doc, prose);
+  assert.equal(empty.anchor, empty.cursor);
+  assertCommentCurrent(empty, "c1", "visual");
+
+  const pending = run("See {c1}m‸ine{/c1} now.", ["d", "g", "c"]);
+  assert.equal(pending.doc, prose);
+  noCommentEffect(pending);
+
+  const upper = run("See {c1}m‸ine{/c1} now.", ["g", "C"]);
+  assert.equal(upper.doc, prose);
+  noCommentEffect(upper);
+
+  const alt = run("See {c1}m‸ine{/c1} now.", ["g", { key: "c", alt: true }]);
+  assert.equal(alt.doc, prose);
+  noCommentEffect(alt);
+
+  const flag = run("See {c1}m‸ine{/c1} now.", ["g", "c"], { flag: false });
+  assert.equal(flag.doc, prose);
+  noCommentEffect(flag);
+});
+
 function insertedSplice(out) {
   const splices = out.steps.filter((step) => step.effect && step.effect.type === "splice" && step.effect.from === step.effect.to);
   assert.equal(splices.length, 1);
