@@ -2642,13 +2642,23 @@ export async function createHub(stateDir, sourceRoot) {
   }
 
   async function applyCommentBody(socket, file, threadId, body, noteId) {
-    const before = createState(file.text);
+    // The writer's caret stays in the prose. A fresh state would publish offset 0,
+    // and this user's page would adopt that.
+    const before = createState(file.text, socket.session.cursor, socket.session.anchor);
     const produced = replaceCommentBody(before, threadId, body);
     if (produced === before || !Array.isArray(produced.changes) || produced.changes.length === 0) {
       sendComment(socket, file, threadId, noteId);
       return;
     }
-    const wrote = await publish(socket, file, file.text, produced.changes, { cursor: 0, anchor: 0 }, null, "comment");
+    const wrote = await publish(
+      socket,
+      file,
+      file.text,
+      produced.changes,
+      { cursor: produced.cursor, anchor: produced.anchor },
+      null,
+      "comment",
+    );
     if (wrote !== true) return failHeld(socket, wrote);
     sendComment(socket, file, threadId, noteId);
   }

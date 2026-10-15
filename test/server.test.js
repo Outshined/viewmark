@@ -1130,6 +1130,58 @@ test("T-comment", async () => {
   });
 });
 
+test("comment.reply and comment.edit keep a caret that is not at the top", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const rel = "long.md";
+    const lines = `top\n${"x".repeat(400)}\ntail word here\n`;
+    const at = lines.indexOf("tail");
+    await fs.writeFile(path.join(dir, rel), lines);
+    const a = await hello(port, "A");
+    try {
+      let rev = (await openDoc(a, "A", rel)).rev;
+      await syncLock(a, [], "A", rel, at, rev, at + 4);
+      a.send({
+        type: "edit",
+        username: "A",
+        path: rel,
+        rev,
+        op: "comment.add",
+        anchor: at,
+        cursor: at + 4,
+      });
+      let doc = await takeDoc(a);
+      rev = doc.rev;
+      assert.ok(doc.cursor > at, `comment.add parked the caret at ${doc.cursor}`);
+      const parked = doc.cursor;
+      const parkedAnchor = doc.anchor;
+      a.send({ type: "comment.reply", username: "A", path: rel, id: "c1", text: "a note" });
+      doc = await takeDoc(a);
+      assert.match(doc.text, /a note/);
+      assert.equal(doc.cursor, parked);
+      assert.equal(doc.anchor, parkedAnchor);
+      assert.equal(await readDoc(dir, rel), doc.text);
+      const thread = commentThreads(doc.text).find((item) => item.id === "c1");
+      const written = parseCommentNotes(thread.body).find((note) => splitCommentNote(note.raw).text === "a note");
+      assert.ok(written, "the reply has no note");
+      a.send({
+        type: "comment.edit",
+        username: "A",
+        path: rel,
+        id: "c1",
+        note: written.id,
+        rev: doc.rev,
+        text: "a longer note",
+      });
+      doc = await takeDoc(a);
+      assert.match(doc.text, /a longer note/);
+      assert.equal(doc.cursor, parked);
+      assert.equal(doc.anchor, parkedAnchor);
+    } finally {
+      a.ws.close();
+    }
+  });
+});
+
 test("an insert that cuts a comment marker answers 409 and the file stays", async () => {
   await withDocs(async ({ port, dir }) => {
     const text = "See {c1}this{/c1} now.\n\n```comment c1\n:: 0\nnote\n```\n";

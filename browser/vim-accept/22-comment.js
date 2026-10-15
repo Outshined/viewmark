@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { launchBrowser, Page, startHub } from "../harness.js";
+import { cli, launchBrowser, Page, REPO, startHub, USER } from "../harness.js";
 
 // ‸ is the focus and « is the anchor. Neither character is stored.
 const VIM = "viewmark.vim";
@@ -192,4 +192,86 @@ test("ctrl-enter after visual gc returns to the editor", async (t) => {
   await editorFocused(page);
   await noCurrentCard(page);
   await wordMoves(page);
+});
+
+test("ctrl-enter on a long ticket stays with the span", async (t) => {
+  const hub = await startHub();
+  let browser;
+  t.after(async () => {
+    if (browser) await browser.close();
+    await hub.close();
+  });
+  const sentence = "filler paragraph is long enough to occupy its own line.";
+  const body = `${Array.from({ length: 50 }, (_, n) => `${sentence} ${n}`).join("\n\n")}\n\nspanword sits here\n`;
+  const created = await cli(hub.port, ["--user", USER, "--repo", REPO, "ticket", "create", "--title", "Long ticket"], body);
+  assert.equal(created.code, 0, created.stderr);
+  const id = created.stdout.trim().split("\n")[0];
+  const path = `tickets/${id}.md`;
+  browser = await launchBrowser();
+  const page = new Page(browser.session, hub.port);
+  await page.init();
+  await page.session.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `localStorage.setItem(${JSON.stringify(VIM)}, "1");`,
+  });
+  await page.login();
+  const since = page.frames.length;
+  page.loads = (page.loads || 0) + 1;
+  await page.session.send("Page.navigate", { url: `http://127.0.0.1:${page.port}/?load=${page.loads}#${REPO}/ticket/${encodeURIComponent(id)}` });
+  await page.until(
+    () => page.frames.slice(since).some((frame) => frame.dir === "in" && frame.data && frame.data.type === "file" && frame.data.path === path),
+    `ticket ${id}`,
+  );
+  await page.until(() => page.eval(`!!document.querySelector("span.md-vim-status")`), "vim status");
+  await page.quiet();
+  const tall = await page.eval(`document.scrollingElement.scrollHeight > window.innerHeight + 400`);
+  assert.equal(tall, true, "the ticket is not longer than the window");
+  const brought = await page.eval(`(() => {
+    const line = [...document.querySelectorAll("#editor .md-line")].find((el) => el.textContent.includes("spanword"));
+    if (!line || typeof line.scrollIntoView !== "function") return false;
+    line.scrollIntoView({ block: "center" });
+    return true;
+  })()`);
+  assert.equal(brought, true, "spanword is not drawn");
+  await page.frame();
+  const point = await page.eval(`window.__qaWordPoint("spanword", 1)`);
+  const innerHeight = await page.eval(`window.innerHeight`);
+  assert.ok(point && point.y > 0 && point.y < innerHeight, `spanword is not in the window ${JSON.stringify(point)}`);
+  await page.click(point.x, point.y);
+  await page.quiet();
+  const scrolled = await page.eval(`Math.max(window.scrollY, document.scrollingElement ? document.scrollingElement.scrollTop : 0)`);
+  const before = await page.caret();
+  assert.ok(before.focus > 200, `caret ${before && before.focus} is still at the top`);
+  assert.ok(scrolled > 200, `scroll ${scrolled} is still at the top`);
+  await keys(page, "0, v, e, g, c");
+  await emptyNoteFocused(page);
+  await page.type("kept");
+  await page.quiet();
+  const mark = page.frames.length;
+  await page.key("Enter", ["Ctrl"]);
+  await page.until(
+    () => page.frames.slice(mark).some((frame) => frame.dir === "in" && frame.data && frame.data.type === "doc"),
+    "saved note",
+  );
+  await page.quiet();
+  await editorFocused(page);
+  const saved = await snap(page, hub, path);
+  assert.match(saved.text, /\nkept\n/, detail(saved));
+  assert.equal(saved.status, "N", detail(saved));
+  const open = saved.text.indexOf("{c1}");
+  const close = saved.text.indexOf("{/c1}");
+  assert.ok(open >= 0 && close > open, detail(saved));
+  assert.ok(saved.focus > open && saved.focus < close, `caret ${saved.focus} left the span ${open}-${close} ${detail(saved)}`);
+  const view = await page.eval(`(() => {
+    const mark = document.querySelector("#editor .md-comment");
+    const scroller = document.scrollingElement;
+    const rect = mark ? mark.getBoundingClientRect() : null;
+    return {
+      scroll: Math.max(window.scrollY, scroller ? scroller.scrollTop : 0),
+      innerHeight: window.innerHeight,
+      top: rect ? rect.top : null,
+      bottom: rect ? rect.bottom : null,
+    };
+  })()`);
+  assert.ok(view.scroll > 200, `page jumped to scroll ${view.scroll}`);
+  assert.ok(view.top != null && view.bottom > 0 && view.top < view.innerHeight, `the span left the window ${JSON.stringify(view)}`);
 });
