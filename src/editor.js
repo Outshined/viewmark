@@ -2278,6 +2278,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let vimMode = "normal";
   let vimInput = emptyVimInput();
   let vimRegister = { text: "", linewise: false };
+  // The register from before a vim splice that has been sent and not answered.
+  // A 409 on that edit puts it back. The doc that accepts the edit drops it.
+  let vimEditRegister = null;
+  // The register from before the vim command now inside applyVimEffect.
+  let vimSplicePrior = null;
   let vimSearch = null;
   let vimFind = null;
   let vimColumn = null;
@@ -2513,6 +2518,22 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     typingRun = null;
     vimInsertOpen = false;
     clearVimHistoryFlight();
+    vimEditRegister = null;
+  }
+
+  function pendingSplicePrior() {
+    for (let i = 0; i < pendingEdits.length; i += 1) {
+      const prior = pendingEdits[i] && pendingEdits[i].splicePrior;
+      if (prior) return prior;
+    }
+    return null;
+  }
+
+  function copyVimRegister(reg) {
+    return {
+      text: reg && typeof reg.text === "string" ? reg.text : "",
+      linewise: !!(reg && reg.linewise),
+    };
   }
 
   function clearEditTimer() {
@@ -2531,6 +2552,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const index = conflictWaiters.indexOf("edit");
       if (index < 0) return;
       conflictWaiters.splice(index, 1);
+      vimEditRegister = null;
       resumeAfterFile = true;
       waitingForFile = true;
       followCaret = null;
@@ -2552,6 +2574,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     for (let i = conflictWaiters.length - 1; i >= 0; i -= 1) {
       if (conflictWaiters[i] === "edit") conflictWaiters.splice(i, 1);
     }
+    vimEditRegister = null;
   }
 
   // An end marker stays behind keys already queued, so those keys still join the run.
@@ -2620,7 +2643,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       || op === "comment.add" || op === "comment.save" || op === "comment.delete" || op === "comment.resolve";
   }
 
-  function sendEdit(partial) {
+  function sendEdit(partial, splicePrior) {
+    // Set before emit. The memory transport answers inside send.
+    if (splicePrior) vimEditRegister = splicePrior;
     const body = { ...partial };
     const vimMark = body.vimMark && Number.isFinite(body.vimMark.before) && Number.isFinite(body.vimMark.after)
       ? { before: body.vimMark.before, after: body.vimMark.after }
@@ -2662,7 +2687,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     emit(message);
   }
 
-  function emitEdit(partial) {
+  function emitEdit(partial, splicePrior) {
     if (!partial || partial.typing !== true) endTypingRunLater();
     if (boundaryNoop(partial)) return;
     goalX = null;
@@ -2676,10 +2701,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (!editHeld()) drainEndRuns();
     if (editHeld()) {
-      pendingEdits.push({ edit: partial });
+      const queued = { edit: partial };
+      if (splicePrior) queued.splicePrior = splicePrior;
+      pendingEdits.push(queued);
       return;
     }
-    sendEdit(partial);
+    sendEdit(partial, splicePrior);
   }
 
   function emitHistory(type) {
@@ -2702,7 +2729,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (next.history) {
       if (vimOn) vimHistoryPending = next.history;
       emit({ type: next.history });
-    } else if (next.edit) sendEdit(next.edit);
+    } else if (next.edit) sendEdit(next.edit, next.splicePrior);
   }
 
   function restoreGrantedCaret() {
@@ -4758,6 +4785,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     vimMode = "normal";
     vimInput = emptyVimInput();
     vimRegister = { text: "", linewise: false };
+    vimEditRegister = null;
     vimSearch = null;
     vimFind = null;
     vimColumn = null;
@@ -5910,7 +5938,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       clearVimHistoryFlight();
       clearEditTimer();
       const index = conflictWaiters.indexOf("edit");
-      if (index >= 0) conflictWaiters.splice(index, 1);
+      if (index >= 0) {
+        conflictWaiters.splice(index, 1);
+        vimEditRegister = null;
+      }
       flushPendingEdit();
       return;
     }
@@ -5957,7 +5988,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (isConflict(message)) {
         const waiter = conflictWaiters.shift();
         if (waiter === "edit") {
+          const prior = vimEditRegister || pendingSplicePrior();
           dropPendingEdits();
+          if (prior) vimRegister = { text: prior.text, linewise: prior.linewise === true };
           armRefusal(message);
         }
         expectNewComment = false;
@@ -6025,6 +6058,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (index >= 0) {
           conflictWaiters.splice(index, 1);
           ownEdit = true;
+          vimEditRegister = null;
         }
       }
     }
@@ -7324,7 +7358,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           after: Number.isInteger(effect.caret) ? effect.caret : before,
         };
       }
-      emitEdit(partial);
+      const prior = vimSplicePrior;
+      vimSplicePrior = null;
+      emitEdit(partial, prior);
       return;
     }
     if (effect.type === "forward-delete") {
@@ -7450,8 +7486,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       flag: true,
     });
     if (!result || result.consumed !== true) return;
-    rememberVim(result.vim);
-    applyVimEffect(result.effect);
+    applyRememberedVim(result.vim, result.effect);
   }
 
   // Ctrl-W and Meta-W close the browser tab. The line keeps the chord.
@@ -7511,9 +7546,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       layout: true,
     });
     if (!result || result.consumed !== true) return false;
-    rememberVim(result.vim);
-    applyVimEffect(result.effect);
+    applyRememberedVim(result.vim, result.effect);
     return true;
+  }
+
+  // rememberVim stores the yank before the hub answers. The prior is kept only
+  // when that command's splice is actually sent.
+  function applyRememberedVim(vim, effect) {
+    vimSplicePrior = copyVimRegister(vimRegister);
+    rememberVim(vim);
+    try {
+      applyVimEffect(effect);
+    } finally {
+      vimSplicePrior = null;
+    }
   }
 
   function vimLineShift(operator) {
@@ -7798,6 +7844,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   listen("mousedown", (event) => {
     endTypingRunLater();
+    // A new press is a new gesture. The previous click's retained caret would collapse it.
+    retainedCaret = null;
     if (beginHandleDrag(event)) return;
     didDrag = false;
     goalX = null;
@@ -7987,6 +8035,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     if (detail === 2 || detail === 3) {
+      // The first click retained its collapsed caret. This click's span replaces it.
+      retainedCaret = null;
       const atom = target?.closest?.(".md-atom");
       if (atom && root.contains(atom)) event.preventDefault();
       const offset = stored != null ? stored : pointOffset(event);
