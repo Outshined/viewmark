@@ -155,7 +155,7 @@ File and folder marks are 24 by 24 stroke icons ahead of the row's text. The tex
 ### Vim keys
 The document menu item Vim keys is off until it is checked. The browser stores that choice as `viewmark.vim`. The hub does not store it. While vim is on, the page asks `src/vim.js` which text a key changes, then sends that edit the same way it sends any other key. `src/vim.js` does not change the document itself.
 
-`gc` comments the highlight. A vim line in the formatted view is a rendered block. `y` and `p` use one unnamed register, which is not the clipboard. Ctrl-V pastes the clipboard. Search text is literal, and the hits are not drawn. The modes, the motions, and the rest of the differences from stock vim are the Vim keys section of `editing.md`.
+`gc` comments the highlight. `gc` on an existing comment makes that thread current. A vim line in the formatted view is a rendered block. `y` and `p` use one unnamed register, which is not the clipboard. Ctrl-V pastes the clipboard. Search text is literal, and the hits are not drawn. The modes, the motions, and the rest of the differences from stock vim are the Vim keys section of `editing.md`.
 
 ```comment c1 resolved
 How are syntax highlighting and mermaid diagrams done?
