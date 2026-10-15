@@ -1364,3 +1364,233 @@ test("VJ.5", () => {
   assert.equal(renderedEffect.caret, 2);
   assert.equal(renderedEffect.yank, null);
 });
+
+test("VR.1", () => {
+  const one = run("al‸pha\n", ["r", "x"]);
+  assert.equal(one.steps[0].match, "partial");
+  assert.equal(one.steps[0].vim.input.keyBuffer, "r");
+  assert.equal(one.show, "al‸xha\n");
+  assert.equal(one.doc, "alxha\n");
+  assert.equal(one.vim.mode, "normal");
+  assert.equal(one.vim.input.keyBuffer, "");
+  const oneEffect = oneSplice(one);
+  assert.equal(oneEffect.from, 2);
+  assert.equal(oneEffect.to, 3);
+  assert.equal(oneEffect.text, "x");
+  assert.equal(oneEffect.caret, 2);
+  assert.equal(oneEffect.yank, null);
+
+  const three = run("al‸pha\n", ["3", "r", "x"]);
+  assert.equal(three.steps[1].match, "partial");
+  assert.equal(three.steps[1].vim.input.prefixRepeat, "3");
+  assert.equal(three.steps[1].vim.input.keyBuffer, "r");
+  assert.equal(three.show, "alxx‸x\n");
+  assert.equal(three.doc, "alxxx\n");
+  const threeEffect = oneSplice(three);
+  assert.equal(threeEffect.from, 2);
+  assert.equal(threeEffect.to, 5);
+  assert.equal(threeEffect.text, "xxx");
+  assert.equal(threeEffect.caret, 4);
+  assert.equal(threeEffect.yank, null);
+
+  const cancel = run("al‸pha\n", ["r", "Escape", "x"]);
+  assert.equal(cancel.show, "al‸ha\n");
+  const arrow = run("al‸pha\n", ["r", "ArrowLeft"]);
+  assert.equal(arrow.show, "al‸pha\n");
+  assert.equal(arrow.steps[1].match, "none");
+  assert.equal(arrow.steps[1].consumed, true);
+  assert.equal(arrow.steps[1].effect, null);
+  assert.equal(arrow.vim.input.keyBuffer, "");
+});
+
+test("VR.2", () => {
+  const end = run("alpha‸\nbeta\n", ["r", "x"]);
+  assert.equal(end.show, "alpha‸\nbeta\n");
+  assert.equal(end.doc, "alpha\nbeta\n");
+  assert.equal(end.steps[1].match, "full");
+  assert.equal(end.steps[1].effect, null);
+  assert.equal(end.steps.some((step) => step.effect && step.effect.type === "forward-delete"), false);
+
+  const over = run("al‸pha\n", ["5", "r", "x"]);
+  assert.equal(over.show, "al‸pha\n");
+  assert.equal(over.doc, "alpha\n");
+  assert.equal(over.steps.at(-1).effect, null);
+  assert.equal(over.vim.input.keyBuffer, "");
+
+  const joined = run("alp‸ha\nbeta\n", ["3", "r", "x"]);
+  assert.equal(joined.show, "alp‸ha\nbeta\n");
+  assert.equal(joined.doc, "alpha\nbeta\n");
+  const inside = run("alp‸ha\nbeta\n", ["2", "r", "x"]);
+  assert.equal(inside.show, "alpx‸x\nbeta\n");
+  assert.equal(oneSplice(inside).text, "xx");
+
+  const marker = run("a‸{c1}bc\n", ["r", "x"]);
+  assert.equal(marker.show, "a‸{c1}bc\n");
+  assert.equal(marker.doc, "a{c1}bc\n");
+  const insideMarker = run("ab{‸c1}x\n", ["r", "x"]);
+  assert.equal(insideMarker.show, "ab{‸c1}x\n");
+  const closer = run("ab‸{/c1}c\n", ["r", "x"]);
+  assert.equal(closer.show, "ab‸{/c1}c\n");
+  const reach = run("ab‸c{c1}de\n", ["3", "r", "x"]);
+  assert.equal(reach.show, "ab‸c{c1}de\n");
+  assert.equal(reach.doc, "abc{c1}de\n");
+  const before = run("ab‸c{c1}de\n", ["r", "x"]);
+  assert.equal(before.show, "ab‸x{c1}de\n");
+  assert.equal(oneSplice(before).text, "x");
+
+  const pending = run("al‸pha\n", ["d", "r", "x"]);
+  assert.equal(pending.steps[1].match, "none");
+  assert.equal(pending.vim.input.operator, null);
+  assert.equal(pending.show, "al‸ha\n");
+});
+
+test("VR.3", () => {
+  const out = run("al‸pha\n", ["r", "Enter"]);
+  assert.equal(out.show, "al\n‸ha\n");
+  assert.equal(out.doc, "al\nha\n");
+  assert.equal(out.vim.mode, "normal");
+  const effect = oneSplice(out);
+  assert.equal(effect.from, 2);
+  assert.equal(effect.to, 3);
+  assert.equal(effect.text, "\n");
+  assert.equal(effect.caret, 3);
+  assert.equal(effect.yank, null);
+
+  const counted = run("al‸pha\n", ["3", "r", "Enter"]);
+  assert.equal(counted.show, "al\n‸\n");
+  assert.equal(counted.doc, "al\n\n");
+  const countedEffect = oneSplice(counted);
+  assert.equal(countedEffect.text, "\n");
+  assert.equal(countedEffect.from, 2);
+  assert.equal(countedEffect.to, 5);
+  assert.equal(countedEffect.caret, 3);
+
+  const crlf = run("al‸pha\r\n", ["r", "Enter"]);
+  assert.equal(crlf.show, "al\r\n‸ha\r\n");
+  assert.equal(crlf.doc, "al\r\nha\r\n");
+  assert.equal(oneSplice(crlf).text, "\r\n");
+  assert.equal(oneSplice(crlf).caret, 4);
+});
+
+test("VR.4", () => {
+  const once = run("‸alPha\n", ["~"]);
+  assert.equal(once.show, "A‸lPha\n");
+  assert.equal(once.doc, "AlPha\n");
+  assert.equal(once.vim.mode, "normal");
+  const onceEffect = oneSplice(once);
+  assert.equal(onceEffect.text, "A");
+  assert.equal(onceEffect.caret, 1);
+  assert.equal(onceEffect.yank, null);
+
+  const four = run("‸alPha\n", ["~", "~", "~", "~"]);
+  assert.equal(four.show, "ALpH‸a\n");
+  assert.equal(four.doc, "ALpHa\n");
+  const counted = run("‸alPha\n", ["4", "~"]);
+  assert.equal(counted.show, "ALpH‸a\n");
+  const countedEffect = oneSplice(counted);
+  assert.equal(countedEffect.text, "ALpH");
+  assert.equal(countedEffect.from, 0);
+  assert.equal(countedEffect.to, 4);
+  assert.equal(countedEffect.caret, 4);
+
+  const end = run("alpha‸\nbeta\n", ["~"]);
+  assert.equal(end.show, "alpha‸\nbeta\n");
+  assert.equal(end.steps[0].match, "full");
+  assert.equal(end.steps[0].effect, null);
+  const over = run("alP‸ha\n", ["3", "~"]);
+  assert.equal(over.show, "alP‸ha\n");
+  assert.equal(over.steps.at(-1).effect, null);
+  const fit = run("alP‸ha\n", ["2", "~"]);
+  assert.equal(fit.show, "alPHA‸\n");
+  assert.equal(oneSplice(fit).text, "HA");
+
+  const marker = run("a‸{c1}bc\n", ["~"]);
+  assert.equal(marker.show, "a‸{c1}bc\n");
+  assert.equal(marker.steps[0].effect, null);
+  const reach = run("ab‸c{c1}d\n", ["2", "~"]);
+  assert.equal(reach.show, "ab‸c{c1}d\n");
+  const before = run("ab‸c{c1}d\n", ["~"]);
+  assert.equal(before.show, "abC‸{c1}d\n");
+
+  const pending = run("‸alPha\n", ["d", "~"]);
+  assert.equal(pending.show, "‸alPha\n");
+  assert.equal(pending.steps[1].effect, null);
+  assert.equal(pending.vim.input.operator, null);
+});
+
+test("VR.5", () => {
+  const word = run("al‸pha beta\n", ["g", "U", "w"]);
+  assert.equal(word.show, "al‸PHA beta\n");
+  assert.equal(word.doc, "alPHA beta\n");
+  assert.equal(word.vim.mode, "normal");
+  assert.equal(word.vim.input.operator, null);
+  const wordEffect = oneSplice(word);
+  assert.equal(wordEffect.from, 2);
+  assert.equal(wordEffect.to, 6);
+  assert.equal(wordEffect.text, "PHA ");
+  assert.equal(wordEffect.caret, 2);
+  assert.equal(wordEffect.yank, null);
+  assert.equal(word.vim.register.text, "");
+
+  const back = run("alpha be‸ta\n", ["g", "U", "b"]);
+  assert.equal(back.show, "alpha ‸BEta\n");
+  assert.equal(back.doc, "alpha BEta\n");
+  const backEffect = oneSplice(back);
+  assert.equal(backEffect.text, "BE");
+  assert.equal(backEffect.from, 6);
+  assert.equal(backEffect.to, 8);
+  assert.equal(backEffect.caret, 6);
+
+  const lower = run("AL‸PHA beta\n", ["g", "u", "w"]);
+  assert.equal(lower.show, "AL‸pha beta\n");
+  assert.equal(oneSplice(lower).text, "pha ");
+  assert.equal(oneSplice(lower).caret, 2);
+  const toggle = run("al‸PHa beta\n", ["g", "~", "w"]);
+  assert.equal(toggle.show, "al‸phA beta\n");
+  assert.equal(oneSplice(toggle).text, "phA ");
+  assert.equal(oneSplice(toggle).caret, 2);
+});
+
+test("VR.6", () => {
+  const upper = run("al‸pha\n", ["g", "U", "U"]);
+  assert.equal(upper.show, "‸ALPHA\n");
+  assert.equal(upper.doc, "ALPHA\n");
+  assert.equal(upper.vim.mode, "normal");
+  assert.equal(upper.vim.input.operator, null);
+  const upperEffect = oneSplice(upper);
+  assert.equal(upperEffect.text, "ALPHA\n");
+  assert.equal(upperEffect.from, 0);
+  assert.equal(upperEffect.to, 6);
+  assert.equal(upperEffect.caret, 0);
+  assert.equal(upperEffect.yank, null);
+
+  const lower = run("AL‸PHA\n", ["g", "u", "u"]);
+  assert.equal(lower.show, "‸alpha\n");
+  assert.equal(lower.doc, "alpha\n");
+  const lowerEffect = oneSplice(lower);
+  assert.equal(lowerEffect.text, "alpha\n");
+  assert.equal(lowerEffect.caret, 0);
+
+  const toggle = run("al‸PHA\n", ["g", "~", "~"]);
+  assert.equal(toggle.show, "‸ALpha\n");
+  assert.equal(toggle.doc, "ALpha\n");
+  const toggleEffect = oneSplice(toggle);
+  assert.equal(toggleEffect.text, "ALpha\n");
+  assert.equal(toggleEffect.caret, 0);
+
+  assert.equal(run("al‸pha\n", ["g", "U", "g", "U"]).show, "‸ALPHA\n");
+  assert.equal(run("AL‸PHA\n", ["g", "u", "g", "u"]).show, "‸alpha\n");
+  assert.equal(run("al‸PHA\n", ["g", "~", "g", "~"]).show, "‸ALpha\n");
+});
+
+test("VR.7", () => {
+  const out = run("‸straße\n", ["g", "U", "U"]);
+  assert.equal(out.show, "‸STRAßE\n");
+  assert.equal(out.doc, "STRAßE\n");
+  const effect = oneSplice(out);
+  assert.equal(effect.text, "STRAßE\n");
+  assert.equal(effect.from, 0);
+  assert.equal(effect.to, "straße\n".length);
+  assert.equal(effect.caret, 0);
+  assert.equal(effect.yank, null);
+});

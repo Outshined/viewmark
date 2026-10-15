@@ -328,6 +328,46 @@ function markerChar(doc, index) {
   return forward !== index || back !== index;
 }
 
+// The opener's first code unit is not hidden. The rest of the token is, so a
+// probe one unit in still names the whole marker. A hard-break tail is hidden
+// too, and it does not match this shape.
+function commentMarkerSpan(doc, index) {
+  if (index < 0 || index >= doc.length) return null;
+  const probes = index + 1 < doc.length ? [index, index + 1] : [index];
+  for (const probe of probes) {
+    const fwd = skipHidden(doc, probe, "forward", { gap: false });
+    const back = skipHidden(doc, probe, "backward", { gap: false });
+    if (fwd === probe && back === probe) continue;
+    const start = back < probe ? back : probe;
+    const end = fwd > probe ? fwd : probe;
+    if (index < start || index >= end) continue;
+    if (/^\{\/?[A-Za-z][A-Za-z0-9_-]*\}$/.test(doc.slice(start, end))) return { start, end };
+  }
+  return null;
+}
+
+function breaksLine(doc, index) {
+  if (doc[index] === "\n") return true;
+  return doc[index] === "\r" && index + 1 < doc.length && doc[index + 1] === "\n";
+}
+
+// r and ~ take ordinary text on the vim line. A count that would include a
+// break or a comment marker takes nothing, rather than stopping short.
+function ordinarySpan(doc, cursor, count, raw) {
+  const line = lineBounds(doc, cursor, raw);
+  const steps = count < 1 ? 1 : count;
+  let at = cursor;
+  for (let n = 0; n < steps; n += 1) {
+    if (at < line.start || at >= line.end || at >= doc.length) return null;
+    if (breaksLine(doc, at) || commentMarkerSpan(doc, at)) return null;
+    const next = at + unitLen(doc, at);
+    if (next > line.end) return null;
+    at = next;
+  }
+  if (at === cursor) return null;
+  return { from: cursor, to: at };
+}
+
 function findHit(doc, line, from, ch, forward) {
   if (forward) {
     for (let i = from; i + ch.length <= line.end; i += 1) {
@@ -1044,6 +1084,7 @@ function leavingOnce(vim, prior) {
   return next;
 }
 
+// Simple case mapping keeps the code unit. A mapping that grows, such as ß to SS, is not simple, so the unit stays.
 function mapCase(text, mode) {
   let out = "";
   for (let i = 0; i < text.length; i += 1) {
@@ -1065,9 +1106,9 @@ function operatorOf(id) {
 
 function doubled(operator, id) {
   if (!operator) return false;
-  if (operator === "gu") return id === "u";
-  if (operator === "gU") return id === "U";
-  if (operator === "g~") return id === "~";
+  if (operator === "gu") return id === "u" || id === "gu";
+  if (operator === "gU") return id === "U" || id === "gU";
+  if (operator === "g~") return id === "~" || id === "g~";
   return operator === id;
 }
 
@@ -1223,7 +1264,7 @@ function forwardCut(doc, cursor) {
 }
 
 function isActionId(id) {
-  return id === "x" || id === "X" || id === "v" || id === "V" || id === "u" || id === "ctrl-r"
+  return id === "x" || id === "X" || id === "v" || id === "V" || id === "u" || id === "U" || id === "ctrl-r"
     || id === "i" || id === "a" || id === "I" || id === "A" || id === "o" || id === "O"
     || id === "ctrl-w" || id === "." || id === "p" || id === "P" || id === "r" || id === "~"
     || id === "J" || id === "gJ" || id === "s" || id === "S" || id === "/" || id === "?" || id === "n" || id === "N"
@@ -1582,7 +1623,67 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
   }
   if (id === "o" || id === "O") return openLine(vim, doc, cursor, raw, id === "o");
   if (id === "J" || id === "gJ") return joinLines(vim, doc, cursor, raw, id === "J");
+  if (id === "r") {
+    if (vim.mode === "visual" || vim.mode === "visual-line") return pack("none", true, clearInput(vim), null);
+    // The count stays in prefixRepeat until the replacement key arrives.
+    return pack("partial", true, { ...vim, input: { ...vim.input, keyBuffer: "r" } }, null);
+  }
+  if (id === "~") return applyToggle(vim, doc, cursor, raw);
   return pack("none", true, clearInput(vim), null);
+}
+
+function replacementChar(key) {
+  if (key.ctrl || key.meta || key.alt) return null;
+  if (key.key === "Enter") return "\n";
+  if (typeof key.key !== "string" || key.key.length < 1 || key.key.length > 2) return null;
+  if (key.key.length === 2) {
+    const hi = key.key.charCodeAt(0);
+    const lo = key.key.charCodeAt(1);
+    if (!(hi >= 0xD800 && hi <= 0xDBFF && lo >= 0xDC00 && lo <= 0xDFFF)) return null;
+  }
+  return key.key;
+}
+
+function finishReplace(vim, doc, cursor, raw, key) {
+  const count = repeatOf(vim);
+  const ch = replacementChar(key);
+  const done = leavingOnce(clearInput(vim), vim);
+  if (ch == null) return pack("none", true, done, null);
+  const span = ordinarySpan(doc, cursor, count, raw);
+  if (!span) return pack("full", true, done, null);
+  done.column = null;
+  // Enter writes one file break for the whole count. The caret is on that new line.
+  // Any other character is repeated, and a count above 1 leaves the caret on the last.
+  const enter = ch === "\n";
+  const text = enter ? fileBreak(doc) : ch.repeat(count);
+  let caret = span.from;
+  if (enter) caret = span.from + text.length;
+  else if (count > 1) caret = span.from + (count - 1) * ch.length;
+  return pack("full", true, done, {
+    type: "splice",
+    from: span.from,
+    to: span.to,
+    text,
+    caret,
+    yank: null,
+  });
+}
+
+function applyToggle(vim, doc, cursor, raw) {
+  if (vim.mode === "visual" || vim.mode === "visual-line") return pack("none", true, clearInput(vim), null);
+  const count = repeatOf(vim);
+  const span = ordinarySpan(doc, cursor, count, raw);
+  const done = leavingOnce(clearInput(vim), vim);
+  if (!span) return pack("full", true, done, null);
+  done.column = null;
+  return pack("full", true, done, {
+    type: "splice",
+    from: span.from,
+    to: span.to,
+    text: mapCase(doc.slice(span.from, span.to), "toggle"),
+    caret: span.to,
+    yank: null,
+  });
 }
 
 function commandFromKey(key) {
@@ -1931,6 +2032,7 @@ export function vimKey(input) {
   if (vim.input.keyBuffer === "f" || vim.input.keyBuffer === "F" || vim.input.keyBuffer === "t" || vim.input.keyBuffer === "T") {
     return finishFind(vim, doc, anchor, cursor, raw, layout, key);
   }
+  if (vim.input.keyBuffer === "r") return finishReplace(vim, doc, cursor, raw, key);
   if (vim.input.keyBuffer === '"') return finishQuote(vim, anchor, cursor, key);
   if (vim.input.keyBuffer === "g") return finishG(vim, doc, anchor, cursor, raw, layout, key);
   if (vim.input.keyBuffer === "z") return finishZ(vim, doc, anchor, cursor, raw, layout, key);
