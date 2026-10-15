@@ -698,22 +698,24 @@ test("VK.15 (ticket 7vdep2z4)", { timeout: 240000 }, async (t) => {
   await page.key("V");
   await page.quiet();
   await page.key("Tab");
-  text = text.slice(0, at) + "\t" + text.slice(at);
+  const blockAt = text.indexOf("\t- f\n\tc\td\n\tlone\nzz\n");
+  text = text.slice(0, blockAt) + "\t\t- f\n\t\tc\td\n\t\tlone\n\tzz\n" + text.slice(blockAt + "\t- f\n\tc\td\n\tlone\nzz\n".length);
   shot = await snap(hub, page);
-  expectShot(shot, "VK.15 visual line Tab", { text, focus: at + 1, anchor: at + 1, rev: before.rev + 1, collapsed: true });
-  assert.equal(text.slice(at, at + 3), "\tzz");
+  expectShot(shot, "VK.15 visual line Tab", { text, focus: blockAt + 2, anchor: blockAt + 2, rev: before.rev + 1, collapsed: true });
+  assert.equal(text.slice(blockAt, blockAt + 6), "\t\t- f\n");
   await normal(page);
-  await place(page, at + 1);
+  await place(page, text.indexOf("zz"));
   before = await snap(hub, page);
   await page.key("V");
   await page.quiet();
   await page.key("Tab", ["Shift"]);
-  text = text.slice(0, at) + text.slice(at + 1);
+  const indentedAt = text.indexOf("\t\t- f\n\t\tc\td\n\t\tlone\n\tzz\n");
+  text = text.slice(0, indentedAt) + "\t- f\n\tc\td\n\tlone\nzz\n" + text.slice(indentedAt + "\t\t- f\n\t\tc\td\n\t\tlone\n\tzz\n".length);
   shot = await snap(hub, page);
-  expectShot(shot, "VK.15 visual line Shift+Tab", { text, focus: at, anchor: at, rev: before.rev + 1, collapsed: true });
+  expectShot(shot, "VK.15 visual line Shift+Tab", { text, focus: indentedAt + 3, anchor: indentedAt + 3, rev: before.rev + 1, collapsed: true });
 
   await normal(page);
-  at = text.indexOf("\n- g\n") + 1;
+  at = text.indexOf("\n- g\n") + 3;
   await place(page, at);
   before = await snap(hub, page);
   await page.key("v");
@@ -736,9 +738,9 @@ test("VK.15 (ticket 7vdep2z4)", { timeout: 240000 }, async (t) => {
   await page.quiet();
   await page.key("Tab", ["Shift"]);
   const marked = text.indexOf("\n\t- g\n\t- h\n");
-  text = text.slice(0, marked) + "\n- g\n- h\n" + text.slice(marked + "\n\t- g\n\t- h\n".length);
+  text = text.slice(0, marked) + "\n\t- g\n- h\n" + text.slice(marked + "\n\t- g\n\t- h\n".length);
   shot = await snap(hub, page);
-  expectShot(shot, "VK.15 visual line Shift+Tab lines", { text, focus: marked + 3, anchor: marked + 3, rev: before.rev + 1, collapsed: true });
+  expectShot(shot, "VK.15 visual line Shift+Tab lines", { text, focus: marked + 8, anchor: marked + 8, rev: before.rev + 1, collapsed: true });
   assert.equal(await page.eval(`document.querySelector("input.md-vim-line") === null`), true);
 });
 
@@ -762,5 +764,5 @@ test("VK.16 (ticket 7vdep2z4)", { timeout: 180000 }, async (t) => {
 
   await page.key("p");
   shot = await snap(hub, page);
-  expectShot(shot, "VK.16 p", { text: "alpha\nalpha\nbeta\n", focus: 6, anchor: 6, rev: before.rev + 1, status: "N", collapsed: true });
+  expectShot(shot, "VK.16 p", { text: "alpha\nbeta\nalpha\nbeta\n", focus: 11, anchor: 11, rev: before.rev + 1, status: "N", collapsed: true });
 });
