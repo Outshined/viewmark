@@ -6749,6 +6749,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // is where the next letter is drawn, so the caret has to be placed there.
     if (before !== after) render();
     else if (anchor !== next || next !== landed || inRawGap(drawn && drawn.node)) placeCaret();
+    // The selection is already on this stop, so the caret is not placed again.
+    // Firefox's block is a separate mark and would stay where it was.
+    else syncVimBlockMark();
   }
 
   // The newline of this line sits in a hidden hard-break tail.
