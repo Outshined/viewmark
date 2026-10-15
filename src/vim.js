@@ -1230,6 +1230,50 @@ function isActionId(id) {
     || id === "*" || id === "#" || id === ":" || id === "D" || id === "C";
 }
 
+// A rendered block joins the next source line, and a list copies its marker,
+// unless a blank line stands between them. That blank is not one of the new lines.
+function fileBreak(doc) {
+  return doc.includes("\r\n") ? "\r\n" : "\n";
+}
+
+// An empty rendered line ends on the CR of a CRLF pair.
+function pastBreak(doc, end) {
+  if (end < doc.length && doc[end] === "\n") return end + 1;
+  if (end + 1 < doc.length && doc[end] === "\r" && doc[end + 1] === "\n") return end + 2;
+  return null;
+}
+
+function openSplice(vim, at, text, caret) {
+  const next = clearInput(vim);
+  next.mode = "insert";
+  next.once = false;
+  next.column = null;
+  return pack("full", true, next, { type: "splice", from: at, to: at, text, caret, yank: null });
+}
+
+function openLine(vim, doc, cursor, raw, below) {
+  const count = repeatOf(vim);
+  const nl = fileBreak(doc);
+  const line = lineBounds(doc, cursor, raw);
+  const brk = pastBreak(doc, line.end);
+  if (raw) {
+    const at = below ? (brk == null ? line.end : brk) : line.start;
+    // A line with no break takes the first one. The new line starts after that break.
+    const caret = below && brk == null ? at + count * nl.length : at + (count - 1) * nl.length;
+    return openSplice(vim, at, nl.repeat(count), caret);
+  }
+  const lines = nl.repeat(count);
+  if (!below) {
+    const at = line.start;
+    return openSplice(vim, at, lines + nl, at + (count - 1) * nl.length);
+  }
+  // The row after a final newline is already past the break, so it needs no lead.
+  const trailing = line.start === doc.length && doc.endsWith("\n");
+  const at = brk == null ? line.end : brk;
+  const lead = brk == null && !trailing ? nl : "";
+  return openSplice(vim, at, lead + nl + lines, at + lead.length + nl.length + (count - 1) * nl.length);
+}
+
 function putRegister(vim, doc, cursor, raw, after) {
   const next = clearInput(vim);
   const reg = vim.register || { text: "", linewise: false };
@@ -1395,6 +1439,7 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
       cursor: anchor,
     });
   }
+  if (id === "o" || id === "O") return openLine(vim, doc, cursor, raw, id === "o");
   return pack("none", true, clearInput(vim), null);
 }
 
