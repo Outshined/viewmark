@@ -341,7 +341,7 @@ function pureInsertEntry(entry) {
 }
 
 // An insertion that ends at a change's from is before that change, not an overlap.
-function rebaseUndoChanges(entry, ext) {
+function rebaseUndoChanges(entry, ext, mode) {
   let eFrom = ext.from;
   let eTo = ext.to;
   const eLen = ext.inserted.length;
@@ -350,13 +350,27 @@ function rebaseUndoChanges(entry, ext) {
   for (let i = entry.changes.length - 1; i >= 0; i -= 1) {
     const change = entry.changes[i];
     const regionEnd = change.from + change.inserted.length;
-    if (eTo <= change.from) {
+    // A forward delete stores no inserted text, so a later delete at that same
+    // offset is past the region and leaves from put. Its undo is a pure history
+    // insert on that index. shiftOffset leaves the index put; sliding it would
+    // restore the earlier character on the wrong side. A delete that only ends
+    // here, such as backspace, is not counted, so its undo still shifts.
+    const historyAtFrom = mode === "history"
+      && change.inserted === ""
+      && eFrom === eTo
+      && eTo === change.from
+      && change.deletesAtFrom > 0;
+    if (eTo <= change.from && !historyAtFrom) {
       const delta = eLen - (eTo - eFrom);
       change.from += delta;
       change.to += delta;
       continue;
     }
+    if (historyAtFrom) change.deletesAtFrom -= 1;
     if (eFrom >= regionEnd) {
+      if (change.inserted === "" && eFrom === regionEnd && eTo > eFrom && eLen === 0) {
+        change.deletesAtFrom = (change.deletesAtFrom || 0) + 1;
+      }
       const delta = change.removed.length - change.inserted.length;
       eFrom += delta;
       eTo += delta;
@@ -424,10 +438,10 @@ function rebaseRedoChanges(entry, ext) {
 
 // Entries stay in current-document coordinates. A splice that overlaps the
 // bytes an entry expects is left in place so the later byte check fails.
-function rebaseStack(stack, change, kind, skip) {
+function rebaseStack(stack, change, kind, skip, mode) {
   for (const entry of stack) {
     if (entry === skip || entry.poison) continue;
-    const ok = kind === "undo" ? rebaseUndoChanges(entry, change) : rebaseRedoChanges(entry, change);
+    const ok = kind === "undo" ? rebaseUndoChanges(entry, change, mode) : rebaseRedoChanges(entry, change);
     if (!ok) {
       entry.poison = true;
       continue;
@@ -1170,19 +1184,19 @@ export async function createHub(stateDir, sourceRoot) {
           sock.session.cursor = shiftOffset(sock.session.cursor, change.from, change.to, change.inserted.length);
           sock.session.anchor = shiftOffset(sock.session.anchor, change.from, change.to, change.inserted.length);
         }
-        rebaseStack(sock.session.undo, change, "undo", entry);
-        rebaseStack(sock.session.redo, change, "redo", entry);
+        rebaseStack(sock.session.undo, change, "undo", entry, mode);
+        rebaseStack(sock.session.redo, change, "redo", entry, mode);
       }
       for (const sock of parkedSockets(file)) {
         if (sock === socket) continue;
         sock.session.cursor = shiftOffset(sock.session.cursor, change.from, change.to, change.inserted.length);
         sock.session.anchor = shiftOffset(sock.session.anchor, change.from, change.to, change.inserted.length);
-        rebaseStack(sock.session.undo, change, "undo", entry);
-        rebaseStack(sock.session.redo, change, "redo", entry);
+        rebaseStack(sock.session.undo, change, "undo", entry, mode);
+        rebaseStack(sock.session.redo, change, "redo", entry, mode);
       }
       if (!file.subscribers.has(socket)) {
-        rebaseStack(socket.session.undo, change, "undo", entry);
-        rebaseStack(socket.session.redo, change, "redo", entry);
+        rebaseStack(socket.session.undo, change, "undo", entry, mode);
+        rebaseStack(socket.session.redo, change, "redo", entry, mode);
       }
     }
     socket.session.cursor = caret.cursor;

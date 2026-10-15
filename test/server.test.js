@@ -793,6 +793,161 @@ test("T-undo", async () => {
   });
 });
 
+test("two forward deletes undo and redo each character", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "alpha beta\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const a = await hello(port, "A");
+    let rev = (await openDoc(a, "A", "a.md")).rev;
+    await syncLock(a, [], "A", "a.md", 0, rev);
+    a.send({ type: "edit", username: "A", path: "a.md", rev, op: "delete", cursor: 0, anchor: 0 });
+    let doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, "lpha beta\n");
+    a.send({ type: "edit", username: "A", path: "a.md", rev, op: "delete", cursor: 0, anchor: 0 });
+    doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, "pha beta\n");
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, "lpha beta\n");
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, text);
+    assert.equal(await readDoc(dir, "a.md"), text);
+    a.send({ type: "redo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, "lpha beta\n");
+    a.send({ type: "redo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, "pha beta\n");
+    assert.equal(await readDoc(dir, "a.md"), doc.text);
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, "lpha beta\n");
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    assert.equal(doc.text, text);
+    assert.equal(await readDoc(dir, "a.md"), text);
+    a.ws.close();
+  });
+});
+
+test("a foreign insert at a deleted offset shifts the earlier undo", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "alpha\n\nbeta\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    let rev = (await openDoc(a, "A", "a.md")).rev;
+    await openDoc(b, "B", "a.md");
+    await syncLock(a, [b], "A", "a.md", 0, rev);
+    a.send({ type: "edit", username: "A", path: "a.md", rev, op: "delete", cursor: 0, anchor: 0 });
+    let doc = await takeDoc(a);
+    await takeDoc(b);
+    rev = doc.rev;
+    assert.equal(doc.text, "lpha\n\nbeta\n");
+    await syncLock(a, [b], "A", "a.md", doc.text.indexOf("beta"), rev);
+    await syncLock(b, [a], "B", "a.md", 0, rev);
+    b.send({ type: "edit", username: "B", path: "a.md", rev, op: "insert", text: "Q", cursor: 0, anchor: 0 });
+    doc = await takeDoc(b);
+    await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, "Qlpha\n\nbeta\n");
+    const gap = doc.text.indexOf("\n\n") + 1;
+    await syncLock(b, [a], "B", "a.md", gap, rev);
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    await takeDoc(b);
+    assert.equal(doc.text, "Qalpha\n\nbeta\n");
+    assert.equal(await readDoc(dir, "a.md"), doc.text);
+    a.ws.close();
+    b.ws.close();
+  });
+});
+
+test("two backspaces undo each character", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "alpha beta\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const a = await hello(port, "A");
+    let rev = (await openDoc(a, "A", "a.md")).rev;
+    await syncLock(a, [], "A", "a.md", 5, rev);
+    a.send({ type: "edit", username: "A", path: "a.md", rev, op: "backspace", cursor: 5, anchor: 5 });
+    let doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, "alph beta\n");
+    a.send({ type: "edit", username: "A", path: "a.md", rev, op: "backspace", cursor: 4, anchor: 4 });
+    doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, "alp beta\n");
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, "alph beta\n");
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, text);
+    a.send({ type: "redo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, "alph beta\n");
+    a.send({ type: "redo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    assert.equal(doc.text, "alp beta\n");
+    assert.equal(await readDoc(dir, "a.md"), doc.text);
+    a.ws.close();
+  });
+});
+
+test("a deleted foreign insert stays in front of an earlier forward delete", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), "alpha\n\nbeta\n");
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    let rev = (await openDoc(a, "A", "a.md")).rev;
+    await openDoc(b, "B", "a.md");
+    await syncLock(a, [b], "A", "a.md", 0, rev);
+    a.send({ type: "edit", username: "A", path: "a.md", rev, op: "delete", cursor: 0, anchor: 0 });
+    let doc = await takeDoc(a);
+    await takeDoc(b);
+    rev = doc.rev;
+    await syncLock(a, [b], "A", "a.md", doc.text.indexOf("beta"), rev);
+    await syncLock(b, [a], "B", "a.md", 0, rev);
+    b.send({ type: "edit", username: "B", path: "a.md", rev, op: "insert", text: "Q", cursor: 0, anchor: 0 });
+    doc = await takeDoc(b);
+    await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text, "Qlpha\n\nbeta\n");
+    const gap = doc.text.indexOf("\n\n") + 1;
+    await syncLock(b, [a], "B", "a.md", gap, rev);
+    await syncLock(a, [b], "A", "a.md", 0, rev);
+    a.send({ type: "edit", username: "A", path: "a.md", rev, op: "delete", cursor: 0, anchor: 0 });
+    doc = await takeDoc(a);
+    await takeDoc(b);
+    rev = doc.rev;
+    assert.equal(doc.text, "lpha\n\nbeta\n");
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    await takeDoc(b);
+    rev = doc.rev;
+    assert.equal(doc.text, "Qlpha\n\nbeta\n");
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    doc = await takeDoc(a);
+    await takeDoc(b);
+    assert.equal(doc.text, "Qalpha\n\nbeta\n");
+    assert.equal(await readDoc(dir, "a.md"), doc.text);
+    a.ws.close();
+    b.ws.close();
+  });
+});
+
 test("T-undo-lock", async () => {
   await withDocs(async ({ port, dir }) => {
     const lines = "alpha\n\nbeta\n\ngamma\n";
