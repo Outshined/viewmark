@@ -6052,6 +6052,18 @@ test("an image line has a caret mark at its start and through its newline", () =
     const inlineImage = mounted.findAll((node) => node.classList && node.classList.contains("md-image")).pop();
     assert.equal(inlineImage.parentElement.childNodes.some((node) => node.classList && node.classList.contains("md-image-caret")), false);
     inline.destroy();
+
+    const spacedDoc = "![box](Test Page/box.png)\n";
+    const spaced = createEditor(mounted.root, spacedDoc, spacedDoc.length);
+    const spacedImage = mounted.findAll((node) => node.classList && node.classList.contains("md-image")).pop();
+    const spacedMarks = spacedImage.parentElement.childNodes.filter((node) => node.classList && node.classList.contains("md-image-caret"));
+    assert.equal(spacedMarks.length, 2);
+    assert.equal(spacedMarks[0].dataset.edge, "start");
+    assert.equal(spacedMarks[1].dataset.edge, "end");
+    mounted.listeners.click({ target: spacedImage, clientX: 1, clientY: 1, preventDefault() {} });
+    assert.equal(spaced.getState().anchor, 0);
+    assert.equal(spaced.getState().cursor, spacedDoc.length);
+    spaced.destroy();
   } finally {
     view.destroy();
     mounted.restore();

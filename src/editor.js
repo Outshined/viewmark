@@ -1663,7 +1663,7 @@ function lineSpan(doc, offset) {
   return [start, end];
 }
 
-const IMAGE_ONLY_LINE = /^!\[[^\]]*\]\([^)\s]+\)$/;
+const IMAGE_ONLY_LINE = /^!\[[^\]]*\]\([^)]+\)$/;
 
 // A click takes the whole image line, including the newline after it. The caret
 // then sits past that line, so the picture stays drawn and Backspace removes the line.

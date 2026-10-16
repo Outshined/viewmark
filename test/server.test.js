@@ -4015,6 +4015,56 @@ test("opening another document is the last close for a token socket", async () =
   });
 });
 
+test("picture: a space in the document path keeps the file when another document opens", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "Test Page.md"), "alpha beta\n");
+    await fs.writeFile(path.join(dir, "away.md"), "Away.\n");
+    const ada = await hello(port, "Ada", "docs", "ada-tab");
+    try {
+      const attached = await attachBytes(ada, "Ada", "Test Page.md", PNG, { cursor: 8 });
+      const name = imageFile(attached.file.text, "Test Page", "png");
+      assert.notEqual(name, "");
+      const full = path.join(dir, "Test Page", name);
+      assert.equal(attached.file.text.includes(`(Test Page/${name})`), true);
+      assert.ok((await fs.readFile(full)).equals(PNG));
+      const raw = await getRaw(port, `/raw/docs/${encodeURIComponent("Test Page")}/${name}`);
+      assert.equal(raw.status, 200);
+      assert.ok(raw.body.equals(PNG));
+
+      ada.send({ type: "open", username: "Ada", path: "away.md" });
+      const away = await ada.next((msg) => msg.type === "file" && msg.path === "away.md");
+      assert.equal(away.text, "Away.\n");
+      assert.ok((await fs.readFile(full)).equals(PNG));
+      const still = await getRaw(port, `/raw/docs/${encodeURIComponent("Test Page")}/${name}`);
+      assert.equal(still.status, 200);
+      assert.ok(still.body.equals(PNG));
+
+      ada.send({ type: "open", username: "Ada", path: "Test Page.md" });
+      const back = await ada.next((msg) => msg.type === "file" && msg.path === "Test Page.md");
+      const start = back.text.indexOf(`![${name}]`);
+      const end = back.text.indexOf("\n", start) + 1;
+      ada.send({
+        type: "edit",
+        username: "Ada",
+        path: "Test Page.md",
+        rev: back.rev,
+        anchor: start,
+        cursor: end,
+        op: "delete",
+      });
+      const removed = await takeDoc(ada);
+      assert.equal(removed.text.includes(`![${name}]`), false);
+      assert.ok((await fs.readFile(full)).equals(PNG));
+      ada.send({ type: "open", username: "Ada", path: "away.md" });
+      await ada.next((msg) => msg.type === "file" && msg.path === "away.md");
+      await waitAbsent(full);
+      assert.equal((await getRaw(port, `/raw/docs/${encodeURIComponent("Test Page")}/${name}`)).status, 404);
+    } finally {
+      ada.ws.close();
+    }
+  });
+});
+
 test("T-rev", async () => {
   await withDocs(async ({ port, dir }) => {
     const helloText = "hello line\nsecond line\n";
@@ -4193,6 +4243,10 @@ test("picture: names, kinds, and placement", () => {
   assert.equal(
     rewriteImageDirs(remote, "notes/welcome", "archive/welcome"),
     "![remote](https://example.com/a.png)\n\n![local](archive/welcome/abcdefgh.png)\n\n![blob](data:image/png;base64,aaaa)\n\n![web](http://example.com/b.png)\n",
+  );
+  assert.equal(
+    rewriteImageDirs("![local](Test Page/abcdefgh.png)\n", "Test Page", "archive/Test Page"),
+    "![local](archive/Test Page/abcdefgh.png)\n",
   );
 });
 

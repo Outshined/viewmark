@@ -1139,11 +1139,12 @@ async function listAssetNames(rootDir, dirRel) {
   return names;
 }
 
+// A document name may contain a space, and that space is part of the address.
 export function rewriteImageDirs(text, fromDir, toDir) {
   if (typeof text !== "string" || !fromDir || !toDir || fromDir === toDir) return text;
   const from = `${fromDir}/`;
   const to = `${toDir}/`;
-  return text.replace(/!\[[^\]]*\]\([^)\s]+\)/g, (token) => {
+  return text.replace(/!\[[^\]]*\]\([^)]+\)/g, (token) => {
     const urlStart = token.indexOf("](") + 2;
     const url = token.slice(urlStart, -1);
     if (url.startsWith("https://") || url.startsWith("http://") || url.startsWith("data:")) return token;
@@ -1156,7 +1157,7 @@ function referencedImageNames(text, dir) {
   const names = new Set();
   if (typeof text !== "string" || !dir) return names;
   const prefix = `${dir}/`;
-  const re = /!\[[^\]]*\]\(([^)\s]+)\)/g;
+  const re = /!\[[^\]]*\]\(([^)]+)\)/g;
   let match = re.exec(text);
   while (match) {
     const url = match[1];
