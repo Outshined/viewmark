@@ -39,6 +39,7 @@ import {
   endBeforeTail,
   ruleLineStop,
   gapCaretStops,
+  imageLine,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
 import { vimKey, vimMatchStarts, vimSubmit, VIM_SEARCH_LIMIT } from "./vim.js";
@@ -1254,7 +1255,7 @@ function adornImageLine(el, block, doc) {
   const start = Number(image.dataset.start);
   const end = Number(image.dataset.end);
   if (!Number.isFinite(start) || !Number.isFinite(end) || start !== block.start || end !== block.end) return;
-  if (!IMAGE_ONLY_LINE.test(doc.slice(start, end).trim())) return;
+  if (!imageLine(doc.slice(start, end))) return;
   placeNodeBefore(el, imageCaret(start, "start"), image);
   if (end < doc.length && doc[end] === "\n") insertAfter(el, image, imageCaret(end, "end"));
 }
@@ -1663,14 +1664,12 @@ function lineSpan(doc, offset) {
   return [start, end];
 }
 
-const IMAGE_ONLY_LINE = /^!\[[^\]]*\]\([^)]+\)$/;
-
 // A click takes the whole image line, including the newline after it. The caret
 // then sits past that line, so the picture stays drawn and Backspace removes the line.
 function wholeImageLine(doc, offset) {
   if (typeof doc !== "string") return null;
   const [start, end] = lineSpan(doc, offset);
-  if (!IMAGE_ONLY_LINE.test(doc.slice(start, end).trim())) return null;
+  if (!imageLine(doc.slice(start, end))) return null;
   const cursor = end < doc.length && doc[end] === "\n" ? end + 1 : end;
   return { anchor: start, cursor };
 }

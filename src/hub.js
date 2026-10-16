@@ -14,6 +14,7 @@ import {
   moveText,
   lockIndexAt,
   lockSpans,
+  addressEnd,
   offsetAt,
   parseCommentNotes,
   parseUnifiedDiff,
@@ -1139,33 +1140,66 @@ async function listAssetNames(rootDir, dirRel) {
   return names;
 }
 
-// A document name may contain a space, and that space is part of the address.
+// A space, a tab, or a parenthesis in a document name is part of the address.
+function imageAddresses(text) {
+  const found = [];
+  if (typeof text !== "string") return found;
+  let index = 0;
+  while (index < text.length) {
+    const bang = text.indexOf("![", index);
+    if (bang < 0) break;
+    const labelEnd = text.indexOf("]", bang + 2);
+    if (labelEnd < 0 || text[labelEnd + 1] !== "(") {
+      index = bang + 2;
+      continue;
+    }
+    const urlEnd = addressEnd(text, labelEnd + 1);
+    if (urlEnd < 0) {
+      index = labelEnd + 2;
+      continue;
+    }
+    found.push({ urlStart: labelEnd + 2, urlEnd, url: text.slice(labelEnd + 2, urlEnd) });
+    index = urlEnd + 1;
+  }
+  return found;
+}
+
+function localImageUrl(url) {
+  return typeof url === "string"
+    && !url.startsWith("https://")
+    && !url.startsWith("http://")
+    && !url.startsWith("data:");
+}
+
 export function rewriteImageDirs(text, fromDir, toDir) {
   if (typeof text !== "string" || !fromDir || !toDir || fromDir === toDir) return text;
   const from = `${fromDir}/`;
   const to = `${toDir}/`;
-  return text.replace(/!\[[^\]]*\]\([^)]+\)/g, (token) => {
-    const urlStart = token.indexOf("](") + 2;
-    const url = token.slice(urlStart, -1);
-    if (url.startsWith("https://") || url.startsWith("http://") || url.startsWith("data:")) return token;
-    if (!url.startsWith(from)) return token;
-    return `${token.slice(0, urlStart)}${to}${url.slice(from.length)})`;
-  });
+  const parts = [];
+  let index = 0;
+  let changed = false;
+  for (const item of imageAddresses(text)) {
+    parts.push(text.slice(index, item.urlStart));
+    if (!localImageUrl(item.url) || !item.url.startsWith(from)) parts.push(item.url);
+    else {
+      parts.push(`${to}${item.url.slice(from.length)}`);
+      changed = true;
+    }
+    index = item.urlEnd;
+  }
+  if (!changed) return text;
+  parts.push(text.slice(index));
+  return parts.join("");
 }
 
 function referencedImageNames(text, dir) {
   const names = new Set();
-  if (typeof text !== "string" || !dir) return names;
+  if (!dir) return names;
   const prefix = `${dir}/`;
-  const re = /!\[[^\]]*\]\(([^)]+)\)/g;
-  let match = re.exec(text);
-  while (match) {
-    const url = match[1];
-    if (!url.startsWith("https://") && !url.startsWith("http://") && !url.startsWith("data:") && url.startsWith(prefix)) {
-      const name = url.slice(prefix.length);
-      if (name.length > 0 && !name.includes("/")) names.add(name);
-    }
-    match = re.exec(text);
+  for (const item of imageAddresses(text)) {
+    if (!localImageUrl(item.url) || !item.url.startsWith(prefix)) continue;
+    const name = item.url.slice(prefix.length);
+    if (name.length > 0 && !name.includes("/")) names.add(name);
   }
   return names;
 }

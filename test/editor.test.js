@@ -6070,6 +6070,37 @@ test("an image line has a caret mark at its start and through its newline", () =
   }
 });
 
+test("an image address keeps a parenthesis inside it", () => {
+  const line = "![NAME.png](Plan (draft)/NAME.png)";
+  const doc = `${line}\n`;
+  const image = plan(doc, doc.length).atoms.find((atom) => atom.type === "image");
+  assert.ok(image);
+  assert.equal(image.url, "Plan (draft)/NAME.png");
+  assert.equal(doc.slice(image.start, image.end), line);
+
+  const trailing = `${line} )\n`;
+  const cut = plan(trailing, trailing.length).atoms.find((atom) => atom.type === "image");
+  assert.equal(cut.url, "Plan (draft)/NAME.png");
+  assert.equal(trailing.slice(cut.start, cut.end), line);
+
+  const tabbedDoc = "![NAME.png](Plan\t(draft)/NAME.png)\n";
+  const tabbed = plan(tabbedDoc, tabbedDoc.length).atoms.find((atom) => atom.type === "image");
+  assert.equal(tabbed.url, "Plan\t(draft)/NAME.png");
+
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, doc, doc.length);
+    const img = mounted.findAll((node) => node.tagName === "IMG").pop();
+    assert.equal(img.alt, "NAME.png");
+    assert.equal(img.src, "Plan (draft)/NAME.png");
+    const marks = img.parentElement.parentElement.childNodes.filter((node) => node.classList && node.classList.contains("md-image-caret"));
+    assert.equal(marks.length, 2);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("CB.5 pasting list items on the empty line under a list stays one list", () => {
   const mounted = mountEditor();
   const doc = "- a\n- b\n\n";

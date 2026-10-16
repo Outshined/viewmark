@@ -4065,6 +4065,40 @@ test("picture: a space in the document path keeps the file when another document
   });
 });
 
+test("picture: a parenthesis in the document path keeps the file when another document opens", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const rel = "Plan (draft).md";
+    await fs.writeFile(path.join(dir, rel), "alpha beta\n");
+    await fs.writeFile(path.join(dir, "away.md"), "Away.\n");
+    const ada = await hello(port, "Ada", "docs", "ada-tab");
+    try {
+      const attached = await attachBytes(ada, "Ada", rel, PNG, { cursor: 8 });
+      const marker = "(Plan (draft)/";
+      const at = attached.file.text.indexOf(marker);
+      assert.ok(at > 0, attached.file.text);
+      const name = attached.file.text.slice(at + marker.length, attached.file.text.indexOf(")", at + marker.length));
+      assert.match(name, /\.png$/);
+      assert.equal(attached.file.text.includes(`![${name}](Plan (draft)/${name})`), true);
+      const full = path.join(dir, "Plan (draft)", name);
+      assert.ok((await fs.readFile(full)).equals(PNG));
+      const rawPath = `/raw/docs/${encodeURIComponent("Plan (draft)")}/${name}`;
+      const raw = await getRaw(port, rawPath);
+      assert.equal(raw.status, 200);
+      assert.ok(raw.body.equals(PNG));
+
+      ada.send({ type: "open", username: "Ada", path: "away.md" });
+      const away = await ada.next((msg) => msg.type === "file" && msg.path === "away.md");
+      assert.equal(away.text, "Away.\n");
+      assert.ok((await fs.readFile(full)).equals(PNG));
+      const still = await getRaw(port, rawPath);
+      assert.equal(still.status, 200);
+      assert.ok(still.body.equals(PNG));
+    } finally {
+      ada.ws.close();
+    }
+  });
+});
+
 test("T-rev", async () => {
   await withDocs(async ({ port, dir }) => {
     const helloText = "hello line\nsecond line\n";
@@ -4247,6 +4281,14 @@ test("picture: names, kinds, and placement", () => {
   assert.equal(
     rewriteImageDirs("![local](Test Page/abcdefgh.png)\n", "Test Page", "archive/Test Page"),
     "![local](archive/Test Page/abcdefgh.png)\n",
+  );
+  assert.equal(
+    rewriteImageDirs("![web](https://example.com/a(b).png)\n![local](Plan (draft)/abcdefgh.png) )\n", "Plan (draft)", "archive/Plan (draft)"),
+    "![web](https://example.com/a(b).png)\n![local](archive/Plan (draft)/abcdefgh.png) )\n",
+  );
+  assert.equal(
+    rewriteImageDirs("![local](Plan\t(draft)/abcdefgh.png)\n", "Plan\t(draft)", "box"),
+    "![local](box/abcdefgh.png)\n",
   );
 });
 

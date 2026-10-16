@@ -1424,6 +1424,22 @@ function codeTokens(line, lang) {
   return { runs, parts: runs, images: [] };
 }
 
+// The parenthesis at open starts the address. One inside the address counts.
+// The parenthesis that brings that open back to zero closes it. One after the image does not.
+export function addressEnd(text, open) {
+  if (typeof text !== "string" || text[open] !== "(") return -1;
+  let depth = 0;
+  for (let i = open; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
 function matchLinkOrImage(text, index, image) {
   let cursor = index;
   if (image) {
@@ -1434,7 +1450,7 @@ function matchLinkOrImage(text, index, image) {
   const labelStart = cursor + 1;
   const labelEnd = text.indexOf("]", labelStart);
   if (labelEnd < 0 || text[labelEnd + 1] !== "(") return null;
-  const urlEnd = text.indexOf(")", labelEnd + 2);
+  const urlEnd = addressEnd(text, labelEnd + 1);
   if (urlEnd < 0) return null;
   return {
     start: index,
@@ -1608,7 +1624,7 @@ function lineBlank(text) {
 }
 
 // A line that is only an image is one paragraph, so it does not join its neighbors.
-function imageLine(text) {
+export function imageLine(text) {
   const core = text.trim();
   if (!core.startsWith("!")) return false;
   const image = matchLinkOrImage(core, 0, true);
