@@ -1427,16 +1427,31 @@ test("T-create", async () => {
       assert.equal(opened.rev, 0);
       assert.equal(await readDoc(dir, "notes/idea.md"), "");
       a.send({ type: "create", username: "A", path: "notes/idea.md" });
-      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+      const ideaDocs = await a.next((msg) => msg.type === "docs" || msg.type === "error");
+      assert.equal(ideaDocs.type, "docs");
+      assert.equal(ideaDocs.files.includes("notes/idea-2.md"), true);
+      const ideaFile = await a.next((msg) => msg.type === "file" || msg.type === "error");
+      assert.equal(ideaFile.type, "file");
+      assert.equal(ideaFile.path, "notes/idea-2.md");
+      assert.equal(ideaFile.rev, 0);
+      assert.equal(ideaFile.text, "");
       assert.equal(await readDoc(dir, "notes/idea.md"), "");
+      assert.equal(await readDoc(dir, "notes/idea-2.md"), "");
       a.send({ type: "create", username: "A", path: "a.txt" });
       assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 400 });
       await assert.rejects(() => fs.lstat(path.join(dir, "a.txt")));
       a.send({ type: "create", username: "A", path: "../x.md" });
       assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 404 });
       a.send({ type: "create", username: "A", path: "exists.md" });
-      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+      const existsDocs = await a.next((msg) => msg.type === "docs" || msg.type === "error");
+      assert.equal(existsDocs.type, "docs");
+      const existsFile = await a.next((msg) => msg.type === "file" || msg.type === "error");
+      assert.equal(existsFile.type, "file");
+      assert.equal(existsFile.path, "exists-2.md");
+      assert.equal(existsFile.rev, 0);
+      assert.equal(existsFile.text, "");
       assert.equal(await readDoc(dir, "exists.md"), "keep");
+      assert.equal(await readDoc(dir, "exists-2.md"), "");
       a.send({ type: "create", username: "A", path: "out/x.md" });
       const outsideFile = await a.next((msg) => (msg.type === "file" && msg.path === "out/x.md") || msg.type === "error");
       assert.equal(outsideFile.type, "file");
@@ -4275,13 +4290,20 @@ test("create stores a normalized document path", async () => {
       const stat = await fs.lstat(path.join(dir, "my-folder"));
       assert.equal(stat.isDirectory(), true);
 
-      a.send({ type: "create", username: "A", path: "test-page.md" });
-      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
-      a.send({ type: "create", username: "A", path: "TEST PAGE.md" });
-      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+      const second = await made("test-page.md");
+      assert.equal(second.file.path, "test-page-2.md");
+      assert.equal(second.file.rev, 0);
+      assert.equal(second.file.text, "");
+      assert.equal(await readDoc(dir, "test-page-2.md"), "");
+      const third = await made("TEST PAGE.md");
+      assert.equal(third.file.path, "test-page-3.md");
+      assert.equal(third.file.rev, 0);
+      assert.equal(third.file.text, "");
+      assert.equal(await readDoc(dir, "test-page-3.md"), "");
       const stored = await readDoc(dir, "test-page.md");
       assert.ok(stored.startsWith("alpha beta\n"));
       assert.ok(stored.includes(`(test-page/${shot})`));
+      await absent("test-page-4.md");
 
       a.send({ type: "create", username: "A", path: "!!!.md" });
       assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 400 });
@@ -4314,9 +4336,12 @@ test("create stores a normalized document path", async () => {
       assert.equal(opened.path, "Kept Name.md");
       assert.equal(opened.text, "kept\n");
       assert.equal(await readDoc(dir, "Kept Name.md"), "kept\n");
-      a.send({ type: "create", username: "A", path: "kept-name.md" });
-      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+      const kept = await made("kept-name.md");
+      assert.equal(kept.file.path, "kept-name-2.md");
+      assert.equal(kept.file.rev, 0);
+      assert.equal(kept.file.text, "");
       assert.equal(await readDoc(dir, "Kept Name.md"), "kept\n");
+      assert.equal(await readDoc(dir, "kept-name-2.md"), "");
       await absent("kept-name.md");
       assert.equal((await fs.readdir(dir)).includes("Kept Name.md"), true);
 
@@ -4393,6 +4418,104 @@ test("create places a file in the directory that already normalizes to that segm
       assert.equal(git.file.path, "git/page.md");
       assert.equal(await readDoc(dir, "git/page.md"), "g\n");
       await absent(".git/page.md");
+    } finally {
+      a.ws.close();
+    }
+  });
+});
+
+test("create stores the first free file name when that name is taken", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const a = await hello(port, "A");
+    try {
+      const made = async (sent, text) => {
+        const payload = { type: "create", username: "A", path: sent };
+        if (text !== undefined) payload.text = text;
+        a.send(payload);
+        const docs = await a.next((msg) => msg.type === "docs" || msg.type === "error");
+        if (docs.type === "error") return docs;
+        const file = await a.next((msg) => msg.type === "file" || msg.type === "error");
+        return { docs, file };
+      };
+      const absent = (rel) => assert.rejects(() => fs.lstat(path.join(dir, rel)));
+
+      const fresh = await made("Fresh Page.md", "fresh\n");
+      assert.equal(fresh.file.path, "fresh-page.md");
+      assert.equal(await readDoc(dir, "fresh-page.md"), "fresh\n");
+
+      const notes = await made("notes.markdown", "one\n");
+      assert.equal(notes.file.path, "notes.markdown");
+      const notesAgain = await made("Notes.markdown", "two\n");
+      assert.equal(notesAgain.file.path, "notes-2.markdown");
+      assert.equal(notesAgain.file.text, "two\n");
+      assert.equal(await readDoc(dir, "notes.markdown"), "one\n");
+      assert.equal(await readDoc(dir, "notes-2.markdown"), "two\n");
+      await absent("notes.md");
+      await absent("notes-2.md");
+
+      await fs.writeFile(path.join(dir, "test-page-2.md"), "two\n");
+      const numbered = await made("test-page-2.md", "next\n");
+      assert.equal(numbered.file.path, "test-page-2-2.md");
+      assert.equal(numbered.file.text, "next\n");
+      assert.equal(await readDoc(dir, "test-page-2.md"), "two\n");
+      assert.equal(await readDoc(dir, "test-page-2-2.md"), "next\n");
+      await absent("test-page.md");
+      await absent("test-page-3.md");
+
+      await fs.writeFile(path.join(dir, "gap.md"), "g\n");
+      await fs.writeFile(path.join(dir, "gap-3.md"), "3\n");
+      const gap = await made("gap.md", "mid\n");
+      assert.equal(gap.file.path, "gap-2.md");
+      assert.equal(await readDoc(dir, "gap.md"), "g\n");
+      assert.equal(await readDoc(dir, "gap-3.md"), "3\n");
+      assert.equal(await readDoc(dir, "gap-2.md"), "mid\n");
+
+      await fs.mkdir(path.join(dir, "dirfile.md"));
+      const dirfile = await made("dirfile.md", "file\n");
+      assert.equal(dirfile.file.path, "dirfile-2.md");
+      assert.equal(await readDoc(dir, "dirfile-2.md"), "file\n");
+      assert.equal((await fs.lstat(path.join(dir, "dirfile.md"))).isDirectory(), true);
+
+      await fs.mkdir(path.join(dir, "Old Pages"));
+      await fs.writeFile(path.join(dir, "Old Pages", "Page.md"), "old\n");
+      await fs.writeFile(path.join(dir, "Old Pages", "Page-2.md"), "spelling\n");
+      const nested = await made("old-pages/Page.md", "new\n");
+      assert.equal(nested.file.path, "Old Pages/page-3.md");
+      assert.equal(nested.file.text, "new\n");
+      assert.equal(await readDoc(dir, "Old Pages/Page.md"), "old\n");
+      assert.equal(await readDoc(dir, "Old Pages/Page-2.md"), "spelling\n");
+      assert.equal(await readDoc(dir, "Old Pages/page-3.md"), "new\n");
+      await absent("old-pages");
+      await absent("Old Pages/page.md");
+      await absent("Old Pages/page-2.md");
+
+      const attached = await attachBytes(a, "A", "Old Pages/page-3.md", PNG, { cursor: 0 });
+      assert.equal(attached.file.type, "file");
+      const shot = imageFile(attached.file.text, "Old Pages/page-3", "png");
+      assert.notEqual(shot, "");
+      assert.ok((await fs.readFile(path.join(dir, "Old Pages", "page-3", shot))).equals(PNG));
+      await absent(path.join("old-pages", "page-3"));
+      assert.equal(await readDoc(dir, "Old Pages/Page.md"), "old\n");
+      assert.equal(await readDoc(dir, "Old Pages/Page-2.md"), "spelling\n");
+
+      await fs.writeFile(path.join(dir, "edge.md"), "edge\n");
+      for (let n = 2; n <= 98; n += 1) await fs.writeFile(path.join(dir, `edge-${n}.md`), `${n}\n`);
+      const last = await made("edge.md", "last\n");
+      assert.equal(last.file.path, "edge-99.md");
+      assert.equal(await readDoc(dir, "edge.md"), "edge\n");
+      assert.equal(await readDoc(dir, "edge-98.md"), "98\n");
+      assert.equal(await readDoc(dir, "edge-99.md"), "last\n");
+      await absent("edge-100.md");
+
+      await fs.writeFile(path.join(dir, "full.md"), "full\n");
+      for (let n = 2; n <= 99; n += 1) await fs.writeFile(path.join(dir, `full-${n}.md`), `${n}\n`);
+      const blocked = await made("Full.md", "no\n");
+      assert.equal(blocked.type, "error");
+      assert.equal(blocked.status, 409);
+      assert.equal(await readDoc(dir, "full.md"), "full\n");
+      assert.equal(await readDoc(dir, "full-2.md"), "2\n");
+      assert.equal(await readDoc(dir, "full-99.md"), "99\n");
+      await absent("full-100.md");
     } finally {
       a.ws.close();
     }

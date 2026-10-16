@@ -693,10 +693,11 @@ test("T-cli-create", async () => {
     assert.equal(await fs.readFile(path.join(dir, "notes", "idea.md"), "utf8"), "");
 
     const again = await run(["--port", String(port), "--user", "user", "--repo", "docs", "create", "notes/idea"]);
-    assert.equal(again.code, shellStatus(409));
-    assert.equal(again.stdout, "");
-    assert.equal(again.stderr, "error 409\n");
+    assert.equal(again.code, 0);
+    assert.equal(again.stdout, "notes/idea-2.md\n");
+    assert.equal(again.stderr, "rev 0\n");
     assert.equal(await fs.readFile(path.join(dir, "notes", "idea.md"), "utf8"), "");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "idea-2.md"), "utf8"), "");
 
     const nope = await run(["--port", String(port), "--user", "user", "--repo", "docs", "create", "../nope"]);
     assert.equal(nope.code, shellStatus(404));
@@ -715,6 +716,14 @@ test("T-cli-create", async () => {
     assert.equal(markdown.stderr, "");
     assert.equal(markdown.stdout, `${JSON.stringify({ path: "notes/keep.markdown", rev: 0 })}\n`);
     assert.equal(await fs.readFile(path.join(dir, "notes", "keep.markdown"), "utf8"), "");
+    const markdownAgain = await run(["--json", "--port", String(port), "--user", "user", "--repo", "docs", "create", "notes/Keep.markdown"]);
+    assert.equal(markdownAgain.code, 0);
+    assert.equal(markdownAgain.stderr, "");
+    assert.equal(markdownAgain.stdout, `${JSON.stringify({ path: "notes/keep-2.markdown", rev: 0 })}\n`);
+    assert.equal(await fs.readFile(path.join(dir, "notes", "keep.markdown"), "utf8"), "");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "keep-2.markdown"), "utf8"), "");
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes", "keep-2.md")));
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes", "keep.md")));
 
     const piped = await run(
       ["--port", String(port), "--user", "user", "--repo", "docs", "create", "notes/piped"],
@@ -862,14 +871,24 @@ test("T-cli-create-slug", async () => {
     assert.equal(await fs.readFile(path.join(dir, "äpfel.md"), "utf8"), "");
 
     const again = await run(args("test-page.md"));
-    assert.equal(again.code, shellStatus(409));
-    assert.equal(again.stdout, "");
-    assert.equal(again.stderr, "error 409\n");
+    assert.equal(again.code, 0);
+    assert.equal(again.stdout, "test-page-2.md\n");
+    assert.equal(again.stderr, "rev 0\n");
     assert.equal(await fs.readFile(path.join(dir, "test-page.md"), "utf8"), "");
+    assert.equal(await fs.readFile(path.join(dir, "test-page-2.md"), "utf8"), "");
+    const jsonAgain = await run(["--json", ...args("TEST PAGE")]);
+    assert.equal(jsonAgain.code, 0);
+    assert.equal(jsonAgain.stderr, "");
+    assert.equal(jsonAgain.stdout, `${JSON.stringify({ path: "test-page-3.md", rev: 0 })}\n`);
+    assert.equal(await fs.readFile(path.join(dir, "test-page.md"), "utf8"), "");
+    assert.equal(await fs.readFile(path.join(dir, "test-page-3.md"), "utf8"), "");
 
     const hello = await run(args("Hello"));
-    assert.equal(hello.code, shellStatus(409));
+    assert.equal(hello.code, 0);
+    assert.equal(hello.stdout, "hello-2.md\n");
+    assert.equal(hello.stderr, "rev 0\n");
     assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
+    assert.equal(await fs.readFile(path.join(dir, "hello-2.md"), "utf8"), "");
 
     const bang = await run(args("!!!"));
     assert.equal(bang.code, shellStatus(400));
@@ -889,9 +908,12 @@ test("T-cli-create-slug", async () => {
     assert.equal(shown.stdout, "kept\n");
     assert.equal(await fs.readFile(path.join(dir, "Kept Name.md"), "utf8"), "kept\n");
     await assert.rejects(() => fs.lstat(path.join(dir, "kept-name.md")));
-    const blocked = await run(args("Kept Name"));
-    assert.equal(blocked.code, shellStatus(409));
+    const kept = await run(args("Kept Name"));
+    assert.equal(kept.code, 0, kept.stderr);
+    assert.equal(kept.stdout, "kept-name-2.md\n");
+    assert.equal(kept.stderr, "rev 0\n");
     assert.equal(await fs.readFile(path.join(dir, "Kept Name.md"), "utf8"), "kept\n");
+    assert.equal(await fs.readFile(path.join(dir, "kept-name-2.md"), "utf8"), "");
     await assert.rejects(() => fs.lstat(path.join(dir, "kept-name.md")));
 
     await fs.mkdir(path.join(dir, "keep"));

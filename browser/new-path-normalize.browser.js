@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { setTimeout as sleep } from "node:timers/promises";
 import { AGENT, REPO, USER, cli, launchBrowser, Page, startHub } from "./harness.js";
 
 // Ticket 96wy2aby: the hub normalizes a new document's path to lowercase and dashes, and leaves
-// a document already stored on its path. Each test is one acceptance criterion in that ticket's
-// body, the hub's list and QA's. The bytes are read back only through GET /raw and the CLI.
+// a document already stored on its path. A second create of that spelling stores the next free
+// name. Each test is one acceptance criterion in that ticket's body, the hub's list and QA's.
+// The bytes are read back only through GET /raw and the CLI.
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 
@@ -88,13 +88,15 @@ for (const [typed, stored] of [["Plan (draft).md", "plan-draft.md"], ["notes/My 
   });
 }
 
-test("96wy2aby: a second create that normalizes to a stored path exits 409 and writes nothing", async (t) => {
+test("96wy2aby: a second create that normalizes to a stored path stores the next free name", async (t) => {
   const { hub } = await setup(t);
   assert.equal((await run(hub, ["create", "test-page.md"], "Keep.\n")).code, 0);
   const out = await run(hub, ["create", "Test Page"], "New.\n");
-  assert.equal(out.code, 153, `exit ${out.code}: ${out.stderr}`);
-  assert.deepEqual(await listed(hub), ["test-page.md"]);
+  assert.equal(out.code, 0, `exit ${out.code}: ${out.stderr}`);
+  assert.equal(out.stdout.trim(), "test-page-2.md");
+  assert.deepEqual(await listed(hub), ["test-page-2.md", "test-page.md"]);
   assert.equal((await hub.show("test-page.md")).text, "Keep.\n");
+  assert.equal((await hub.show("test-page-2.md")).text, "New.\n");
 });
 
 for (const name of ["!!!", "tickets/Hello"]) {
@@ -163,17 +165,21 @@ test("96wy2aby: on the page, New file with Test Page opens test-page.md, the dra
   assert.equal(await getRaw(ctx.hub.port, address), 200);
 });
 
-test("96wy2aby: on the page, New file with a name that normalizes to a stored document writes nothing", async (t) => {
+test("96wy2aby: on the page, New file with a name that normalizes to a stored document opens the next free name", async (t) => {
   const ctx = await setup(t);
   await ctx.hub.create("test-page.md", "Keep.\n");
   const page = await openPage(ctx, "test-page.md");
   const before = await ctx.hub.show("test-page.md");
   await newFile(page, "Test Page");
-  await sleep(1500);
+  await page.until(() => page.eval(`location.hash.endsWith("/doc/test-page-2.md")`), "test-page-2.md open");
+  await page.quiet();
   const after = await ctx.hub.show("test-page.md");
   assert.equal(after.text, "Keep.\n");
   assert.equal(after.rev, before.rev);
-  assert.deepEqual(await listed(ctx.hub), ["test-page.md"]);
-  const notice = await page.eval(`(document.querySelector(".md-notice") || {}).textContent || null`);
-  t.diagnostic(`notice after the refused create: ${JSON.stringify(notice)}`);
+  assert.equal((await ctx.hub.show("test-page-2.md")).text, "");
+  await page.until(async () => (await drawerPaths(page)).includes("test-page-2.md"), "test-page-2.md in the drawer");
+  const paths = await drawerPaths(page);
+  assert.ok(paths.includes("test-page.md"), `the drawer lists ${JSON.stringify(paths)}`);
+  assert.ok(!paths.includes("Test Page.md"), `the drawer lists ${JSON.stringify(paths)}`);
+  assert.deepEqual(await listed(ctx.hub), ["test-page-2.md", "test-page.md"]);
 });

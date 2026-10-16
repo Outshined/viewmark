@@ -779,6 +779,33 @@ async function createTaken(repo, rel) {
   return false;
 }
 
+// The parent spelling stays. A stem that already ends in a number is not a
+// suffix to increment: a taken test-page-2 continues at test-page-2-2.
+function createNameCandidates(stored) {
+  const slash = stored.lastIndexOf("/");
+  const parent = slash === -1 ? "" : stored.slice(0, slash + 1);
+  const base = slash === -1 ? stored : stored.slice(slash + 1);
+  const suffix = base.endsWith(".markdown") ? ".markdown" : ".md";
+  const stem = base.slice(0, -suffix.length);
+  if (stem.length === 0) return [];
+  const names = [];
+  for (let n = 1; n <= 99; n += 1) {
+    const name = n === 1 ? stem : `${stem}-${n}`;
+    names.push(`${parent}${name}${suffix}`);
+  }
+  return names;
+}
+
+async function firstFreeCreateRel(repo, stored) {
+  for (const candidate of createNameCandidates(stored)) {
+    const normalized = normalizeDocRel(candidate);
+    if (!normalized || (await createTaken(repo, normalized))) continue;
+    if (await existsPath(path.resolve(repo.path, candidate))) continue;
+    return candidate;
+  }
+  return null;
+}
+
 function headingTitle(text) {
   if (typeof text !== "string") return "";
   const raw = text.split("\n", 1)[0];
@@ -2069,11 +2096,11 @@ export async function createHub(stateDir, sourceRoot) {
       if (typeof msg.text !== "string") return fail(socket, 400);
       text = msg.text;
     }
-    if (await createTaken(repo, rel)) return fail(socket, 409);
     const placed = await resolveStoredRel(docsDir, rel);
     if (!placed) return fail(socket, 404);
     if (placed.conflict) return fail(socket, 409);
-    const stored = placed.rel;
+    const stored = await firstFreeCreateRel(repo, placed.rel);
+    if (!stored) return fail(socket, 409);
     const dest = await createDest(docsDir, stored);
     if (!dest) return fail(socket, 404);
     if (await existsPath(dest)) return fail(socket, 409);
