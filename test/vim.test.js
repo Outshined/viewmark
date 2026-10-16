@@ -656,6 +656,41 @@ test("VW.1", () => {
   assert.equal(run("alpha\n\nbe‸ta\n", ["k"]).show, "al‸pha\n\nbeta\n");
 });
 
+// The quote mark on a list item inside a quote is not drawn. A column in that
+// prefix has no glyph, and the page then puts the caret at offset 0.
+test("czp4tesp j and k land on a drawn offset of a list item inside a quote", () => {
+  const start = "T‸op.\n\n> quoted block\n> * List under a quoted block\n> * second list item\n\nAfter.\n";
+  const quote = run(start, ["j"]);
+  assert.equal(quote.show, "Top.\n\n>‸ quoted block\n> * List under a quoted block\n> * second list item\n\nAfter.\n");
+  assert.equal(quote.vim.column, 1);
+  const first = run(quote.show, ["j"], { vim: quote.vim });
+  assert.equal(first.show, "Top.\n\n> quoted block\n> ‸* List under a quoted block\n> * second list item\n\nAfter.\n");
+  assert.notEqual(first.cursor, 0);
+  const second = run(first.show, ["j"], { vim: first.vim });
+  assert.equal(second.show, "Top.\n\n> quoted block\n> * List under a quoted block\n> ‸* second list item\n\nAfter.\n");
+  const after = run(second.show, ["j"], { vim: second.vim });
+  assert.equal(after.show, "Top.\n\n> quoted block\n> * List under a quoted block\n> * second list item\n\nA‸fter.\n");
+
+  const up1 = run("Top.\n\n> quoted block\n> * List under a quoted block\n> * second list item\n\nA‸fter.\n", ["k"]);
+  assert.equal(up1.show, "Top.\n\n> quoted block\n> * List under a quoted block\n> ‸* second list item\n\nAfter.\n");
+  const up2 = run(up1.show, ["k"], { vim: up1.vim });
+  assert.equal(up2.show, "Top.\n\n> quoted block\n> ‸* List under a quoted block\n> * second list item\n\nAfter.\n");
+  const up3 = run(up2.show, ["k"], { vim: up2.vim });
+  assert.equal(up3.show, "Top.\n\n>‸ quoted block\n> * List under a quoted block\n> * second list item\n\nAfter.\n");
+  assert.notEqual(up3.cursor, 0);
+
+  const only = run("T‸op.\n\n> * first item\n> * second item\n\nAfter.\n", ["j"]);
+  assert.equal(only.show, "Top.\n\n> ‸* first item\n> * second item\n\nAfter.\n");
+  const onlyUp = run("Top.\n\n> * first item\n> * second item\n\nA‸fter.\n", ["k"]);
+  assert.equal(onlyUp.show, "Top.\n\n> * first item\n> ‸* second item\n\nAfter.\n");
+
+  const plain = run("T‸op.\n\n> one line\n> two line\n\nAfter.\n", ["j", "j"]);
+  assert.equal(plain.show, "Top.\n\n> one line\n>‸ two line\n\nAfter.\n");
+
+  const source = run("Top.\n\n>‸ quoted block\n> * List under a quoted block\n", ["j"], { raw: true });
+  assert.equal(source.show, "Top.\n\n> quoted block\n>‸ * List under a quoted block\n");
+});
+
 test("VW.2", () => {
   const once = run("al‸pha\n\nbeta\n", ["j"], { raw: true });
   assert.equal(once.show, "alpha\n‸\nbeta\n");

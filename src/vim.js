@@ -208,6 +208,65 @@ function hiddenEdge(doc, offset, direction, raw) {
   return at;
 }
 
+function columnInLine(line, limit, offset) {
+  return offset >= line.start && offset <= limit;
+}
+
+// A list item inside a quote drops "> " even on the cursor line. A column in
+// that prefix has no glyph, so the page has nowhere to draw the caret.
+function restOnDrawn(doc, line, offset, direction, limit) {
+  const blocks = plan(doc, offset).blocks;
+  let block = null;
+  for (const item of blocks) {
+    if (!item || typeof item.start !== "number" || typeof item.end !== "number") continue;
+    if (item.classes && item.classes.includes("md-paragraph-gap")) continue;
+    if (offset < item.start || offset > item.end) continue;
+    block = item;
+  }
+  if (!block || block.type !== "line") return offset;
+  // A spaces-only line draws no glyphs. Its caret is the slot, not the break after it.
+  if (typeof block.slot === "number" && offset === block.slot && columnInLine(line, limit, block.slot)) return offset;
+  const parts = [];
+  for (const part of block.parts || []) {
+    if (!part || typeof part.start !== "number" || typeof part.end !== "number") continue;
+    if (part.end < part.start) continue;
+    parts.push(part);
+  }
+  if (parts.length === 0) return offset;
+  for (const part of parts) {
+    if (offset >= part.start && offset <= part.end) return offset;
+  }
+  const forward = () => {
+    let next = null;
+    for (const part of parts) {
+      if (part.start < offset || !columnInLine(line, limit, part.start)) continue;
+      if (next == null || part.start < next) next = part.start;
+    }
+    return next;
+  };
+  const backward = () => {
+    let prev = null;
+    for (const part of parts) {
+      if (part.end > offset || !columnInLine(line, limit, part.end)) continue;
+      if (prev == null || part.end > prev) prev = part.end;
+    }
+    return prev;
+  };
+  const toward = direction < 0 ? backward() : forward();
+  const other = direction < 0 ? forward() : backward();
+  const snapped = toward == null ? other : toward;
+  return snapped == null ? offset : snapped;
+}
+
+function drawnColumn(doc, line, offset, direction, raw, limit) {
+  if (raw || !columnInLine(line, limit, offset)) return offset;
+  const snapped = restOnDrawn(doc, line, offset, direction, limit);
+  if (snapped === offset || !columnInLine(line, limit, snapped)) return offset;
+  const edged = hiddenEdge(doc, snapped, direction, raw);
+  if (columnInLine(line, limit, edged)) return edged;
+  return snapped;
+}
+
 function placeColumn(doc, line, column, raw, direction) {
   const limit = lineDollar(doc, line);
   let offset = line.start + (column < 0 ? 0 : column);
@@ -216,11 +275,11 @@ function placeColumn(doc, line, column, raw, direction) {
   offset = lineCaret(doc, offset);
   offset = endBeforeTail(doc, offset);
   const edged = hiddenEdge(doc, offset, direction, raw);
-  if (edged >= line.start && edged <= limit) return edged;
+  if (columnInLine(line, limit, edged)) return drawnColumn(doc, line, edged, direction, raw, limit);
   const back = hiddenEdge(doc, offset, -1, raw);
-  if (back >= line.start && back <= limit) return back;
+  if (columnInLine(line, limit, back)) return drawnColumn(doc, line, back, -1, raw, limit);
   const fwd = hiddenEdge(doc, offset, 1, raw);
-  if (fwd >= line.start && fwd <= limit) return fwd;
+  if (columnInLine(line, limit, fwd)) return drawnColumn(doc, line, fwd, 1, raw, limit);
   if (offset < line.start) return line.start;
   if (offset > limit) return limit;
   return offset;
