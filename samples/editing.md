@@ -36,7 +36,7 @@ The add-comment button's top edge is a half line under the lowest edge of the se
 This lists what the page should do for each key and click, not what it does today.
 
 ### The rule for the whole page
-- Text appears where the caret is when keys are pressed. A typed character is drawn where the caret was drawn just before the key (R99). The character then wraps as normal text does, so at the end of a line that wraps it goes in at the caret and can start the next line. A picture pasted inside a block is drawn after that block, and that block is not split. That paste is the exception (R91).
+- Text appears where the caret is when keys are pressed. A typed character is drawn where the caret was drawn just before the key (R99). After spaces typed at the end of a line, the caret is drawn after them, though two trailing spaces are a hidden line break marker (D17). The character then wraps as normal text does, so at the end of a line that wraps it goes in at the caret and can start the next line. A picture pasted inside a block is drawn after that block, and that block is not split. That paste is the exception (R91).
 
 ### What is drawn
 - Only the block holding the caret is raw and shows its markdown source. Every other block is drawn rendered. Hard-break markers stay hidden even in the raw block, and so does the `>` on the later lines of a quoted paragraph (R1).

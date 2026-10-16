@@ -470,6 +470,7 @@ The owner approved D1 to D22 as correct enough to start. A later default is appr
 - D15. Delete at the end of a visual line whose break is hidden, as with two trailing spaces, removes the break (R42), and by D35 its hidden markers with it. The alternative removes an invisible space and turns the break into a soft join. Cells: `DL.hb.1`, `DL.hb.2`.
 - D16. A line drawn empty is empty for Backspace and Delete (R30, R40). That includes a line of spaces, a line holding a tab, a `\r` line, and a line of spaces inside a paragraph. It has one caret position, at its start (D17): a click, ↓, and ↑ all land there. Otherwise Backspace removes one invisible character and nothing visibly changes, which is the reported symptom. Cells: `BG.ws.*`.
 - D17. The end of a line is before its hidden trailing markers (R30, R70, R74). Offsets 3, 4, and 5 of `red  \n` draw at the same x, and this decides which one a caret means. Cells: `MV.hb.1`, `MV.he.9`.
+  - The owner decided on 2026-10-16 that this does not hold for spaces just typed: after spaces typed at the end of a line, the caret is drawn after them, not back before them `[U]` (ticket xhx944ku).
 - D18. A `\r\n` file is drawn and edited as `\n`, and keeps its line endings (R5, R91). Cells: `CR.*`.
 - D19. A task item `- [ ] ` continues as `- [ ] ` on Enter, and leaves the list when empty. Backspace removes `[ ] ` first (R20, R22, R32). Cells: `EN.tk.*`, `BS.tk.*`.
 - D20. A middle-click pastes the primary selection, and a drag of selected text moves it (R88). Cells: `CK.mid.1`, `DD.1`.
