@@ -147,7 +147,7 @@ This lists what the page should do for each key and click, not what it does toda
 - {c10}A file a session has open cannot be deleted. The CLI's delete and the page's Delete are refused with 409 and name that session's user. A rename or a move updates every session that has the file open: its address, its files list, and its title (R106).{/c10} A closed tab, or a page that is left, lets go of its file and its blocks at once. A rename or a move leaves every open session's caret where it was in the text (D37).
 
 ### Vim keys
-With Vim keys off, the editor behaves as it does now: the rules above hold as written. With Vim keys on, the keys in Normal, Visual, and Visual Line do what vim does, as R110 to R122 say, where that differs from the rules above. Shift+arrow in Normal moves the caret and leaves it collapsed, where R70 extends the selection. An Insert session, from entering Insert until Escape, is one undo, including a pause, an arrow, Backspace, and Enter, so the one-second cutoff of R92 does not apply during it (R109).
+With Vim keys off, the editor behaves as it does now: the rules above hold as written. With Vim keys on, the keys in Normal, Visual, and Visual Line do what vim does, as R110 to R122 say, where that differs from the rules above. {c15}Shift+arrow in Normal moves the caret and leaves it collapsed{/c15}, where R70 extends the selection. An Insert session, from entering Insert until Escape, {c16}is one undo, including a pause, an arrow, Backspace, and Enter{/c16}, so the one-second cutoff of R92 does not apply during it (R109).
 
 The document menu item Vim keys is off until it is checked. The browser remembers the choice for every document it opens, and stores it as `viewmark.vim`. The hub does not store it. A status beside that menu shows `N` for normal, `I` for insert, `V` for character visual, and `VL` for line visual. A count or an operator that is still waiting shows there instead of the letter. Normal and both visual modes draw a block caret. Insert keeps the thin caret (R110).
 
@@ -167,7 +167,7 @@ Search text is literal. `/` and `?` remember earlier patterns for the life of th
 
 Motions are `h` `l` `j` `k` and the arrow keys, `0` `^` `$` `|`, `gg` and `G` with a count for a vim line, `w` `b` `e` `ge`, `f` `F` `t` `T` then `;` and `,`, `%` on brackets, `{` and `}` by block, and `H` `M` `L` for the top, middle, and bottom of the rows on screen. `+`, `-`, and Enter move by line and land on the first non-blank. `_` does that on the counted line, where 1 is the current line. Ctrl-F and Ctrl-B move by the rows on screen, and Ctrl-D and Ctrl-U move by half of them. `zz`, `zt`, and `zb` put the caret's line at the center, the top, or the bottom. `z.`, `z-`, and `z` followed by Enter do that and also move to the first non-blank. Ctrl-N and Ctrl-P are `j` and `k`. Home is `0`, End is `$`, Page Up is Ctrl-B, and Page Down is Ctrl-F. Space is `l` and Shift-Space is `w`. Backspace is `h` and Shift-Backspace is `b`. Delete is `x` (R118).
 
-Operators are `d`, `c`, `y`, `>`, `<`, `=`, `gu`, `gU`, and `g~`. Doubled, they act on the vim line, and a count is that many lines. `D` and `C` run through the end of the line. `x` and `X` delete characters and stay on the source line, stopping before its newline. `s` deletes those characters and enters insert. In visual, `s` changes the highlight. `S` changes whole vim lines and enters insert. In visual line, `R` and `S` change the highlighted lines. While a thread is current, `R` resolves or reopens for the first note's author instead. Elsewhere `R` is not replace mode. `Y` yanks the line. `J` joins with a space and `gJ` joins without one. `r` replaces the following characters with the next key, and Enter as that key writes one line break for the whole count. `~` toggles case. `>` and `<` are a list indent, not a shift of spaces. `>` writes one leading tab, and an ordered item that starts a new level is numbered 1. On a line that is not a list item, `>` writes a tab at the start and `<` removes one leading tab. `=` changes a list item to one level under the item above, or to the top level when there is no item above, and it leaves any other line as it is. On a list item, `<<` lands on the item text. Tab and Shift-Tab in normal and visual are `>` and `<`. In insert, Tab is the ordinary list indent, and Shift-Tab does what Tab does (R119).
+Operators are `d`, `c`, `y`, `>`, `<`, `=`, `gu`, `gU`, and `g~`. Doubled, they act on the vim line, and a count is that many lines. `D` and `C` run through the end of the line. `x` and `X` delete characters and stay on the source line, stopping before its newline. `s` deletes those characters and enters insert. In visual, `s` changes the highlight. `S` changes whole vim lines and enters insert. In visual line, `R` and `S` change the highlighted lines. While a thread is current, `R` resolves or reopens for the first note's author instead. Elsewhere `R` is not replace mode. `Y` yanks the line. `J` joins with a space and `gJ` joins without one. `r` replaces the following characters with the next key, and Enter as that key writes one line break for the whole count. `~` toggles case. `>` and `<` are a list indent, not a shift of spaces. `>` writes one leading tab, and an ordered item that starts a new level is numbered 1. On a line that is not a list item, `>` writes a tab at the start and `<` removes one leading tab. `=` changes a list item to one level under the item above, or to the top level when there is no item above, and it leaves any other line as it is. On a list item, `<<` lands on the item text. {c17}Tab and Shift-Tab in normal and visual are `>` and `<`.{/c17} In insert, Tab is the ordinary list indent, and Shift-Tab does what Tab does (R119).
 
 Text objects follow an operator, or they extend a visual selection. They are a word (`iw`, `aw`), an inline code span (inner or around a backtick), a single or double quote that closes on the source line, a link label (`i[` and `a[`, or the same with `]`), and a block (`ip`, `ap`). `aw` takes the spaces after the word, or the spaces before it when none follow. `ip` stops before the block's own newline. `ap` also takes the blank lines after the block, or the blank lines before it when nothing follows (R120).
 
@@ -321,5 +321,32 @@ this is crap writing and jargon.
 :: 1
 @2026-10-10T15:25:52.099Z claude
 Rewritten in plain words, as what a person can expect when a key reaches past the caret's own paragraph or item. The code names are gone. The heading now reads "The hub decides what a key changes". The four sections around it, "An edit always gets an answer", "One caret", "Every offset has one DOM point", and "A gesture keeps the layout it started on", are written the same way, from the implementer's point of view. Say if you want those rewritten too.
+
+```
+
+```comment c15
+:: 0
+@2026-10-16T13:47:28.128Z claude
+For the owner: should Shift+→ and Shift+← in Normal move by a word, as stock vim does?
+
+Today each moves one character. In stock vim 9.2, with no vimrc, Shift+→ from the start of `alpha beta gamma` lands on `beta`. This sentence came from the implementer's note c8.2 on 7vdep2z4. No note of yours records it.
+
+```
+
+```comment c16
+:: 0
+@2026-10-16T13:47:28.279Z claude
+For the owner: should an arrow in Insert end the undo step, as it does in stock vim?
+
+On the page, `i`, `xx`, ↓, `yy`, Escape, then one `u` takes back both `xx` and `yy`. In stock vim 9.2, with no vimrc, the same keys take back only `yy`, and a second `u` takes back `xx`. Enter and a pause do not end the step in either. This sentence came from the implementer's note c22.2 on 7vdep2z4. No note of yours records it.
+
+```
+
+```comment c17
+:: 0
+@2026-10-16T13:47:28.410Z claude
+For the owner: should Tab and Shift+Tab leave the text alone in Normal and Visual?
+
+Today Tab indents the line and Shift+Tab outdents it. On 7vdep2z4 your note c3.0 says Tab does not belong in vim mode, and c25.1 asks that Shift+Tab do what vim does. In stock vim 9.2, with no vimrc, neither key changes the text in Normal. The implementer's later notes c25.5 and c26.0 record the indent and outdent as your decision. No note of yours records it.
 
 ```
