@@ -4,10 +4,6 @@ Viewmark keeps each open document as one string in a single Node process. The cu
 
 From this directory the command is `node cli.js`. The same program is `viewmark` once `cli.js` is on `PATH`.
 
-## Memories
-
-This repository does not hold agent memories. Do not add `ai/memories/` or any other memory file here.
-
 ## Editing documents
 
 Pass `--user` and `--repo` on every document, comment, and ticket command. The username is the label stored on the edit. There is no default.
