@@ -1262,7 +1262,7 @@ function frameUnderPointer(node) {
   return null;
 }
 
-function renderImage(image, repo) {
+function renderImage(image, repo, onSized) {
   const el = document.createElement("span");
   el.className = image.comment ? "md-atom md-image md-comment" : "md-atom md-image";
   el.contentEditable = "false";
@@ -1271,9 +1271,15 @@ function renderImage(image, repo) {
   if (image.comment) el.dataset.comment = image.comment;
   const frame = pinFrameElement();
   const img = document.createElement("img");
-  img.src = imageSrc(image.url, repo);
   img.alt = image.alt;
   img.draggable = false;
+  // A pin fraction is of the picture's box. That box has no height until load,
+  // so the cards from the first layout sit on the frame's top.
+  if (typeof onSized === "function" && typeof img.addEventListener === "function") {
+    img.addEventListener("load", () => onSized());
+  }
+  img.src = imageSrc(image.url, repo);
+  if (typeof onSized === "function" && img.complete === true && img.naturalWidth > 0) onSized();
   frame.appendChild(img);
   el.appendChild(frame);
   return el;
@@ -1537,11 +1543,11 @@ function pullBreakOntoSlot(node) {
   setStyle(node, "margin-top", "-1lh");
 }
 
-function appendParts(el, block, repo) {
+function appendParts(el, block, repo, onSized) {
   const share = markerOnly(block);
   if (block.slot != null) el.appendChild(renderCaretSlot(block.slot));
   for (const part of block.parts) {
-    const node = part.type === "image" ? renderImage(part, repo) : renderRun(part);
+    const node = part.type === "image" ? renderImage(part, repo, onSized) : renderRun(part);
     if (share && part.type === "break") pullBreakOntoSlot(node);
     el.appendChild(node);
   }
@@ -1622,7 +1628,7 @@ function takeRawMarker(el, marker) {
   return hang;
 }
 
-function renderBlock(block, repo) {
+function renderBlock(block, repo, onSized) {
   if (block.type === "table") return renderTable(block);
   if (block.type === "diagram") return renderDiagram(block);
   if (block.collapsed) return renderCollapsed(block);
@@ -1646,14 +1652,14 @@ function renderBlock(block, repo) {
   }
   if (block.raw) {
     if (block.empty) el.appendChild(document.createElement("br"));
-    else appendParts(el, block, repo);
+    else appendParts(el, block, repo, onSized);
     return el;
   }
   if (block.empty || block.hr) {
     if (block.empty) el.appendChild(document.createElement("br"));
     return el;
   }
-  appendParts(el, block, repo);
+  appendParts(el, block, repo, onSized);
   if (!el.childNodes || el.childNodes.length === 0) {
     el.dataset.start = String(block.end);
     el.dataset.end = String(block.end);
@@ -2391,6 +2397,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let scrollCommentId = null;
   let writingHash = false;
   let closed = false;
+  let pictureLayoutFrame = 0;
+  let pictureObserver = null;
   const repoStorage = storage || null;
   // Raw is not stored. It applies only to the document that was open when it was turned on.
   let sourceMode = false;
@@ -3921,6 +3929,38 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     };
     walk(root);
     return found;
+  }
+
+  // A measurement in the load handler can still see the empty frame. The next
+  // frame has the picture's height, and so does a later change of that box.
+  function layoutAfterPicture() {
+    if (closed) return;
+    layoutComments();
+    const view = typeof window !== "undefined" ? window : null;
+    if (!view || typeof view.requestAnimationFrame !== "function" || pictureLayoutFrame) return;
+    pictureLayoutFrame = view.requestAnimationFrame(() => {
+      pictureLayoutFrame = 0;
+      if (!closed) layoutComments();
+    });
+  }
+
+  // The picture's box changes when its file arrives, and again if the column
+  // then narrows it. Pins are a fraction of that box, so the cards follow it.
+  function watchPictures() {
+    if (typeof ResizeObserver !== "function" || typeof Element !== "function") return;
+    if (!pictureObserver) pictureObserver = new ResizeObserver(() => layoutAfterPicture());
+    pictureObserver.disconnect();
+    for (const host of elementsWithClass("md-image")) {
+      const img = directChildTag(pictureFrame(host) || host, "img");
+      if (!img || !(img instanceof Element)) continue;
+      try {
+        pictureObserver.observe(img);
+      } catch {
+        pictureObserver.disconnect();
+        pictureObserver = null;
+        return;
+      }
+    }
   }
 
   function layoutComments() {
@@ -5969,6 +6009,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       syncSourceClass();
       syncVimCaret();
       if (sourceMode) {
+        if (pictureObserver) pictureObserver.disconnect();
         renderSourceView(caretTop());
         mountViewToggle();
         return;
@@ -5982,7 +6023,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       blocks = blocksForCaret(blocks);
       const flashBlock = refusal && !refusal.name ? tightestBlock(blocks, refusal.offset) : null;
       const nodes = blocks.map((block) => {
-        const el = renderBlock(block, activeRepo);
+        const el = renderBlock(block, activeRepo, layoutAfterPicture);
         adornImageLine(el, block, state.doc);
         hangRawMarker(el, rawListMarker(block), block && block.indent);
         appendLockMarks(el, block);
@@ -6000,6 +6041,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       paintAnchorMarks();
       renderCommentAside(planned.comments);
       layoutComments();
+      watchPictures();
       if (commentFocus) {
         restoreEditorFocus = false;
         focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
@@ -11650,6 +11692,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     },
     destroy() {
       closed = true;
+      const view = typeof window !== "undefined" ? window : null;
+      if (pictureLayoutFrame && view && typeof view.cancelAnimationFrame === "function") {
+        view.cancelAnimationFrame(pictureLayoutFrame);
+      }
+      pictureLayoutFrame = 0;
+      if (pictureObserver) {
+        pictureObserver.disconnect();
+        pictureObserver = null;
+      }
       vimPaintHold = null;
       closeVimLine();
       clearVimMatches();
