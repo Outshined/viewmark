@@ -6926,8 +6926,9 @@ test("comment cards edit the thread and line up with the highlight", () => {
       },
     });
     mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
-    const button = mounted.findAll((node) => node.className === "md-add-comment")[0];
-    assert.equal(button.textContent, "Add comment");
+    const button = mounted.findAll((node) => node.classList && node.classList.contains("md-add-comment"))[0];
+    assert.equal(button.getAttribute("aria-label"), "Add comment");
+    assert.equal(button.textContent, "");
     assert.equal(button.hidden, false);
     // No measured glyph and no button width: the left edge is the last character, one pixel in from the highlight.
     const line = 18 * 1.2;
@@ -7102,6 +7103,157 @@ test("comment cards edit the thread and line up with the highlight", () => {
   }
 });
 
+test("agrd2gk6: the highlight add-comment control draws the corner pin's balloon and shows no words", () => {
+  const mounted = mountSheet();
+  const doc = "hello fox\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n![a](a.svg)\n";
+  const rect = { top: 40, left: 8, right: 72, bottom: 58, width: 64, height: 18 };
+  const addButtons = () => mounted.findAll((node) => node.classList && node.classList.contains("md-add-comment"));
+  const textUnder = (el) => {
+    const found = [];
+    const walk = (node) => {
+      if (!node) return;
+      if (node.nodeType === 3 && node.textContent) found.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(el);
+    return found[0];
+  };
+  const iconShape = (button) => {
+    const svg = (button.childNodes || []).find((node) => node.localName === "svg");
+    const path = svg && (svg.childNodes || []).find((node) => node.localName === "path");
+    assert.ok(svg);
+    assert.ok(path);
+    assert.equal(button.childNodes.filter((node) => node.nodeType === 3 && node.textContent).length, 0);
+    return {
+      viewBox: svg.getAttribute("viewBox"),
+      hidden: svg.getAttribute("aria-hidden"),
+      d: path.getAttribute("d"),
+      fill: path.getAttribute("fill"),
+      stroke: path.getAttribute("stroke"),
+      width: path.getAttribute("stroke-width"),
+      cap: path.getAttribute("stroke-linecap"),
+      join: path.getAttribute("stroke-linejoin"),
+    };
+  };
+  const drag = (startNode, startOffset, endNode, endOffset) => {
+    mounted.listeners.mousedown({ clientX: 0, clientY: 0 });
+    mounted.setSelection({
+      rangeCount: 1,
+      anchorNode: startNode,
+      anchorOffset: startOffset,
+      focusNode: endNode,
+      focusOffset: endOffset,
+      getRangeAt() {
+        return {
+          collapsed: false,
+          startContainer: startNode,
+          startOffset,
+          endContainer: endNode,
+          endOffset,
+          commonAncestorContainer: mounted.root,
+          getClientRects() {
+            return [rect];
+          },
+        };
+      },
+    });
+    mounted.listeners.mouseup({ clientX: 40, clientY: 20 });
+  };
+  try {
+    globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+    const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    const rule = css.match(/\.md-add-comment\s*\{[^}]*\}/);
+    assert.ok(rule);
+    assert.equal(/padding:/.test(rule[0]), false);
+    assert.equal(/background:/.test(rule[0]), false);
+    assert.equal(/font-size:/.test(rule[0]), false);
+    assert.match(rule[0], /z-index:\s*7/);
+    assert.match(rule[0], /cursor:\s*pointer/);
+    const view = createEditor(mounted.root, doc, 0);
+    assert.equal(addButtons().length, 0);
+    const fox = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "hello fox")[0];
+    const cell = (label) => mounted.findAll((node) => node.tagName === "TH" && node.textContent === label)[0];
+    const a = textUnder(cell("a"));
+    const b = textUnder(cell("b"));
+    assert.ok(fox);
+    assert.ok(a);
+    assert.ok(b);
+    drag(a, 0, b, b.textContent.length);
+    assert.notEqual(view.getState().anchor, view.getState().cursor);
+    assert.equal(commentRangeReason(doc, view.getState().anchor, view.getState().cursor), "overlaps a table");
+    assert.equal(addComment(doc, view.getState().anchor, view.getState().cursor), null);
+    assert.equal(addButtons().length, 0);
+    assert.equal(view.getState().doc, doc);
+
+    const at = fox.textContent.indexOf("fox");
+    drag(fox, at, fox, at + "fox".length);
+    const button = addButtons()[0];
+    assert.ok(button);
+    assert.equal(button.hidden, false);
+    assert.equal(button.classList.contains("icon-btn"), true);
+    assert.equal(button.getAttribute("aria-label"), "Add comment");
+    assert.equal(button.textContent, "");
+    assert.equal(button.type, "button");
+    const pitch = rect.height * 1.2;
+    assert.equal(button.styleProps.position, "fixed");
+    assert.equal(button.styleProps.top, `${rect.bottom + pitch / 2}px`);
+    assert.equal(button.styleProps.left, `${rect.right - 1}px`);
+
+    drag(a, 0, b, b.textContent.length);
+    assert.equal(button.hidden, true);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(addComment(doc, view.getState().anchor, view.getState().cursor), null);
+
+    drag(fox, at, fox, at + "fox".length);
+    assert.equal(button.hidden, false);
+    const img = mounted.findAll((node) => node.tagName === "IMG")[0];
+    assert.ok(img);
+    mounted.listeners.mousemove({ target: img, clientX: 0, clientY: 0 });
+    const pin = mounted.findAll((node) => node.classList && node.classList.contains("md-pin-corner"))[0];
+    assert.ok(pin);
+    assert.equal(pin.getAttribute("aria-label"), "Comment pin");
+    assert.equal(pin.classList.contains("icon-btn"), true);
+    assert.equal(pin.draggable, true);
+    assert.equal(pin.getAttribute("draggable"), "true");
+    assert.notEqual(pin, button);
+    const shape = iconShape(button);
+    assert.deepEqual(iconShape(pin), shape);
+    assert.equal(shape.d, "M12 19l-2-3H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-3l-2 3z");
+    assert.equal(shape.viewBox, "0 0 24 24");
+    assert.equal(shape.hidden, "true");
+    assert.equal(shape.fill, "none");
+    assert.equal(shape.stroke, "currentColor");
+    assert.equal(shape.width, "2");
+    assert.equal(shape.cap, "round");
+    assert.equal(shape.join, "round");
+
+    let prevented = false;
+    button.listeners.mousedown({
+      button: 1,
+      preventDefault() {
+        prevented = true;
+      },
+    });
+    assert.equal(prevented, false);
+    assert.equal(view.getState().doc, doc);
+    button.listeners.mousedown({
+      button: 0,
+      preventDefault() {
+        prevented = true;
+      },
+    });
+    assert.equal(prevented, true);
+    assert.equal(view.getState().doc, "hello {c1}fox{/c1}\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n![a](a.svg)\n\n```comment c1\n\n```\n");
+    mounted.listeners.mousemove({ target: mounted.findAll((node) => node.tagName === "IMG")[0], clientX: 0, clientY: 0 });
+    const again = mounted.findAll((node) => node.classList && node.classList.contains("md-pin-corner"))[0];
+    assert.equal(again.getAttribute("aria-label"), "Comment pin");
+    assert.deepEqual(iconShape(again), shape);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("the add-comment button sits half a line under the highlight and clear of comment cards", () => {
   const mounted = mountSheet();
   const doc = "See {c1}this{/c1} now and more words here.\n\n```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nNote.\n```\n";
@@ -7163,7 +7315,7 @@ test("the add-comment button sits half a line under the highlight and clear of c
     let cardRect = box(28, 880, 320, 102);
     card.getBoundingClientRect = () => cardRect;
     press(28);
-    const button = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    const button = mounted.findAll((node) => node.classList && node.classList.contains("md-add-comment"))[0];
     assert.ok(button);
     assert.equal(button.hidden, false);
     assert.equal(button.styleProps.position, "fixed");
@@ -7302,7 +7454,7 @@ test("the add-comment button appears under the highlight's last line when the se
     };
     const rect = { top: 40, left: 8, right: 200, bottom: 58, width: 192, height: 18 };
     show([rect]);
-    const button = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    const button = mounted.findAll((node) => node.classList && node.classList.contains("md-add-comment"))[0];
     assert.equal(button.hidden, false);
     assert.equal(button.styleProps.position, "fixed");
     const pitch = rect.height * 1.2;
@@ -7367,7 +7519,7 @@ test("the add-comment button follows the highlight when the page scrolls", () =>
       },
     });
     mounted.listeners.selectionchange();
-    const button = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    const button = mounted.findAll((node) => node.classList && node.classList.contains("md-add-comment"))[0];
     const pitch = 18 * 1.2;
     assert.equal(button.hidden, false);
     assert.equal(button.styleProps.top, `${58 + pitch / 2}px`);
@@ -7473,7 +7625,7 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(label.parentElement, openedMenu.row);
     assert.equal(mounted.aside.childNodes[0].classList.contains("md-attach-input"), true);
     chooseFox();
-    const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    const add = mounted.findAll((node) => node.classList && node.classList.contains("md-add-comment"))[0];
     add.listeners.mousedown({ button: 0, preventDefault() {} });
     assert.equal(fresh.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n");
     assert.equal(buttons("Resolve").length, 0);
@@ -8067,7 +8219,7 @@ test("comment cards mark the thread being acted on", () => {
       },
     });
     mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
-    const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    const add = mounted.findAll((node) => node.classList && node.classList.contains("md-add-comment"))[0];
     add.listeners.mousedown({ button: 0, preventDefault() {} });
     assert.equal(fresh.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n\n```\n");
     assert.equal(currentCards().length, 1);
@@ -8551,7 +8703,7 @@ test("a comment note keeps the poster who saved it", () => {
       },
     });
     mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
-    const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    const add = mounted.findAll((node) => node.classList && node.classList.contains("md-add-comment"))[0];
     add.listeners.mousedown({ button: 0, preventDefault() {} });
     assert.equal(authors()[0].textContent, "Ada");
     assert.equal(times().length, 0);
@@ -9714,7 +9866,7 @@ test("a comment.add focuses the id the doc message added", () => {
       },
     });
     mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
-    const add = mounted.findAll((node) => node.className === "md-add-comment")[0];
+    const add = mounted.findAll((node) => node.classList && node.classList.contains("md-add-comment"))[0];
     add.listeners.mousedown({ button: 0, preventDefault() {} });
     assert.equal(view.getState().doc, "hello fox two deer\n");
     assert.equal(view.getState().anchor, 6);
@@ -15773,7 +15925,7 @@ test("a saved note opens only for its author", () => {
       },
     });
     mounted.listeners.mouseup({ clientX: 30, clientY: 12 });
-    mounted.findAll((node) => node.className === "md-add-comment")[0].listeners.mousedown({ button: 0, preventDefault() {} });
+    mounted.findAll((node) => node.classList && node.classList.contains("md-add-comment"))[0].listeners.mousedown({ button: 0, preventDefault() {} });
     areas()[0].value = "hi";
     press("Save");
     const saved = fresh.getState().doc;
