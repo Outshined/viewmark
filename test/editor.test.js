@@ -7192,6 +7192,7 @@ test("agrd2gk6: the highlight add-comment control draws the corner pin's balloon
     assert.equal(button.hidden, false);
     assert.equal(button.classList.contains("icon-btn"), true);
     assert.equal(button.getAttribute("aria-label"), "Add comment");
+    assert.equal(button.getAttribute("title"), "Add comment");
     assert.equal(button.textContent, "");
     assert.equal(button.type, "button");
     const pitch = rect.height * 1.2;

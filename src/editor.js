@@ -4260,6 +4260,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (typeof addCommentButton.setAttribute === "function") {
         addCommentButton.setAttribute("type", "button");
         addCommentButton.setAttribute("aria-label", "Add comment");
+        addCommentButton.setAttribute("title", "Add comment");
       }
       const icon = strokeIcon(COMMENT_BALLOON);
       if (icon) addCommentButton.appendChild(icon);
