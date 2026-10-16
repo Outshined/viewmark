@@ -300,7 +300,7 @@ for (const kind of ["rendered", "raw"]) {
     // The left quarter of a glyph is nearest the boundary before it, and the right quarter is
     // nearest the boundary after it, where a click there puts the caret. These places are in the
     // right quarter of a glyph, outside every highlight.
-    test(`the ${edge} handle held in ${block}: with the pointer in the right quarter of a glyph, the highlight ends at the boundary after that glyph, where a click there puts the caret, and the release stores that range (ticket arh58dxz)`, async (t) => {
+    test(`the ${edge} handle held in ${block}: with the pointer in the right quarter of a glyph, the highlight ends at the boundary after that glyph, where a click there puts the caret, and the release stores that range (tickets arh58dxz, uz5rme4t)`, async (t) => {
       const file = `${kind}-${edge}-right.md`;
       const { hub, page } = await setup(t, { [file]: DOC });
       await open(page, file);
@@ -404,7 +404,7 @@ async function measureGaps(t, placements) {
           assert.ok(await page.clickOffset(0));
           await page.quiet();
           await arrowTo(page, at.first + 1);
-        } else if (placement === "inside the highlight, by a click on it") assert.ok(await page.clickOffset(at.first + 1));
+        }
         await page.quiet();
         const measured = await gaps(page, at.offsets);
         assert.equal(measured.missing, undefined, `${placement}: a glyph is missing in ${side}-${i}.md`);
@@ -420,28 +420,14 @@ async function measureGaps(t, placements) {
 const report = (rows, gap) => rows.map((row) => `${JSON.stringify(row.sample)} with the caret ${row.placement}: ${gap} gap ${row.marked[gap].toFixed(2)} px${row.marked.current ? " (comment current)" : ""}, with no comment ${row.plain[gap].toFixed(2)} px`).join("; ");
 
 const OFF_OR_KEYS = ["before the highlight", "after the highlight", "inside the highlight, by arrow keys"];
-const CLICKED = ["inside the highlight, by a click on it"];
 
 test("the end-marker gap: with the caret in the paragraph, before the highlight, after it, or inside it by arrow keys, the highlight's last character is as far from the next character as with no comment, within 1 px (ticket arh58dxz)", async (t) => {
   const rows = await measureGaps(t, OFF_OR_KEYS);
   assert.ok(rows.every((row) => Math.abs(row.marked.end - row.plain.end) <= 1), report(rows, "end"));
 });
 
-// The ticket body's criterion for the gap before the highlight. Thread c2 on the ticket asks the
-// owner to confirm it; this checks the criterion as the body states it.
+// The ticket body's criterion for the gap before the highlight, as the body states it.
 test("the start-marker gap: with the caret in the paragraph, before the highlight, after it, or inside it by arrow keys, the character before the highlight is as far from its first character as with no comment, within 1 px (ticket arh58dxz)", async (t) => {
   const rows = await measureGaps(t, OFF_OR_KEYS);
-  assert.ok(rows.every((row) => Math.abs(row.marked.start - row.plain.start) <= 1), report(rows, "start"));
-});
-
-// A click on the highlight puts the caret in the paragraph and makes the comment current, which
-// draws a border around the highlight. The criterion names no exception for it.
-test("the end-marker gap: with the caret put in the paragraph by a click on the highlight, which makes the comment current, the highlight's last character is as far from the next character as with no comment, within 1 px (ticket arh58dxz)", async (t) => {
-  const rows = await measureGaps(t, CLICKED);
-  assert.ok(rows.every((row) => Math.abs(row.marked.end - row.plain.end) <= 1), report(rows, "end"));
-});
-
-test("the start-marker gap: with the caret put in the paragraph by a click on the highlight, which makes the comment current, the character before the highlight is as far from its first character as with no comment, within 1 px (ticket arh58dxz)", async (t) => {
-  const rows = await measureGaps(t, CLICKED);
   assert.ok(rows.every((row) => Math.abs(row.marked.start - row.plain.start) <= 1), report(rows, "start"));
 });
