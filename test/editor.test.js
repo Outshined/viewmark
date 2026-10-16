@@ -10586,6 +10586,8 @@ test("T-ticket-rows", () => {
   assert.match(wideRule, /width:\s*80vw/);
   assert.match(wideRule, /z-index:\s*4/);
   assert.match(wideRule, /transition:\s*width 0\.5s,\s*left 0\.5s/);
+  assert.equal(/opacity/.test(drawerRule), false);
+  assert.equal(/opacity/.test(wideRule), false);
   assert.equal(/top:\s*0/.test(wideRule), false);
   assert.equal(/bottom:\s*0/.test(wideRule), false);
   assert.match(css, /\.ticket-tree \.md-ticket-row:hover\s*\{[^}]*background:\s*#2c3440/);
@@ -10816,8 +10818,15 @@ test("T-ticket-rows", () => {
       assert.equal(pending.length, 1);
       assert.equal(pending[0].ms, 200);
       const hide = pending.pop();
-      drawer.styleProps.transition = "none";
       hide.fn();
+      assert.equal(drawer.classList.contains("md-ticket-wide"), true);
+      assert.equal(drawer.styleProps.top, "0px");
+      assert.equal(drawer.styleProps.height, "10px");
+      assert.equal(drawer.styleProps.width, "20px");
+      assert.equal(pending.length, 1);
+      assert.equal(pending[0].ms, 500);
+      drawer.styleProps.transition = "none";
+      pending.pop().fn();
       assert.equal(drawer.classList.contains("md-ticket-wide"), false);
       assert.equal(drawer.styleProps.top, "");
       assert.equal(drawer.styleProps.height, "");
@@ -11182,6 +11191,36 @@ test("T-ticket-drawer", () => {
     hide.fn();
     assert.equal(drawer.hidden, false);
     assert.equal(drawer.hasAttribute("hidden"), false);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
+    assert.equal(drawer.styleProps.top, "0px");
+    assert.equal(drawer.styleProps.height, "10px");
+    assert.equal(drawer.styleProps.width, "20px");
+    assert.equal(drawer.styleProps.opacity, undefined);
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].ms, 500);
+    block.listeners.pointerleave();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].ms, 500);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
+    assert.equal(drawer.styleProps.width, "20px");
+    block.listeners.pointerenter();
+    assert.equal(pending.length, 0);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
+    assert.equal(drawer.styleProps.width, "80vw");
+    assert.equal(drawer.styleProps.top, "0px");
+    assert.equal(drawer.styleProps.height, "10px");
+    block.listeners.pointerleave();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].ms, 200);
+    pending.pop().fn();
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
+    assert.equal(pending[0].ms, 500);
+    bravoOpen.listeners.click({ preventDefault() {} });
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].ms, 500);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
+    drawer.styleProps.transition = "none";
+    pending.pop().fn();
     assert.equal(drawer.classList.contains("md-ticket-wide"), false);
     assert.equal(drawer.styleProps.top, "");
     assert.equal(drawer.styleProps.height, "");
@@ -11204,6 +11243,49 @@ test("T-ticket-drawer", () => {
     assert.equal(drawer.hidden, false);
     assert.equal(block.listeners.pointerenter, undefined);
     assert.equal(block.listeners.pointerleave, undefined);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+    mounted.restore();
+  }
+});
+
+test("ticket drawer closes at once when it never measured a column width", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  const pending = [];
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms) => {
+    const handle = { fn, ms };
+    pending.push(handle);
+    return handle;
+  };
+  globalThis.clearTimeout = (handle) => {
+    const index = pending.indexOf(handle);
+    if (index >= 0) pending.splice(index, 1);
+  };
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const block = byClass(mounted.nav, "ticket-block")[0];
+    const drawer = byClass(block, "md-ticket-drawer")[0];
+    drawer.getBoundingClientRect = () => null;
+    block.listeners.pointerenter();
+    assert.equal(drawer.classList.contains("md-ticket-wide"), true);
+    assert.equal(drawer.styleProps.width, "80vw");
+    assert.equal(drawer.styleProps.top, undefined);
+    block.listeners.pointerleave();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].ms, 200);
+    pending.pop().fn();
+    assert.equal(pending.length, 0);
+    assert.equal(drawer.classList.contains("md-ticket-wide"), false);
+    assert.equal(drawer.styleProps.top, "");
+    assert.equal(drawer.styleProps.height, "");
+    assert.equal(drawer.styleProps.width, "");
+    assert.equal(drawer.styleProps.transition, "");
+    view.destroy();
+    assert.equal(pending.length, 0);
   } finally {
     globalThis.setTimeout = realSetTimeout;
     globalThis.clearTimeout = realClearTimeout;
