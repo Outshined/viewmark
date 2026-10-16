@@ -280,3 +280,55 @@ for (const [name, token] of [
     assert.equal(after.text, before.text);
   });
 }
+
+// ---- The owner's decisions of 2026-10-16 on adding a pin ----------------------------------------
+
+const pictureBox = (page, n = 0) => page.eval(`(() => { const i = document.querySelectorAll(".md-image img")[${n}]; if (!i || !i.complete || !i.naturalWidth) return null; const r = i.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; })()`);
+
+// The draggable pin drawn in a picture's top right corner, if any.
+const cornerPin = (page, img) => page.eval(`(() => {
+  const near = [...document.querySelectorAll("[draggable=true]")].filter((el) => {
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    return cx >= ${img.right} - 40 && cx <= ${img.right} + 4 && cy >= ${img.top} - 4 && cy <= ${img.top} + 40;
+  });
+  return near.length;
+})()`);
+
+test("4m94ewju: after a pin is dropped on a picture, the picture stays drawn and the caret is on a line above or below the image line", async (t) => {
+  const text = "Intro.\n\n![box](box.svg)\n\nEnd.\n";
+  const { page } = await setup(t, text);
+  const img = await waitFor(() => pictureBox(page), "the picture drawn");
+  assert.ok(await page.clickOffset(text.indexOf("End.") + 2));
+  await page.quiet();
+  const x = img.left + 0.5 * img.width;
+  const y = img.top + 0.5 * img.height;
+  await page.eval(`(() => {
+    const source = document.querySelector(".md-pin-source") || [...document.querySelectorAll("[draggable=true]")].find((el) => el.closest(".md-image"));
+    const data = new DataTransfer();
+    source.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: data }));
+    const target = document.elementFromPoint(${x}, ${y});
+    for (const type of ["dragenter", "dragover", "drop"]) target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, clientX: ${x}, clientY: ${y}, dataTransfer: data }));
+    return true;
+  })()`);
+  await page.quiet();
+  await sleep(500);
+  assert.ok(await pictureBox(page), "the picture is not drawn after the pin");
+  const line = { from: text.indexOf("![box]"), to: text.indexOf("![box]") + "![box](box.svg)".length };
+  const caret = await page.caret();
+  if (caret.focus != null) assert.ok(caret.focus < line.from || caret.focus > line.to, `the caret is on the image line, at ${caret.focus}`);
+});
+
+test("4m94ewju: a pointer over a picture shows a draggable pin in its top right corner, and it goes when the pointer leaves, for each picture", async (t) => {
+  const { page } = await setup(t, "Intro.\n\n![box](box.svg)\n\nMiddle.\n\n![box](box.svg)\n\nEnd.\n");
+  for (const n of [0, 1]) {
+    const img = await waitFor(() => pictureBox(page, n), `picture ${n + 1} drawn`);
+    await page.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: img.left + img.width / 2, y: img.top + img.height / 2 });
+    await sleep(300);
+    assert.equal(await cornerPin(page, img), 1, `no draggable pin in picture ${n + 1}'s top right corner while the pointer is over it`);
+    await page.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: img.right + 300, y: img.bottom + 200 });
+    await sleep(300);
+    assert.equal(await cornerPin(page, img), 0, `picture ${n + 1}'s pin stays after the pointer leaves`);
+  }
+});
