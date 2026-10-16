@@ -6,7 +6,7 @@ From this directory the command is `node cli.js`. The same program is `viewmark`
 
 ## Memories
 
-At the start of a session, read `ai/memories/MEMORY.md` and every memory it points to. Store memories only in `ai/memories/`, one file per memory, and keep one line per memory in `ai/memories/MEMORY.md`. Nothing else holds memories for this project.
+This repository does not hold agent memories. Do not add `ai/memories/` or any other memory file here.
 
 ## Editing documents
 
