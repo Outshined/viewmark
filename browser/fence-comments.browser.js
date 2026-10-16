@@ -127,14 +127,14 @@ test("4m94ewju: a second range on the same fence is the next comment fence, and 
   assert.ok(after.includes(`Both returns.\n\`\`\`\n\`\`\`comment c2 4\n`), JSON.stringify(after));
 });
 
-test("4m94ewju: with vim keys on, v and gj from line 2 to line 3 of a fence, then gc, write the range 2-3", async (t) => {
+test("4m94ewju: with vim keys on, V and j from line 2 to line 3 of a fence, then gc, write the range 2-3", async (t) => {
   const text = `Intro.\n\n${FENCE}\nEnd.\n`;
   const { hub, page, file } = await setup(t, text, { vim: true });
   assert.ok(await page.clickOffset(text.indexOf("  return 1;") + 2));
   await page.quiet();
   await page.key("Escape");
-  // A fence is one vim line in the rendered view (R112), so gj, by drawn row, reaches line 3.
-  for (const k of ["v", "g", "j", "g", "c"]) await page.key(k);
+  // Inside a code fence, j moves one line of code, as in stock vim (g92jk6em).
+  for (const k of ["V", "j", "g", "c"]) await page.key(k);
   await page.until(() => page.eval(`document.activeElement && document.activeElement.classList.contains("md-comment-body")`), "the note box");
   await page.type("Two lines.");
   await page.key("Enter", ["Ctrl"]);
