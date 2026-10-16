@@ -224,6 +224,55 @@ async function createDest(rootDir, rel) {
   return path.join(parentReal, base);
 }
 
+// A directory already on disk under another spelling is that segment.
+// The new file goes there, so create does not add a second directory beside it.
+async function resolveStoredRel(rootDir, rel) {
+  const parts = rel.split("/");
+  const base = parts.pop();
+  const used = [];
+  let parent = rootDir;
+  let i = 0;
+  for (; i < parts.length; i += 1) {
+    const segment = parts[i];
+    let entries;
+    try {
+      entries = await fs.readdir(parent, { withFileTypes: true });
+    } catch (err) {
+      if (err && err.code === "ENOENT") break;
+      return null;
+    }
+    const names = [];
+    for (const entry of entries) {
+      if (!segmentUsable(entry.name)) continue;
+      if (entry.isSymbolicLink()) {
+        let info;
+        try {
+          info = await fs.stat(path.join(parent, entry.name));
+        } catch {
+          continue;
+        }
+        if (!info.isDirectory()) continue;
+      } else if (!entry.isDirectory()) continue;
+      names.push(entry.name);
+    }
+    if (names.includes(segment)) {
+      used.push(segment);
+      parent = path.join(parent, segment);
+      continue;
+    }
+    const matches = names.filter((name) => normalizeSegment(name) === segment);
+    if (matches.length > 1) return { conflict: true };
+    if (matches.length === 1) {
+      used.push(matches[0]);
+      parent = path.join(parent, matches[0]);
+      continue;
+    }
+    break;
+  }
+  used.push(...parts.slice(i));
+  return { rel: used.length === 0 ? base : `${used.join("/")}/${base}` };
+}
+
 async function resolveInside(rootDir, rel) {
   const found = await walkTree(rootDir, rel);
   if (!found) return null;
@@ -250,7 +299,30 @@ function isTicketTree(rel) {
 }
 
 function isMarkdownPath(rel) {
-  return rel.endsWith(".md") || rel.endsWith(".markdown");
+  return typeof rel === "string" && (rel.endsWith(".md") || rel.endsWith(".markdown"));
+}
+
+function normalizeSegment(part) {
+  return part.toLowerCase().replace(/[^\p{L}\p{Nd}]+/gu, "-").replace(/^-+|-+$/g, "");
+}
+
+function segmentUsable(name) {
+  return name !== "" && name !== "." && name !== ".." && name !== ".git";
+}
+
+// Create stores one spelling. A later create of another spelling is that same document.
+export function normalizeDocRel(rel) {
+  if (!isMarkdownPath(rel)) return null;
+  const suffix = rel.endsWith(".markdown") ? ".markdown" : ".md";
+  const stem = rel.slice(0, -suffix.length);
+  if (stem.length === 0) return null;
+  const slugged = [];
+  for (const part of stem.split("/")) {
+    const next = normalizeSegment(part);
+    if (next.length === 0) return null;
+    slugged.push(next);
+  }
+  return `${slugged.join("/")}${suffix}`;
 }
 
 // A comment may sit on a ticket document. The tickets directory, a deeper
@@ -691,6 +763,20 @@ async function listMarkdown(dir, prefix = "", stack = null) {
   }
   out.sort();
   return out;
+}
+
+// A document already on disk under another spelling is the same path.
+async function createTaken(repo, rel) {
+  if (repo.files.has(rel)) return true;
+  if (await existsPath(path.resolve(repo.path, rel))) return true;
+  for (const cached of repo.files.keys()) {
+    if (normalizeDocRel(cached) === rel) return true;
+  }
+  const listed = await listMarkdown(repo.path, "");
+  for (const item of listed) {
+    if (normalizeDocRel(item) === rel) return true;
+  }
+  return false;
 }
 
 function headingTitle(text) {
@@ -1971,25 +2057,30 @@ export async function createHub(stateDir, sourceRoot) {
     if (!repo) return fail(socket, 400);
     const files = repo.files;
     const docsDir = repo.path;
-    const rel = safeRel(msg.path);
-    if (!rel) return fail(socket, 404);
+    const raw = safeRel(msg.path);
+    if (!raw) return fail(socket, 404);
+    if (raw === "tickets" || raw.startsWith("tickets/")) return fail(socket, 400);
+    if (!isMarkdownPath(raw)) return fail(socket, 400);
+    const rel = normalizeDocRel(raw);
+    if (!rel || rel.length > 1024) return fail(socket, 400);
     if (rel === "tickets" || rel.startsWith("tickets/")) return fail(socket, 400);
-    if (!rel.endsWith(".md") && !rel.endsWith(".markdown")) return fail(socket, 400);
     let text = "";
     if (Object.prototype.hasOwnProperty.call(msg, "text")) {
       if (typeof msg.text !== "string") return fail(socket, 400);
       text = msg.text;
     }
-    if (files.has(rel)) return fail(socket, 409);
-    const full = path.resolve(docsDir, rel);
-    if (await existsPath(full)) return fail(socket, 409);
-    const dest = await createDest(docsDir, rel);
+    if (await createTaken(repo, rel)) return fail(socket, 409);
+    const placed = await resolveStoredRel(docsDir, rel);
+    if (!placed) return fail(socket, 404);
+    if (placed.conflict) return fail(socket, 409);
+    const stored = placed.rel;
+    const dest = await createDest(docsDir, stored);
     if (!dest) return fail(socket, 404);
     if (await existsPath(dest)) return fail(socket, 409);
     await writeAtomic(dest, text);
-    files.set(rel, { rel, full: dest, rev: 0, text, subscribers: new Set(), locks: new Map() });
+    files.set(stored, { rel: stored, full: dest, rev: 0, text, subscribers: new Set(), locks: new Map() });
     broadcastDocs(repo, await docsPayload(repo));
-    await onOpen(socket, { path: rel });
+    await onOpen(socket, { path: stored });
   }
 
   async function onTickets(socket) {

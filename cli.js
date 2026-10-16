@@ -92,6 +92,7 @@ attach:
 
 create:
   The body is stdin when stdin is not a terminal. A terminal sends an empty body. --file PATH reads that file instead and does not read stdin.
+  The hub stores each segment in lowercase, with other characters as dashes. stdout is that stored path. A directory already stored under another spelling of a segment is reused. An empty segment is 400. A stored path that already exists, or two directories that normalize to the same segment, is 409.
 
 ticket:
   list [--closed], show <id>, create --title TEXT [--state STATE] [--type TYPE] [--priority PRIORITY] [--assignee NAME], set <id>, delete <id>, purge.

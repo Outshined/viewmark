@@ -56,7 +56,7 @@ async function setup(t, docs) {
     if (ctx.browser) await ctx.browser.close();
     await hub.close();
   });
-  for (const [file, text] of Object.entries(docs)) await hub.create(file, text);
+  for (const [file, text] of Object.entries(docs)) hub.plant(file, text);
   return ctx;
 }
 

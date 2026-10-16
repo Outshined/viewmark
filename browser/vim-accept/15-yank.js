@@ -122,19 +122,19 @@ test("VY.1 (ticket 7vdep2z4)", async (t) => {
   });
 
   await part("Y", async () => {
-    const upper = await openMarked(hub, page, "vy1-Y.md", "‸alpha\n\nbeta\n", false);
+    const upper = await openMarked(hub, page, "vy1-upper-y.md", "‸alpha\n\nbeta\n", false);
     await keys(page, "Y");
-    await unchanged(hub, "vy1-Y.md", upper);
+    await unchanged(hub, "vy1-upper-y.md", upper);
     await keys(page, "p");
-    await expectMarked(hub, page, "vy1-Y.md", "alpha\n\n‸alpha\n\nbeta\n", upper.rev + 1);
+    await expectMarked(hub, page, "vy1-upper-y.md", "alpha\n\n‸alpha\n\nbeta\n", upper.rev + 1);
   });
 
   await part("P", async () => {
-    const before = await openMarked(hub, page, "vy1-P.md", "‸alpha\n\nbeta\n", false);
+    const before = await openMarked(hub, page, "vy1-upper-p.md", "‸alpha\n\nbeta\n", false);
     await keys(page, "y", "y");
-    await unchanged(hub, "vy1-P.md", before);
+    await unchanged(hub, "vy1-upper-p.md", before);
     await keys(page, "P");
-    await expectMarked(hub, page, "vy1-P.md", "‸alpha\nalpha\n\nbeta\n", before.rev + 1);
+    await expectMarked(hub, page, "vy1-upper-p.md", "‸alpha\nalpha\n\nbeta\n", before.rev + 1);
   });
 
   await part("raw", async () => {
@@ -183,13 +183,13 @@ test("VY.4 (ticket 7vdep2z4)", async (t) => {
 test("VY.5 (ticket 7vdep2z4)", async (t) => {
   const { hub, page } = await setup(t);
 
-  const word = await openMarked(hub, page, "vy5-P.md", "‸alpha beta\n", false);
+  const word = await openMarked(hub, page, "vy5-upper-p.md", "‸alpha beta\n", false);
   await keys(page, "y", "w");
-  await unchanged(hub, "vy5-P.md", word);
+  await unchanged(hub, "vy5-upper-p.md", word);
   await keys(page, "w");
-  await unchanged(hub, "vy5-P.md", word);
+  await unchanged(hub, "vy5-upper-p.md", word);
   await keys(page, "P");
-  await expectMarked(hub, page, "vy5-P.md", "alpha ‸alpha beta\n", word.rev + 1);
+  await expectMarked(hub, page, "vy5-upper-p.md", "alpha ‸alpha beta\n", word.rev + 1);
 
   const cut = await openMarked(hub, page, "vy5-p.md", "‸ab\n", false);
   await keys(page, "x");

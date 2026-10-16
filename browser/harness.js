@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import net from "node:net";
-import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -108,6 +108,17 @@ export async function startHub() {
     async create(file, text) {
       const made = await cli(port, ["--user", USER, "--repo", REPO, "create", file], text);
       if (made.code !== 0) throw new Error(`create ${file}: ${made.stderr}`);
+      const stored = made.stdout.trim();
+      if (!stored) throw new Error(`create ${file}: no path`);
+      return stored;
+    },
+    // A document that was already stored, including a name create would rewrite.
+    plant(file, text) {
+      const parts = String(file).split("/");
+      if (parts.some((part) => part === "" || part === "." || part === "..")) throw new Error(`plant ${file}`);
+      const full = path.join(repo, ...parts);
+      mkdirSync(path.dirname(full), { recursive: true });
+      writeFileSync(full, text ?? "");
     },
     edit(file, diff, user = AGENT) {
       return cli(port, ["--user", user, "--repo", REPO, "edit", file], diff);
