@@ -714,9 +714,9 @@ test("the add-comment button: after the page scrolls under the pointer, is half 
 });
 
 // Ticket mar9nkqb, the owner's answer of 2026-10-13: when the button's place under the highlight
-// is not inside the window, the page makes room for it there. QA's reading: for a selection just
-// made, the page scrolls until the whole button is inside the window, and at the end of the
-// document it adds room to scroll into. A scroll the person makes is left alone.
+// is not inside the window, the page makes room for it there. The owner made that exact on
+// 2026-10-15, closing jya6tkt4: the page extends so the person can scroll to the button, and it
+// need not scroll there by itself. A scroll the person makes is left alone.
 const ROOM = Array.from({ length: 60 }, (_, i) => `Filler paragraph ${i + 1} holds the word mark${i + 1}x here.`).join("\n\n") + "\n\nThe last paragraph ends with omega.\n";
 
 // Scrolls the page until the line holding `word` ends at the bottom of the window, or as far as
@@ -739,7 +739,7 @@ function lineToBottom(page, word) {
 }
 
 for (const [name, word] of [["a word on the window's last line", "mark30x"], ["the last word of the document, scrolled to its end", "omega"]]) {
-  test(`the add-comment button: ${name}, double-clicked, the page makes room and the button is half a line below the highlight, in the window (ticket mar9nkqb)`, async (t) => {
+  test(`the add-comment button: ${name}, double-clicked, the button is half a line below the highlight, and the page extends so a scroll shows it whole (tickets mar9nkqb, jya6tkt4)`, async (t) => {
     const { page } = await setup(t, { "a.md": ROOM });
     await open(page, "a.md");
     await place(page, 0);
@@ -751,8 +751,14 @@ for (const [name, word] of [["a word on the window's last line", "mark30x"], ["t
     await page.click(point.x, point.y, { clickCount: 2 });
     await page.quiet();
     await sleep(400);
+    // Below the window, the person scrolls by the overflow. A page that did not extend stops short.
+    const below = await page.eval(`(() => { const b = document.querySelector("button.md-add-comment, .md-add-comment"); return b ? Math.max(0, Math.ceil(b.getBoundingClientRect().bottom - innerHeight) + 4) : 0; })()`);
+    if (below > 0) {
+      await page.session.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: 900, y: 400, deltaX: 0, deltaY: below });
+      await sleep(400);
+    }
     const at = await buttonPlace(page);
-    assertPlaced(at, `${name}, its line's bottom at y ${Math.round(moved.bottom)} in a ${moved.height} px window before the double-click`);
+    assertPlaced(at, `${name}, its line's bottom at y ${Math.round(moved.bottom)} in a ${moved.height} px window before the double-click, then scrolled ${below} px`);
   });
 }
 
