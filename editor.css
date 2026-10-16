@@ -1538,18 +1538,8 @@ a.md-link {
 
 .md-add-comment {
   z-index: 7;
-  box-sizing: border-box;
   margin: 0;
-  width: max-content;
-  max-width: 20rem;
-  white-space: nowrap;
-  font: inherit;
-  font-size: 0.85rem;
-  padding: 0.2rem 0.5rem;
-  border: 1px solid #5c574e;
-  background: #2a2826;
   color: #e7e2d8;
-  border-radius: 4px;
   cursor: pointer;
 }
 

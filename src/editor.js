@@ -4216,8 +4216,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!addCommentButton) {
       addCommentButton = document.createElement("button");
       addCommentButton.type = "button";
-      addCommentButton.className = "md-add-comment";
-      addCommentButton.textContent = "Add comment";
+      addCommentButton.className = "md-add-comment icon-btn";
+      if (typeof addCommentButton.setAttribute === "function") {
+        addCommentButton.setAttribute("type", "button");
+        addCommentButton.setAttribute("aria-label", "Add comment");
+      }
+      const icon = strokeIcon(COMMENT_BALLOON);
+      if (icon) addCommentButton.appendChild(icon);
       addCommentButton.hidden = true;
       host.appendChild(addCommentButton);
       addCommentButton.addEventListener("mousedown", (event) => {
