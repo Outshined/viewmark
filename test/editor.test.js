@@ -7979,6 +7979,57 @@ test("77fvpzwf: a pin card sits on the pin tip, and a click opens the thread wit
   }
 });
 
+test("77fvpzwf: a picture load puts each pin card beside its tip", () => {
+  const mounted = mountSheet();
+  const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+  const card = (id) => cards().find((node) => node.dataset.comment === id);
+  const pins = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-pin"));
+  const topOf = (id) => Number.parseFloat(card(id).styleProps.top);
+  const note = (id, y, text) => `\`\`\`comment ${id} 0.50,${y}\n:: 0\n@2026-10-16T15:00:00.000Z qa\n${text}\n\`\`\`\n`;
+  try {
+    const doc = `Intro.\n\n![a](a.png)\n${note("c1", "0.10", "One.")}${note("c2", "0.50", "Two.")}${note("c3", "0.90", "Three.")}`;
+    globalThis.window.matchMedia = () => ({ matches: false });
+    const view = createEditor(mounted.root, doc, 0);
+    const img = mounted.findAll((node) => node.tagName === "IMG")[0];
+    assert.equal(pins().length, 3);
+    assert.equal(typeof img.listeners.load, "function");
+    assert.deepEqual(cards().map((node) => node.dataset.comment), ["c1", "c2", "c3"]);
+    const stacked = [topOf("c1"), topOf("c2"), topOf("c3")];
+    assert.deepEqual(stacked, [12, 54, 96]);
+
+    const tips = { c1: 400, c2: 640, c3: 880 };
+    mounted.aside.getBoundingClientRect = () => ({
+      top: 0, left: 0, right: 320, bottom: 900, width: 320, height: 900,
+    });
+    for (const pin of pins()) {
+      const id = pin.dataset.comment;
+      pin.getBoundingClientRect = () => {
+        const tip = tips[id];
+        return { top: tip - 24, left: 40, right: 64, bottom: tip, width: 24, height: 24 };
+      };
+    }
+    assert.deepEqual([topOf("c1"), topOf("c2"), topOf("c3")], stacked);
+    const scrolled = [];
+    globalThis.window.scrollX = 0;
+    globalThis.window.scrollY = 400;
+    globalThis.window.scrollTo = (x, y) => { scrolled.push([x, y]); };
+    img.listeners.load();
+    assert.deepEqual([topOf("c1"), topOf("c2"), topOf("c3")], [400, 640, 880]);
+    assert.deepEqual(scrolled, []);
+
+    tips.c1 = 200;
+    tips.c2 = 210;
+    tips.c3 = 500;
+    img.listeners.load();
+    assert.equal(topOf("c1"), 200);
+    assert.equal(topOf("c2"), 242);
+    assert.equal(topOf("c3"), 500);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("comment cards start below the shown comment controls", () => {
   const mounted = mountSheet();
   let onResize = null;
