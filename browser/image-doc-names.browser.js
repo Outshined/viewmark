@@ -30,12 +30,19 @@ function getRaw(port, address) {
 
 const run = (hub, args, input = "") => cli(hub.port, ["--user", AGENT, "--repo", REPO, ...args], input);
 
-// The image lines the hub wrote, each a whole line: ![NAME](ADDRESS), the name being the
-// address's last part.
+// The image lines the hub wrote, each a whole line. A path a bare CommonMark
+// address cannot hold is written <PATH>. The address is that path, brackets
+// off and backslash escapes undone, and the name is its last part.
 function imageLines(text) {
   return text.split("\n").flatMap((line) => {
-    const m = /^!\[([^\]]+)\]\((.+)\/\1\)$/.exec(line);
-    return m ? [{ line, name: m[1], address: `${m[2]}/${m[1]}` }] : [];
+    const m = /^!\[([^\]]+)\]\((.*)\)$/.exec(line);
+    if (!m) return [];
+    let address = m[2];
+    if (address.startsWith("<") && address.endsWith(">")) {
+      address = address.slice(1, -1).replace(/\\([!-/:-@[-`{-~])/g, "$1");
+    }
+    if (!address.endsWith(`/${m[1]}`)) return [];
+    return [{ line, name: m[1], address }];
   });
 }
 

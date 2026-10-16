@@ -14,7 +14,7 @@ import {
   moveText,
   lockIndexAt,
   lockSpans,
-  addressEnd,
+  readDestination,
   offsetAt,
   parseCommentNotes,
   parseUnifiedDiff,
@@ -1213,8 +1213,33 @@ export function imageRangePlacement(doc, lo, hi, imageLine) {
   };
 }
 
+// A bare address cannot hold a space, a tab, a control character, a leading <,
+// a backslash, or an unbalanced parenthesis. Those paths go in angle brackets
+// so a CommonMark viewer resolves the same file the page draws.
+function destinationNeedsBrackets(rel) {
+  if (typeof rel !== "string" || rel.length === 0 || rel[0] === "<") return true;
+  let depth = 0;
+  for (let i = 0; i < rel.length; i += 1) {
+    const ch = rel[i];
+    if (ch === "\\") return true;
+    const code = ch.charCodeAt(0);
+    if (code <= 0x20 || code === 0x7f) return true;
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      if (depth === 0) return true;
+      depth -= 1;
+    }
+  }
+  return depth !== 0;
+}
+
+function destinationText(rel) {
+  if (!destinationNeedsBrackets(rel)) return rel;
+  return `<${String(rel).replace(/[\\<>]/g, (ch) => `\\${ch}`)}>`;
+}
+
 export function imageLineFor(dir, file) {
-  return `![${file}](${dir}/${file})`;
+  return `![${file}](${destinationText(`${dir}/${file}`)})`;
 }
 
 // Eight draws, same as a new ticket. A name already in the text or in occupied is skipped.
@@ -1222,12 +1247,13 @@ export function imageFileName(dir, ext, text, occupied, random = Math.random) {
   const blocked = new Set();
   const body = typeof text === "string" ? text : "";
   const hold = occupied instanceof Set ? occupied : new Set();
+  const urls = new Set(imageAddresses(body).map((item) => item.url));
   for (let round = 0; round < 8; round += 1) {
     const id = allocateImageId((candidate) => blocked.has(candidate), random);
     if (!id) return null;
     const file = `${id}.${ext}`;
     const rel = `${dir}/${file}`;
-    if (body.includes(`](${rel})`) || hold.has(file) || hold.has(rel)) {
+    if (urls.has(rel) || hold.has(file) || hold.has(rel)) {
       blocked.add(id);
       continue;
     }
@@ -1253,7 +1279,8 @@ async function listAssetNames(rootDir, dirRel) {
   return names;
 }
 
-// A space, a tab, or a parenthesis in a document name is part of the address.
+// The path is the destination a CommonMark viewer reads. Brackets around it are
+// not part of that path. An unclosed ![alt]( does not run on to the next picture.
 function imageAddresses(text) {
   const found = [];
   if (typeof text !== "string") return found;
@@ -1266,13 +1293,13 @@ function imageAddresses(text) {
       index = bang + 2;
       continue;
     }
-    const urlEnd = addressEnd(text, labelEnd + 1);
-    if (urlEnd < 0) {
+    const dest = readDestination(text, labelEnd + 1);
+    if (!dest) {
       index = labelEnd + 2;
       continue;
     }
-    found.push({ urlStart: labelEnd + 2, urlEnd, url: text.slice(labelEnd + 2, urlEnd) });
-    index = urlEnd + 1;
+    found.push({ urlStart: labelEnd + 2, urlEnd: dest.end, url: dest.url });
+    index = dest.end + 1;
   }
   return found;
 }
@@ -1293,9 +1320,9 @@ export function rewriteImageDirs(text, fromDir, toDir) {
   let changed = false;
   for (const item of imageAddresses(text)) {
     parts.push(text.slice(index, item.urlStart));
-    if (!localImageUrl(item.url) || !item.url.startsWith(from)) parts.push(item.url);
+    if (!localImageUrl(item.url) || !item.url.startsWith(from)) parts.push(text.slice(item.urlStart, item.urlEnd));
     else {
-      parts.push(`${to}${item.url.slice(from.length)}`);
+      parts.push(destinationText(`${to}${item.url.slice(from.length)}`));
       changed = true;
     }
     index = item.urlEnd;

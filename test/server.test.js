@@ -9,7 +9,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { start } from "../server.js";
-import { allocateImageId, assetDirOf, imageFileName, imageKind, imagePlacement, imageRangePlacement, normalizeDocRel, readBuild, rewriteImageDirs } from "../src/hub.js";
+import { allocateImageId, assetDirOf, imageFileName, imageKind, imageLineFor, imagePlacement, imageRangePlacement, normalizeDocRel, readBuild, rewriteImageDirs } from "../src/hub.js";
 import { commentThreads, lockIndexAt, lockSpans, parseCommentNotes, plan, splitCommentNote } from "../src/doc.js";
 import { TICKET_ALPHABET, composeTicket, parseTicket } from "../src/ticket.js";
 import { MAX_PAYLOAD, createParser, encodeFrame } from "../src/ws.js";
@@ -4040,7 +4040,7 @@ test("picture: a space in the document path keeps the file when another document
       const name = imageFile(attached.file.text, "Test Page", "png");
       assert.notEqual(name, "");
       const full = path.join(dir, "Test Page", name);
-      assert.equal(attached.file.text.includes(`(Test Page/${name})`), true);
+      assert.equal(attached.file.text.includes(`![${name}](<Test Page/${name}>)`), true);
       assert.ok((await fs.readFile(full)).equals(PNG));
       const raw = await getRaw(port, `/raw/docs/${encodeURIComponent("Test Page")}/${name}`);
       assert.equal(raw.status, 200);
@@ -4088,12 +4088,9 @@ test("picture: a parenthesis in the document path keeps the file when another do
     const ada = await hello(port, "Ada", "docs", "ada-tab");
     try {
       const attached = await attachBytes(ada, "Ada", rel, PNG, { cursor: 8 });
-      const marker = "(Plan (draft)/";
-      const at = attached.file.text.indexOf(marker);
-      assert.ok(at > 0, attached.file.text);
-      const name = attached.file.text.slice(at + marker.length, attached.file.text.indexOf(")", at + marker.length));
-      assert.match(name, /\.png$/);
-      assert.equal(attached.file.text.includes(`![${name}](Plan (draft)/${name})`), true);
+      const name = imageFile(attached.file.text, "Plan (draft)", "png");
+      assert.notEqual(name, "");
+      assert.equal(attached.file.text.includes(`![${name}](<Plan (draft)/${name}>)`), true);
       const full = path.join(dir, "Plan (draft)", name);
       assert.ok((await fs.readFile(full)).equals(PNG));
       const rawPath = `/raw/docs/${encodeURIComponent("Plan (draft)")}/${name}`;
@@ -4199,7 +4196,8 @@ async function attachBytes(client, username, rel, bytes, extra = {}, timeout = 3
 
 function imageFiles(text, dir, ext) {
   const found = [];
-  const re = new RegExp(`!\\[(${IMAGE_ID}\\.${ext})\\]\\(${dir}/\\1\\)`, "g");
+  const escaped = dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`!\\[(${IMAGE_ID}\\.${ext})\\]\\(<?${escaped}/\\1>?\\)`, "g");
   for (const match of text.matchAll(re)) found.push(match[1]);
   return found;
 }
@@ -4609,16 +4607,46 @@ test("picture: names, kinds, and placement", () => {
   );
   assert.equal(
     rewriteImageDirs("![local](Test Page/abcdefgh.png)\n", "Test Page", "archive/Test Page"),
-    "![local](archive/Test Page/abcdefgh.png)\n",
+    "![local](<archive/Test Page/abcdefgh.png>)\n",
+  );
+  assert.equal(
+    rewriteImageDirs("![local](<Test Page/abcdefgh.png>)\n", "Test Page", "archive/Test Page"),
+    "![local](<archive/Test Page/abcdefgh.png>)\n",
+  );
+  assert.equal(
+    rewriteImageDirs("![local](plain/abcdefgh.png)\n", "plain", "Old Notes/plain"),
+    "![local](<Old Notes/plain/abcdefgh.png>)\n",
   );
   assert.equal(
     rewriteImageDirs("![web](https://example.com/a(b).png)\n![local](Plan (draft)/abcdefgh.png) )\n", "Plan (draft)", "archive/Plan (draft)"),
-    "![web](https://example.com/a(b).png)\n![local](archive/Plan (draft)/abcdefgh.png) )\n",
+    "![web](https://example.com/a(b).png)\n![local](<archive/Plan (draft)/abcdefgh.png>) )\n",
   );
   assert.equal(
     rewriteImageDirs("![local](Plan\t(draft)/abcdefgh.png)\n", "Plan\t(draft)", "box"),
     "![local](box/abcdefgh.png)\n",
   );
+  assert.equal(
+    rewriteImageDirs("Type `![alt](` and then the address.\n\n![abcdefgh.png](span/abcdefgh.png)\n", "span", "archive/span"),
+    "Type `![alt](` and then the address.\n\n![abcdefgh.png](archive/span/abcdefgh.png)\n",
+  );
+  assert.equal(
+    rewriteImageDirs("```\n![alt](\n```\n\n![abcdefgh.png](<My Notes/abcdefgh.png>)\n", "My Notes", "archive/My Notes"),
+    "```\n![alt](\n```\n\n![abcdefgh.png](<archive/My Notes/abcdefgh.png>)\n",
+  );
+  assert.equal(imageLineFor("My Notes", "abcdefgh.png"), "![abcdefgh.png](<My Notes/abcdefgh.png>)");
+  assert.equal(imageLineFor("Tab\there", "abcdefgh.png"), "![abcdefgh.png](<Tab\there/abcdefgh.png>)");
+  assert.equal(imageLineFor("Plan (draft)", "abcdefgh.png"), "![abcdefgh.png](<Plan (draft)/abcdefgh.png>)");
+  assert.equal(imageLineFor("Plan)", "abcdefgh.png"), "![abcdefgh.png](<Plan)/abcdefgh.png>)");
+  assert.equal(imageLineFor("a\\b", "abcdefgh.png"), "![abcdefgh.png](<a\\\\b/abcdefgh.png>)");
+  assert.equal(imageLineFor("plain", "abcdefgh.png"), "![abcdefgh.png](plain/abcdefgh.png)");
+  assert.equal(imageLineFor("sub/deep", "abcdefgh.png"), "![abcdefgh.png](sub/deep/abcdefgh.png)");
+  assert.equal(imageLineFor("a%20b", "abcdefgh.png"), "![abcdefgh.png](a%20b/abcdefgh.png)");
+  assert.equal(imageLineFor("a#b", "abcdefgh.png"), "![abcdefgh.png](a#b/abcdefgh.png)");
+  let bracketAt = 0;
+  const bracketSeq = rollsFor("abcdefgh").concat(rollsFor("23456789"));
+  const bracketed = imageFileName("My Notes", "png", "![abcdefgh.png](<My Notes/abcdefgh.png>)\n", new Set(), () => bracketSeq[bracketAt++]);
+  assert.equal(bracketed.file, "23456789.png");
+  assert.equal(bracketed.rel, "My Notes/23456789.png");
 });
 
 test("picture: a PNG attach is its own paragraph and GET /raw returns the bytes", async () => {
