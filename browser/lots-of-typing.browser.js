@@ -77,6 +77,26 @@ for (const where of ["document", "ticket"]) {
   }
 }
 
+// The owner decided on 2026-10-16 that the caret is drawn after spaces just typed at the end of a
+// line, though two of them are a hidden line break marker (D17).
+for (const where of ["document", "ticket"]) {
+  for (const vim of [true, false]) {
+    test(`xhx944ku: in a ${where}, vim keys ${vim ? "on" : "off"}, each space typed after a period at the end of a line draws the caret further right`, async (t) => {
+      const { page } = await setup(t, where, "# Notes\n\nalpha beta\n", vim);
+      await insertAt(page, "# Notes\n\nalpha beta".length, vim);
+      const xs = [];
+      for (const key of [".", " ", " "]) {
+        await page.key(key);
+        await sleep(300);
+        const caret = await page.caret();
+        assert.ok(caret.rect, `no caret is drawn after ${JSON.stringify(key)}`);
+        xs.push(caret.rect.x);
+      }
+      assert.ok(xs[1] > xs[0] && xs[2] > xs[1], `the caret is drawn at x ${xs.map((x) => Math.round(x)).join(", ")} after the period and each space`);
+    });
+  }
+}
+
 // About eight keys a second, a fast typist's pace.
 const PACE = 120;
 
@@ -121,6 +141,7 @@ for (const [where, seed] of [["document", 3], ["ticket", 2]]) {
       let doc = await show(hub, file);
       let caret = await page.caret();
       let n = 0;
+      let drawn = caret.rect;
       for (const key of walk(seed)) {
         n += 1;
         const before = { doc, focus: caret.focus };
@@ -131,6 +152,10 @@ for (const [where, seed] of [["document", 3], ["ticket", 2]]) {
         const r = caret.rect;
         assert.ok(r, `${where}: no caret is drawn`);
         assert.ok(!(r.x < corner.left + 30 && r.top < corner.top + 30) || caret.focus === 0, `${where}: the caret is drawn at the top left of the edit area, offset ${caret.focus}`);
+        if (key === " " && drawn && Math.abs(r.top - drawn.top) < 6) {
+          assert.ok(r.x > drawn.x, `${where}: the caret is drawn at x ${Math.round(r.x)}, not right of ${Math.round(drawn.x)} where it was before the space`);
+        }
+        drawn = r;
         if (key.length === 1 && !"←→↑↓".includes(key)) {
           doc = await show(hub, file);
           assert.equal(doc, before.doc.slice(0, before.focus) + key + before.doc.slice(before.focus), `${where}: the letter is not where the caret was`);
