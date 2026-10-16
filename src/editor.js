@@ -2259,6 +2259,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let ticketDrawerEnter = null;
   let ticketDrawerLeave = null;
   let ticketDrawerTimer = null;
+  // "" while resting or wide, "wait" during the 200ms grace, "narrow" while the width eases home.
+  let ticketDrawerPhase = "";
+  let ticketDrawerCompact = "";
   let fileBlockEl = null;
   let fileDrawerEnter = null;
   let fileDrawerLeave = null;
@@ -9076,26 +9079,61 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return findClassChild(findClassChild(filesNav(), "ticket-block"), "md-ticket-drawer");
   }
 
-  function showTicketDrawer() {
+  function clearTicketDrawerTimer() {
     if (ticketDrawerTimer != null) {
       clearTimeout(ticketDrawerTimer);
       ticketDrawerTimer = null;
+    }
+  }
+
+  function finishTicketDrawer(drawer) {
+    ticketDrawerPhase = "";
+    if (drawer && drawer.classList) drawer.classList.remove("md-ticket-wide");
+    setStyle(drawer, "top", "");
+    setStyle(drawer, "height", "");
+    setStyle(drawer, "width", "");
+    setStyle(drawer, "transition", "");
+  }
+
+  function showTicketDrawer() {
+    // A click during the grace keeps the wide list. Once the width is easing
+    // back, that close runs out; a pointer over the block is what widens it.
+    if (ticketDrawerPhase === "wait") {
+      clearTicketDrawerTimer();
+      ticketDrawerPhase = "";
     }
     const drawer = ticketDrawerEl();
     if (drawer) showElement(drawer);
   }
 
   // A pointer that slips off and comes back inside 200ms keeps the wide list.
+  // The wide class stays until the width has eased back. It holds position and
+  // z-index, so the document does not paint over the drawer while it is still wide.
   function scheduleHideTicketDrawer() {
-    if (ticketDrawerTimer != null) clearTimeout(ticketDrawerTimer);
+    clearTicketDrawerTimer();
+    if (ticketDrawerPhase === "narrow") {
+      const drawer = ticketDrawerEl();
+      if (drawer && ticketDrawerCompact) setStyle(drawer, "width", ticketDrawerCompact);
+      ticketDrawerTimer = setTimeout(() => {
+        ticketDrawerTimer = null;
+        finishTicketDrawer(drawer);
+      }, 500);
+      return;
+    }
+    ticketDrawerPhase = "wait";
     ticketDrawerTimer = setTimeout(() => {
       ticketDrawerTimer = null;
       const drawer = ticketDrawerEl();
-      if (drawer && drawer.classList) drawer.classList.remove("md-ticket-wide");
-      setStyle(drawer, "top", "");
-      setStyle(drawer, "height", "");
-      setStyle(drawer, "width", "");
-      setStyle(drawer, "transition", "");
+      if (!drawer || !ticketDrawerCompact) {
+        finishTicketDrawer(drawer);
+        return;
+      }
+      ticketDrawerPhase = "narrow";
+      setStyle(drawer, "width", ticketDrawerCompact);
+      ticketDrawerTimer = setTimeout(() => {
+        ticketDrawerTimer = null;
+        finishTicketDrawer(drawer);
+      }, 500);
     }, 200);
   }
 
@@ -9118,10 +9156,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function releaseTicketDrawer() {
-    if (ticketDrawerTimer != null) {
-      clearTimeout(ticketDrawerTimer);
-      ticketDrawerTimer = null;
-    }
+    clearTicketDrawerTimer();
+    ticketDrawerPhase = "";
     if (ticketBlockEl && typeof ticketBlockEl.removeEventListener === "function") {
       if (ticketDrawerEnter) ticketBlockEl.removeEventListener("pointerenter", ticketDrawerEnter);
       if (ticketDrawerLeave) ticketBlockEl.removeEventListener("pointerleave", ticketDrawerLeave);
@@ -9136,8 +9172,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (ticketBlockEl === block && ticketDrawerEnter) return;
     releaseTicketDrawer();
     ticketDrawerEnter = () => {
-      showTicketDrawer();
       const drawer = ticketDrawerEl();
+      if (ticketDrawerPhase === "narrow") {
+        clearTicketDrawerTimer();
+        ticketDrawerPhase = "";
+        if (drawer) setStyle(drawer, "width", "80vw");
+      }
+      showTicketDrawer();
       if (!drawer) return;
       const alreadyWide = Boolean(drawer.classList && drawer.classList.contains("md-ticket-wide"));
       // Fixed positioning replaces the pane box, so read that box before the wide class.
@@ -9149,6 +9190,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         setStyle(drawer, "height", `${rect.height}px`);
       }
       if (alreadyWide) return;
+      if (rect && typeof rect.width === "number" && Number.isFinite(rect.width)) {
+        ticketDrawerCompact = `${rect.width}px`;
+      }
       setStyle(drawer, "transition", "none");
       if (rect) setStyle(drawer, "width", `${rect.width}px`);
       if (drawer.classList) drawer.classList.add("md-ticket-wide");
