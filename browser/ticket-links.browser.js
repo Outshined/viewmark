@@ -8,8 +8,8 @@ import { REPO, USER, cli, launchBrowser, Page, startHub } from "./harness.js";
 
 // Acceptance for ticket dfpje5ux, cross-repo ticket links, from the page part of the Acceptance
 // section of the ticket's body. REPO is the repo that holds A, OTHER_REPO a second registered repo,
-// and ghost a name no repo has. The live update of an inbound link is a QA proposal the owner has
-// not answered, so it has no test here.
+// and ghost a name no repo has. The owner decided on 2026-10-15 that an inbound row updates while
+// this page is open, and that remove on that row writes the other repo's ticket.
 
 const OTHER_REPO = "other";
 const GHOST = "ghost:k2n4p7qa";
@@ -184,30 +184,46 @@ test("Depends: removing other:B stores the list without that token, and the othe
   assert.deepEqual([...(await ticketJson(hub, REPO, a)).depends].sort(), [c, GHOST].sort());
 });
 
-test("Blocks and Children: an inbound ticket offers no remove, and pressing remove writes nothing in either repo", async (t) => {
+test("Blocks and Children: remove on an inbound row writes that ticket in its repo", async (t) => {
   const { hub, page } = await setup(t);
   const a = await makeTicket(hub, REPO, "Ticket A");
   const blocker = await makeTicket(hub, OTHER_REPO, "Blocker over there");
   const child = await makeTicket(hub, OTHER_REPO, "Child over there");
   await setTicket(hub, OTHER_REPO, blocker, "--depends", `${REPO}:${a}`);
   await setTicket(hub, OTHER_REPO, child, "--parent", `${REPO}:${a}`);
-  const snapshot = async () => JSON.stringify([
-    await ticketJson(hub, REPO, a),
-    await ticketJson(hub, OTHER_REPO, blocker),
-    await ticketJson(hub, OTHER_REPO, child),
-  ]);
-  const before = await snapshot();
   await openTicket(page, a);
   await page.until(() => page.eval(SHOWN(`.ticket-form ${FIELD.blocks}`)), "the Blocks row", 3000);
-  const since = page.frames.length;
-  for (const [field, id] of [[FIELD.blocks, blocker], [FIELD.children, child]]) {
-    await press(page, `.ticket-form ${field} .md-ticket-link[data-id="${id}"]`);
-    await press(page, `.ticket-form ${field} .md-ticket-remove`);
-  }
-  await sleep(400);
-  const sent = page.frames.slice(since).filter((f) => f.dir === "out" && f.data && /^ticket\./.test(f.data.type || "")).map((f) => f.data);
-  assert.deepEqual(sent, [], "the page sent a ticket write");
-  assert.equal(await snapshot(), before, "a ticket changed");
+  await page.until(() => page.eval(SHOWN(`.ticket-form ${FIELD.children}`)), "the Children row", 3000);
+  const blockRow = `.ticket-form ${FIELD.blocks} .md-ticket-link[data-id="${blocker}"]`;
+  const childRow = `.ticket-form ${FIELD.children} .md-ticket-link[data-id="${child}"]`;
+  assert.equal(await page.eval(`document.querySelector(${JSON.stringify(blockRow)}).tagName`), "BUTTON");
+  assert.equal(await page.eval(`document.querySelector(${JSON.stringify(childRow)}).tagName`), "BUTTON");
+  await press(page, blockRow);
+  await press(page, `.ticket-form ${FIELD.blocks} .md-ticket-remove`);
+  await page.until(async () => !((await ticketJson(hub, OTHER_REPO, blocker)).depends || []).includes(`${REPO}:${a}`), "the blocker no longer depends on A", 3000);
+  assert.deepEqual((await ticketJson(hub, OTHER_REPO, blocker)).depends, []);
+  await press(page, childRow);
+  await press(page, `.ticket-form ${FIELD.children} .md-ticket-remove`);
+  await page.until(async () => (await ticketJson(hub, OTHER_REPO, child)).parent === "", "the child's parent is clear", 3000);
+  const stored = await ticketJson(hub, REPO, a);
+  assert.equal(stored.parent, "");
+  assert.deepEqual(stored.depends, []);
+});
+
+test("Children: setting another repo's parent to this ticket shows that title without a reload", async (t) => {
+  const { hub, page } = await setup(t);
+  const a = await makeTicket(hub, REPO, "Ticket A");
+  const b = await makeTicket(hub, OTHER_REPO, "Child over there");
+  await openTicket(page, a);
+  await page.eval(`document.documentElement.dataset.stay = "1"`);
+  await setTicket(hub, OTHER_REPO, b, "--parent", `${REPO}:${a}`);
+  const row = `.ticket-form ${FIELD.children} .md-ticket-link[data-id="${b}"]`;
+  await page.until(async () => {
+    const drawn = await links(page, FIELD.children);
+    return drawn.some((item) => item.id === b && item.text === "Child over there");
+  }, "B's title on A's children", 3000);
+  assert.equal(await page.eval(`document.documentElement.dataset.stay`), "1");
+  assert.equal(await page.eval(`document.querySelector(${JSON.stringify(row)}).tagName`), "BUTTON");
 });
 
 // The owner's answer of 2026-10-13: a link to a ticket that has gone missing is removed or ignored.
