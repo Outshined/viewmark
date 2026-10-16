@@ -3624,7 +3624,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (cancel) parent.removeChild(cancel);
   }
 
-  function appendAuthor(parent, id, index, withResolve, name, time) {
+  const COMMENT_BALLOON = "M12 19l-2-3H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-3l-2 3z";
+
+  function appendAuthor(parent, id, index, withResolve, name, time, pinned) {
     const row = document.createElement("div");
     row.className = "md-comment-author-row";
     const by = document.createElement("div");
@@ -3638,7 +3640,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       threadId.textContent = `(${id})`;
       by.appendChild(threadId);
     }
-    by.appendChild(author);
+    if (pinned) {
+      const line = document.createElement("span");
+      line.className = "md-comment-pin-line";
+      const mark = strokeIcon(COMMENT_BALLOON);
+      if (mark && mark.classList) mark.classList.add("md-comment-pin-mark");
+      if (mark) line.appendChild(mark);
+      line.appendChild(author);
+      by.appendChild(line);
+    } else {
+      by.appendChild(author);
+    }
     if (time) {
       const clock = document.createElement("time");
       clock.className = "md-comment-time";
@@ -3712,7 +3724,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (unsavedThreads.has(comment.id)) {
       const noteId = records[0] ? records[0].id : 0;
       const stored = records[0] ? splitCommentNote(records[0].raw).text : "";
-      appendAuthor(card, comment.id, noteId, false, selfName(), "");
+      appendAuthor(card, comment.id, noteId, false, selfName(), "", !!comment.pin);
       appendBody(card, comment.id, noteId, stored, "fresh");
       if (comment.id !== currentCommentId) setCommentActions(card, false);
       return card;
@@ -3720,7 +3732,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (records.length === 0 && !replyDrafts.has(comment.id)) {
       const note = document.createElement("div");
       note.className = "md-comment-note";
-      appendAuthor(note, comment.id, 0, true, "", "");
+      appendAuthor(note, comment.id, 0, true, "", "", !!comment.pin);
       const mode = editingNotes.has(draftKey(comment.id, 0)) ? "edit" : "saved";
       appendBody(note, comment.id, 0, "", mode);
       card.appendChild(note);
@@ -3729,7 +3741,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const parts = splitCommentNote(record.raw);
       const note = document.createElement("div");
       note.className = "md-comment-note";
-      appendAuthor(note, comment.id, record.id, index === 0, parts.author, parts.time);
+      appendAuthor(note, comment.id, record.id, index === 0, parts.author, parts.time, !!comment.pin && index === 0);
       const mode = editingNotes.has(draftKey(comment.id, record.id)) ? "edit" : "saved";
       appendBody(note, comment.id, record.id, parts.text, mode);
       card.appendChild(note);
@@ -3759,8 +3771,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (comment.id !== currentCommentId) setCommentActions(card, false);
     return card;
   }
-
-  const COMMENT_BALLOON = "M12 19l-2-3H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-3l-2 3z";
 
   function anchorMarkButton(thread, className) {
     const button = document.createElement("button");
@@ -3894,7 +3904,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return el.getBoundingClientRect();
   }
 
-  function highlightRects(id) {
+  function highlightMarks(id) {
     const found = [];
     const walk = (node) => {
       if (!node || node.nodeType !== 1) {
@@ -3905,7 +3915,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       if (node.classList && node.classList.contains("md-comment") && node.dataset && node.dataset.comment === id) {
         const rect = elementRect(node);
-        if (rect) found.push(rect);
+        if (rect) found.push({ rect, pin: node.classList.contains("md-comment-pin") });
       }
       for (const child of node.childNodes || []) walk(child);
     };
@@ -3960,15 +3970,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const bottom = shownBottom(control);
       if (bottom > floor) floor = bottom;
     }
-    // A card may move down to clear the cards above it, never up over them.
-    // A tall closed card shortens so the next anchor keeps a place. The open card stays full height.
+    // A card sits on its anchor: a pin's tip, or the top of a highlight. A later
+    // card stays there when that does not cover an earlier card, and moves down
+    // only to clear one it would cover. A tall closed card shortens so a later
+    // anchor below it keeps that place. The open card stays full height.
     const menuFloor = floor;
     const SHORT = 10 * COMMENT_CARD_GAP;
     const GAP = COMMENT_CARD_GAP;
     const anchorOf = (card) => {
       const id = card.dataset.comment;
-      let rects = highlightRects(id);
-      if (rects.length === 0) {
+      let marks = highlightMarks(id);
+      if (marks.length === 0) {
         const span = spans.find((item) => item.id === id);
         if (span) {
           const walk = (node) => {
@@ -3978,7 +3990,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
               const end = Number(node.dataset.end);
               if (start >= span.interiorStart && end <= span.interiorEnd) {
                 const rect = elementRect(node);
-                if (rect) rects.push(rect);
+                if (rect) marks.push({ rect, pin: false });
               }
             }
             for (const child of node.childNodes || []) walk(child);
@@ -3986,16 +3998,41 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           walk(root);
         }
       }
-      if (rects.length === 0) return null;
-      let markTop = rects[0].top;
-      for (const rect of rects) if (rect.top < markTop) markTop = rect.top;
-      return markTop - asideRect.top;
+      if (marks.length === 0) return null;
+      const pins = marks.filter((mark) => mark.pin);
+      const use = pins.length > 0 ? pins : marks;
+      let edge = null;
+      for (const mark of use) {
+        // The balloon's tip is the bottom of the pin. A highlight's anchor is its top.
+        const at = mark.pin ? mark.rect.bottom : mark.rect.top;
+        if (!Number.isFinite(at)) continue;
+        if (edge == null || at < edge) edge = at;
+      }
+      if (edge == null || !Number.isFinite(asideRect.top)) return null;
+      return edge - asideRect.top;
     };
     const anchors = cards.map((card) => anchorOf(card));
+    const placed = [];
+    const clearOf = (top, height) => {
+      let next = top;
+      for (let guard = placed.length + 1; guard > 0; guard -= 1) {
+        let hit = null;
+        for (const box of placed) {
+          const limit = box.top + box.used + GAP;
+          if (next < limit && next + height > box.top) {
+            if (hit == null || limit > hit) hit = limit;
+          }
+        }
+        if (hit == null) break;
+        next = hit;
+      }
+      return next;
+    };
     for (let i = 0; i < cards.length; i += 1) {
       const card = cards[i];
       const anchor = anchors[i];
-      const top = anchor == null ? floor : Math.max(floor, menuFloor, anchor);
+      const home = anchor == null ? null : Math.max(menuFloor, anchor);
+      let top = home == null ? floor : home;
       setStyle(card, "position", "absolute");
       setStyle(card, "left", "0px");
       setStyle(card, "width", "100%");
@@ -4004,6 +4041,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       setStyle(card, "max-height", "");
       setStyle(card, "overflow", "");
       const natural = typeof card.offsetHeight === "number" ? card.offsetHeight : (elementRect(card)?.height || 0);
+      top = clearOf(top, natural);
       let nextAnchor = null;
       for (let j = i + 1; j < anchors.length; j += 1) {
         if (anchors[j] != null) {
@@ -4013,7 +4051,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       const current = card.classList && card.classList.contains("md-comment-current");
       let used = natural;
-      if (!current && natural > SHORT && nextAnchor != null) {
+      if (!current && natural > SHORT && nextAnchor != null && (home == null || nextAnchor > home)) {
         const nextHome = Math.max(nextAnchor, menuFloor);
         const room = nextHome - top - GAP;
         if (natural + GAP > nextHome - top) used = Math.min(natural, SHORT, Math.max(GAP, room));
@@ -4023,7 +4061,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         setStyle(card, "overflow", "hidden");
       }
       setStyle(card, "top", `${top}px`);
-      floor = top + used + GAP;
+      placed.push({ top, used });
+      floor = Math.max(floor, top + used + GAP);
     }
     setStyle(commentsAside, "height", `${floor}px`);
   }
@@ -9036,6 +9075,26 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     let keepCurrent = false;
     if (highlighted && highlighted.dataset && highlighted.dataset.comment) {
       const id = highlighted.dataset.comment;
+      // A pin click only opens that thread. Selecting the picture would put the
+      // caret on its markdown and the host would scroll back to the top.
+      if (hasClass(highlighted, "md-comment-pin")) {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        const shot = captureScroll();
+        const card = findCommentCard(id);
+        if (card) showCurrentCard(card);
+        else {
+          currentCommentId = id;
+          markCurrentHighlights();
+        }
+        restoreScroll(shot);
+        const view = typeof window !== "undefined" ? window : null;
+        if (view && typeof view.requestAnimationFrame === "function") {
+          view.requestAnimationFrame(() => {
+            if (!closed) restoreScroll(shot);
+          });
+        }
+        return;
+      }
       const inside = root.contains(highlighted);
       const connected = highlighted.isConnected === true;
       const box = findCommentBox(id);

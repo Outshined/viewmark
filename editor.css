@@ -1595,6 +1595,26 @@ a.md-link {
   color: inherit;
 }
 
+.md-comment-pin-line {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.md-comment-pin-line > .md-comment-author {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.md-comment-pin-mark {
+  width: 24px;
+  height: 24px;
+  flex: none;
+}
+
 .md-comment-time {
   display: block;
   margin: 0;
