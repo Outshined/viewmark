@@ -260,3 +260,70 @@ for (const { name, file, text } of UNCLOSED) {
     assert.equal((await getRaw(ctx.hub.port, img.address)).status, 200);
   });
 }
+
+// ---- Other markdown viewers ------------------------------------------------------------------
+
+// The destination of an image line as CommonMark reads it, or null if CommonMark does not read
+// the line as an image. Either <...> with no line ending and no unescaped < or >, or a bare run
+// with no space or control character whose parentheses balance. Backslash escapes are undone.
+function commonMarkDestination(line) {
+  const m = /^!\[[^\]]*\]\(/.exec(line);
+  if (!m) return null;
+  let i = m[0].length;
+  const unescape = (s) => s.replace(/\\([!-/:-@[-`{-~])/g, "$1");
+  if (line[i] === "<") {
+    let j = i + 1;
+    while (j < line.length && line[j] !== ">") {
+      if (line[j] === "\\") j += 1;
+      else if (line[j] === "<" || line[j] === "\n") return null;
+      j += 1;
+    }
+    if (line[j] !== ">" || line[j + 1] !== ")") return null;
+    return unescape(line.slice(i + 1, j));
+  }
+  let depth = 0;
+  let j = i;
+  for (; j < line.length; j += 1) {
+    const ch = line[j];
+    if (ch === "\\") { j += 1; continue; }
+    if (ch.charCodeAt(0) <= 0x20 || ch === "\x7f") return null;
+    if (ch === "(") depth += 1;
+    if (ch === ")") {
+      if (depth === 0) break;
+      depth -= 1;
+    }
+  }
+  if (j === i || line[j] !== ")" || j !== line.length - 1) return null;
+  return unescape(line.slice(i, j));
+}
+
+// The address a viewer requests: characters a URL cannot hold are percent-encoded, and an
+// existing %XX is kept, as CommonMark renderers do.
+const href = (dest) => dest.replace(/%(?![0-9a-fA-F]{2})|[^A-Za-z0-9\-._~!$&'()*+,;=:@/?#%]/gu, (c) => encodeURIComponent(c));
+
+function getHref(port, path) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: "127.0.0.1", port, path: `/raw/${REPO}/${path}`, method: "GET", headers: { Connection: "close" } }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+for (const file of ["My Notes.md", "Tab\there.md", "Plan (draft).md", "plain.md"]) {
+  test(`t37rgtxg: the image line the hub writes in ${JSON.stringify(file)} is one a CommonMark viewer reads as that picture`, async (t) => {
+    const ctx = await setup(t, { [file]: "alpha beta\n" });
+    const out = await run(ctx.hub, ["attach", file, "--start", "1:0", "--end", "1:5", "--expect", "alpha"], PNG);
+    assert.equal(out.code, 0, out.stderr);
+    const line = (await ctx.hub.show(file)).text.split("\n").find((l) => l.startsWith("!["));
+    assert.ok(line, "no image line");
+    const dest = commonMarkDestination(line);
+    assert.ok(dest !== null, `CommonMark does not read ${JSON.stringify(line)} as an image`);
+    const raw = await getHref(ctx.hub.port, href(dest));
+    assert.equal(raw.status, 200, `${JSON.stringify(line)}: a viewer asks for ${href(dest)}, and /raw answers ${raw.status}`);
+    assert.ok(raw.body.equals(PNG));
+  });
+}
