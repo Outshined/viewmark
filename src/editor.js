@@ -1212,6 +1212,56 @@ function imageSrc(url, repo) {
   return `/raw/${encodeURIComponent(repo)}/${parts.join("/")}`;
 }
 
+function pinFrameElement() {
+  const frame = document.createElement("span");
+  frame.className = "md-pin-frame";
+  return frame;
+}
+
+function directChildTag(parent, tag) {
+  const want = tag.toUpperCase();
+  for (const child of childArray(parent)) {
+    if (child && child.nodeType === 1 && String(child.tagName || "").toUpperCase() === want) return child;
+  }
+  return null;
+}
+
+function pictureFrame(host) {
+  if (!host) return null;
+  return findClassChild(host, "md-pin-frame");
+}
+
+// The drawn picture, not the line box or the diagram's padding.
+function drawnPicture(host) {
+  const frame = pictureFrame(host);
+  if (!frame) return null;
+  if (hasClass(host, "md-diagram")) return directChildTag(frame, "svg");
+  if (hasClass(host, "md-image")) return directChildTag(frame, "img");
+  return null;
+}
+
+function frameUnderPointer(node) {
+  if (!node || node.nodeType !== 1 || typeof node.closest !== "function") return null;
+  if (node.closest(".md-raw")) return null;
+  const corner = node.closest(".md-pin-corner");
+  if (corner && hasClass(corner.parentElement, "md-pin-frame")) return corner.parentElement;
+  const frame = node.closest(".md-pin-frame");
+  if (!frame) return null;
+  const host = frame.parentElement;
+  if (!host || hasClass(host, "md-raw")) return null;
+  if (hasClass(host, "md-image")) {
+    const img = directChildTag(frame, "img");
+    if (img && (node === img || node.closest("img") === img)) return frame;
+    return null;
+  }
+  if (hasClass(host, "md-diagram")) {
+    const svg = directChildTag(frame, "svg");
+    if (svg && (node === svg || node.closest("svg") === svg)) return frame;
+    return null;
+  }
+  return null;
+}
+
 function renderImage(image, repo) {
   const el = document.createElement("span");
   el.className = image.comment ? "md-atom md-image md-comment" : "md-atom md-image";
@@ -1219,11 +1269,13 @@ function renderImage(image, repo) {
   el.dataset.start = String(image.start);
   el.dataset.end = String(image.end);
   if (image.comment) el.dataset.comment = image.comment;
+  const frame = pinFrameElement();
   const img = document.createElement("img");
   img.src = imageSrc(image.url, repo);
   img.alt = image.alt;
   img.draggable = false;
-  el.appendChild(img);
+  frame.appendChild(img);
+  el.appendChild(frame);
   return el;
 }
 
@@ -1346,12 +1398,36 @@ function diagramMessage(err) {
   return String(err);
 }
 
+function keptClass(el, className) {
+  const found = [];
+  const walk = (node) => {
+    for (const child of childArray(node)) {
+      if (!child || child.nodeType !== 1) continue;
+      if (hasClass(child, className)) found.push(child);
+      else walk(child);
+    }
+  };
+  walk(el);
+  return found;
+}
+
 function keptPins(el) {
-  const pins = [];
-  for (const child of childArray(el)) {
-    if (hasClass(child, "md-comment-pin")) pins.push(child);
+  return keptClass(el, "md-comment-pin");
+}
+
+// useMaxWidth draws the svg at width 100% and caps it with max-width. The frame
+// takes that cap, so a pin fraction is of the drawing and not the diagram block.
+function fitDrawnSvg(frame, node) {
+  if (!node || typeof node.getAttribute !== "function") return;
+  const style = String(node.getAttribute("style") || "");
+  const max = /(?:^|;)\s*max-width:\s*([0-9.]+)px/.exec(style);
+  let width = max ? max[1] : "";
+  if (!width) {
+    const attr = String(node.getAttribute("width") || "");
+    if (/^[0-9.]+(?:px)?$/.test(attr)) width = attr.replace(/px$/, "");
   }
-  return pins;
+  if (!width) return;
+  setStyle(frame, "width", `${width}px`);
 }
 
 function showDiagramSource(el, source, err) {
@@ -1379,8 +1455,13 @@ function showDiagramSvg(el, source, svg) {
     return;
   }
   const pins = keptPins(el);
-  el.replaceChildren(node);
-  for (const pin of pins) el.appendChild(pin);
+  const corners = keptClass(el, "md-pin-corner");
+  const frame = pictureFrame(el) || pinFrameElement();
+  frame.replaceChildren(node);
+  fitDrawnSvg(frame, node);
+  for (const pin of pins) frame.appendChild(pin);
+  for (const corner of corners) frame.appendChild(corner);
+  if (frame.parentElement !== el) el.replaceChildren(frame);
 }
 
 function renderDiagram(atom) {
@@ -1390,9 +1471,11 @@ function renderDiagram(atom) {
   el.dataset.start = String(atom.start);
   el.dataset.end = String(atom.end);
   el.dataset.bodyStart = String(atom.bodyStart);
+  const frame = pinFrameElement();
   const pre = document.createElement("pre");
   pre.textContent = atom.body;
-  el.appendChild(pre);
+  frame.appendChild(pre);
+  el.appendChild(frame);
   const api = mermaidApi();
   if (!api) return el;
   const source = atom.body;
@@ -2421,6 +2504,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // The selection under the press, kept so a drop can move it after the caret has moved.
   let dragRange = null;
   let dragSource = null;
+  let pinDrag = false;
+  let cornerFrame = null;
   // The first press of a multi-click. Later presses reuse it after a render
   // would have moved the text under the pointer.
   let gestureOffset = null;
@@ -3736,12 +3821,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
     }
     if (!host) return;
+    const frame = pictureFrame(host) || host;
     const button = anchorMarkButton(thread, "md-comment-pin md-comment");
     setStyle(button, "left", `${pin.x * 100}%`);
     setStyle(button, "top", `${pin.y * 100}%`);
     const icon = strokeIcon(COMMENT_BALLOON);
     if (icon) button.appendChild(icon);
-    host.appendChild(button);
+    frame.appendChild(button);
   }
 
   // Bars and pins are their own elements. The code runs stay unmarked, so the
@@ -3799,29 +3885,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       detachNode(child);
     }
     commentsAside.appendChild(row);
-    const pinSource = document.createElement("button");
-    pinSource.type = "button";
-    pinSource.className = "md-pin-source icon-btn";
-    pinSource.draggable = true;
-    if (typeof pinSource.setAttribute === "function") {
-      pinSource.setAttribute("type", "button");
-      pinSource.setAttribute("aria-label", "Comment pin");
-      pinSource.setAttribute("title", "Comment pin");
-      pinSource.setAttribute("draggable", "true");
-    }
-    const pinIcon = strokeIcon(COMMENT_BALLOON);
-    if (pinIcon) pinSource.appendChild(pinIcon);
-    pinSource.addEventListener("dragstart", (event) => {
-      const data = event && event.dataTransfer;
-      if (!data || typeof data.setData !== "function") return;
-      try {
-        data.setData("text/viewmark-pin", "pin");
-        data.effectAllowed = "copy";
-      } catch {
-        // A drag double may reject writes.
-      }
-    });
-    commentsAside.appendChild(pinSource);
     for (const card of cards) commentsAside.appendChild(card);
     syncEntryLink();
   }
@@ -4783,7 +4846,79 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return true;
   }
 
+  function removeCornerPin() {
+    if (cornerFrame) {
+      const pin = findClassChild(cornerFrame, "md-pin-corner");
+      if (pin) detachNode(pin);
+    }
+    for (const el of elementsWithClass("md-pin-corner")) detachNode(el);
+    cornerFrame = null;
+  }
+
+  function showCornerPin(frame) {
+    removeCornerPin();
+    if (!frame) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "md-pin-corner icon-btn";
+    button.draggable = true;
+    button.tabIndex = -1;
+    if (typeof button.setAttribute === "function") {
+      button.setAttribute("type", "button");
+      button.setAttribute("aria-label", "Comment pin");
+      button.setAttribute("draggable", "true");
+      button.setAttribute("tabindex", "-1");
+    }
+    const icon = strokeIcon(COMMENT_BALLOON);
+    if (icon) button.appendChild(icon);
+    // A press here is a drag, not a caret move. preventDefault would cancel the drag.
+    button.addEventListener("mousedown", (event) => {
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+    });
+    button.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+    });
+    button.addEventListener("keydown", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+    });
+    button.addEventListener("dragstart", (event) => {
+      pinDrag = true;
+      dragSource = null;
+      dragRange = null;
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      const data = event && event.dataTransfer;
+      if (!data || typeof data.setData !== "function") return;
+      try {
+        data.setData("text/viewmark-pin", "pin");
+        data.effectAllowed = "copy";
+      } catch {
+        // A drag double may reject writes.
+      }
+    });
+    button.addEventListener("dragend", () => {
+      pinDrag = false;
+      removeCornerPin();
+    });
+    frame.appendChild(button);
+    cornerFrame = frame;
+  }
+
+  function syncCornerPin(event) {
+    if (pinDrag) return;
+    const target = event && event.target;
+    const node = target && target.nodeType === 1 ? target : target && target.parentElement;
+    const frame = frameUnderPointer(node);
+    if (frame && frame === cornerFrame && findClassChild(frame, "md-pin-corner")) return;
+    if (!frame) {
+      removeCornerPin();
+      return;
+    }
+    showCornerPin(frame);
+  }
+
   function onRootMouseMove(event) {
+    if (!pinDrag) syncCornerPin(event);
     if (handleDrag) {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       moveDraggedHandle(event);
@@ -4810,16 +4945,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onDocumentMouseMove(event) {
+    const node = event && event.target;
+    const inside = node && root.contains(node);
+    if (!inside && !pinDrag) removeCornerPin();
     if (handleDrag) {
-      const node = event && event.target;
-      if (node && root.contains(node)) return;
+      if (inside) return;
       moveDraggedHandle(event);
       refreshDragHighlight(event);
       return;
     }
     if (pointer) return;
-    const node = event && event.target;
-    if (node && root.contains(node)) return;
+    if (inside) return;
     if (!hoverCommentId) return;
     hoverCommentId = null;
     clearCommentHandles();
@@ -7432,10 +7568,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const host = image || diagram;
     if (!host) return;
     if (hasClass(host, "md-raw") || (typeof host.closest === "function" && host.closest(".md-raw"))) return;
-    const rect = typeof host.getBoundingClientRect === "function" ? host.getBoundingClientRect() : null;
+    const picture = drawnPicture(host);
+    if (!picture || typeof picture.getBoundingClientRect !== "function") return;
+    const rect = picture.getBoundingClientRect();
     if (!rect || !(rect.width > 0) || !(rect.height > 0)) return;
-    const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
-    const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+    const x = (event.clientX - rect.left) / rect.width;
+    const y = (event.clientY - rect.top) / rect.height;
+    if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return;
     const offset = Number(host.dataset && host.dataset.start);
     if (!Number.isFinite(offset)) return;
     expectNewComment = true;

@@ -6070,6 +6070,128 @@ test("an image line has a caret mark at its start and through its newline", () =
   }
 });
 
+test("a pointer over a picture shows that picture's pin, and a drop uses the picture", () => {
+  const mounted = mountSheet();
+  const move = (target) => {
+    mounted.listeners.mousemove({ target, clientX: 0, clientY: 0 });
+  };
+  const pins = () => mounted.findAll((node) => node.classList && node.classList.contains("md-pin-corner"));
+  const transfer = () => {
+    const store = new Map();
+    return {
+      types: [],
+      effectAllowed: "",
+      setData(type, value) {
+        store.set(type, value);
+        if (!this.types.includes(type)) this.types.push(type);
+      },
+      getData(type) {
+        return store.has(type) ? store.get(type) : "";
+      },
+    };
+  };
+  const dropAt = (data, target, x, y) => {
+    mounted.listeners.drop({
+      target,
+      clientX: x,
+      clientY: y,
+      dataTransfer: data,
+      preventDefault() {},
+    });
+  };
+  try {
+    const doc = "![a](a.svg)\n\n![b](b.svg)\n";
+    const view = createEditor(mounted.root, doc, doc.length);
+    assert.equal(mounted.aside.childNodes.some((node) => node.classList && node.classList.contains("md-pin-source")), false);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-pin-source")).length, 0);
+    const images = mounted.findAll((node) => node.classList && node.classList.contains("md-image"));
+    assert.equal(images.length, 2);
+    const frameOf = (host) => host.childNodes.find((node) => node.classList && node.classList.contains("md-pin-frame"));
+    const imgs = images.map((host) => frameOf(host).childNodes.find((node) => node.tagName === "IMG"));
+    assert.equal(pins().length, 0);
+    move(imgs[0]);
+    assert.equal(pins().length, 1);
+    assert.equal(pins()[0].parentElement, frameOf(images[0]));
+    assert.equal(pins()[0].draggable, true);
+    assert.equal(pins()[0].getAttribute("draggable"), "true");
+    assert.equal(pins()[0].getAttribute("aria-label"), "Comment pin");
+    assert.equal(pins()[0].getAttribute("tabindex"), "-1");
+    let keyPrevented = false;
+    pins()[0].listeners.keydown({ preventDefault() { keyPrevented = true; } });
+    assert.equal(keyPrevented, true);
+    move(pins()[0]);
+    assert.equal(pins().length, 1);
+    move(imgs[1]);
+    assert.equal(pins().length, 1);
+    assert.equal(pins()[0].parentElement, frameOf(images[1]));
+    move(mounted.root);
+    assert.equal(pins().length, 0);
+
+    const picture = { left: 10, top: 40, width: 200, height: 160, right: 210, bottom: 200 };
+    imgs[0].getBoundingClientRect = () => picture;
+    images[0].getBoundingClientRect = () => ({ left: 10, top: 160, width: 200, height: 20, right: 210, bottom: 180 });
+    move(imgs[0]);
+    const data = transfer();
+    pins()[0].listeners.dragstart({ target: pins()[0], dataTransfer: data, stopPropagation() {} });
+    move(mounted.root);
+    assert.equal(pins().length, 1);
+    dropAt(data, imgs[0], 70, 30);
+    assert.equal(view.getState().doc, doc);
+    dropAt(data, imgs[0], 70, 72);
+    const pinned = view.getState();
+    assert.match(pinned.doc, /```comment c1 0\.3,0\.2\n/);
+    const imageAt = doc.indexOf("![a]");
+    assert.ok(pinned.cursor < imageAt || pinned.cursor > doc.indexOf("\n", imageAt));
+    assert.equal(mounted.findAll((node) => node.tagName === "IMG").length, 2);
+    const box = mounted.findAll((node) => node.tagName === "TEXTAREA")[0];
+    assert.equal(box.focused, true);
+    assert.equal(box.value, "");
+    const mark = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-pin"))[0];
+    assert.equal(mark.parentElement.classList.contains("md-pin-frame"), true);
+    assert.equal(mark.styleProps.left, "30%");
+    assert.equal(mark.styleProps.top, "20%");
+    view.destroy();
+
+    const diagramDoc = "See\n```mermaid\nA-->B\n```\n";
+    const diagramView = createEditor(mounted.root, diagramDoc, 0);
+    const host = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
+    const frame = host.childNodes.find((node) => node.classList && node.classList.contains("md-pin-frame"));
+    const svg = document.createElement("svg");
+    svg.getBoundingClientRect = () => ({ left: 100, top: 50, width: 200, height: 100, right: 300, bottom: 150 });
+    frame.replaceChildren(svg);
+    host.getBoundingClientRect = () => ({ left: 0, top: 0, width: 900, height: 200, right: 900, bottom: 200 });
+    move(host);
+    assert.equal(pins().length, 0);
+    move(frame);
+    assert.equal(pins().length, 0);
+    move(svg);
+    assert.equal(pins().length, 1);
+    assert.equal(pins()[0].parentElement, frame);
+    const diagramData = transfer();
+    pins()[0].listeners.dragstart({ target: pins()[0], dataTransfer: diagramData, stopPropagation() {} });
+    dropAt(diagramData, host, 10, 100);
+    assert.equal(diagramView.getState().doc, diagramDoc);
+    dropAt(diagramData, svg, 180, 120);
+    assert.match(diagramView.getState().doc, /```comment c1 0\.4,0\.7\n/);
+    assert.ok(diagramView.getState().cursor < diagramDoc.indexOf("```"));
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-diagram")).length, 1);
+    diagramView.destroy();
+
+    const held = "para\n![alt](sample.svg)\n```comment c1 0.25,0.5\n\n```\nnext\n";
+    const heldView = createEditor(mounted.root, held, 4);
+    const heldPin = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-pin"))[0];
+    const heldImg = mounted.findAll((node) => node.tagName === "IMG")[0];
+    assert.equal(heldPin.parentElement.classList.contains("md-pin-frame"), true);
+    assert.equal(heldPin.parentElement, heldImg.parentElement);
+    assert.equal(heldPin.styleProps.left, "25%");
+    assert.equal(heldPin.styleProps.top, "50%");
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-pin-source")).length, 0);
+    heldView.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("an image address keeps a parenthesis inside it", () => {
   const line = "![NAME.png](Plan (draft)/NAME.png)";
   const doc = `${line}\n`;
@@ -6116,7 +6238,9 @@ test("an image address keeps a parenthesis inside it", () => {
     const img = mounted.findAll((node) => node.tagName === "IMG").pop();
     assert.equal(img.alt, "NAME.png");
     assert.equal(img.src, "Plan (draft)/NAME.png");
-    const marks = img.parentElement.parentElement.childNodes.filter((node) => node.classList && node.classList.contains("md-image-caret"));
+    let imageLine = img;
+    while (imageLine && !(imageLine.classList && imageLine.classList.contains("md-line"))) imageLine = imageLine.parentElement;
+    const marks = imageLine.childNodes.filter((node) => node.classList && node.classList.contains("md-image-caret"));
     assert.equal(marks.length, 2);
     view.destroy();
   } finally {
@@ -6282,8 +6406,12 @@ test("mermaid render replaces source", async () => {
     const boxes = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"));
     assert.equal(parsed, 2);
     assert.equal(boxes.length, 2);
-    assert.ok(boxes.every((box) => box.childNodes.some((child) => child.localName === "svg")));
-    assert.ok(boxes[0].childNodes.some((child) => child.dataset.value.includes("A-->B")));
+    const drawn = (box) => {
+      const frame = box.childNodes.find((child) => child.classList && child.classList.contains("md-pin-frame"));
+      return frame ? frame.childNodes : [];
+    };
+    assert.ok(boxes.every((box) => drawn(box).some((child) => child.localName === "svg")));
+    assert.ok(drawn(boxes[0]).some((child) => child.dataset.value.includes("A-->B")));
     view.destroy();
 
     let release;
@@ -6294,7 +6422,8 @@ test("mermaid render replaces source", async () => {
     await Promise.resolve();
     assert.equal(typeof release, "function");
     const old = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
-    assert.equal(old.childNodes.some((child) => child.tagName === "PRE"), true);
+    const oldFrame = old.childNodes.find((child) => child.classList && child.classList.contains("md-pin-frame"));
+    assert.equal(oldFrame.childNodes.some((child) => child.tagName === "PRE"), true);
     mounted.listeners.click({ target: old, clientX: 0, clientY: 0, preventDefault() {} });
     assert.equal(old.isConnected, false);
     const parsedBefore = parsed;
@@ -6922,20 +7051,9 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.equal(mounted.aside.childNodes[1], menu.row);
     assert.equal(menu.row.hidden, true);
     assert.equal(menu.row.hasAttribute("hidden"), true);
-    const pin = mounted.aside.childNodes[2];
-    assert.equal(pin.tagName, "BUTTON");
-    assert.equal(pin.classList.contains("md-pin-source"), true);
-    assert.equal(pin.classList.contains("icon-btn"), true);
-    assert.equal(pin.getAttribute("aria-label"), "Comment pin");
-    assert.equal(pin.draggable, true);
-    const pinSvg = pin.childNodes[0];
-    assert.equal(pinSvg.getAttribute("viewBox"), "0 0 24 24");
-    assert.equal(pinSvg.getAttribute("aria-hidden"), "true");
-    const pinPath = pinSvg.childNodes[0];
-    assert.equal(pinPath.getAttribute("fill"), "none");
-    assert.equal(pinPath.getAttribute("stroke"), "currentColor");
-    assert.equal(pinPath.getAttribute("stroke-width"), "2");
-    assert.equal(cards[0], mounted.aside.childNodes[3]);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-pin-source")).length, 0);
+    assert.equal(mounted.aside.childNodes.some((node) => node.classList && node.classList.contains("md-pin-source")), false);
+    assert.equal(cards[0], mounted.aside.childNodes[2]);
     assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-doc-commit")).length, 0);
     assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-attach")).length, 0);
     assert.equal(mounted.findAll((node) => node.tagName === "BUTTON" && node.textContent === "Commit repo").length, 0);

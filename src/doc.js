@@ -1233,7 +1233,8 @@ function prefixBounds(text, from, to) {
   return { from: start, to: end };
 }
 
-// Whole body lines of one source fence. A partial line stays a fence overlap.
+// Exact body-line edges of one source fence. A partial highlight is snapped
+// by the caller. Opener and closer lines are not body lines.
 function wholeSourceLines(doc, from, to) {
   for (const fence of fenceContentRanges(doc)) {
     if (fence.lang === "comment" || fence.diagram) continue;
@@ -1260,16 +1261,16 @@ export function addComment(doc, anchor, cursor) {
   const text = typeof doc === "string" ? doc : "";
   const clamped = clampRange(text, anchor, cursor);
   if (!(clamped.from < clamped.to)) return null;
-  const whole = wholeSourceLines(text, clamped.from, clamped.to);
-  if (whole) {
+  const snapped = sourceLineCommentRange(text, clamped.from, clamped.to);
+  if (snapped) {
     const id = nextCommentId(text);
-    const fenceText = `${commentHead(id, { kind: "lines", start: whole.start, end: whole.end }, false)}\n\n\`\`\`\n`;
-    const at = whole.insertAt;
+    const fenceText = `${commentHead(id, { kind: "lines", start: snapped.lines.start, end: snapped.lines.end }, false)}\n\n\`\`\`\n`;
+    const at = snapped.lines.insertAt;
     return {
       doc: text.slice(0, at) + fenceText + text.slice(at),
       id,
-      anchor: clamped.from,
-      cursor: clamped.to,
+      anchor: snapped.anchor,
+      cursor: snapped.cursor,
       changes: [{ from: at, to: at, inserted: fenceText, removed: "" }],
     };
   }
@@ -1308,6 +1309,24 @@ function pinHostAt(doc, offset) {
   return null;
 }
 
+// A caret on the host draws the picture raw. The line above keeps it drawn.
+// Nothing above uses the line below.
+function caretBesideHost(doc, host) {
+  const lines = lineSpans(doc);
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (host.end <= line.start || host.start > line.end) continue;
+    if (first < 0) first = i;
+    last = i;
+  }
+  if (first > 0) return lines[first - 1].end;
+  if (last >= 0 && last + 1 < lines.length) return lines[last + 1].start;
+  if (host.end < doc.length) return host.end;
+  return doc.length;
+}
+
 export function addPinComment(doc, offset, x, y) {
   const text = typeof doc === "string" ? doc : "";
   const px = typeof x === "number" ? x : NaN;
@@ -1318,11 +1337,15 @@ export function addPinComment(doc, offset, x, y) {
   const id = nextCommentId(text);
   const fenceText = `${commentHead(id, { kind: "pin", x: px, y: py }, false)}\n\n\`\`\`\n`;
   const at = runEnd(text, host.end);
+  // The fence is inserted on the line below a leading picture. The caret stays
+  // on that line, past the fence, so neither the picture nor the note opens raw.
+  const beside = caretBesideHost(text, host);
+  const caret = beside >= at ? beside + fenceText.length : beside;
   return {
     doc: text.slice(0, at) + fenceText + text.slice(at),
     id,
-    cursor: host.start,
-    anchor: host.start,
+    cursor: caret,
+    anchor: caret,
     changes: [{ from: at, to: at, inserted: fenceText, removed: "" }],
   };
 }
@@ -1394,6 +1417,18 @@ export function snapSourceFenceLines(doc, anchor, cursor) {
     };
   }
   return null;
+}
+
+// Exact edges stay as given. Any other highlight inside one source fence uses
+// the body lines it touches. A highlight that leaves the fence does not snap.
+function sourceLineCommentRange(doc, from, to) {
+  const exact = wholeSourceLines(doc, from, to);
+  if (exact) return { lines: exact, anchor: from, cursor: to };
+  const snap = snapSourceFenceLines(doc, from, to);
+  if (!snap) return null;
+  const lines = wholeSourceLines(doc, snap.anchor, snap.cursor);
+  if (!lines) return null;
+  return { lines, anchor: snap.anchor, cursor: snap.cursor };
 }
 
 export function sourceLineComment(doc, offset) {

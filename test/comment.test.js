@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   addComment,
   addPinComment,
+  commentRangeReason,
+  plan,
   appendCommentReply,
   backspace,
   commentAnchorReason,
@@ -531,8 +533,13 @@ test("a source fence stores a following line-range comment and leaves the code b
   const alpha = code.indexOf("alpha");
   const beta = code.indexOf("beta");
   const partial = addComment(code, alpha, alpha + 2);
-  assert.equal(partial, null);
-  assert.equal(addComment(code, alpha + 1, alpha + "alpha".length), null);
+  assert.equal(partial.doc, `${code}\`\`\`comment c1 1\n\n\`\`\`\n`);
+  assert.equal(partial.anchor, alpha);
+  assert.equal(partial.cursor, beta);
+  const tail = addComment(code, alpha + 1, alpha + "alpha".length);
+  assert.equal(tail.doc, partial.doc);
+  assert.equal(tail.anchor, alpha);
+  assert.equal(tail.cursor, beta);
   assert.equal(addComment(code, code.indexOf("```", 3), code.indexOf("```", 3) + 1), null);
 
   const one = addComment(code, alpha, alpha + "alpha".length);
@@ -564,6 +571,21 @@ test("a source fence stores a following line-range comment and leaves the code b
 
   const same = addComment(code, beta, beta + "beta".length);
   assert.equal(same.doc, `${code}\`\`\`comment c1 2\n\n\`\`\`\n`);
+
+  const inside = "```js\none\ntwo\nthree\n```\n";
+  const twoAt = inside.indexOf("two");
+  const threeAt = inside.indexOf("three");
+  const closerAt = inside.indexOf("```", 3);
+  const crossed = addComment(inside, twoAt + 1, threeAt + 2);
+  assert.equal(crossed.doc, `${inside}\`\`\`comment c1 2-3\n\n\`\`\`\n`);
+  assert.equal(crossed.anchor, twoAt);
+  assert.equal(crossed.cursor, closerAt);
+  const before = `see\n${inside}`;
+  assert.equal(addComment(before, 0, before.indexOf("two") + 1), null);
+  assert.equal(commentRangeReason(before, 0, before.indexOf("two") + 1), "overlaps a fence");
+  const afterFence = `${inside}tail\n`;
+  assert.equal(addComment(afterFence, afterFence.indexOf("two"), afterFence.indexOf("tail") + 1), null);
+  assert.equal(commentRangeReason(afterFence, afterFence.indexOf("two"), afterFence.indexOf("tail") + 1), "overlaps a fence");
   const reversed = `${SOURCE}\`\`\`comment c1 3-2\n\n\`\`\`\n`;
   assert.deepEqual(commentThreads(reversed)[0].lines, { start: 2, end: 3 });
   assert.equal(commentAnchorReason(reversed), null);
@@ -580,8 +602,8 @@ test("a pin is the following fence on an image or a diagram", () => {
   const image = "![alt](sample.svg)\n";
   const pin = addPinComment(image, 0, 0.62, 0.18);
   assert.equal(pin.id, "c1");
-  assert.equal(pin.cursor, 0);
-  assert.equal(pin.anchor, 0);
+  assert.equal(pin.cursor, pin.doc.length);
+  assert.equal(pin.anchor, pin.doc.length);
   assert.equal(pin.doc, `${image}\`\`\`comment c1 0.62,0.18\n\n\`\`\`\n`);
   assert.equal(pin.doc.startsWith(image), true);
   const thread = commentThreads(pin.doc)[0];
@@ -605,6 +627,34 @@ test("a pin is the following fence on an image or a diagram", () => {
   assert.equal(again.id, "c2");
   assert.equal(again.doc.startsWith(pin.doc), true);
   assert.equal(again.doc, `${pin.doc}\`\`\`comment c2 0.25,0.5\n\n\`\`\`\n`);
+});
+
+test("a pin leaves the caret off the image line so the picture stays drawn", () => {
+  const only = "![alt](sample.svg)\n";
+  const first = addPinComment(only, 0, 0.25, 0.5);
+  const onlyEnd = only.indexOf("\n");
+  assert.equal(first.cursor, first.doc.length);
+  assert.ok(first.cursor > onlyEnd);
+  assert.equal(first.anchor, first.cursor);
+  assert.equal(plan(first.doc, first.cursor).blocks.some((block) => block.raw && block.start === 0), false);
+  assert.ok(plan(first.doc, first.cursor).atoms.some((atom) => atom.type === "image"));
+
+  const above = "para\n![alt](sample.svg)\nnext\n";
+  const at = above.indexOf("![");
+  const pinned = addPinComment(above, at + 1, 0.3, 0.2);
+  const imageEnd = above.indexOf("\n", at);
+  assert.equal(pinned.cursor, at - 1);
+  assert.equal(pinned.anchor, pinned.cursor);
+  assert.ok(pinned.cursor < at || pinned.cursor > imageEnd);
+  const drawn = plan(pinned.doc, pinned.cursor);
+  const imageLine = drawn.blocks.find((block) => block.type === "line" && block.start === at);
+  assert.equal(imageLine.raw, false);
+  assert.ok(drawn.atoms.some((atom) => atom.type === "image" && atom.start === at));
+
+  const diagram = "See\n```mermaid\nA-->B\n```\n";
+  const marked = addPinComment(diagram, diagram.indexOf("A"), 0.4, 0.7);
+  assert.ok(marked.cursor < diagram.indexOf("```"));
+  assert.ok(plan(marked.doc, marked.cursor).atoms.some((atom) => atom.type === "diagram"));
 });
 
 test("a range or pin that does not follow its block is 400 and writes nothing", () => {
