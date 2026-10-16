@@ -716,6 +716,52 @@ test("VW.9", () => {
   assert.equal(out.show.startsWith("x\n\n‸| a | b |"), true);
 });
 
+function lineAtCaret(out) {
+  const start = out.doc.lastIndexOf("\n", Math.max(0, out.cursor - 1)) + 1;
+  const end = out.doc.indexOf("\n", out.cursor);
+  return out.doc.slice(start, end < 0 ? out.doc.length : end);
+}
+
+function press(out, key, opts) {
+  return run(out.show, [key], { vim: out.vim, ...opts });
+}
+
+test("pn4hbr22 k from below a table lands on the last row and steps up", () => {
+  const doc = "Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nAfte‸r.\n";
+  let out = run(doc, ["k"]);
+  assert.equal(lineAtCaret(out), "");
+  assert.equal(out.vim.column, 4);
+  const up = ["| 3 | 4 |", "| 1 | 2 |", "|---|---|", "| a | b |", "Top."];
+  for (const text of up) {
+    out = press(out, "k");
+    assert.equal(lineAtCaret(out), text);
+    assert.equal(out.cursor - (out.doc.lastIndexOf("\n", Math.max(0, out.cursor - 1)) + 1), Math.min(4, text.length));
+  }
+  const under = run("Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\nAfte‸r.\n", ["k"]);
+  assert.equal(lineAtCaret(under), "| 1 | 2 |");
+  assert.equal(under.cursor - under.doc.indexOf("| 1 | 2 |"), 4);
+  const counted = run("Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nAfte‸r.\n", ["2", "k"]);
+  assert.equal(lineAtCaret(counted), "| 3 | 4 |");
+  const down = ["| a | b |", "|---|---|", "| 1 | 2 |", "| 3 | 4 |", "After."];
+  let jay = run("‸Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nAfter.\n", ["j"]);
+  for (const text of down) {
+    assert.equal(lineAtCaret(jay), text);
+    jay = press(jay, "j");
+  }
+  const raw = run("Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\nAfte‸r.\n", ["k"], { raw: true });
+  assert.equal(lineAtCaret(raw), "| 1 | 2 |");
+});
+
+test("pn4hbr22 dk from below a table deletes that table line", () => {
+  const doc = "Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nAfter.\n";
+  const blank = run(doc.replace("\n\nAfter.", "\n‸\nAfter."), ["d", "k"]);
+  assert.equal(blank.doc, "Top.\n\nAfter.\n");
+  const after = run(doc.replace("After.", "‸After."), ["d", "k"]);
+  assert.equal(after.doc, "Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n");
+  const into = run(doc.replace("Top.", "‸Top."), ["d", "j"]);
+  assert.equal(into.doc, "\nAfter.\n");
+});
+
 test("VW.10", () => {
   const out = run("‸x\n\n```mermaid\ngraph TD\nA-->B\n```\n", ["j"]);
   assert.equal(out.show.startsWith("x\n\n‸```mermaid\n"), true);

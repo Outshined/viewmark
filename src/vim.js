@@ -140,13 +140,31 @@ function rawLines(doc) {
   return lines;
 }
 
+// The source lines of a closed table. end is the line's newline, or the
+// block's end when the last row has none.
+function sourceRows(doc, start, end) {
+  const rows = [];
+  let at = start;
+  while (at <= end && at <= doc.length) {
+    let stop = at;
+    while (stop < end && stop < doc.length && doc[stop] !== "\n") stop += 1;
+    rows.push({ start: at, end: stop });
+    if (stop >= end || stop >= doc.length || doc[stop] !== "\n") break;
+    at = stop + 1;
+  }
+  return rows;
+}
+
 function renderedLines(doc, cursor) {
   const blocks = plan(doc, cursor).blocks;
   const lines = [];
   for (const block of blocks) {
     if (block.classes && block.classes.includes("md-paragraph-gap")) continue;
     if (typeof block.start !== "number" || typeof block.end !== "number") continue;
-    lines.push({ start: block.start, end: block.end });
+    const line = { start: block.start, end: block.end };
+    // k lands on the last row. The block stays one vim line for a linewise delete.
+    if (block.type === "table") line.table = true;
+    lines.push(line);
   }
   if (lines.length === 0) lines.push({ start: 0, end: Math.min(doc.length, 0) });
   return lines;
@@ -246,13 +264,23 @@ function columnOf(doc, cursor, raw) {
   return cursor - lines[index].start;
 }
 
+// A closed table is one block, so the line above starts at the header.
+// k rests on the last row, and the open table then walks one row at a time.
+function backwardTableRow(doc, line) {
+  if (!line || !line.table) return line;
+  const rows = sourceRows(doc, line.start, line.end);
+  return rows.length > 0 ? rows[rows.length - 1] : line;
+}
+
 function moveVertical(doc, cursor, delta, count, raw, column) {
   const lines = vimLines(doc, cursor, raw);
   const index = lineIndex(lines, doc, cursor, raw);
   const col = column == null ? columnOf(doc, cursor, raw) : column;
   const next = stepLine(index, delta, count, lines.length);
   if (next === index || next >= lines.length) return { cursor, column: col, linewise: true };
-  const landed = placeColumn(doc, lines[next], col, raw, delta);
+  let line = lines[next];
+  if (!raw && delta < 0) line = backwardTableRow(doc, line);
+  const landed = placeColumn(doc, line, col, raw, delta);
   return { cursor: landed, column: col, linewise: true };
 }
 
@@ -626,8 +654,19 @@ function runMotion(id, spec) {
   return { kind: "stay", anchor };
 }
 
+// True when this offset sits in a table the closed plan still draws as one block.
+function opensTable(doc, offset) {
+  for (const block of plan(doc, -1).blocks) {
+    if (block.type === "table" && offset >= block.start && offset <= block.end) return true;
+  }
+  return false;
+}
+
 function linewiseRange(doc, fromOff, toOff, raw) {
-  const origin = vimLines(doc, Math.min(fromOff, toOff), raw);
+  // Planning at the caret inside the table opens it and drops the blank under
+  // that one line, so a delete started below the table runs through the line after.
+  const planAt = !raw && opensTable(doc, toOff) && !opensTable(doc, fromOff) ? fromOff : Math.min(fromOff, toOff);
+  const origin = vimLines(doc, planAt, raw);
   const a = lineIndex(origin, doc, fromOff, raw);
   const b = lineIndex(origin, doc, toOff, raw);
   const lo = Math.min(a, b);
