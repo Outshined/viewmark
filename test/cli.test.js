@@ -50,7 +50,7 @@ const HELP_NEEDLES = [
   "matches N",
   "error STATUS",
   "held by NAME",
-  "Each hunk is its own splice, so unchanged text between hunks stays put. Another socket's span is 409 and names that user, and a comment range that overlaps a fence or a table or splits a comment is 409 and names that.",
+  "Each hunk is its own splice, so unchanged text between hunks stays put. Another socket's span is 409 and names that user, and a brace comment that overlaps a fence or a table or splits a comment is 409 and names that. A source fence's comments are the comment fences in the run immediately after it, and the token after the id is the body-line range. An image line or a mermaid fence takes a pin after the id. A range or pin that is not in that run, a pin outside 0 to 1, and a range outside the body lines are 400 and write nothing.",
   "{files}",
   "{path,rev,text}",
   "{path,rev:0}",
@@ -282,7 +282,7 @@ function trap() {
 
 test("T-cli-help", async () => {
   const agents = await fs.readFile(path.join(root, "AGENTS.md"), "utf8");
-  const cause = "Each hunk is its own splice, so unchanged text between hunks stays put. Another socket's span is 409 and names that user, and a comment range that overlaps a fence or a table or splits a comment is 409 and names that.";
+  const cause = "Each hunk is its own splice, so unchanged text between hunks stays put. Another socket's span is 409 and names that user, and a brace comment that overlaps a fence or a table or splits a comment is 409 and names that. A source fence's comments are the comment fences in the run immediately after it, and the token after the id is the body-line range. An image line or a mermaid fence takes a pin after the id. A range or pin that is not in that run, a pin outside 0 to 1, and a range outside the body lines are 400 and write nothing.";
   assert.ok(agents.includes(cause));
   assert.equal(agents.includes("crosses one of those boundaries"), false);
   const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));

@@ -4,6 +4,7 @@
 import {
   createState,
   addComment,
+  addPinComment,
   insert,
   insertLiteral,
   moveText,
@@ -125,7 +126,9 @@ export function createMemoryTransport(doc, cursor = 0) {
       if (message.op === "insert") {
         inserted = typeof message.text === "string" ? message.text : "";
         next = insert(base, inserted, message.paste === true, message.raw === true);
+        if (next && next.refused) return;
         if (next == null && message.raw === true) next = insertLiteral(base, inserted);
+        if (next && next.refused) return;
         if (next && next !== base && Array.isArray(next.changes) && next.changes.length === 1
           && typeof message.caret === "number" && Number.isFinite(message.caret)) {
           const caret = Math.max(0, Math.min(next.doc.length, Math.trunc(message.caret)));
@@ -137,11 +140,18 @@ export function createMemoryTransport(doc, cursor = 0) {
         next = deleteForward(base);
       } else if (message.op === "move") {
         next = moveText(base, message.dest);
-        if (next == null) return;
+        if (next == null || next.refused) return;
       } else if (message.op === "comment.add") {
         const added = addComment(base.doc, base.anchor, base.cursor);
         if (!added) return;
         next = replaceDocument(base, added.doc, added.cursor);
+        if (Number.isInteger(added.anchor)) next = { ...next, anchor: added.anchor };
+        inserted = next.doc;
+      } else if (message.op === "comment.pin") {
+        const added = addPinComment(base.doc, message.offset, message.x, message.y);
+        if (!added || added.refused) return;
+        next = replaceDocument(base, added.doc, added.cursor);
+        if (Number.isInteger(added.anchor)) next = { ...next, anchor: added.anchor };
         inserted = next.doc;
       } else if (message.op === "comment.save") {
         next = replaceCommentBody(base, message.id, typeof message.body === "string" ? message.body : "");
@@ -155,6 +165,7 @@ export function createMemoryTransport(doc, cursor = 0) {
       } else {
         return;
       }
+      if (next && next.refused) return;
       if (next === base) {
         deliverNoop(message);
         return;

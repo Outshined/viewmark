@@ -2414,6 +2414,82 @@ test("gc on a comment makes that thread current", () => {
   noCommentEffect(flag);
 });
 
+function withMarks(doc, anchor, cursor) {
+  let out = "";
+  for (let i = 0; i <= doc.length; i += 1) {
+    if (i === anchor) out += "«";
+    if (i === cursor) out += CARET;
+    if (i < doc.length) out += doc[i];
+  }
+  return out;
+}
+
+test("visual gc inside a source fence writes the line-range selection", () => {
+  const fence = "```js\none\ntwo\nthree\n```\n";
+  const two = fence.indexOf("two");
+  const three = fence.indexOf("three");
+  const closer = fence.indexOf("```", 3);
+  const visual = run(withMarks(fence, two, two + 2), ["g", "c"], { mode: "visual" });
+  assert.equal(visual.doc, fence);
+  assert.equal(visual.vim.mode, "visual");
+  assert.equal(visual.vim.input.keyBuffer, "");
+  assert.deepEqual(last(visual).effect, { type: "comment-add", anchor: two, cursor: three });
+
+  const line = run(withMarks(fence, two + 1, three + 2), ["g", "c"], { mode: "visual-line" });
+  assert.equal(line.vim.mode, "visual-line");
+  assert.deepEqual(last(line).effect, { type: "comment-add", anchor: two, cursor: closer });
+
+  const opener = run(withMarks(fence, 0, 3), ["g", "c"], { mode: "visual" });
+  assert.deepEqual(last(opener).effect, { type: "comment-add" });
+
+  const before = `see\n${fence}`;
+  const outside = run(withMarks(before, 0, before.indexOf("two") + 1), ["g", "c"], { mode: "visual" });
+  assert.deepEqual(last(outside).effect, { type: "comment-add" });
+  const after = `${fence}tail\n`;
+  const past = run(withMarks(after, after.indexOf("two"), after.indexOf("tail") + 2), ["g", "c"], { mode: "visual" });
+  assert.deepEqual(last(past).effect, { type: "comment-add" });
+
+  const host = "```js\none\ntwo\nthree\nfour\n```\n";
+  const marked = `${host}\`\`\`comment c1 2-3\n\n\`\`\`\n`;
+  const onTwo = marked.indexOf("two");
+  const onThree = marked.indexOf("three");
+  const onFour = marked.indexOf("four");
+  const onOne = marked.indexOf("one");
+  const normal = run(withMarks(marked, onTwo + 1, onTwo + 1), ["g", "c"]);
+  assertCommentCurrent(normal, "c1", "normal");
+  const off = run(withMarks(marked, onOne + 1, onOne + 1), ["g", "c"]);
+  noCommentEffect(off);
+  const later = run(withMarks(marked, onFour + 1, onFour + 1), ["g", "c"]);
+  noCommentEffect(later);
+
+  const held = run(withMarks(marked, onTwo, onTwo + 2), ["g", "c"], { mode: "visual" });
+  assert.equal(held.vim.mode, "visual");
+  assert.deepEqual(last(held).effect, {
+    type: "comment-current",
+    id: "c1",
+    anchor: onTwo,
+    cursor: onThree,
+  });
+  const wider = run(withMarks(marked, onTwo + 1, onFour + 1), ["g", "c"], { mode: "visual" });
+  assert.deepEqual(last(wider).effect, {
+    type: "comment-add",
+    anchor: onTwo,
+    cursor: marked.indexOf("```", 3),
+  });
+
+  const nested = `${host}\`\`\`comment c1 1-4\n\n\`\`\`\n\`\`\`comment c2 2-3\n\n\`\`\`\n`;
+  const inner = run(withMarks(nested, nested.indexOf("two"), nested.indexOf("two") + 2), ["g", "c"], { mode: "visual" });
+  assert.deepEqual(last(inner).effect, {
+    type: "comment-current",
+    id: "c2",
+    anchor: nested.indexOf("two"),
+    cursor: nested.indexOf("three"),
+  });
+  const tied = `${host}\`\`\`comment c1 2-3\n\n\`\`\`\n\`\`\`comment c2 2-3\n\n\`\`\`\n`;
+  const same = run(withMarks(tied, tied.indexOf("two") + 1, tied.indexOf("two") + 1), ["g", "c"]);
+  assertCommentCurrent(same, "c1", "normal");
+});
+
 function insertedSplice(out) {
   const splices = out.steps.filter((step) => step.effect && step.effect.type === "splice" && step.effect.from === step.effect.to);
   assert.equal(splices.length, 1);
