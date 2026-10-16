@@ -7745,6 +7745,88 @@ test("comment cards stay near their anchors", () => {
   }
 });
 
+test("77fvpzwf: a pin card sits on the pin tip, and a click opens the thread without scrolling", () => {
+  const mounted = mountSheet();
+  let onResize = null;
+  globalThis.window.addEventListener = (type, fn) => {
+    if (type === "resize") onResize = fn;
+  };
+  const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+  const card = (id) => cards().find((node) => node.dataset.comment === id);
+  const pins = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-pin"));
+  const marks = (id) => walkNodes(card(id), (node) => node.classList && node.classList.contains("md-comment-pin-mark"));
+  const pathsOf = (el) => walkNodes(el, (node) => node && node.localName === "path").map((node) => node.getAttribute("d"));
+  const topOf = (id) => Number.parseFloat(card(id).styleProps.top);
+  const note = (id, y, text) => `\`\`\`comment ${id} 0.20,${y}\n:: 0\n@2026-10-16T15:00:00.000Z qa\n${text}\n\`\`\`\n`;
+  try {
+    const doc = `Intro {c3}word{/c3}.\n\n\`\`\`comment c3\n:: 0\n@2026-10-16T15:00:00.000Z qa\nPlain.\n\`\`\`\n\n![a](a.svg)\n${note("c1", "0.80", "Low.")}${note("c2", "0.20", "High.")}`;
+    globalThis.window.matchMedia = () => ({ matches: false });
+    const view = createEditor(mounted.root, doc, 0);
+    assert.equal(typeof onResize, "function");
+    assert.equal(pins().length, 2);
+    assert.deepEqual(cards().map((node) => node.dataset.comment), ["c3", "c1", "c2"]);
+    assert.equal(marks("c3").length, 0);
+    assert.equal(marks("c1").length, 1);
+    assert.equal(marks("c2").length, 1);
+    const line = marks("c1")[0].parentElement;
+    assert.equal(line.classList.contains("md-comment-pin-line"), true);
+    assert.equal(line.childNodes[0], marks("c1")[0]);
+    assert.equal(line.childNodes[1].classList.contains("md-comment-author"), true);
+    assert.equal(line.childNodes[1].textContent, "qa");
+    assert.deepEqual(pathsOf(marks("c1")[0]), pathsOf(pins().find((node) => node.dataset.comment === "c1")));
+
+    let asideTop = 0;
+    const tips = { c1: 400, c2: 180 };
+    mounted.aside.getBoundingClientRect = () => ({
+      top: asideTop, left: 0, right: 320, bottom: asideTop + 900, width: 320, height: 900,
+    });
+    for (const pin of pins()) {
+      const id = pin.dataset.comment;
+      pin.getBoundingClientRect = () => {
+        const tip = tips[id];
+        return { top: asideTop + tip - 24, left: 40, right: 64, bottom: asideTop + tip, width: 24, height: 24 };
+      };
+    }
+    onResize();
+    assert.equal(topOf("c1"), 400);
+    assert.equal(topOf("c2"), 180);
+    asideTop = -1770;
+    onResize();
+    assert.equal(topOf("c1"), 400);
+    assert.equal(topOf("c2"), 180);
+    asideTop = 0;
+    tips.c1 = 200;
+    tips.c2 = 220;
+    onResize();
+    assert.equal(topOf("c1"), 200);
+    assert.equal(topOf("c2"), 242);
+
+    const scrolled = [];
+    globalThis.window.scrollX = 0;
+    globalThis.window.scrollY = 1770;
+    globalThis.window.scrollTo = (x, y) => { scrolled.push([x, y]); };
+    const pin = pins().find((node) => node.dataset.comment === "c2");
+    mounted.listeners.click({
+      target: pin,
+      detail: 1,
+      clientX: 1,
+      clientY: 1,
+      preventDefault() {},
+    });
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(card("c2").classList.contains("md-comment-current"), true);
+    assert.equal(card("c1").classList.contains("md-comment-current"), false);
+    assert.deepEqual(scrolled, [[0, 1770]]);
+    assert.equal(topOf("c1"), 200);
+    assert.equal(topOf("c2"), 242);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("comment cards start below the shown comment controls", () => {
   const mounted = mountSheet();
   let onResize = null;
