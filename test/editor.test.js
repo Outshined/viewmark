@@ -6087,6 +6087,29 @@ test("an image address keeps a parenthesis inside it", () => {
   const tabbed = plan(tabbedDoc, tabbedDoc.length).atoms.find((atom) => atom.type === "image");
   assert.equal(tabbed.url, "Plan\t(draft)/NAME.png");
 
+  const pointy = "![NAME.png](<Plan (draft)/NAME.png>)";
+  const pointyDoc = `${pointy}\n`;
+  const pointyImage = plan(pointyDoc, pointyDoc.length).atoms.find((atom) => atom.type === "image");
+  assert.equal(pointyImage.url, "Plan (draft)/NAME.png");
+  assert.equal(pointyDoc.slice(pointyImage.start, pointyImage.end), pointy);
+
+  const tabPointy = "![NAME.png](<Plan\t(draft)/NAME.png>)\n";
+  const tabPointyImage = plan(tabPointy, tabPointy.length).atoms.find((atom) => atom.type === "image");
+  assert.equal(tabPointyImage.url, "Plan\t(draft)/NAME.png");
+
+  const spacedPointy = "![NAME.png](<My Notes/NAME.png>)\n";
+  const spacedPointyImage = plan(spacedPointy, spacedPointy.length).atoms.find((atom) => atom.type === "image");
+  assert.equal(spacedPointyImage.url, "My Notes/NAME.png");
+
+  const escaped = "![NAME.png](<a\\\\b/NAME.png>)\n";
+  const escapedImage = plan(escaped, escaped.length).atoms.find((atom) => atom.type === "image");
+  assert.equal(escapedImage.url, "a\\b/NAME.png");
+
+  const ahead = "Type `![alt](` and then the address.\n\n![NAME.png](<span/NAME.png>)\n";
+  const kept = plan(ahead, ahead.length).atoms.filter((atom) => atom.type === "image");
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].url, "span/NAME.png");
+
   const mounted = mountEditor();
   try {
     const view = createEditor(mounted.root, doc, doc.length);

@@ -1424,20 +1424,44 @@ function codeTokens(line, lang) {
   return { runs, parts: runs, images: [] };
 }
 
-// The parenthesis at open starts the address. One inside the address counts.
-// The parenthesis that brings that open back to zero closes it. One after the image does not.
-export function addressEnd(text, open) {
-  if (typeof text !== "string" || text[open] !== "(") return -1;
+function unescapeDestination(raw) {
+  return raw.replace(/\\([!-/:-@[-`{-~])/g, "$1");
+}
+
+// The parenthesis at open starts the address. <...> is one address, so a space
+// or a parenthesis inside it stays part of the path: a bare address cannot hold
+// a space, and other markdown viewers would not resolve it. A backslash in the
+// brackets keeps the next character. Outside them, a parenthesis inside the
+// address counts, and the one that brings the open back to zero closes it.
+// end is the index of that parenthesis. url is the path, without the brackets.
+export function readDestination(text, open) {
+  if (typeof text !== "string" || text[open] !== "(") return null;
+  if (text[open + 1] === "<") {
+    const start = open + 2;
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text[i];
+      if (ch === "\n" || ch === "<") return null;
+      if (ch === "\\") {
+        i += 1;
+        continue;
+      }
+      if (ch === ">") {
+        if (text[i + 1] !== ")") return null;
+        return { end: i + 1, url: unescapeDestination(text.slice(start, i)) };
+      }
+    }
+    return null;
+  }
   let depth = 0;
   for (let i = open; i < text.length; i += 1) {
     const ch = text[i];
     if (ch === "(") depth += 1;
     else if (ch === ")") {
       depth -= 1;
-      if (depth === 0) return i;
+      if (depth === 0) return { end: i, url: text.slice(open + 1, i) };
     }
   }
-  return -1;
+  return null;
 }
 
 function matchLinkOrImage(text, index, image) {
@@ -1450,15 +1474,15 @@ function matchLinkOrImage(text, index, image) {
   const labelStart = cursor + 1;
   const labelEnd = text.indexOf("]", labelStart);
   if (labelEnd < 0 || text[labelEnd + 1] !== "(") return null;
-  const urlEnd = addressEnd(text, labelEnd + 1);
-  if (urlEnd < 0) return null;
+  const dest = readDestination(text, labelEnd + 1);
+  if (!dest) return null;
   return {
     start: index,
-    end: urlEnd + 1,
+    end: dest.end + 1,
     labelStart,
     labelEnd,
     alt: text.slice(labelStart, labelEnd),
-    url: text.slice(labelEnd + 2, urlEnd),
+    url: dest.url,
   };
 }
 

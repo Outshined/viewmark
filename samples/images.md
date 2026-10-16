@@ -7,7 +7,7 @@ The image line is markdown, and the page draws it:
 ![k3m9qp2x.png](tickets/48w97e8c/k3m9qp2x.png)
 ```
 
-The line stands alone, so it is one lock span. The alt text is the file name. The address is relative to the repository root, and the page requests `/raw/<repo>/tickets/48w97e8c/k3m9qp2x.png`. An address that starts with `https://` or `http://` is used as it is. A `data:` address is not written. A fence is a block of source, and a screenshot is not one.
+The line stands alone, so it is one lock span. The alt text is the file name. The address is relative to the repository root, and the page requests `/raw/<repo>/tickets/48w97e8c/k3m9qp2x.png`. A path with a space or a tab is written in angle brackets, `![name.png](<My Notes/name.png>)`, so other markdown viewers resolve the same file. An address that starts with `https://` or `http://` is used as it is. A `data:` address is not written. A fence is a block of source, and a screenshot is not one.
 
 The directory sits beside the markdown. `tickets/<id>.md` owns `tickets/<id>/`. `notes/welcome.md` owns `notes/welcome/`. The directory is not a document, and it does not appear in the file list.
 
