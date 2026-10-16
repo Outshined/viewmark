@@ -653,7 +653,7 @@ async function openDocMenu(page) {
   await page.until(() => page.eval(shown), "document menu open");
 }
 
-test("the document menu lists Attach image and Delete file, and Commit repo is absent", async (t) => {
+test("the document menu lists Attach image, Delete file, and Vim keys (R110), and Commit repo is absent", async (t) => {
   const { hub, page } = await setup(t);
   await hub.create("a.md", "alpha\n");
   const id = await makeTicket(hub, "Alpha");
@@ -679,7 +679,7 @@ test("the document menu lists Attach image and Delete file, and Commit repo is a
   const doc = await read();
   assert.equal(doc.label, "Menu");
   assert.equal(doc.role, "menu");
-  assert.deepEqual(doc.items, ["Attach image", "Delete file"]);
+  assert.deepEqual(doc.items, ["Attach image", "Delete file", "Vim keys"]);
   assert.equal(doc.commit, false);
   assert.equal(doc.attach, 0);
   assert.ok(doc.menu.right <= doc.raw.left + 1, "the menu covers the raw toggle");
@@ -687,7 +687,7 @@ test("the document menu lists Attach image and Delete file, and Commit repo is a
   await openTicket(page, id);
   await openDocMenu(page);
   const ticket = await read();
-  assert.deepEqual(ticket.items, ["Attach image"]);
+  assert.deepEqual(ticket.items, ["Attach image", "Vim keys"]);
   assert.equal(ticket.commit, false);
   assert.equal(ticket.label, "Menu");
   assert.ok(ticket.menu.right <= ticket.raw.left + 1, "the menu covers the raw toggle on a ticket");
