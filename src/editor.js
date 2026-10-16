@@ -1346,11 +1346,21 @@ function diagramMessage(err) {
   return String(err);
 }
 
+function keptPins(el) {
+  const pins = [];
+  for (const child of childArray(el)) {
+    if (hasClass(child, "md-comment-pin")) pins.push(child);
+  }
+  return pins;
+}
+
 function showDiagramSource(el, source, err) {
   if (el.isConnected !== true) return;
+  const pins = keptPins(el);
   const pre = document.createElement("pre");
   pre.textContent = source;
   el.replaceChildren(pre, document.createTextNode(diagramMessage(err)));
+  for (const pin of pins) el.appendChild(pin);
 }
 
 function showDiagramSvg(el, source, svg) {
@@ -1368,7 +1378,9 @@ function showDiagramSvg(el, source, svg) {
     if (el.isConnected === true) showDiagramSource(el, source, new Error("diagram did not return svg"));
     return;
   }
+  const pins = keptPins(el);
   el.replaceChildren(node);
+  for (const pin of pins) el.appendChild(pin);
 }
 
 function renderDiagram(atom) {
@@ -1533,6 +1545,10 @@ function renderBlock(block, repo) {
   if (block.collapsed) return renderCollapsed(block);
   const el = document.createElement("div");
   el.className = ["md-line", ...block.classes].join(" ");
+  if (block.fence) {
+    el.dataset.fenceStart = String(block.start);
+    if (!block.raw) el.dataset.bodyLines = String(block.bodyLines || 0);
+  }
   if (typeof block.indent === "number") el.style.setProperty("--indent", String(block.indent));
   if (block.marker) el.dataset.marker = block.marker;
   if (block.raw || block.empty || block.hr) {
@@ -2686,7 +2702,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function editRecordsUndo(body) {
     const op = body && body.op;
     return op === "insert" || op === "backspace" || op === "delete" || op === "move"
-      || op === "comment.add" || op === "comment.save" || op === "comment.delete" || op === "comment.resolve";
+      || op === "comment.add" || op === "comment.pin" || op === "comment.save" || op === "comment.delete" || op === "comment.resolve";
   }
 
   function sendEdit(partial, splicePrior) {
@@ -2718,7 +2734,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         vimGroupCont = false;
       }
     }
-    if (body.op === "comment.add" || body.op === "comment.delete" || body.op === "comment.resolve") {
+    if (body.op === "comment.add" || body.op === "comment.pin" || body.op === "comment.delete" || body.op === "comment.resolve") {
       lockThroughEnd();
     }
     const message = {
@@ -3659,6 +3675,85 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return card;
   }
 
+  const COMMENT_BALLOON = "M12 19l-2-3H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-3l-2 3z";
+
+  function anchorMarkButton(thread, className) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = className;
+    if (typeof button.setAttribute === "function") {
+      button.setAttribute("type", "button");
+      button.setAttribute("aria-label", `Comment ${thread.id}`);
+    }
+    button.dataset.comment = thread.id;
+    if (currentCommentId === thread.id) button.classList.add("md-comment-current");
+    if (editingCommentIds().has(thread.id)) button.classList.add("md-comment-editing");
+    button.addEventListener("mousedown", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+    });
+    return button;
+  }
+
+  function paintLineBar(thread) {
+    const count = thread.bodyCount;
+    const lines = thread.lines;
+    if (!Number.isInteger(count) || count < 1 || !lines) return;
+    if (!(lines.start >= 1 && lines.end >= lines.start && lines.end <= count)) return;
+    let host = null;
+    for (const el of elementsWithClass("md-block-fence")) {
+      if (hasClass(el, "md-raw")) continue;
+      if (!el.dataset || el.dataset.bodyLines == null || el.dataset.bodyLines === "") continue;
+      if (Number(el.dataset.fenceStart) === thread.anchorAt) {
+        host = el;
+        break;
+      }
+    }
+    if (!host) return;
+    const button = anchorMarkButton(thread, "md-comment-bar md-comment");
+    setStyle(button, "top", `${((lines.start - 1) / count) * 100}%`);
+    setStyle(button, "height", `${((lines.end - lines.start + 1) / count) * 100}%`);
+    host.appendChild(button);
+  }
+
+  function paintPinMark(thread) {
+    const pin = thread.pin;
+    if (!pin) return;
+    let host = null;
+    if (thread.hostKind === "diagram") {
+      for (const el of elementsWithClass("md-diagram")) {
+        if (Number(el.dataset && el.dataset.start) === thread.anchorAt) {
+          host = el;
+          break;
+        }
+      }
+    } else if (thread.hostKind === "image") {
+      for (const el of elementsWithClass("md-image")) {
+        const start = Number(el.dataset && el.dataset.start);
+        if (start >= thread.anchorAt && (thread.hostEnd == null || start < thread.hostEnd)) {
+          host = el;
+          break;
+        }
+      }
+    }
+    if (!host) return;
+    const button = anchorMarkButton(thread, "md-comment-pin md-comment");
+    setStyle(button, "left", `${pin.x * 100}%`);
+    setStyle(button, "top", `${pin.y * 100}%`);
+    const icon = strokeIcon(COMMENT_BALLOON);
+    if (icon) button.appendChild(icon);
+    host.appendChild(button);
+  }
+
+  // Bars and pins are their own elements. The code runs stay unmarked, so the
+  // comment color does not cover the tokens.
+  function paintAnchorMarks() {
+    for (const thread of commentThreads(state.doc)) {
+      if (!thread || (thread.resolved && !showResolved)) continue;
+      if (thread.lines) paintLineBar(thread);
+      else if (thread.pin) paintPinMark(thread);
+    }
+  }
+
   function renderCommentAside(comments) {
     if (!commentsAside || typeof commentsAside.replaceChildren !== "function") return;
     ensureDocMenu();
@@ -3704,6 +3799,29 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       detachNode(child);
     }
     commentsAside.appendChild(row);
+    const pinSource = document.createElement("button");
+    pinSource.type = "button";
+    pinSource.className = "md-pin-source icon-btn";
+    pinSource.draggable = true;
+    if (typeof pinSource.setAttribute === "function") {
+      pinSource.setAttribute("type", "button");
+      pinSource.setAttribute("aria-label", "Comment pin");
+      pinSource.setAttribute("title", "Comment pin");
+      pinSource.setAttribute("draggable", "true");
+    }
+    const pinIcon = strokeIcon(COMMENT_BALLOON);
+    if (pinIcon) pinSource.appendChild(pinIcon);
+    pinSource.addEventListener("dragstart", (event) => {
+      const data = event && event.dataTransfer;
+      if (!data || typeof data.setData !== "function") return;
+      try {
+        data.setData("text/viewmark-pin", "pin");
+        data.effectAllowed = "copy";
+      } catch {
+        // A drag double may reject writes.
+      }
+    });
+    commentsAside.appendChild(pinSource);
     for (const card of cards) commentsAside.appendChild(card);
     syncEntryLink();
   }
@@ -5699,6 +5817,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       markEditingHighlights();
       hideResolvedHighlights();
       markCurrentHighlights();
+      paintAnchorMarks();
       renderCommentAside(planned.comments);
       layoutComments();
       if (commentFocus) {
@@ -7296,13 +7415,48 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     consumePaste(event.clipboardData?.getData("text/plain") ?? "", event.clipboardData);
   });
 
+  function transferHas(data, type) {
+    const types = data && data.types;
+    if (!types) return false;
+    if (typeof types.includes === "function" && types.includes(type)) return true;
+    const count = typeof types.length === "number" ? types.length : 0;
+    for (let i = 0; i < count; i += 1) if (types[i] === type) return true;
+    return false;
+  }
+
+  function dropPin(event) {
+    const node = event.target && event.target.nodeType === 1 ? event.target : event.target && event.target.parentElement;
+    if (!node || typeof node.closest !== "function") return;
+    const image = node.closest(".md-image");
+    const diagram = image ? null : node.closest(".md-diagram");
+    const host = image || diagram;
+    if (!host) return;
+    if (hasClass(host, "md-raw") || (typeof host.closest === "function" && host.closest(".md-raw"))) return;
+    const rect = typeof host.getBoundingClientRect === "function" ? host.getBoundingClientRect() : null;
+    if (!rect || !(rect.width > 0) || !(rect.height > 0)) return;
+    const x = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+    const offset = Number(host.dataset && host.dataset.start);
+    if (!Number.isFinite(offset)) return;
+    expectNewComment = true;
+    const before = state.doc;
+    emitEdit({ op: "comment.pin", offset, x, y });
+    if (state.doc === before && (active.memory === true || !live)) expectNewComment = false;
+  }
+
   listen("dragover", (event) => {
-    if (fileListOf(event.dataTransfer).length === 0) return;
+    const data = event.dataTransfer;
+    if (fileListOf(data).length === 0 && !transferHas(data, "text/viewmark-pin")) return;
     if (typeof event.preventDefault === "function") event.preventDefault();
   });
 
   listen("drop", (event) => {
     if (dragSource) return;
+    if (transferHas(event.dataTransfer, "text/viewmark-pin")) {
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      dropPin(event);
+      return;
+    }
     if (fileListOf(event.dataTransfer).length === 0) return;
     if (typeof event.preventDefault === "function") event.preventDefault();
     consumePaste("", event.dataTransfer);
@@ -7837,10 +7991,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function applyVimEffect(effect) {
     if (!effect || typeof effect.type !== "string") return;
     if (effect.type === "comment-current") {
+      if (Number.isInteger(effect.anchor) && Number.isInteger(effect.cursor)) moveVimCaret(effect.anchor, effect.cursor);
       showCommentCurrent(effect.id);
       return;
     }
     if (effect.type === "comment-add") {
+      if (Number.isInteger(effect.anchor) && Number.isInteger(effect.cursor)) {
+        state = { ...state, anchor: effect.anchor, cursor: effect.cursor };
+      }
       addSelectionComment();
       return;
     }

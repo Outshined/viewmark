@@ -1424,6 +1424,49 @@ a.md-link {
   color: #ffa657;
 }
 
+.md-line.md-block-fence,
+.md-atom.md-diagram,
+.md-atom.md-image {
+  position: relative;
+}
+
+.md-comment-bar {
+  position: absolute;
+  left: -0.55rem;
+  width: 0.28rem;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: #6b5e45;
+  cursor: pointer;
+}
+
+.md-comment-pin {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #e7e2d8;
+  transform: translate(-50%, -100%);
+  cursor: pointer;
+  z-index: 2;
+}
+
+.md-comment.md-comment-pin {
+  background: transparent;
+  color: #e7e2d8;
+}
+
+.md-pin-source {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  margin: 0 0 0.4rem;
+  padding: 0;
+}
+
 .md-comment {
   background: #6b5e45;
   color: #e7e2d8;

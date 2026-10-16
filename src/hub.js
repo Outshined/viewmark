@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   addComment,
+  addPinComment,
   appendCommentReply,
   commentRangeReason,
   backspace,
@@ -23,6 +24,7 @@ import {
   replaceCommentBody,
   reviseCommentNote,
   setCommentResolved,
+  settleSplice,
   splitCommentNote,
 } from "./doc.js";
 import {
@@ -693,7 +695,9 @@ function runOp(text, cursor, anchor, msg) {
       const typed = typeof msg.text === "string" ? msg.text : "";
       next = insert(state, typed, msg.paste === true, msg.raw === true, msg.exact === true);
       // exact names the bytes. A refusal is not rewritten as a raw insert.
+      if (next && next.refused === 400) return next;
       if (next === null && msg.raw === true && msg.exact !== true) next = insertLiteral(state, typed);
+      if (next && next.refused === 400) return next;
       if (next && next !== state && Array.isArray(next.changes) && next.changes.length === 1
         && typeof msg.caret === "number" && Number.isFinite(msg.caret)) {
         const caret = Math.max(0, Math.min(next.doc.length, Math.trunc(msg.caret)));
@@ -703,13 +707,22 @@ function runOp(text, cursor, anchor, msg) {
     else if (msg.op === "backspace") next = backspace(state);
     else if (msg.op === "delete") next = deleteForward(state);
     else next = moveText(state, msg.dest);
+    if (next && next.refused === 400) return next;
     if (next === null) return null;
     return producedFrom(next, state);
   }
   if (msg.op === "comment.add") {
     const result = addComment(text, anchor, cursor);
     if (!result) return null;
-    return { doc: result.doc, cursor: result.cursor, anchor: result.cursor, changes: result.changes };
+    const caretAnchor = Number.isInteger(result.anchor) ? result.anchor : result.cursor;
+    return { doc: result.doc, cursor: result.cursor, anchor: caretAnchor, changes: result.changes };
+  }
+  if (msg.op === "comment.pin") {
+    const result = addPinComment(text, msg.offset, msg.x, msg.y);
+    if (!result || result.refused === 400) {
+      return result && result.refused === 400 ? result : { refused: 400, reason: "not in the run" };
+    }
+    return { doc: result.doc, cursor: result.cursor, anchor: result.anchor, changes: result.changes };
   }
   const state = createState(text, cursor, anchor);
   let next = state;
@@ -2504,19 +2517,25 @@ export async function createHub(stateDir, sourceRoot) {
     }
     socket.session.lines = held;
     syncLocks(file);
+    let probe = file.text;
+    const batch = [];
     for (const splice of splices) {
-      const caret = splice.from + splice.inserted.length;
+      const settled = settleSplice(probe, splice.from, splice.to, splice.inserted);
+      if (settled.refused === 400) return fail(socket, 400, { reason: settled.reason });
+      if (settled.doc !== probe) batch.push(settled);
+      probe = settled.doc;
+    }
+    if (batch.length === 0) {
+      send(socket, { type: "file", path: file.rel, rev: file.rev, text: file.text });
+      return;
+    }
+    for (const settled of batch) {
       const wrote = await publish(
         socket,
         file,
         file.text,
-        [{
-          from: splice.from,
-          to: splice.to,
-          inserted: splice.inserted,
-          removed: file.text.slice(splice.from, splice.to),
-        }],
-        { cursor: caret, anchor: caret },
+        settled.changes,
+        { cursor: settled.cursor, anchor: settled.anchor },
         null,
         "diff",
         true,
@@ -2546,6 +2565,11 @@ export async function createHub(stateDir, sourceRoot) {
       session.cursor = cursor;
     }
     const produced = runOp(file.text, session.cursor, session.anchor, msg);
+    if (produced && produced.refused === 400) {
+      session.cursor = savedCursor;
+      session.anchor = savedAnchor;
+      return fail(socket, 400, { reason: produced.reason });
+    }
     const changes = produced && Array.isArray(produced.changes) ? produced.changes : [];
     if (produced === undefined || produced === null || changes.length === 0 || produced.doc === file.text) {
       const reason = produced === null && msg.op === "comment.add"

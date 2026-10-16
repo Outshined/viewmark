@@ -2,15 +2,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   addComment,
+  addPinComment,
   appendCommentReply,
   backspace,
+  commentAnchorReason,
   commentNotes,
+  commentThreads,
   createState,
   deleteForward,
   insert,
   formatCommentNotes,
   parseCommentNotes,
   reviseCommentNote,
+  setCommentResolved,
+  settleSplice,
   splitCommentNote,
   commentDragPreview,
 } from "../src/doc.js";
@@ -486,4 +491,256 @@ test("a comment drag preview is the release range and maps every byte back", () 
   assert.equal(commentDragPreview(crossed, "c1", "end", crossedProse.indexOf("that") + 1), null);
   const widened = commentDragPreview(crossed, "c1", "end", crossedProse.indexOf("and"));
   assert.equal(visibleHighlight(crossed, widened), "this ");
+});
+
+const SOURCE = "```js\none\ntwo\nthree\nfour\n```\n";
+const RANGED = `${SOURCE}\`\`\`comment c1 2-3\n\n\`\`\`\n`;
+
+function editBytes(doc, from, to, text) {
+  return insert(createState(doc, to, from), text, false, false, true);
+}
+
+function replayChanges(doc, changes) {
+  let text = doc;
+  for (const change of changes) {
+    assert.equal(text.slice(change.from, change.to), change.removed);
+    text = text.slice(0, change.from) + change.inserted + text.slice(change.to);
+  }
+  return text;
+}
+
+function undoChanges(doc, changes) {
+  let text = doc;
+  for (let i = changes.length - 1; i >= 0; i -= 1) {
+    const change = changes[i];
+    const end = change.from + change.inserted.length;
+    assert.equal(text.slice(change.from, end), change.inserted);
+    text = text.slice(0, change.from) + change.removed + text.slice(end);
+  }
+  return text;
+}
+
+function assertRoundTrip(before, after) {
+  assert.equal(after.refused, undefined);
+  assert.equal(replayChanges(before, after.changes), after.doc);
+  assert.equal(undoChanges(after.doc, after.changes), before);
+}
+
+test("a source fence stores a following line-range comment and leaves the code bytes", () => {
+  const code = "```python\nalpha\nbeta\n```\n";
+  const alpha = code.indexOf("alpha");
+  const beta = code.indexOf("beta");
+  const partial = addComment(code, alpha, alpha + 2);
+  assert.equal(partial, null);
+  assert.equal(addComment(code, alpha + 1, alpha + "alpha".length), null);
+  assert.equal(addComment(code, code.indexOf("```", 3), code.indexOf("```", 3) + 1), null);
+
+  const one = addComment(code, alpha, alpha + "alpha".length);
+  assert.equal(one.id, "c1");
+  assert.equal(one.anchor, alpha);
+  assert.equal(one.cursor, alpha + "alpha".length);
+  assert.equal(one.doc, `${code}\`\`\`comment c1 1\n\n\`\`\`\n`);
+  assert.equal(one.doc.startsWith(code), true);
+  const throughNewline = addComment(code, alpha, beta);
+  assert.equal(throughNewline.doc, one.doc);
+
+  const span = addComment(code, alpha, beta + "beta".length);
+  assert.equal(span.id, "c1");
+  assert.equal(span.doc, `${code}\`\`\`comment c1 1-2\n\n\`\`\`\n`);
+  assert.equal(span.anchor, alpha);
+  assert.equal(span.cursor, beta + "beta".length);
+  const spanThread = commentThreads(span.doc)[0];
+  assert.deepEqual(spanThread.lines, { start: 1, end: 2 });
+  assert.equal(spanThread.pin, null);
+  assert.equal(spanThread.hostKind, "fence");
+  assert.equal(spanThread.bodyCount, 2);
+  assert.equal(spanThread.anchorAt, 0);
+  assert.equal(commentAnchorReason(span.doc), null);
+
+  const second = addComment(one.doc, beta, beta + "beta".length);
+  assert.equal(second.id, "c2");
+  assert.equal(second.doc, `${code}\`\`\`comment c1 1\n\n\`\`\`\n\`\`\`comment c2 2\n\n\`\`\`\n`);
+  assert.equal(second.doc.startsWith(code), true);
+
+  const same = addComment(code, beta, beta + "beta".length);
+  assert.equal(same.doc, `${code}\`\`\`comment c1 2\n\n\`\`\`\n`);
+  const reversed = `${SOURCE}\`\`\`comment c1 3-2\n\n\`\`\`\n`;
+  assert.deepEqual(commentThreads(reversed)[0].lines, { start: 2, end: 3 });
+  assert.equal(commentAnchorReason(reversed), null);
+  const spaced = `${SOURCE}\`\`\`comment c1  2-3   resolved\n\n\`\`\`\n`;
+  assert.equal(commentThreads(spaced)[0].resolved, true);
+  assert.deepEqual(commentThreads(spaced)[0].lines, { start: 2, end: 3 });
+  const garbage = `${SOURCE}\`\`\`comment c1 hello\n\n\`\`\`\n`;
+  assert.equal(commentThreads(garbage)[0].lines, null);
+  assert.equal(commentThreads(garbage)[0].pin, null);
+  assert.equal(commentAnchorReason(garbage), null);
+});
+
+test("a pin is the following fence on an image or a diagram", () => {
+  const image = "![alt](sample.svg)\n";
+  const pin = addPinComment(image, 0, 0.62, 0.18);
+  assert.equal(pin.id, "c1");
+  assert.equal(pin.cursor, 0);
+  assert.equal(pin.anchor, 0);
+  assert.equal(pin.doc, `${image}\`\`\`comment c1 0.62,0.18\n\n\`\`\`\n`);
+  assert.equal(pin.doc.startsWith(image), true);
+  const thread = commentThreads(pin.doc)[0];
+  assert.equal(thread.lines, null);
+  assert.deepEqual(thread.pin, { x: 0.62, y: 0.18 });
+  assert.equal(thread.hostKind, "image");
+  assert.equal(commentAnchorReason(pin.doc), null);
+
+  const edges = addPinComment(image, image.length - 1, 0, 1);
+  assert.equal(edges.doc, `${image}\`\`\`comment c1 0,1\n\n\`\`\`\n`);
+  const rounded = addPinComment(image, 0, 0.123456, 1);
+  assert.equal(rounded.doc.includes("```comment c1 0.1235,1\n"), true);
+
+  const diagram = "```mermaid\nA-->B\n```\n";
+  const marked = addPinComment(diagram, 4, 0.62, 0.18);
+  assert.equal(marked.doc, `${diagram}\`\`\`comment c1 0.62,0.18\n\n\`\`\`\n`);
+  assert.equal(commentThreads(marked.doc)[0].hostKind, "diagram");
+  assert.equal(marked.doc.startsWith(diagram), true);
+
+  const again = addPinComment(pin.doc, 1, 0.25, 0.5);
+  assert.equal(again.id, "c2");
+  assert.equal(again.doc.startsWith(pin.doc), true);
+  assert.equal(again.doc, `${pin.doc}\`\`\`comment c2 0.25,0.5\n\n\`\`\`\n`);
+});
+
+test("a range or pin that does not follow its block is 400 and writes nothing", () => {
+  assert.deepEqual(addPinComment("hello\n", 0, 0.2, 0.3), { refused: 400, reason: "not in the run" });
+  assert.deepEqual(addPinComment("![a](b.png)\n", 0, 1.01, 0.2), { refused: 400, reason: "pin is out of range" });
+  assert.deepEqual(addPinComment("hello\n", 0, -0.1, 0.2), { refused: 400, reason: "pin is out of range" });
+  assert.deepEqual(addPinComment("![a](b.png)\n", 0, Number.NaN, 0.2), { refused: 400, reason: "pin is out of range" });
+
+  const image = "![a](b.png)\n";
+  assert.equal(commentAnchorReason(`${image}\`\`\`comment c1 1.5,0.2\n\n\`\`\`\n`), "pin is out of range");
+  assert.equal(commentAnchorReason(`${image}\`\`\`comment c1 0,1.0001\n\n\`\`\`\n`), "pin is out of range");
+  assert.equal(commentAnchorReason(`${image}\`\`\`comment c1 0,1\n\n\`\`\`\n`), null);
+  assert.equal(commentAnchorReason(`${image}\`\`\`comment c1 1\n\n\`\`\`\n`), "not in the run");
+  assert.equal(commentAnchorReason(`${SOURCE}\`\`\`comment c1 0.5,0.5\n\n\`\`\`\n`), "not in the run");
+  assert.equal(commentAnchorReason("```mermaid\nA-->B\n```\n```comment c1 1\n\n```\n"), "not in the run");
+  assert.equal(commentAnchorReason(`${SOURCE}\n\`\`\`comment c1 2-3\n\n\`\`\`\n`), "not in the run");
+  assert.equal(commentAnchorReason(`${SOURCE}later\n\`\`\`comment c1 2-3\n\n\`\`\`\n`), "not in the run");
+  assert.equal(commentAnchorReason("```comment c1 2-3\n\n```\n"), "not in the run");
+  assert.equal(commentAnchorReason(`${SOURCE}\`\`\`comment c1 0\n\n\`\`\`\n`), "range is outside the body");
+  assert.equal(commentAnchorReason(`${SOURCE}\`\`\`comment c1 5\n\n\`\`\`\n`), "range is outside the body");
+  assert.equal(commentAnchorReason(`${SOURCE}\`\`\`comment c1 2-9\n\n\`\`\`\n`), "range is outside the body");
+  const between = `${SOURCE}\`\`\`comment c9\n\n\`\`\`\n\`\`\`comment c1 2-3\n\n\`\`\`\n`;
+  assert.equal(commentAnchorReason(between), null);
+  assert.equal(commentThreads(between).find((item) => item.id === "c1").hostKind, "fence");
+
+  const widened = settleSplice(RANGED, RANGED.indexOf("2-3"), RANGED.indexOf("2-3") + 3, "2-9");
+  assert.deepEqual(widened, { refused: 400, reason: "range is outside the body" });
+  assert.equal(widened.doc, undefined);
+  const gapAt = RANGED.indexOf("```comment");
+  const gapped = settleSplice(RANGED, gapAt, gapAt, "\n");
+  assert.deepEqual(gapped, { refused: 400, reason: "not in the run" });
+  const broken = editBytes(RANGED, gapAt, gapAt, "\n");
+  assert.deepEqual(
+    { refused: broken.refused, reason: broken.reason },
+    { refused: 400, reason: "not in the run" },
+  );
+  assert.equal(broken.doc, undefined);
+
+  const pinned = `${image}\`\`\`comment c1 0.5,0.25\n\n\`\`\`\n`;
+  const dropped = editBytes(pinned, 0, image.length, "");
+  assert.equal(dropped.refused, 400);
+  assert.equal(dropped.reason, "not in the run");
+  assert.equal(dropped.doc, undefined);
+  const moved = editBytes(pinned, pinned.indexOf("```comment"), pinned.indexOf("```comment"), "\n");
+  assert.equal(moved.reason, "not in the run");
+  const badCoord = settleSplice(pinned, pinned.indexOf("0.5,0.25"), pinned.indexOf("0.5,0.25") + "0.5,0.25".length, "1.5,0.25");
+  assert.deepEqual(badCoord, { refused: 400, reason: "pin is out of range" });
+});
+
+test("a line edit rebases the following range and leaves a pin and a prose brace", () => {
+  const two = RANGED.indexOf("two");
+  const three = RANGED.indexOf("three");
+  const four = RANGED.indexOf("four");
+  const one = RANGED.indexOf("one");
+
+  const above = editBytes(RANGED, two, two, "X\n");
+  assertRoundTrip(RANGED, above);
+  assert.equal(above.doc.includes("```comment c1 3-4\n"), true);
+  assert.equal(above.doc.includes("X\ntwo\n"), true);
+
+  const inside = editBytes(RANGED, three, three, "X\n");
+  assertRoundTrip(RANGED, inside);
+  assert.equal(inside.doc.includes("```comment c1 2-4\n"), true);
+
+  const shrunk = editBytes(RANGED, three, three + "three\n".length, "");
+  assertRoundTrip(RANGED, shrunk);
+  assert.equal(shrunk.doc.includes("```comment c1 2\n"), true);
+  assert.equal(shrunk.doc.includes("three"), false);
+
+  const gone = editBytes(RANGED, two, three + "three\n".length, "");
+  assertRoundTrip(RANGED, gone);
+  assert.equal(gone.doc.includes("```comment"), false);
+  assert.equal(gone.doc, "```js\none\nfour\n```\n");
+
+  const renamed = editBytes(RANGED, two, two + "two".length, "TWO");
+  assertRoundTrip(RANGED, renamed);
+  assert.equal(renamed.changes.length, 1);
+  assert.equal(renamed.doc.includes("```comment c1 2-3\n"), true);
+  assert.equal(renamed.doc.includes("TWO\n"), true);
+
+  const before = editBytes(RANGED, one, one, "X\n");
+  assertRoundTrip(RANGED, before);
+  assert.equal(before.doc.includes("```comment c1 3-4\n"), true);
+
+  const after = editBytes(RANGED, four, four, "X\n");
+  assertRoundTrip(RANGED, after);
+  assert.equal(after.doc.includes("```comment c1 2-3\n"), true);
+  assert.equal(after.doc.includes("X\nfour\n"), true);
+
+  const droppedFirst = editBytes(RANGED, one, one + "one\n".length, "");
+  assertRoundTrip(RANGED, droppedFirst);
+  assert.equal(droppedFirst.doc.includes("```comment c1 1-2\n"), true);
+
+  const literal = `${SOURCE}\`\`\`comment c1 2-2\n\n\`\`\`\n`;
+  const still = editBytes(literal, literal.indexOf("two"), literal.indexOf("two") + 3, "TWO");
+  assert.equal(still.doc.includes("```comment c1 2-2\n"), true);
+  const shiftedLiteral = editBytes(literal, literal.indexOf("two"), literal.indexOf("two"), "X\n");
+  assert.equal(shiftedLiteral.doc.includes("```comment c1 3\n"), true);
+  assert.equal(shiftedLiteral.doc.includes("2-2"), false);
+
+  const resolved = setCommentResolved(createState(RANGED, 0), "c1", true);
+  assert.equal(resolved.doc.includes("```comment c1 2-3 resolved\n"), true);
+  const kept = editBytes(resolved.doc, resolved.doc.indexOf("two"), resolved.doc.indexOf("two"), "X\n");
+  assert.equal(kept.doc.includes("```comment c1 3-4 resolved\n"), true);
+
+  const pair = `${SOURCE}\`\`\`comment c1 2-3\n\n\`\`\`\n\`\`\`comment c2 4\n\n\`\`\`\n`;
+  const both = editBytes(pair, pair.indexOf("three"), pair.indexOf("three"), "X\n");
+  assertRoundTrip(pair, both);
+  assert.equal(both.doc.includes("```comment c1 2-4\n"), true);
+  assert.equal(both.doc.includes("```comment c2 5\n"), true);
+  const fourAt = pair.indexOf("four");
+  const emptied = editBytes(pair, fourAt, fourAt + "four\n".length, "");
+  assertRoundTrip(pair, emptied);
+  assert.equal(emptied.doc.includes("```comment c2"), false);
+  assert.equal(emptied.doc.includes("```comment c1 2-3\n"), true);
+  assert.equal(emptied.doc.includes("four"), false);
+
+  const image = "para\n![a](b.png)\n";
+  const pinned = `${image}\`\`\`comment c1 0.5,0.25\n\n\`\`\`\n`;
+  const typed = editBytes(pinned, 0, 0, "X\n");
+  assertRoundTrip(pinned, typed);
+  assert.equal(typed.doc.includes("```comment c1 0.5,0.25\n"), true);
+  const alt = editBytes(pinned, pinned.indexOf("a"), pinned.indexOf("a"), "alt");
+  assert.equal(alt.doc.includes("```comment c1 0.5,0.25\n"), true);
+  assert.equal(commentAnchorReason(alt.doc), null);
+
+  const prose = addComment("hello fox\n", 6, 9);
+  assert.equal("anchor" in prose, false);
+  assert.equal(prose.doc, "hello {c1}fox{/c1}\n\n```comment c1\n\n```\n");
+  const proseThread = commentThreads(prose.doc)[0];
+  assert.equal(proseThread.lines, null);
+  assert.equal(proseThread.pin, null);
+  assert.equal(proseThread.anchorAt, null);
+  const proseResolved = setCommentResolved(createState(prose.doc, 0), "c1", true);
+  assert.equal(proseResolved.doc.includes("```comment c1 resolved\n"), true);
+  const pinResolved = setCommentResolved(createState(`${image}\`\`\`comment c1 0.62,0.18\n\n\`\`\`\n`, 0), "c1", true);
+  assert.equal(pinResolved.doc.includes("```comment c1 0.62,0.18 resolved\n"), true);
+  assert.equal(addComment("```python\nx\n```\n", 12, 13), null);
 });

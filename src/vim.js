@@ -1,5 +1,5 @@
 // Pure key match. The page applies the effect. This module does not touch the editor.
-import { codeSpanAt, createState, deleteForward, endBeforeTail, findSpans, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, sourceLine, wordStop } from "./doc.js";
+import { codeSpanAt, createState, deleteForward, endBeforeTail, findSpans, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, wordStop } from "./doc.js";
 
 const REPEAT_CAP = 10000;
 const PAGE = 20;
@@ -1396,7 +1396,7 @@ function sourceSpan(doc, cursor, count, backward) {
 
 function forwardCut(doc, cursor) {
   const after = deleteForward(createState(doc, cursor, cursor));
-  if (after.doc === doc) return "";
+  if (!after || after.refused || typeof after.doc !== "string" || after.doc === doc) return "";
   const at = Math.min(after.cursor, after.doc.length);
   const lost = doc.length - after.doc.length;
   if (lost > 0 && doc.slice(0, at) + doc.slice(at + lost) === after.doc) return doc.slice(at, at + lost);
@@ -2319,12 +2319,30 @@ function finishG(vim, doc, anchor, cursor, raw, layout, key) {
   if (!key.ctrl && !key.meta && !key.alt && key.key === "c" && !vim.input.operator) {
     const visual = (vim.mode === "visual" || vim.mode === "visual-line") && anchor !== cursor;
     if (visual) {
+      const snap = snapSourceFenceLines(doc, anchor, cursor);
+      if (snap) {
+        if (snap.held) {
+          return pack("full", true, clearInput(vim), {
+            type: "comment-current",
+            id: snap.held,
+            anchor: snap.anchor,
+            cursor: snap.cursor,
+          });
+        }
+        return pack("full", true, clearInput(vim), {
+          type: "comment-add",
+          anchor: snap.anchor,
+          cursor: snap.cursor,
+        });
+      }
       const held = commentHoldingRange(doc, anchor, cursor);
       if (!held) return pack("full", true, clearInput(vim), { type: "comment-add" });
       return pack("full", true, clearInput(vim), { type: "comment-current", id: held });
     }
     const id = commentUnderCaret(doc, cursor);
     if (id) return pack("full", true, clearInput(vim), { type: "comment-current", id });
+    const lineId = sourceLineComment(doc, cursor);
+    if (lineId) return pack("full", true, clearInput(vim), { type: "comment-current", id: lineId });
     return pack("none", true, clearInput(vim), null);
   }
   if (!id) return pack("none", true, clearInput(vim), null);

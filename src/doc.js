@@ -560,17 +560,61 @@ function classify(text) {
   return { kind: "p", marker: 0, indent: 0, plain: "md-p" };
 }
 
+// A tail that is not a line range, a pin, or resolved is prose. Incremental
+// typing of an unfinished token stays prose until the token is complete.
+function commentTail(rest) {
+  const match = /^[ \t]*(?:(\d+)(?:-(\d+))?|(\d+(?:\.\d+)?),(\d+(?:\.\d+)?))?(?:[ \t]+(resolved))?[ \t]*$/.exec(rest);
+  if (!match) return { resolved: false, anchor: null };
+  if (match[1] != null) {
+    let start = Number(match[1]);
+    let end = match[2] != null ? Number(match[2]) : start;
+    if (!(end >= start)) {
+      const swap = start;
+      start = end;
+      end = swap;
+    }
+    return { resolved: match[5] === "resolved", anchor: { kind: "lines", start, end } };
+  }
+  if (match[3] != null) {
+    return {
+      resolved: match[5] === "resolved",
+      anchor: { kind: "pin", x: Number(match[3]), y: Number(match[4]) },
+    };
+  }
+  return { resolved: match[5] === "resolved", anchor: null };
+}
+
+function formatCoord(value) {
+  const rounded = Math.round(value * 10000) / 10000;
+  return String(rounded);
+}
+
+function formatLineRange(start, end) {
+  return start === end ? String(start) : `${start}-${end}`;
+}
+
+function commentHead(id, anchor, resolved) {
+  let head = `\`\`\`comment ${id}`;
+  if (anchor && anchor.kind === "lines") head += ` ${formatLineRange(anchor.start, anchor.end)}`;
+  else if (anchor && anchor.kind === "pin") head += ` ${formatCoord(anchor.x)},${formatCoord(anchor.y)}`;
+  if (resolved) head += " resolved";
+  return head;
+}
+
 function fenceOpen(text) {
   const match = /^```[ \t]*([^`\s]*)(.*)$/.exec(text);
   if (!match) return null;
   const lang = match[1];
   let commentId = null;
   let resolved = false;
+  let anchor = null;
   if (lang === "comment") {
     const id = /^[ \t]*([A-Za-z][A-Za-z0-9_-]*)(.*)$/.exec(match[2]);
     if (id) {
       commentId = id[1];
-      resolved = /^[ \t]*resolved[ \t]*$/.test(id[2]);
+      const tail = commentTail(id[2]);
+      resolved = tail.resolved;
+      anchor = tail.anchor;
     }
   }
   return {
@@ -578,6 +622,7 @@ function fenceOpen(text) {
     diagram: lang === "mermaid",
     commentId,
     resolved,
+    anchor,
   };
 }
 
@@ -613,6 +658,7 @@ function fenceContentRanges(doc) {
       diagram: opened.diagram === true,
       commentId: opened.commentId,
       resolved: opened.resolved === true,
+      anchor: opened.anchor || null,
       closed,
       openIndex: index,
       lastIndex: last,
@@ -620,6 +666,81 @@ function fenceContentRanges(doc) {
     index = last + 1;
   }
   return ranges;
+}
+
+// Body lines sit strictly between the opener and the closer. The end offset is
+// the next line's start, so the last line's end is the closer.
+function bodyLinesOf(doc, fence) {
+  const lines = lineSpans(doc);
+  const first = fence.openIndex + 1;
+  const last = fence.closed ? fence.lastIndex - 1 : fence.lastIndex;
+  const body = [];
+  for (let i = first; i <= last && i < lines.length; i += 1) {
+    const line = lines[i];
+    const next = i + 1 < lines.length ? lines[i + 1].start : doc.length;
+    body.push({ start: line.start, end: line.end, next });
+  }
+  return body;
+}
+
+function hostsOf(doc) {
+  const hosts = [];
+  for (const fence of fenceContentRanges(doc)) {
+    if (fence.lang === "comment") continue;
+    hosts.push({
+      kind: fence.diagram ? "diagram" : "fence",
+      start: fence.start,
+      end: fence.end,
+      fence,
+    });
+  }
+  for (const line of lineSpans(doc)) {
+    if (!imageLine(line.text)) continue;
+    const end = line.end < doc.length && doc[line.end] === "\n" ? line.end + 1 : line.end;
+    hosts.push({ kind: "image", start: line.start, end, fence: null });
+  }
+  hosts.sort((a, b) => a.start - b.start || a.end - b.end);
+  return hosts;
+}
+
+// Comment fences that begin where the previous one ends. A blank line ends the run.
+function runAfter(doc, hostEnd) {
+  const run = [];
+  let at = hostEnd;
+  for (const fence of fenceContentRanges(doc)) {
+    if (fence.lang !== "comment" || !fence.commentId || fence.start !== at) continue;
+    run.push(fence);
+    at = fence.end;
+  }
+  return run;
+}
+
+function runEnd(doc, hostEnd) {
+  const run = runAfter(doc, hostEnd);
+  return run.length === 0 ? hostEnd : run[run.length - 1].end;
+}
+
+function hostAt(doc, fenceStart, id) {
+  for (const host of hostsOf(doc)) {
+    if (runAfter(doc, host.end).some((item) => item.start === fenceStart && item.commentId === id)) return host;
+  }
+  return null;
+}
+
+function anchorFields(doc, fence) {
+  const anchor = fence.anchor;
+  const lines = anchor && anchor.kind === "lines" ? { start: anchor.start, end: anchor.end } : null;
+  const pin = anchor && anchor.kind === "pin" ? { x: anchor.x, y: anchor.y } : null;
+  if (!lines && !pin) return { lines: null, pin: null, anchorAt: null, hostEnd: null, hostKind: null, bodyCount: null };
+  const host = hostAt(doc, fence.start, fence.commentId);
+  return {
+    lines,
+    pin,
+    anchorAt: host ? host.start : null,
+    hostEnd: host ? host.end : null,
+    hostKind: host ? host.kind : null,
+    bodyCount: host && host.kind === "fence" ? bodyLinesOf(doc, host.fence).length : null,
+  };
 }
 
 export function commentThreads(doc) {
@@ -633,12 +754,19 @@ export function commentThreads(doc) {
     const to = fence.closed ? lines[fence.lastIndex].start : doc.length;
     let body = doc.slice(from, to);
     if (body.endsWith("\n")) body = body.slice(0, -1);
+    const placed = anchorFields(doc, fence);
     threads.push({
       id: fence.commentId,
       body,
       start: fence.start,
       end: fence.end,
       resolved: fence.resolved === true,
+      lines: placed.lines,
+      pin: placed.pin,
+      anchorAt: placed.anchorAt,
+      hostEnd: placed.hostEnd,
+      hostKind: placed.hostKind,
+      bodyCount: placed.bodyCount,
     });
   }
   return threads;
@@ -856,7 +984,9 @@ export function orderVisibleComments(comments, doc) {
   const ranked = comments.map((comment, index) => ({
     comment,
     index,
-    at: earliest.has(comment.id) ? earliest.get(comment.id) : null,
+    at: earliest.has(comment.id)
+      ? earliest.get(comment.id)
+      : (Number.isInteger(comment.anchorAt) ? comment.anchorAt : null),
   }));
   ranked.sort((a, b) => {
     if (a.at != null && b.at != null && a.at !== b.at) return a.at - b.at;
@@ -935,6 +1065,12 @@ function cleanupComments(doc, cursor) {
   const tokens = commentTokens(doc);
   for (const fence of fences) {
     if (live.has(fence.id)) continue;
+    // A following fence names its block. It has no brace span, so a missing
+    // mark is not a dropped thread.
+    if (fence.lines || fence.pin) {
+      if (!empty.has(fence.id) && tokens.some((token) => token.id === fence.id)) broken = true;
+      continue;
+    }
     dropped.add(fence.id);
     if (!empty.has(fence.id) && tokens.some((token) => token.id === fence.id)) broken = true;
   }
@@ -1039,7 +1175,7 @@ export function setCommentResolved(state, id, resolved) {
   if (!fence) return state;
   const open = lines[fence.openIndex];
   if (!open) return state;
-  const nextHead = resolved ? `\`\`\`comment ${id} resolved` : `\`\`\`comment ${id}`;
+  const nextHead = commentHead(id, fence.anchor || null, resolved === true);
   if (open.text === nextHead) return state;
   const doc = state.doc.slice(0, open.start) + nextHead + state.doc.slice(open.end);
   return {
@@ -1097,10 +1233,46 @@ function prefixBounds(text, from, to) {
   return { from: start, to: end };
 }
 
+// Whole body lines of one source fence. A partial line stays a fence overlap.
+function wholeSourceLines(doc, from, to) {
+  for (const fence of fenceContentRanges(doc)) {
+    if (fence.lang === "comment" || fence.diagram) continue;
+    const body = bodyLinesOf(doc, fence);
+    let startIdx = -1;
+    for (let i = 0; i < body.length; i += 1) {
+      if (body[i].start === from) startIdx = i;
+    }
+    if (startIdx < 0) continue;
+    let endIdx = -1;
+    for (let i = startIdx; i < body.length; i += 1) {
+      if (to === body[i].end || to === body[i].next) {
+        endIdx = i;
+        break;
+      }
+    }
+    if (endIdx < 0) continue;
+    return { start: startIdx + 1, end: endIdx + 1, insertAt: runEnd(doc, fence.end) };
+  }
+  return null;
+}
+
 export function addComment(doc, anchor, cursor) {
   const text = typeof doc === "string" ? doc : "";
   const clamped = clampRange(text, anchor, cursor);
   if (!(clamped.from < clamped.to)) return null;
+  const whole = wholeSourceLines(text, clamped.from, clamped.to);
+  if (whole) {
+    const id = nextCommentId(text);
+    const fenceText = `${commentHead(id, { kind: "lines", start: whole.start, end: whole.end }, false)}\n\n\`\`\`\n`;
+    const at = whole.insertAt;
+    return {
+      doc: text.slice(0, at) + fenceText + text.slice(at),
+      id,
+      anchor: clamped.from,
+      cursor: clamped.to,
+      changes: [{ from: at, to: at, inserted: fenceText, removed: "" }],
+    };
+  }
   if (commentRangeReason(text, anchor, cursor)) return null;
   const { from, to } = prefixBounds(text, clamped.from, clamped.to);
   if (!(from < to)) return null;
@@ -1119,6 +1291,286 @@ export function addComment(doc, anchor, cursor) {
     { from: marked.length, to: marked.length, inserted: fence, removed: "" },
   ];
   return { doc: marked + fence, id, cursor: from + open.length, changes };
+}
+
+function pinHostAt(doc, offset) {
+  const at = Math.max(0, Math.min(doc.length, Number.isFinite(offset) ? Math.trunc(offset) : -1));
+  if (at < 0) return null;
+  for (const line of lineSpans(doc)) {
+    if (!imageLine(line.text)) continue;
+    const end = line.end < doc.length && doc[line.end] === "\n" ? line.end + 1 : line.end;
+    if (at >= line.start && at < end) return { kind: "image", start: line.start, end };
+  }
+  for (const fence of fenceContentRanges(doc)) {
+    if (!fence.diagram) continue;
+    if (at >= fence.start && at < fence.end) return { kind: "diagram", start: fence.start, end: fence.end };
+  }
+  return null;
+}
+
+export function addPinComment(doc, offset, x, y) {
+  const text = typeof doc === "string" ? doc : "";
+  const px = typeof x === "number" ? x : NaN;
+  const py = typeof y === "number" ? y : NaN;
+  if (!(px >= 0 && px <= 1 && py >= 0 && py <= 1)) return { refused: 400, reason: "pin is out of range" };
+  const host = pinHostAt(text, offset);
+  if (!host) return { refused: 400, reason: "not in the run" };
+  const id = nextCommentId(text);
+  const fenceText = `${commentHead(id, { kind: "pin", x: px, y: py }, false)}\n\n\`\`\`\n`;
+  const at = runEnd(text, host.end);
+  return {
+    doc: text.slice(0, at) + fenceText + text.slice(at),
+    id,
+    cursor: host.start,
+    anchor: host.start,
+    changes: [{ from: at, to: at, inserted: fenceText, removed: "" }],
+  };
+}
+
+// A recognized range or pin that does not follow its block, a pin outside 0 to 1,
+// or a range outside the body lines. Prose fences are not a fault.
+export function commentAnchorReason(doc) {
+  const text = typeof doc === "string" ? doc : "";
+  if (!text.includes("```comment")) return null;
+  for (const fence of fenceContentRanges(text)) {
+    if (fence.lang !== "comment" || !fence.commentId || !fence.anchor) continue;
+    const host = hostAt(text, fence.start, fence.commentId);
+    const anchor = fence.anchor;
+    if (!host) return "not in the run";
+    if (anchor.kind === "pin") {
+      if (host.kind !== "image" && host.kind !== "diagram") return "not in the run";
+      if (!(anchor.x >= 0 && anchor.x <= 1 && anchor.y >= 0 && anchor.y <= 1)) return "pin is out of range";
+      continue;
+    }
+    if (host.kind !== "fence") return "not in the run";
+    const body = bodyLinesOf(text, host.fence);
+    if (!(anchor.start >= 1 && anchor.end >= anchor.start && anchor.end <= body.length)) {
+      return "range is outside the body";
+    }
+  }
+  return null;
+}
+
+function holdingLines(doc, fence, startLine, endLine) {
+  let best = null;
+  for (const comment of runAfter(doc, fence.end)) {
+    const anchor = comment.anchor;
+    if (!anchor || anchor.kind !== "lines") continue;
+    if (startLine < anchor.start || endLine > anchor.end) continue;
+    const size = anchor.end - anchor.start;
+    if (!best || size < best.size || (size === best.size && comment.start < best.start)) {
+      best = { size, start: comment.start, id: comment.commentId };
+    }
+  }
+  return best ? best.id : null;
+}
+
+// Both ends sit in one source fence. The snap is the body lines the highlight
+// touches. Opener and closer lines are not body lines.
+export function snapSourceFenceLines(doc, anchor, cursor) {
+  const text = typeof doc === "string" ? doc : "";
+  const from = Math.min(anchor, cursor);
+  const to = Math.max(anchor, cursor);
+  if (!(from < to)) return null;
+  for (const fence of fenceContentRanges(text)) {
+    if (fence.lang === "comment" || fence.diagram) continue;
+    if (from < fence.start || to > fence.end) continue;
+    const body = bodyLinesOf(text, fence);
+    let first = -1;
+    let last = -1;
+    for (let i = 0; i < body.length; i += 1) {
+      if (from < body[i].next && to > body[i].start) {
+        if (first < 0) first = i;
+        last = i;
+      }
+    }
+    if (first < 0) continue;
+    const start = first + 1;
+    const end = last + 1;
+    return {
+      anchor: body[first].start,
+      cursor: body[last].next,
+      held: holdingLines(text, fence, start, end),
+    };
+  }
+  return null;
+}
+
+export function sourceLineComment(doc, offset) {
+  const text = typeof doc === "string" ? doc : "";
+  const at = Number.isFinite(offset) ? offset : 0;
+  for (const fence of fenceContentRanges(text)) {
+    if (fence.lang === "comment" || fence.diagram) continue;
+    if (at < fence.start || at > fence.end) continue;
+    const body = bodyLinesOf(text, fence);
+    for (let i = 0; i < body.length; i += 1) {
+      if (at < body[i].start || at >= body[i].next) continue;
+      return holdingLines(text, fence, i + 1, i + 1);
+    }
+  }
+  return null;
+}
+
+function openerNextOf(doc, line) {
+  if (line.end < doc.length && doc[line.end] === "\n") return line.end + 1;
+  return line.end;
+}
+
+function collectLineAnchors(doc) {
+  const lines = lineSpans(doc);
+  const items = [];
+  for (const fence of fenceContentRanges(doc)) {
+    if (!fence.anchor || fence.anchor.kind !== "lines" || !fence.commentId) continue;
+    const open = lines[fence.openIndex];
+    if (!open) continue;
+    const host = hostAt(doc, fence.start, fence.commentId);
+    const body = host && host.kind === "fence" ? bodyLinesOf(doc, host.fence) : [];
+    const start = fence.anchor.start;
+    const end = fence.anchor.end;
+    const first = body[start - 1];
+    const last = body[end - 1];
+    const tracked = first && last;
+    items.push({
+      id: fence.commentId,
+      start,
+      end,
+      origStart: start,
+      origEnd: end,
+      rangeStart: tracked ? first.start : fence.start,
+      rangeEnd: tracked ? last.next : fence.start,
+      fenceStart: fence.start,
+      fenceEnd: fence.end,
+      openerStart: open.start,
+      openerNext: openerNextOf(doc, open),
+      touched: !tracked,
+      gone: false,
+    });
+  }
+  return items;
+}
+
+function countNewlines(text) {
+  let count = 0;
+  for (let i = 0; i < text.length; i += 1) if (text[i] === "\n") count += 1;
+  return count;
+}
+
+// A pure insert on the first byte of the range is a line above it. A replacement
+// that starts there deletes range text, so its newlines are inside.
+function classifyInserted(from, to, inserted, rangeStart, rangeEnd) {
+  const count = countNewlines(inserted);
+  if (count === 0 || from >= rangeEnd) return { above: 0, inside: 0 };
+  if (from < rangeStart || (from === rangeStart && from === to)) return { above: count, inside: 0 };
+  if (from < rangeEnd) return { above: 0, inside: count };
+  return { above: 0, inside: 0 };
+}
+
+function classifyDeleted(doc, from, to, rangeStart, rangeEnd) {
+  let above = 0;
+  let inside = 0;
+  for (let i = from; i < to && i < doc.length; i += 1) {
+    if (doc[i] !== "\n") continue;
+    if (i < rangeStart) above += 1;
+    else if (i < rangeEnd) inside += 1;
+  }
+  return { above, inside };
+}
+
+function stepItem(item, doc, change) {
+  if (item.gone) return;
+  const from = change.from;
+  const to = change.to;
+  const inserted = typeof change.inserted === "string" ? change.inserted : "";
+  if (from <= item.fenceStart && to >= item.fenceEnd) {
+    item.gone = true;
+    return;
+  }
+  if (from < item.openerNext && to > item.openerStart) item.touched = true;
+  if (!item.touched) {
+    const del = classifyDeleted(doc, from, to, item.rangeStart, item.rangeEnd);
+    const ins = classifyInserted(from, to, inserted, item.rangeStart, item.rangeEnd);
+    const shift = ins.above - del.above;
+    const grow = ins.inside - del.inside;
+    item.start += shift;
+    item.end += shift + grow;
+  }
+  const size = inserted.length;
+  // The inserted line sits above the range, so the range itself moves past it.
+  if (!item.touched && from === to && from === item.rangeStart) {
+    item.rangeStart += size;
+    item.rangeEnd += size;
+  } else {
+    item.rangeStart = shiftReplace(item.rangeStart, from, to, size);
+    item.rangeEnd = shiftReplace(item.rangeEnd, from, to, size);
+  }
+  item.fenceStart = shiftReplace(item.fenceStart, from, to, size);
+  item.fenceEnd = shiftReplace(item.fenceEnd, from, to, size);
+  item.openerStart = shiftReplace(item.openerStart, from, to, size);
+  item.openerNext = shiftReplace(item.openerNext, from, to, size);
+}
+
+function planAnchorPatch(text, item) {
+  if (item.gone || item.touched) return null;
+  if (item.fenceStart < 0 || item.fenceEnd > text.length || item.fenceStart >= item.fenceEnd) return null;
+  const host = hostAt(text, item.fenceStart, item.id);
+  if (!host || host.kind !== "fence") return null;
+  let start = item.start;
+  let end = item.end;
+  if (start < 1) start = 1;
+  if (end < start) return { from: item.fenceStart, to: item.fenceEnd, inserted: "" };
+  const bodyLen = bodyLinesOf(text, host.fence).length;
+  if (start > bodyLen) return { from: item.fenceStart, to: item.fenceEnd, inserted: "" };
+  if (end > bodyLen) end = bodyLen;
+  if (end < start) return { from: item.fenceStart, to: item.fenceEnd, inserted: "" };
+  if (start === item.origStart && end === item.origEnd) return null;
+  const openerLine = text.slice(item.openerStart, item.openerNext).replace(/\r?\n$/, "");
+  const opened = fenceOpen(openerLine);
+  if (!opened || opened.commentId !== item.id || !opened.anchor || opened.anchor.kind !== "lines") return null;
+  const head = commentHead(item.id, { kind: "lines", start, end }, opened.resolved);
+  if (head === openerLine) return null;
+  return { from: item.openerStart, to: item.openerStart + openerLine.length, inserted: head };
+}
+
+// Header rewrites ride in the same change list as the splice. Undo inverts both.
+// A fault refuses the whole edit, so the caller writes nothing.
+function settleChanges(doc, changes, cursor, anchor) {
+  const tracked = collectLineAnchors(doc);
+  let text = doc;
+  for (const change of changes) {
+    for (const item of tracked) stepItem(item, text, change);
+    const inserted = typeof change.inserted === "string" ? change.inserted : "";
+    text = text.slice(0, change.from) + inserted + text.slice(change.to);
+  }
+  let nextCursor = cursor;
+  let nextAnchor = anchor;
+  const all = changes.map((change) => ({
+    from: change.from,
+    to: change.to,
+    inserted: typeof change.inserted === "string" ? change.inserted : "",
+    removed: typeof change.removed === "string" ? change.removed : "",
+  }));
+  const extras = [];
+  for (const item of tracked) {
+    const extra = planAnchorPatch(text, item);
+    if (extra) extras.push(extra);
+  }
+  extras.sort((a, b) => b.from - a.from || b.to - a.to);
+  for (const extra of extras) {
+    const removed = text.slice(extra.from, extra.to);
+    all.push({ from: extra.from, to: extra.to, inserted: extra.inserted, removed });
+    text = text.slice(0, extra.from) + extra.inserted + text.slice(extra.to);
+    nextCursor = shiftReplace(nextCursor, extra.from, extra.to, extra.inserted.length);
+    nextAnchor = shiftReplace(nextAnchor, extra.from, extra.to, extra.inserted.length);
+  }
+  const reason = commentAnchorReason(text);
+  if (reason) return { refused: 400, reason };
+  return { doc: text, cursor: nextCursor, anchor: nextAnchor, changes: all };
+}
+
+export function settleSplice(doc, from, to, inserted) {
+  const text = typeof inserted === "string" ? inserted : "";
+  const changes = [{ from, to, inserted: text, removed: doc.slice(from, to) }];
+  return settleChanges(doc, changes, from + text.length, from + text.length);
 }
 
 // A click inside a marker belongs on the nearer edge. The view draws that marker
@@ -2686,11 +3138,13 @@ function fenceBlock(slot, cursor, spans) {
     if (i < shown.length - 1) parts.push(breakPart(shown[i].end));
   }
   const runs = parts.filter((part) => part.type === "run");
+  const bodyLines = slot.closed ? Math.max(0, lines.length - 2) : Math.max(0, lines.length - 1);
   return {
     type: "line",
     raw,
     empty: false,
     fence: true,
+    bodyLines,
     start,
     end,
     text: runs.map((run) => run.text).join(""),
@@ -3328,7 +3782,7 @@ export function markerSplice(doc, from, to) {
 }
 
 function snapBreak(next) {
-  if (!next) return next;
+  if (!next || next.refused || typeof next.doc !== "string") return next;
   // A caret left on a hidden space, a backslash, or the newline of a visible
   // line moves to the marker's first offset. The newline of a spaces-only
   // break is itself a caret, so it stays.
@@ -3412,8 +3866,10 @@ function applySplice(state, from, to, text, cursor) {
   if (cleaned.broken) return null;
   const changes = [{ from, to, inserted: text, removed: state.doc.slice(from, to) }];
   if (cleaned.changes.length > 0) changes.push(...cleaned.changes);
-  if (cleaned.doc === next.doc && cleaned.cursor === next.cursor) return { ...next, changes };
-  return { ...next, doc: cleaned.doc, cursor: cleaned.cursor, anchor: cleaned.cursor, changes };
+  const anchor = cleaned.doc === next.doc && cleaned.cursor === next.cursor ? next.anchor : cleaned.cursor;
+  const settled = settleChanges(state.doc, changes, cleaned.cursor, anchor);
+  if (settled.refused) return settled;
+  return { ...next, doc: settled.doc, cursor: settled.cursor, anchor: settled.anchor, changes: settled.changes };
 }
 
 export function replaceDocument(state, doc, cursor) {
@@ -3537,10 +3993,10 @@ export function insertLiteral(state, text) {
   if (value === "" && from === to) return state;
   const next = splice(state, from, to, value, from + value.length);
   if (next === state) return state;
-  return {
-    ...next,
-    changes: [{ from, to, inserted: value, removed: state.doc.slice(from, to) }],
-  };
+  const changes = [{ from, to, inserted: value, removed: state.doc.slice(from, to) }];
+  const settled = settleChanges(state.doc, changes, next.cursor, next.anchor);
+  if (settled.refused) return settled;
+  return { ...next, doc: settled.doc, cursor: settled.cursor, anchor: settled.anchor, changes: settled.changes };
 }
 
 // Move a selection to dest. A drop inside it, or on either edge, changes nothing.
@@ -3573,15 +4029,15 @@ export function moveText(state, dest) {
   const cleaned = cleanupComments(doc, caret);
   if (cleaned.broken) return null;
   const all = changes.concat(cleaned.changes);
-  const cursor = cleaned.cursor;
-  const nextDoc = cleaned.doc;
+  const settled = settleChanges(state.doc, all, cleaned.cursor, cleaned.cursor);
+  if (settled.refused) return settled;
   return {
-    doc: nextDoc,
-    cursor,
-    anchor: cursor,
+    doc: settled.doc,
+    cursor: settled.cursor,
+    anchor: settled.anchor,
     undo: state.undo.concat([{ doc: state.doc, cursor: state.cursor, anchor: state.anchor }]),
     redo: [],
-    changes: all,
+    changes: settled.changes,
   };
 }
 

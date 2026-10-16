@@ -5898,3 +5898,55 @@ test("a released ticket caret no longer blocks another socket", async () => {
     }
   });
 });
+
+test("a line inserted above a range shifts the stored numbers and undo restores them", async () => {
+  const source = "```js\none\ntwo\nthree\nfour\n```\n";
+  const original = `${source}\`\`\`comment c1 2-3\n\n\`\`\`\n`;
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "a.md"), original);
+    const a = await hello(port, "A");
+    let rev = (await openDoc(a, "A", "a.md")).rev;
+    const at = original.indexOf("two");
+    await syncLock(a, [], "A", "a.md", at, rev);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev,
+      op: "insert",
+      text: "X\n",
+      exact: true,
+      anchor: at,
+      cursor: at,
+    });
+    const doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.equal(doc.text.includes("```comment c1 3-4\n"), true);
+    assert.equal(doc.text.includes("X\ntwo\n"), true);
+    assert.equal(await readDoc(dir, "a.md"), doc.text);
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    const restored = await takeDoc(a);
+    assert.equal(restored.text, original);
+    assert.equal(await readDoc(dir, "a.md"), original);
+
+    const gap = restored.text.indexOf("```comment");
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev: restored.rev,
+      op: "insert",
+      text: "\n",
+      exact: true,
+      anchor: gap,
+      cursor: gap,
+    });
+    assert.deepEqual(await a.next((msg) => msg.type === "error"), {
+      type: "error",
+      status: 400,
+      reason: "not in the run",
+    });
+    assert.equal(await readDoc(dir, "a.md"), original);
+    a.ws.close();
+  });
+});

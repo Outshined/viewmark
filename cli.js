@@ -57,7 +57,7 @@ stdout and stderr:
   match count other than one: matches N on stderr
   overlapping matches: overlap on stderr
   other statuses: error STATUS on stderr, then held by NAME or the reason when the hub names one
-  Each hunk is its own splice, so unchanged text between hunks stays put. Another socket's span is 409 and names that user, and a comment range that overlaps a fence or a table or splits a comment is 409 and names that.
+  Each hunk is its own splice, so unchanged text between hunks stays put. Another socket's span is 409 and names that user, and a brace comment that overlaps a fence or a table or splits a comment is 409 and names that. A source fence's comments are the comment fences in the run immediately after it, and the token after the id is the body-line range. An image line or a mermaid fence takes a pin after the id. A range or pin that is not in that run, a pin outside 0 to 1, and a range outside the body lines are 400 and write nothing.
   --json: one object plus a newline and empty stderr:
     list {files}; show and edit {path,rev,text}; create {path,rev:0};
     conflict {path,rev,text,error:"conflict"} and heldBy only when the hub names that user;
