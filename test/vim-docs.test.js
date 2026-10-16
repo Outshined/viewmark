@@ -108,7 +108,7 @@ test("starter docs, project docs, and the README cover vim keys", async () => {
   assert.equal(commentThreads(seed).length, 0);
   assert.equal(
     commentThreads(editing).map((item) => item.id).join(","),
-    "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14",
+    "c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17",
   );
 
   assertHeadingTight("samples/ARCHITECTURE.md", architecture, "### Vim keys");

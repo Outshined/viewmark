@@ -95,7 +95,7 @@ printf 'Hello\n' | viewmark --user ada --repo notes create welcome.md
 printf '%s\n' '@@' '-Hello' '+Hi' | viewmark --user ada --repo notes edit welcome.md
 ```
 
-`show` prints the document on stdout and `rev N` on stderr. `create` reads the body from stdin when stdin is not a terminal. Pass `--file` to read a file instead. A path without a markdown suffix is stored with `.md` added. `edit` reads a unified diff on stdin. `--start` and `--end` together limit the slice. The old lines must occur once inside that slice. A context mismatch changes nothing.
+`show` prints the document on stdout and `rev N` on stderr. `create` reads the body from stdin when stdin is not a terminal. Pass `--file` to read a file instead. A path without a markdown suffix is stored with `.md` added. On create, each segment except that suffix is stored in lowercase, with other characters turned into dashes, and stdout is that stored path. A directory already stored under another spelling of that segment is the one used. `edit` reads a unified diff on stdin. `--start` and `--end` together limit the slice. The old lines must occur once inside that slice. A context mismatch changes nothing.
 
 You send the text of one comment note. The hub writes the note id and the author line.
 

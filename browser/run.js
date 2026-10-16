@@ -658,8 +658,7 @@ export async function runCell(suite, cell, routeName, serial) {
   const [route, wait] = routeName.split("@");
   const interval = wait ? Number(wait) : 30;
   const result = { id: cell.id, route: routeName, status: "PASS", failed: [], unchecked: [], observed: {} };
-  const file = `${cell.id}--${routeName}--${serial}.md`.replace(/[^A-Za-z0-9.-]/g, "_");
-  const context = { ...suite, file };
+  const requested = `${cell.id}--${routeName}--${serial}.md`.replace(/[^A-Za-z0-9.-]/g, "_");
   const bytes = cell.source.bytes;
   const before = PREFIX[route] || "";
   const after = SUFFIX[route] || "";
@@ -672,7 +671,9 @@ export async function runCell(suite, cell, routeName, serial) {
   else if (route === "cleared") cell.routeBytes = bytes.slice(0, caretAt) + "xyz" + bytes.slice(caretAt);
   else if (route === "scrolled") cell.routeBytes = before + bytes;
   else cell.routeBytes = bytes;
-  await hub.create(file, cell.routeBytes);
+  // Create stores the normalized path. The cell opens that path, not the requested spelling.
+  const file = await hub.create(requested, cell.routeBytes);
+  const context = { ...suite, file };
   page.frames.length = 0;
   await page.open(file);
   const target = route === "scrolled" ? start : cell.source;

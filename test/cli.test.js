@@ -829,6 +829,97 @@ test("T-cli-create", async () => {
   });
 });
 
+test("T-cli-create-slug", async () => {
+  await withDocs(async ({ dir, port }) => {
+    const args = (...rest) => ["--port", String(port), "--user", "user", "--repo", "docs", "create", ...rest];
+    const created = await run(args("Test Page"));
+    assert.equal(created.code, 0);
+    assert.equal(created.stdout, "test-page.md\n");
+    assert.equal(created.stderr, "rev 0\n");
+    assert.equal(await fs.readFile(path.join(dir, "test-page.md"), "utf8"), "");
+    await assert.rejects(() => fs.lstat(path.join(dir, "Test Page.md")));
+
+    const json = await run(["--json", ...args("Plan (draft).md")]);
+    assert.equal(json.code, 0);
+    assert.equal(json.stderr, "");
+    assert.equal(json.stdout, `${JSON.stringify({ path: "plan-draft.md", rev: 0 })}\n`);
+    assert.equal(await fs.readFile(path.join(dir, "plan-draft.md"), "utf8"), "");
+    await assert.rejects(() => fs.lstat(path.join(dir, "Plan (draft).md")));
+
+    const nested = await run(args("notes/My Notes"));
+    assert.equal(nested.code, 0);
+    assert.equal(nested.stdout, "notes/my-notes.md\n");
+    assert.equal(nested.stderr, "rev 0\n");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "my-notes.md"), "utf8"), "");
+
+    const versioned = await run(args("my_notes.v2"));
+    assert.equal(versioned.stdout, "my-notes-v2.md\n");
+    assert.equal(await fs.readFile(path.join(dir, "my-notes-v2.md"), "utf8"), "");
+
+    const apple = await run(args("Äpfel.md"));
+    assert.equal(apple.code, 0);
+    assert.equal(apple.stdout, "äpfel.md\n");
+    assert.equal(await fs.readFile(path.join(dir, "äpfel.md"), "utf8"), "");
+
+    const again = await run(args("test-page.md"));
+    assert.equal(again.code, shellStatus(409));
+    assert.equal(again.stdout, "");
+    assert.equal(again.stderr, "error 409\n");
+    assert.equal(await fs.readFile(path.join(dir, "test-page.md"), "utf8"), "");
+
+    const hello = await run(args("Hello"));
+    assert.equal(hello.code, shellStatus(409));
+    assert.equal(await fs.readFile(path.join(dir, "hello.md"), "utf8"), HELLO);
+
+    const bang = await run(args("!!!"));
+    assert.equal(bang.code, shellStatus(400));
+    assert.equal(bang.stdout, "");
+    assert.equal(bang.stderr, "error 400\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "!!!.md")));
+
+    const tickets = await run(args("tickets/Hello"));
+    assert.equal(tickets.code, shellStatus(400));
+    assert.equal(tickets.stdout, "");
+    await assert.rejects(() => fs.lstat(path.join(dir, "tickets", "Hello.md")));
+    await assert.rejects(() => fs.lstat(path.join(dir, "tickets", "hello.md")));
+
+    await fs.writeFile(path.join(dir, "Kept Name.md"), "kept\n");
+    const shown = await run(["--port", String(port), "--user", "user", "--repo", "docs", "show", "Kept Name.md"]);
+    assert.equal(shown.code, 0);
+    assert.equal(shown.stdout, "kept\n");
+    assert.equal(await fs.readFile(path.join(dir, "Kept Name.md"), "utf8"), "kept\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "kept-name.md")));
+    const blocked = await run(args("Kept Name"));
+    assert.equal(blocked.code, shellStatus(409));
+    assert.equal(await fs.readFile(path.join(dir, "Kept Name.md"), "utf8"), "kept\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "kept-name.md")));
+
+    await fs.mkdir(path.join(dir, "keep"));
+    await fs.writeFile(path.join(dir, "keep", "k.md"), "k\n");
+    const moved = await run(["--port", String(port), "--user", "user", "--repo", "docs", "move", "Kept Name.md", "--dir", "keep"]);
+    assert.equal(moved.code, 0, moved.stderr);
+    assert.equal(moved.stdout, "keep/Kept Name.md\n");
+    assert.equal(await fs.readFile(path.join(dir, "keep", "Kept Name.md"), "utf8"), "kept\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "keep", "kept-name.md")));
+
+    await fs.mkdir(path.join(dir, "My Notes"));
+    await fs.writeFile(path.join(dir, "My Notes", "keep.md"), "k\n");
+    const reused = await run(args("my-notes/Page"));
+    assert.equal(reused.code, 0, reused.stderr);
+    assert.equal(reused.stdout, "My Notes/page.md\n");
+    assert.equal(await fs.readFile(path.join(dir, "My Notes", "page.md"), "utf8"), "");
+    await assert.rejects(() => fs.lstat(path.join(dir, "my-notes")));
+
+    await fs.mkdir(path.join(dir, "My_Notes"));
+    const clash = await run(args("my-notes/other"));
+    assert.equal(clash.code, shellStatus(409));
+    assert.equal(clash.stdout, "");
+    await assert.rejects(() => fs.lstat(path.join(dir, "my-notes")));
+    await assert.rejects(() => fs.lstat(path.join(dir, "My Notes", "other.md")));
+    await assert.rejects(() => fs.lstat(path.join(dir, "My_Notes", "other.md")));
+  });
+});
+
 function editArgs(port, path, extra = []) {
   return ["--port", String(port), "--user", "user", "--repo", "docs", "edit", path, ...extra];
 }

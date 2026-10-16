@@ -9,7 +9,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { start } from "../server.js";
-import { allocateImageId, assetDirOf, imageFileName, imageKind, imagePlacement, imageRangePlacement, readBuild, rewriteImageDirs } from "../src/hub.js";
+import { allocateImageId, assetDirOf, imageFileName, imageKind, imagePlacement, imageRangePlacement, normalizeDocRel, readBuild, rewriteImageDirs } from "../src/hub.js";
 import { commentThreads, lockIndexAt, lockSpans, parseCommentNotes, plan, splitCommentNote } from "../src/doc.js";
 import { TICKET_ALPHABET, composeTicket, parseTicket } from "../src/ticket.js";
 import { MAX_PAYLOAD, createParser, encodeFrame } from "../src/ws.js";
@@ -4192,6 +4192,212 @@ function imageFiles(text, dir, ext) {
 function imageFile(text, dir, ext) {
   return imageFiles(text, dir, ext)[0] || "";
 }
+
+test("create stores a normalized document path", async () => {
+  assert.equal(normalizeDocRel("Test Page.md"), "test-page.md");
+  assert.equal(normalizeDocRel("Plan (draft).md"), "plan-draft.md");
+  assert.equal(normalizeDocRel("notes/My Notes.md"), "notes/my-notes.md");
+  assert.equal(normalizeDocRel("my_notes.v2.md"), "my-notes-v2.md");
+  assert.equal(normalizeDocRel("Äpfel.md"), "äpfel.md");
+  assert.equal(normalizeDocRel("My Notes.markdown"), "my-notes.markdown");
+  assert.equal(normalizeDocRel("a---b.md"), "a-b.md");
+  assert.equal(normalizeDocRel("-Page-.md"), "page.md");
+  assert.equal(normalizeDocRel("!!!.md"), null);
+  assert.equal(normalizeDocRel("notes/!!!.md"), null);
+  assert.equal(normalizeDocRel(".md"), null);
+  assert.equal(normalizeDocRel("a.txt"), null);
+  assert.equal(assetDirOf("test-page.md"), "test-page");
+
+  await withDocs(async ({ port, dir }) => {
+    const a = await hello(port, "A");
+    try {
+      const made = async (sent, text) => {
+        const payload = { type: "create", username: "A", path: sent };
+        if (text !== undefined) payload.text = text;
+        a.send(payload);
+        const docs = await a.next((msg) => msg.type === "docs" || msg.type === "error");
+        if (docs.type === "error") return docs;
+        const file = await a.next((msg) => msg.type === "file" || msg.type === "error");
+        return { docs, file };
+      };
+      const absent = (rel) => assert.rejects(() => fs.lstat(path.join(dir, rel)));
+
+      const page = await made("Test Page.md", "alpha beta\n");
+      assert.equal(page.file.type, "file");
+      assert.equal(page.file.path, "test-page.md");
+      assert.equal(page.file.rev, 0);
+      assert.equal(page.file.text, "alpha beta\n");
+      assert.equal(page.docs.files.includes("test-page.md"), true);
+      assert.equal(page.docs.files.includes("Test Page.md"), false);
+      assert.equal(page.docs.titles["test-page.md"], undefined);
+      assert.equal(await readDoc(dir, "test-page.md"), "alpha beta\n");
+      await absent("Test Page.md");
+
+      const attached = await attachBytes(a, "A", "test-page.md", PNG, { cursor: 8 });
+      const shot = imageFile(attached.file.text, "test-page", "png");
+      assert.notEqual(shot, "");
+      assert.equal(attached.file.text.includes(`(test-page/${shot})`), true);
+      assert.ok((await fs.readFile(path.join(dir, "test-page", shot))).equals(PNG));
+      await absent(path.join("Test Page", shot));
+      const raw = await getRaw(port, `/raw/docs/test-page/${shot}`);
+      assert.equal(raw.status, 200);
+      assert.ok(raw.body.equals(PNG));
+
+      const draft = await made("Plan (draft).md");
+      assert.equal(draft.file.path, "plan-draft.md");
+      assert.equal(await readDoc(dir, "plan-draft.md"), "");
+      await absent("Plan (draft).md");
+
+      const nested = await made("notes/My Notes.md", "# My Notes\n");
+      assert.equal(nested.file.path, "notes/my-notes.md");
+      assert.equal(nested.docs.titles["notes/my-notes.md"], "My Notes");
+      assert.equal(await readDoc(dir, "notes/my-notes.md"), "# My Notes\n");
+      await absent("notes/My Notes.md");
+
+      const dotted = await made("my_notes.v2.md");
+      assert.equal(dotted.file.path, "my-notes-v2.md");
+      assert.equal(await readDoc(dir, "my-notes-v2.md"), "");
+
+      const apple = await made("Äpfel.md", "fruit\n");
+      assert.equal(apple.file.path, "äpfel.md");
+      assert.equal(await readDoc(dir, "äpfel.md"), "fruit\n");
+      await absent("Äpfel.md");
+
+      const markdown = await made("Keep Me.markdown");
+      assert.equal(markdown.file.path, "keep-me.markdown");
+      assert.equal(await readDoc(dir, "keep-me.markdown"), "");
+
+      const folder = await made("My Folder/Page.md", "no heading\n");
+      assert.equal(folder.file.path, "my-folder/page.md");
+      assert.equal(folder.docs.titles["my-folder/page.md"], undefined);
+      assert.equal(await readDoc(dir, "my-folder/page.md"), "no heading\n");
+      await absent("My Folder/Page.md");
+      const stat = await fs.lstat(path.join(dir, "my-folder"));
+      assert.equal(stat.isDirectory(), true);
+
+      a.send({ type: "create", username: "A", path: "test-page.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+      a.send({ type: "create", username: "A", path: "TEST PAGE.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+      const stored = await readDoc(dir, "test-page.md");
+      assert.ok(stored.startsWith("alpha beta\n"));
+      assert.ok(stored.includes(`(test-page/${shot})`));
+
+      a.send({ type: "create", username: "A", path: "!!!.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+      await absent("!!!.md");
+      a.send({ type: "create", username: "A", path: "newdir/!!!.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+      await absent("newdir");
+      a.send({ type: "create", username: "A", path: "!!!/page.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+      await absent("page.md");
+
+      a.send({ type: "create", username: "A", path: "tickets/Hello.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+      await absent("tickets/Hello.md");
+      await absent("tickets/hello.md");
+      a.send({ type: "create", username: "A", path: "Tickets/Hello.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 400 });
+      await absent("Tickets/Hello.md");
+      await absent("tickets/hello.md");
+
+      a.send({ type: "create", username: "A", path: "../nope.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+      a.send({ type: "create", username: "A", path: ".git/x.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+      a.send({ type: "create", username: "A", path: `${"n".repeat(1022)}.md` });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 404 });
+
+      await fs.writeFile(path.join(dir, "Kept Name.md"), "kept\n");
+      const opened = await openDoc(a, "A", "Kept Name.md");
+      assert.equal(opened.path, "Kept Name.md");
+      assert.equal(opened.text, "kept\n");
+      assert.equal(await readDoc(dir, "Kept Name.md"), "kept\n");
+      a.send({ type: "create", username: "A", path: "kept-name.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "error"), { type: "error", status: 409 });
+      assert.equal(await readDoc(dir, "Kept Name.md"), "kept\n");
+      await absent("kept-name.md");
+      assert.equal((await fs.readdir(dir)).includes("Kept Name.md"), true);
+
+      await fs.mkdir(path.join(dir, "archive"), { recursive: true });
+      await fs.writeFile(path.join(dir, "archive", "keep.md"), "k\n");
+      await fs.mkdir(path.join(dir, "Old Notes"), { recursive: true });
+      await fs.writeFile(path.join(dir, "Old Notes", "space.md"), "space\n");
+      a.send({ type: "move", username: "A", path: "Old Notes", dir: "archive" });
+      const moved = await a.next((msg) => msg.type === "moved" || msg.type === "error");
+      assert.deepEqual(moved, {
+        type: "moved",
+        path: "Old Notes",
+        moves: [{ path: "Old Notes/space.md", dest: "archive/Old Notes/space.md" }],
+      });
+      assert.equal(await readDoc(dir, "archive/Old Notes/space.md"), "space\n");
+      await absent("archive/old-notes/space.md");
+      await absent("Old Notes/space.md");
+    } finally {
+      a.ws.close();
+    }
+  });
+});
+
+test("create places a file in the directory that already normalizes to that segment", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const a = await hello(port, "A");
+    try {
+      const made = async (sent, text) => {
+        a.send({ type: "create", username: "A", path: sent, text });
+        const docs = await a.next((msg) => msg.type === "docs" || msg.type === "error");
+        if (docs.type === "error") return docs;
+        const file = await a.next((msg) => msg.type === "file" || msg.type === "error");
+        return { docs, file };
+      };
+      const absent = (rel) => assert.rejects(() => fs.lstat(path.join(dir, rel)));
+
+      await fs.mkdir(path.join(dir, "My Notes"));
+      await fs.writeFile(path.join(dir, "My Notes", "keep.md"), "keep\n");
+      const reused = await made("MY NOTES/Page.md", "inside\n");
+      assert.equal(reused.file.path, "My Notes/page.md");
+      assert.equal(reused.file.text, "inside\n");
+      assert.equal(await readDoc(dir, "My Notes/page.md"), "inside\n");
+      await absent("my-notes");
+      await absent("MY NOTES");
+
+      const nested = await made("my-notes/Sub/Leaf.md", "leaf\n");
+      assert.equal(nested.file.path, "My Notes/sub/leaf.md");
+      assert.equal(await readDoc(dir, "My Notes/sub/leaf.md"), "leaf\n");
+      await absent("my-notes");
+
+      const attached = await attachBytes(a, "A", "My Notes/page.md", PNG, { cursor: 3 });
+      const shot = imageFile(attached.file.text, "My Notes/page", "png");
+      assert.notEqual(shot, "");
+      assert.ok((await fs.readFile(path.join(dir, "My Notes", "page", shot))).equals(PNG));
+      await absent(path.join("my-notes", "page"));
+
+      await fs.mkdir(path.join(dir, "notes"));
+      await fs.mkdir(path.join(dir, "Notes"));
+      const exact = await made("NOTES/Zed.md", "z\n");
+      assert.equal(exact.file.path, "notes/zed.md");
+      assert.equal(await readDoc(dir, "notes/zed.md"), "z\n");
+      await absent("Notes/zed.md");
+
+      await fs.mkdir(path.join(dir, "My_Notes"));
+      const clash = await made("my-notes/other.md", "no\n");
+      assert.equal(clash.type, "error");
+      assert.equal(clash.status, 409);
+      await absent("my-notes");
+      await absent("My Notes/other.md");
+      await absent("My_Notes/other.md");
+
+      await fs.mkdir(path.join(dir, ".git"));
+      const git = await made("git/page.md", "g\n");
+      assert.equal(git.file.path, "git/page.md");
+      assert.equal(await readDoc(dir, "git/page.md"), "g\n");
+      await absent(".git/page.md");
+    } finally {
+      a.ws.close();
+    }
+  });
+});
 
 async function waitAbsent(full) {
   for (let i = 0; i < 40; i += 1) {

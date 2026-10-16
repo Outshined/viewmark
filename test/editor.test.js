@@ -10521,6 +10521,92 @@ test("a create 409 does not restore the caret and a later 409 does", () => {
   }
 });
 
+test("a new file opens the stored path and a heading labels it", () => {
+  const mounted = mountEditor();
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const sheet = document.createElement("div");
+  sheet.append(nav, mounted.root);
+  const transport = holdingTransport();
+  const previousHistory = globalThis.history;
+  const previousLocation = globalThis.location;
+  const urls = [];
+  globalThis.history = {
+    replaceState(_state, _title, url) {
+      urls.push(url);
+    },
+  };
+  globalThis.location = { origin: "https://viewmark.test", pathname: "/app", search: "", hash: "" };
+  const storage = {
+    data: { "viewmark.repo": "viewmark" },
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
+    },
+    setItem(key, value) {
+      this.data[key] = String(value);
+    },
+    removeItem(key) {
+      delete this.data[key];
+    },
+  };
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport, storage);
+    transport.deliver({
+      type: "repos",
+      repos: [{ name: "viewmark", description: "Viewmark" }],
+    });
+    transport.deliver({
+      type: "docs",
+      files: ["bare.md", "my-folder/page.md", "test-page.md"],
+      titles: { "test-page.md": "Test Page" },
+    });
+    const buttonPath = (rel) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.dataset && node.dataset.path === rel)[0];
+    const buttonDir = (rel) => walkNodes(nav, (node) => node.tagName === "BUTTON" && node.dataset && node.dataset.dir === rel)[0];
+    assert.equal(buttonPath("test-page.md").textContent, "Test Page");
+    assert.equal(buttonPath("bare.md").textContent, "bare.md");
+    assert.equal(buttonPath("Test Page.md"), undefined);
+    assert.equal(buttonDir("my-folder").textContent, "my-folder");
+    buttonDir("my-folder").listeners.click({ preventDefault() {} });
+    assert.equal(buttonPath("my-folder/page.md").textContent, "page.md");
+
+    const button = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"))[0];
+    const field = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name"))[0];
+    button.listeners.click({ preventDefault() {} });
+    field.value = "Test Page";
+    field.listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.deepEqual(transport.sent.at(-1), { type: "create", path: "Test Page.md", username: "" });
+    transport.deliver({
+      type: "docs",
+      files: ["bare.md", "my-folder/page.md", "test-page.md"],
+      titles: { "test-page.md": "Test Page" },
+    });
+    transport.deliver({ type: "file", path: "test-page.md", rev: 0, text: "# Test Page\n", locks: [] });
+    assert.equal(view.getState().doc, "# Test Page\n");
+    const hash = formatHash({ repo: "viewmark", kind: "doc", path: "test-page.md" });
+    assert.equal(globalThis.location.hash, hash);
+    assert.equal(urls.at(-1), `/app${hash}`);
+    assert.equal(buttonPath("test-page.md").textContent, "Test Page");
+    assert.equal(buttonPath("test-page.md").classList.contains("md-file-current"), true);
+    assert.equal(buttonPath("Test Page.md"), undefined);
+
+    button.listeners.click({ preventDefault() {} });
+    field.value = "Test Page";
+    field.listeners.keydown({ key: "Enter", preventDefault() {} });
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(view.getState().doc, "# Test Page\n");
+    assert.equal(globalThis.location.hash, hash);
+    assert.equal(walkNodes(sheet, (node) => node.classList && node.classList.contains("md-notice")).length, 0);
+    assert.equal(buttonPath("Test Page.md"), undefined);
+    view.destroy();
+  } finally {
+    if (previousHistory === undefined) delete globalThis.history;
+    else globalThis.history = previousHistory;
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
+    mounted.restore();
+  }
+});
+
 test("createEditor without activeElement does not throw", () => {
   const mounted = mountEditor();
   try {

@@ -328,7 +328,7 @@ cell("VS.11", async (t) => {
   const body = "one two one\n";
   const gn = "gn.md";
   const dgn = "dgn.md";
-  const gN = "gN.md";
+  const gN = "g-upper-n.md";
   const { hub, page } = await boot(t, { [gn]: body, [dgn]: body, [gN]: body });
 
   await page.open(gn);
