@@ -479,6 +479,26 @@ function normalizeInbound(item) {
   };
 }
 
+function normalizeForeign(item) {
+  if (!item || typeof item !== "object") return null;
+  const repo = typeof item.repo === "string" ? item.repo : "";
+  const id = typeof item.id === "string" ? item.id : "";
+  if (!repo || !id) return null;
+  const depends = [];
+  if (Array.isArray(item.depends)) {
+    for (const dep of item.depends) if (typeof dep === "string") depends.push(dep);
+  }
+  const rev = typeof item.rev === "number" && Number.isFinite(item.rev) ? item.rev : 0;
+  return {
+    repo,
+    id,
+    title: typeof item.title === "string" ? item.title : "",
+    parent: typeof item.parent === "string" ? item.parent : "",
+    depends,
+    rev,
+  };
+}
+
 function compareTickets(a, b) {
   if (a.created < b.created) return -1;
   if (a.created > b.created) return 1;
@@ -2216,6 +2236,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const openDirs = new Set();
   let ticketList = [];
   let inboundList = [];
+  // Tickets in every other registered repo: title, links, and the file rev.
+  let foreignList = [];
   // repo:id the last tickets message said exist. Null until that list arrives.
   let linkPresent = null;
   let openTicket = null;
@@ -9148,9 +9170,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function sendTicketSet(fields) {
     if (!openTicket || !openPath) return;
     const path = typeof fields.path === "string" && fields.path ? fields.path : openPath;
+    const foreignRepo = typeof fields.repo === "string" && fields.repo && fields.repo !== activeRepo ? fields.repo : "";
     let target = openTicket;
     if (path !== openPath) {
-      target = ticketList.find((item) => `tickets/${item.id}.md` === path) || null;
+      if (foreignRepo) {
+        target = foreignList.find((item) => item.repo === foreignRepo && `tickets/${item.id}.md` === path)
+          || inboundList.find((item) => item.repo === foreignRepo && `tickets/${item.id}.md` === path)
+          || null;
+      } else {
+        target = ticketList.find((item) => `tickets/${item.id}.md` === path) || null;
+      }
       if (!target) return;
     }
     // A child update names that file's rev. The open document rev belongs only to this path.
@@ -9173,11 +9202,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     // Frame `type` is the command, so the ticket type travels as ticketType.
+    const payload = { type: "ticket.set", path, rev: nextRev };
+    if (foreignRepo) payload.repo = foreignRepo;
     if (Object.prototype.hasOwnProperty.call(fields, "type")) {
-      emit({ type: "ticket.set", path, rev: nextRev, ticketType: fields.type });
+      payload.ticketType = fields.type;
+      emit(payload);
       return;
     }
-    const payload = { type: "ticket.set", path, rev: nextRev };
     if (Object.prototype.hasOwnProperty.call(fields, "title")) payload.title = fields.title;
     else if (Object.prototype.hasOwnProperty.call(fields, "state")) payload.state = fields.state;
     else if (Object.prototype.hasOwnProperty.call(fields, "parent")) payload.parent = fields.parent || "";
@@ -9204,6 +9235,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof input.setSelectionRange === "function") input.setSelectionRange(start, end);
   }
 
+  function matchTicketText(ticket, needle) {
+    const title = typeof ticket.title === "string" ? ticket.title : "";
+    const id = typeof ticket.id === "string" ? ticket.id : "";
+    if (title.toLowerCase().startsWith(needle)) return title;
+    if (id.toLowerCase().startsWith(needle)) return id;
+    return null;
+  }
+
   function matchingTickets(query) {
     const typed = String(query || "");
     if (!typed || !openTicket) return [];
@@ -9211,11 +9250,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const matches = [];
     for (const ticket of ticketList) {
       if (!ticket || ticket.id === openTicket.id) continue;
-      const title = typeof ticket.title === "string" ? ticket.title : "";
-      const id = typeof ticket.id === "string" ? ticket.id : "";
-      let text = null;
-      if (title.toLowerCase().startsWith(needle)) text = title;
-      else if (id.toLowerCase().startsWith(needle)) text = id;
+      const text = matchTicketText(ticket, needle);
+      if (text != null) matches.push({ ticket, text });
+    }
+    for (const item of foreignList) {
+      if (!item || !item.id) continue;
+      const ticket = {
+        id: item.id,
+        repo: item.repo,
+        title: item.title,
+        parent: item.parent,
+        depends: item.depends,
+        rev: item.rev,
+      };
+      const text = matchTicketText(ticket, needle);
       if (text != null) matches.push({ ticket, text });
     }
     matches.sort((a, b) => compareTickets(a.ticket, b.ticket));
@@ -9296,7 +9344,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   // The file can still hold a token whose ticket is gone. It is not drawn as a
   // parent, a dependency, a block, or a child. An unregistered name is not gone.
-  // Another repo's title is not fetched; an outbound row stays the stored token.
   function tokenAbsent(token) {
     if (typeof token !== "string" || token === "") return false;
     const parsed = parseTicketToken(token);
@@ -9367,8 +9414,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const onClear = options.onClear;
     const commitOnPick = options.commitOnPick === true;
     const buttons = options.buttons !== false;
-    // A typed token is stored on this ticket. Children and blocks write another
-    // file, and only a ticket from this repo is that file.
+    // A typed token that is not a suggestion is stored as typed. A suggestion
+    // from another repo is that repo's ticket, not text.
     const acceptTyped = options.acceptTyped === true;
     const picker = document.createElement("div");
     picker.className = "md-ticket-picker";
@@ -9433,6 +9480,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       for (const match of matches) {
         const option = plainButton("md-ticket-option", match.ticket.title || match.text);
         option.dataset.id = match.ticket.id;
+        if (match.ticket.repo && match.ticket.repo !== activeRepo) option.dataset.repo = match.ticket.repo;
         // mousedown would blur the field and drop the click before it chooses the row.
         option.addEventListener("mousedown", (event) => {
           if (event && typeof event.preventDefault === "function") event.preventDefault();
@@ -9521,19 +9569,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       selected = null;
       const rows = [];
       for (const ticket of next || []) {
-        // An inbound row is another repo's ticket. Selecting it would write that repo.
-        if (ticket.inbound) {
-          const row = document.createElement("div");
-          row.className = "md-ticket-link";
-          row.textContent = ticket.title || `${ticket.repo}:${ticket.id}`;
-          row.dataset.id = ticket.id;
-          row.dataset.repo = ticket.repo || "";
-          row.dataset.inbound = "true";
-          rows.push(row);
-          continue;
-        }
         const row = plainButton("md-ticket-link", ticket.title || ticket.id);
         row.dataset.id = ticket.id;
+        if (ticket.inbound) {
+          row.dataset.repo = ticket.repo || "";
+          row.dataset.inbound = "true";
+        }
         row.addEventListener("click", (event) => {
           if (event && typeof event.preventDefault === "function") event.preventDefault();
           selected = ticket;
@@ -9552,20 +9593,34 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return {
       links,
       removeSelected() {
-        if (!selected || selected.inbound) return;
+        if (!selected) return;
         onRemove(selected);
       },
     };
   }
 
   // A bare id and this repo's repo:id are the same local ticket. The stored
-  // token stays the row id so remove filters that token. Inbound titles belong
-  // to rows that point here; an outbound token is drawn as stored.
+  // token stays the row id so remove filters that token. A registered ticket's
+  // title comes from foreign. An unregistered token stays the token.
   function knownTicket(token) {
     const parsed = parseTicketToken(token);
     if (parsed && (!parsed.repo || parsed.repo === activeRepo)) {
       const local = ticketList.find((item) => item.id === parsed.id);
       if (local) return { ...local, id: token, title: local.title || token };
+    }
+    if (parsed && parsed.repo && parsed.repo !== activeRepo) {
+      const foreign = foreignList.find((item) => item.repo === parsed.repo && item.id === parsed.id);
+      if (foreign && foreign.title) {
+        return {
+          id: token,
+          title: foreign.title,
+          created: "",
+          parent: foreign.parent,
+          depends: foreign.depends,
+          rev: foreign.rev,
+          repo: foreign.repo,
+        };
+      }
     }
     return {
       id: token,
@@ -9575,6 +9630,22 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       depends: [],
       rev: 0,
     };
+  }
+
+  // A pick in this repo stores a bare id. A pick in another repo stores repo:id.
+  function storedToken(chosen) {
+    if (!chosen || typeof chosen.id !== "string") return "";
+    if (typeof chosen.repo === "string" && chosen.repo && chosen.repo !== activeRepo) return `${chosen.repo}:${chosen.id}`;
+    return chosen.id;
+  }
+
+  function aimedRepo(chosen) {
+    if (!chosen || typeof chosen.repo !== "string" || !chosen.repo || chosen.repo === activeRepo) return "";
+    return chosen.repo;
+  }
+
+  function linkHere(id) {
+    return activeRepo ? `${activeRepo}:${id}` : id;
   }
 
   function namesLocal(token, id) {
@@ -9590,14 +9661,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const rows = [];
     for (const item of inboundList) {
       if (!item || !predicate(item)) continue;
+      const foreign = foreignList.find((row) => row.repo === item.repo && row.id === item.id);
       rows.push({
         id: item.id,
-        title: item.title || `${item.repo}:${item.id}`,
+        title: item.title || (foreign && foreign.title) || `${item.repo}:${item.id}`,
         repo: item.repo,
         parent: item.parent,
         depends: item.depends,
         inbound: true,
-        rev: 0,
+        rev: foreign ? foreign.rev : 0,
         created: "",
       });
     }
@@ -9952,7 +10024,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       buttons: false,
       acceptTyped: true,
       value: parentShown,
-      onAdd: (chosen) => sendTicketSet({ parent: chosen.id }),
+      onAdd: (chosen) => sendTicketSet({ parent: storedToken(chosen) }),
       onClear: () => sendTicketSet({ parent: "" }),
     });
     parentField.append(fieldName("Parent"), parentPicker);
@@ -9971,8 +10043,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       onAdd: (chosen) => {
         const current = openTicket;
         if (!current) return;
+        const token = storedToken(chosen);
+        if (!token) return;
         const ids = (current.depends || []).slice();
-        if (!ids.includes(chosen.id)) ids.push(chosen.id);
+        if (!ids.includes(token)) ids.push(token);
         sendTicketSet({ depends: ids });
       },
       onRemove: () => dependList.removeSelected(),
@@ -9986,22 +10060,26 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     children.className = "md-ticket-children";
     const childTickets = childTicketsOf(ticket);
     const childList = buildLinkList(childTickets, (selected) => {
-      if (selected.inbound) return;
-      sendTicketSet({
+      const fields = {
         path: `tickets/${selected.id}.md`,
         rev: selected.rev,
         parent: "",
-      });
+      };
+      if (selected.inbound && selected.repo) fields.repo = selected.repo;
+      sendTicketSet(fields);
     });
     const childPicker = buildTicketPicker({
       addTitle: "Add a child",
       removeTitle: "Remove a child",
       onAdd: (chosen) => {
-        sendTicketSet({
+        const repo = aimedRepo(chosen);
+        const fields = {
           path: `tickets/${chosen.id}.md`,
           rev: chosen.rev,
-          parent: ticket.id,
-        });
+          parent: repo ? linkHere(ticket.id) : ticket.id,
+        };
+        if (repo) fields.repo = repo;
+        sendTicketSet(fields);
       },
       onRemove: () => childList.removeSelected(),
     });
@@ -10049,24 +10127,32 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const blocks = document.createElement("div");
     blocks.className = "md-ticket-blocks";
     const blockList = buildLinkList(blockers, (selected) => {
-      if (selected.inbound) return;
-      sendTicketSet({
+      const drop = selected.inbound
+        ? (dep) => namesInbound(dep, ticket.id)
+        : (dep) => namesLocal(dep, ticket.id);
+      const fields = {
         path: `tickets/${selected.id}.md`,
         rev: selected.rev,
-        depends: (selected.depends || []).filter((dep) => !namesLocal(dep, ticket.id)),
-      });
+        depends: (selected.depends || []).filter((dep) => !drop(dep)),
+      };
+      if (selected.inbound && selected.repo) fields.repo = selected.repo;
+      sendTicketSet(fields);
     });
     const blockPicker = buildTicketPicker({
       addTitle: "Add a block",
       removeTitle: "Remove a block",
       onAdd: (chosen) => {
+        const repo = aimedRepo(chosen);
+        const token = repo ? linkHere(ticket.id) : ticket.id;
         const ids = (chosen.depends || []).slice();
-        if (!ids.includes(ticket.id)) ids.push(ticket.id);
-        sendTicketSet({
+        if (!ids.includes(token)) ids.push(token);
+        const fields = {
           path: `tickets/${chosen.id}.md`,
           rev: chosen.rev,
           depends: ids,
-        });
+        };
+        if (repo) fields.repo = repo;
+        sendTicketSet(fields);
       },
       onRemove: () => blockList.removeSelected(),
     });
@@ -10232,6 +10318,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (row) nextInbound.push(row);
     }
     inboundList = nextInbound;
+    const incomingForeign = Array.isArray(message.foreign) ? message.foreign : [];
+    const nextForeign = [];
+    for (const item of incomingForeign) {
+      const row = normalizeForeign(item);
+      if (row) nextForeign.push(row);
+    }
+    foreignList = nextForeign;
     if (openTicket && !ticketList.some((ticket) => ticket.id === openTicket.id)) {
       clearOpenTicket();
       return;
@@ -10675,6 +10768,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     draggedMove = null;
     ticketList = [];
     inboundList = [];
+    foreignList = [];
     linkPresent = null;
     state = createState("");
     bodyCaretReleased = false;

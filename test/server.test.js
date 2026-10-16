@@ -5010,12 +5010,47 @@ test("T-ticket-cross-repo", async () => {
         const msg = await setResult(client, username, payload);
         assert.equal(msg.type, "tickets");
         assert.ok(Array.isArray(msg.inbound));
+        assert.ok(Array.isArray(msg.present));
+        assert.ok(Array.isArray(msg.foreign));
+        const home = msg.tickets.some((ticket) => ticket.id === C) ? "docs"
+          : msg.tickets.some((ticket) => ticket.id === D) ? "other" : "";
+        assert.notEqual(home, "");
+        for (const row of msg.foreign) {
+          assert.deepEqual(Object.keys(row).sort(), ["depends", "id", "parent", "repo", "rev", "title"]);
+          assert.equal(typeof row.rev, "number");
+          assert.notEqual(row.repo, home);
+        }
         for (const ticket of msg.tickets) assertTicketEntry(ticket);
         for (const peer of peers) {
           const copy = await peer.next((item) => item.type === "tickets" || item.type === "error");
           assert.deepEqual(copy, msg);
         }
         return msg;
+      }
+
+      async function expectOwnTickets(client, home, ownId, otherRepo, otherId) {
+        const msg = await client.next((item) => item.type === "tickets" || item.type === "error");
+        assert.equal(msg.type, "tickets");
+        assert.equal(msg.tickets.some((ticket) => ticket.id === ownId), true);
+        assert.ok(Array.isArray(msg.foreign));
+        assert.equal(msg.foreign.some((row) => row.repo === home), false);
+        const row = msg.foreign.find((item) => item.repo === otherRepo && item.id === otherId);
+        assert.ok(row, `${otherRepo}:${otherId}`);
+        assert.deepEqual(Object.keys(row).sort(), ["depends", "id", "parent", "repo", "rev", "title"]);
+        assert.equal(typeof row.rev, "number");
+        assert.ok(Array.isArray(msg.present));
+        return msg;
+      }
+
+      // The writer's frame is already taken by setOk. These take the other repo's frame.
+      async function docsSaw(otherId) {
+        const msg = await expectOwnTickets(ada, "docs", C, "other", otherId);
+        assert.deepEqual(await ada2.next((item) => item.type === "tickets" || item.type === "error"), msg);
+        return msg;
+      }
+
+      async function otherSaw(docsId) {
+        return expectOwnTickets(bo, "other", D, "docs", docsId);
       }
 
       async function setBad(client, username, payload, status, fileRoot, id, peers) {
@@ -5034,7 +5069,9 @@ test("T-ticket-cross-repo", async () => {
         const ghostParent = await readId(dir, A);
         assert.match(ghostParent, /^parent: ghost:k2n4p7qa$/m);
         assert.equal(ghostParent.includes(`docs:${K}`), false);
-        await expectNoTicketBroadcast(bo, "B");
+        const ghostFrame = await otherSaw(A);
+        assert.notDeepEqual(ghostFrame, listedMine);
+        assert.equal(ghostFrame.foreign.find((row) => row.repo === "docs" && row.id === A).parent, `ghost:${K}`);
 
         await setBad(ada, "A", { path: pathOf(A), depends: [`my_repo-2:${K}`] }, 409, dir, A, [
           { client: ada2, username: "A2" },
@@ -5064,7 +5101,10 @@ test("T-ticket-cross-repo", async () => {
         const renamedDisk = parseTicket(A, await readId(dir, A));
         assert.equal(renamedDisk.title, "Renamed");
         assert.equal(renamedDisk.parent, "");
-        await expectNoTicketBroadcast(bo, "B");
+        const renamedOther = await otherSaw(A);
+        assert.notDeepEqual(renamedOther, renamed);
+        assert.equal(renamedOther.foreign.find((row) => row.repo === "docs" && row.id === A).title, "Renamed");
+        assert.equal(renamedOther.foreign.find((row) => row.repo === "docs" && row.id === A).parent, "");
 
         await setBad(ada, "A", { path: pathOf(A), parent: `other:${K}` }, 409, dir, A, [
           { client: ada2, username: "A2" },
@@ -5101,12 +5141,14 @@ test("T-ticket-cross-repo", async () => {
         const bareDisk = await readId(dir, A);
         assert.match(bareDisk, /^parent: bbbbbbbb$/m);
         assert.equal(bareDisk.includes("docs:bbbbbbbb"), false);
-        await expectNoTicketBroadcast(bo, "B");
+        const bareOther = await otherSaw(A);
+        assert.equal(bareOther.foreign.find((row) => row.repo === "docs" && row.id === A).parent, B);
 
         const qualified = await setOk(ada, "A", { path: pathOf(A), parent: `docs:${B}` }, [ada2]);
         assert.equal(qualified.tickets.find((ticket) => ticket.id === A).parent, `docs:${B}`);
         assert.match(await readId(dir, A), /^parent: docs:bbbbbbbb$/m);
-        await expectNoTicketBroadcast(bo, "B");
+        const qualifiedOther = await otherSaw(A);
+        assert.equal(qualifiedOther.foreign.find((row) => row.repo === "docs" && row.id === A).parent, `docs:${B}`);
 
         const linked = await setOk(ada, "A", { path: pathOf(A), parent: `other:${B}` }, [ada2]);
         assert.equal(linked.tickets.find((ticket) => ticket.id === A).parent, `other:${B}`);
@@ -5116,12 +5158,26 @@ test("T-ticket-cross-repo", async () => {
           { repo: "other", id: H, title: "Aitch", parent: `docs:${F}`, depends: [] },
         ]);
         assert.match(await readId(dir, A), /^parent: other:bbbbbbbb$/m);
-        await expectNoTicketBroadcast(bo, "B");
+        const linkedOther = await otherSaw(A);
+        assert.notDeepEqual(linkedOther, linked);
+        assert.equal(linkedOther.foreign.find((row) => row.repo === "docs" && row.id === A).parent, `other:${B}`);
+        assertInbound(linkedOther.inbound, [
+          { repo: "docs", id: A, title: "Renamed", parent: `other:${B}`, depends: [] },
+          {
+            repo: "docs",
+            id: G,
+            title: "Gee",
+            parent: F,
+            depends: [`docs:${F}`, `other:${B}`],
+          },
+        ]);
 
         bo.send({ type: "tickets", username: "B" });
         const otherList = await bo.next((msg) => msg.type === "tickets");
         assert.equal(otherList.tickets.some((ticket) => ticket.id === A), false);
         assert.equal(otherList.tickets.some((ticket) => ticket.id === B), true);
+        assert.equal(otherList.foreign.some((row) => row.repo === "other"), false);
+        assert.equal(otherList.foreign.find((row) => row.repo === "docs" && row.id === A).parent, `other:${B}`);
         assertInbound(otherList.inbound, [
           { repo: "docs", id: A, title: "Renamed", parent: `other:${B}`, depends: [] },
           {
@@ -5135,6 +5191,8 @@ test("T-ticket-cross-repo", async () => {
         ada.send({ type: "tickets", username: "A" });
         const docsList = await ada.next((msg) => msg.type === "tickets");
         assert.equal(docsList.tickets.some((ticket) => ticket.id === D), false);
+        assert.equal(docsList.foreign.some((row) => row.repo === "docs"), false);
+        assert.equal(docsList.foreign.find((row) => row.repo === "other" && row.id === D).parent, `docs:${A}`);
         assertInbound(docsList.inbound, linked.inbound);
         await expectNoTicketBroadcast(ada2, "A2");
         await expectNoTicketBroadcast(bo, "B");
@@ -5147,8 +5205,8 @@ test("T-ticket-cross-repo", async () => {
 
         const dependBack = await setOk(bo, "B", { path: pathOf(B), depends: [`docs:${A}`] }, []);
         assert.deepEqual(dependBack.tickets.find((ticket) => ticket.id === B).depends, [`docs:${A}`]);
-        await expectNoTicketBroadcast(ada, "A");
-        await expectNoTicketBroadcast(ada2, "A2");
+        const dependDocs = await docsSaw(B);
+        assert.deepEqual(dependDocs.foreign.find((row) => row.repo === "other" && row.id === B).depends, [`docs:${A}`]);
         await setBad(ada, "A", { path: pathOf(A), depends: [`other:${B}`] }, 409, dir, A, [
           { client: ada2, username: "A2" },
           { client: bo, username: "B" },
@@ -5156,23 +5214,30 @@ test("T-ticket-cross-repo", async () => {
         assert.deepEqual(parseTicket(A, await readId(dir, A)).depends, []);
 
         await setOk(bo, "B", { path: pathOf(B), depends: [] }, []);
-        await expectNoTicketBroadcast(ada, "A");
-        await expectNoTicketBroadcast(ada2, "A2");
+        const clearedDocs = await docsSaw(B);
+        assert.deepEqual(clearedDocs.foreign.find((row) => row.repo === "other" && row.id === B).depends, []);
         const ownParent = await setOk(ada, "A", { path: pathOf(A), depends: [`other:${B}`] }, [ada2]);
         assert.equal(ownParent.tickets.find((ticket) => ticket.id === A).parent, `other:${B}`);
         assert.deepEqual(ownParent.tickets.find((ticket) => ticket.id === A).depends, [`other:${B}`]);
         const ownDisk = await readId(dir, A);
         assert.match(ownDisk, /^parent: other:bbbbbbbb$/m);
         assert.match(ownDisk, /^depends: other:bbbbbbbb$/m);
-        await expectNoTicketBroadcast(bo, "B");
+        const ownOther = await otherSaw(A);
+        assert.equal(ownOther.foreign.find((row) => row.repo === "docs" && row.id === A).parent, `other:${B}`);
+        assert.deepEqual(ownOther.foreign.find((row) => row.repo === "docs" && row.id === A).depends, [`other:${B}`]);
 
         const foreign = await setOk(bo, "B", { path: pathOf(B), parent: `nope:${A}` }, []);
         assert.equal(foreign.tickets.find((ticket) => ticket.id === B).parent, `nope:${A}`);
-        await setOk(bo, "B", { path: pathOf(B), title: "Still Bravo" }, []);
+        const nopeDocs = await docsSaw(B);
+        assert.equal(nopeDocs.foreign.find((row) => row.repo === "other" && row.id === B).parent, `nope:${A}`);
+        const still = await setOk(bo, "B", { path: pathOf(B), title: "Still Bravo" }, []);
+        assert.equal(still.tickets.find((ticket) => ticket.id === B).title, "Still Bravo");
+        assert.equal(still.tickets.find((ticket) => ticket.id === B).parent, `nope:${A}`);
+        const stillDocs = await docsSaw(B);
+        assert.equal(stillDocs.foreign.find((row) => row.repo === "other" && row.id === B).title, "Still Bravo");
+        assert.equal(stillDocs.foreign.find((row) => row.repo === "other" && row.id === B).parent, `nope:${A}`);
         assert.equal(parseTicket(B, await readId(otherDir, B)).title, "Still Bravo");
         assert.equal(parseTicket(B, await readId(otherDir, B)).parent, `nope:${A}`);
-        await expectNoTicketBroadcast(ada, "A");
-        await expectNoTicketBroadcast(ada2, "A2");
 
         const deeBefore = await readId(otherDir, D);
         const aitchBefore = await readId(otherDir, H);
@@ -5183,7 +5248,10 @@ test("T-ticket-cross-repo", async () => {
         assert.equal((await ada2.next((msg) => msg.type === "docs" || msg.type === "tickets")).type, "docs");
         assert.deepEqual(await ada2.next((msg) => msg.type === "tickets"), afterDelete);
         assert.equal(afterDelete.tickets.some((ticket) => ticket.id === A), false);
-        await expectNoTicketBroadcast(bo, "B");
+        const deletedOther = await otherSaw(C);
+        assert.notDeepEqual(deletedOther, afterDelete);
+        assert.equal(deletedOther.foreign.some((row) => row.repo === "docs" && row.id === A), false);
+        assert.equal(deletedOther.tickets.find((ticket) => ticket.id === D).parent, `docs:${A}`);
         const cee = parseTicket(C, await readId(dir, C));
         assert.equal(cee.parent, "");
         assert.deepEqual(cee.depends, [`other:${A}`]);
@@ -5195,14 +5263,19 @@ test("T-ticket-cross-repo", async () => {
         const ceeDisk = parseTicket(C, await readId(dir, C));
         assert.equal(ceeDisk.title, "Cee 2");
         assert.deepEqual(ceeDisk.depends, []);
-        await expectNoTicketBroadcast(bo, "B");
+        const ceeOther = await otherSaw(C);
+        assert.equal(ceeOther.foreign.find((row) => row.repo === "docs" && row.id === C).title, "Cee 2");
+        assert.deepEqual(ceeOther.foreign.find((row) => row.repo === "docs" && row.id === C).depends, []);
 
         ada.send({ type: "ticket.purge", username: "A" });
         const purged = await ada.next((msg) => msg.type === "tickets" || msg.type === "error");
         assert.equal(purged.type, "tickets");
         assert.deepEqual(await ada2.next((msg) => msg.type === "tickets"), purged);
         assert.equal(purged.tickets.some((ticket) => ticket.id === F), false);
-        await expectNoTicketBroadcast(bo, "B");
+        const purgedOther = await otherSaw(G);
+        assert.notDeepEqual(purgedOther, purged);
+        assert.equal(purgedOther.foreign.some((row) => row.repo === "docs" && row.id === F), false);
+        assert.equal(purgedOther.foreign.find((row) => row.repo === "docs" && row.id === G).parent, "");
         await assert.rejects(() => fs.lstat(path.join(dir, pathOf(F))));
         const gee = parseTicket(G, await readId(dir, G));
         assert.equal(gee.parent, "");
@@ -5212,11 +5285,65 @@ test("T-ticket-cross-repo", async () => {
         const aitchSet = await setOk(bo, "B", { path: pathOf(H), title: "Aitch 2" }, []);
         assert.equal(aitchSet.tickets.find((ticket) => ticket.id === H).title, "Aitch 2");
         assert.equal(aitchSet.tickets.find((ticket) => ticket.id === H).parent, "");
-        await expectNoTicketBroadcast(ada, "A");
-        await expectNoTicketBroadcast(ada2, "A2");
+        const aitchDocs = await docsSaw(H);
+        assert.equal(aitchDocs.foreign.find((row) => row.repo === "other" && row.id === H).title, "Aitch 2");
+        assert.equal(aitchDocs.foreign.find((row) => row.repo === "other" && row.id === H).parent, "");
         assert.equal(parseTicket(H, await readId(otherDir, H)).title, "Aitch 2");
         assert.equal(parseTicket(H, await readId(otherDir, H)).parent, "");
         assert.equal(await readId(otherDir, D), deeBefore);
+
+        await setBad(ada, "A", { path: pathOf(D), repo: "other", parent: "other:" }, 400, otherDir, D, [
+          { client: ada2, username: "A2" },
+          { client: bo, username: "B" },
+        ]);
+        await setBad(ada, "A", { path: pathOf(D), repo: "other", parent: `other:${K}` }, 409, otherDir, D, [
+          { client: ada2, username: "A2" },
+          { client: bo, username: "B" },
+        ]);
+        await setBad(ada, "A", { path: pathOf(D), repo: "other", parent: D }, 409, otherDir, D, [
+          { client: ada2, username: "A2" },
+          { client: bo, username: "B" },
+        ]);
+        await setBad(ada, "A", { path: pathOf(D), repo: "nope", parent: "" }, 404, otherDir, D, [
+          { client: ada2, username: "A2" },
+          { client: bo, username: "B" },
+        ]);
+
+        const cleared = await setOk(ada, "A", { path: pathOf(D), repo: "other", parent: "" }, [ada2]);
+        assert.equal(cleared.tickets.some((ticket) => ticket.id === D), false);
+        assert.equal(cleared.foreign.find((row) => row.repo === "other" && row.id === D).parent, "");
+        assert.deepEqual(cleared.foreign.find((row) => row.repo === "other" && row.id === D).depends, []);
+        const clearedOther = await otherSaw(C);
+        assert.notDeepEqual(clearedOther, cleared);
+        assert.equal(clearedOther.tickets.find((ticket) => ticket.id === D).parent, "");
+        assert.deepEqual(clearedOther.tickets.find((ticket) => ticket.id === D).depends, []);
+        const clearedDisk = parseTicket(D, await readId(otherDir, D));
+        assert.equal(clearedDisk.parent, "");
+        assert.deepEqual(clearedDisk.depends, []);
+
+        ada.send({ type: "ticket.create", username: "A", title: "Made" });
+        const made = await ada.next((msg) => msg.type === "tickets" || msg.type === "error");
+        assert.equal(made.type, "tickets");
+        const madeTicket = made.tickets.find((ticket) => ticket.title === "Made");
+        assert.ok(madeTicket);
+        assert.deepEqual(await ada2.next((msg) => msg.type === "tickets" || msg.type === "error"), made);
+        const madeFile = await ada.next((msg) => msg.type === "file");
+        assert.equal(madeFile.path, pathOf(madeTicket.id));
+        const madeOther = await otherSaw(madeTicket.id);
+        assert.equal(madeOther.foreign.find((row) => row.repo === "docs" && row.id === madeTicket.id).title, "Made");
+        assert.notDeepEqual(madeOther, made);
+
+        const heldBefore = await readId(otherDir, H);
+        await openDoc(bo, "B", pathOf(H));
+        ada.send({ type: "ticket.set", username: "A", path: pathOf(H), repo: "other", title: "Held" });
+        assert.deepEqual(await ada.next((msg) => msg.type === "error" || msg.type === "tickets"), {
+          type: "error",
+          status: 409,
+          heldBy: "B",
+        });
+        assert.equal(await readId(otherDir, H), heldBefore);
+        await expectNoTicketBroadcast(ada2, "A2");
+        await expectNoTicketBroadcast(bo, "B");
       } finally {
         ada.ws.close();
         ada2.ws.close();

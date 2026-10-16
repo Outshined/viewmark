@@ -1596,7 +1596,7 @@ export async function createHub(stateDir, sourceRoot) {
   }
 
   // repo:id for every ticket this hub has. The page uses it to skip a missing
-  // token. Titles stay out: an outbound row is the stored token.
+  // token. Titles travel on foreign, not on this set.
   async function presentTokens() {
     const tokens = [];
     for (const registered of repos.values()) {
@@ -1607,12 +1607,41 @@ export async function createHub(stateDir, sourceRoot) {
     return tokens;
   }
 
+  // Every ticket in every other registered repo, so a page can title a token
+  // and write that ticket without opening its repo.
+  async function collectForeign(repo) {
+    const foreign = [];
+    for (const other of repos.values()) {
+      if (other.name === repo.name) continue;
+      const found = await collectTickets(other);
+      for (const ticket of found) {
+        foreign.push({
+          repo: other.name,
+          id: ticket.id,
+          title: ticket.title,
+          parent: typeof ticket.parent === "string" ? ticket.parent : "",
+          depends: Array.isArray(ticket.depends) ? [...ticket.depends] : [],
+          rev: typeof ticket.rev === "number" ? ticket.rev : 0,
+        });
+      }
+    }
+    foreign.sort((a, b) => {
+      if (a.repo < b.repo) return -1;
+      if (a.repo > b.repo) return 1;
+      if (a.id < b.id) return -1;
+      if (a.id > b.id) return 1;
+      return 0;
+    });
+    return foreign;
+  }
+
   async function ticketsPayload(repo) {
     return {
       type: "tickets",
       tickets: await collectTickets(repo),
       inbound: await collectInbound(repo),
       present: await presentTokens(),
+      foreign: await collectForeign(repo),
     };
   }
 
@@ -1634,11 +1663,17 @@ export async function createHub(stateDir, sourceRoot) {
     return { home: home.name, repos: names, tickets };
   }
 
-  // This repo's sockets only. Another repo's open page is not told.
-  async function broadcastTickets(repo) {
-    const msg = await ticketsPayload(repo);
+  // A write changes what every open repo draws. Each repo gets its own frame.
+  async function broadcastTickets() {
+    const live = new Set();
     for (const sock of sockets) {
-      if (sock.session?.repo === repo) send(sock, msg);
+      if (sock.session?.repo) live.add(sock.session.repo);
+    }
+    for (const repo of live) {
+      const msg = await ticketsPayload(repo);
+      for (const sock of sockets) {
+        if (sock.session?.repo === repo) send(sock, msg);
+      }
     }
   }
 
@@ -1998,15 +2033,23 @@ export async function createHub(stateDir, sourceRoot) {
       subscribers: new Set(),
       locks: new Map(),
     });
-    await broadcastTickets(repo);
+    await broadcastTickets();
     await onOpen(socket, { path: allocated.rel });
   }
 
   async function onTicketSet(socket, msg) {
-    const repo = socket.session.repo;
-    if (!repo) return fail(socket, 400);
+    const sessionRepo = socket.session.repo;
+    if (!sessionRepo) return fail(socket, 400);
     if (Object.prototype.hasOwnProperty.call(msg, "reporter") || Object.prototype.hasOwnProperty.call(msg, "created")) {
       return fail(socket, 400);
+    }
+    // The file is not in this session's repo. An unregistered name is not a file.
+    let repo = sessionRepo;
+    if (Object.prototype.hasOwnProperty.call(msg, "repo")) {
+      if (typeof msg.repo !== "string") return fail(socket, 404);
+      const named = repos.get(msg.repo);
+      if (!named) return fail(socket, 404);
+      repo = named;
     }
     const rel = safeRel(msg.path);
     if (!rel || !ticketIdFromRel(rel)) return fail(socket, 404);
@@ -2029,8 +2072,7 @@ export async function createHub(stateDir, sourceRoot) {
     const parsed = parseTicket(file.ticket.id, composed);
     if (!parsed) return fail(socket, 400);
     // A stored link whose ticket is gone is removed with this write. One this
-    // set adds is still a conflict. This repo's sockets only: broadcastTickets
-    // does not tell another repo.
+    // set adds is still a conflict. Bare ids stay bare: home is the file's repo.
     const index = await linkIndex(repo);
     const dropped = dropStoredMissing(index, file.ticket.parent, file.ticket.depends, parsed.parent, parsed.depends);
     const reason = rejectLink(index, parsed.id, dropped.parent, dropped.depends);
@@ -2040,10 +2082,15 @@ export async function createHub(stateDir, sourceRoot) {
     if (rewritten == null) return fail(socket, 400);
     const current = composeTicket({ ...file.ticket, body: file.text });
     if (rewritten === current) return;
+    // Another socket in that repo has the file. Same refusal as delete.
+    if (repo !== sessionRepo) {
+      const holder = otherHolder(repo, rel, socket);
+      if (holder) return fail(socket, 409, { heldBy: holder });
+    }
     await writeAtomic(file.full, rewritten);
     file.rev += 1;
     file.ticket = ticketView(stored, file.rev);
-    await broadcastTickets(repo);
+    await broadcastTickets();
     broadcast(file, ticketNotice(file));
   }
 
@@ -2134,7 +2181,7 @@ export async function createHub(stateDir, sourceRoot) {
       if (parent === ticket.parent && depends.length === ticket.depends.length) continue;
       await rewriteTicketLinks(repo, ticket.id, parent, depends);
     }
-    await broadcastTickets(repo);
+    await broadcastTickets();
   }
 
   async function onTicketPurge(socket) {
@@ -2158,7 +2205,7 @@ export async function createHub(stateDir, sourceRoot) {
       if (parent === ticket.parent && depends.length === ticket.depends.length) continue;
       await rewriteTicketLinks(repo, ticket.id, parent, depends);
     }
-    await broadcastTickets(repo);
+    await broadcastTickets();
   }
 
   async function onLock(socket, msg) {
