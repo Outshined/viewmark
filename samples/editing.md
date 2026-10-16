@@ -147,7 +147,7 @@ This lists what the page should do for each key and click, not what it does toda
 - {c10}A file a session has open cannot be deleted. The CLI's delete and the page's Delete are refused with 409 and name that session's user. A rename or a move updates every session that has the file open: its address, its files list, and its title (R106).{/c10} A closed tab, or a page that is left, lets go of its file and its blocks at once. A rename or a move leaves every open session's caret where it was in the text (D37).
 
 ### Vim keys
-With Vim keys off, the editor behaves as it does now: the rules above hold as written. With Vim keys on, the keys in Normal, Visual, and Visual Line do what vim does, as R110 to R122 say, where that differs from the rules above. {c15}Shift+arrow in Normal moves the caret and leaves it collapsed{/c15}, where R70 extends the selection. An Insert session, from entering Insert until Escape, {c16}is one undo, including a pause, an arrow, Backspace, and Enter{/c16}, so the one-second cutoff of R92 does not apply during it (R109).
+With Vim keys off, the editor behaves as it does now: the rules above hold as written. With Vim keys on, the keys in Normal, Visual, and Visual Line do what vim does, as R110 to R122 say, where that differs from the rules above. {c15}Shift+arrow in Normal moves the caret and leaves it collapsed{/c15}, where R70 extends the selection. Shift+→ and Shift+← move by a word, as `w` and `b` do in stock vim. An Insert session, from entering Insert until Escape, {c16}is one undo, including a pause, an arrow, Backspace, and Enter{/c16}, so the one-second cutoff of R92 does not apply during it. The owner prefers the undo of Obsidian's vim mode here, if it can be built (R109).
 
 The document menu item Vim keys is off until it is checked. The browser remembers the choice for every document it opens, and stores it as `viewmark.vim`. The hub does not store it. A status beside that menu shows `N` for normal, `I` for insert, `V` for character visual, and `VL` for line visual. A count or an operator that is still waiting shows there instead of the letter. Normal and both visual modes draw a block caret. Insert keeps the thin caret (R110).
 
@@ -314,7 +314,7 @@ Rewritten with an example: the same selection, what each arrow key does today, a
 
 ```
 
-```comment c14
+```comment c14 resolved
 :: 0
 @2026-10-10T15:08:56.706Z Operator
 this is crap writing and jargon.
@@ -324,22 +324,28 @@ Rewritten in plain words, as what a person can expect when a key reaches past th
 
 ```
 
-```comment c15
+```comment c15 resolved
 :: 0
 @2026-10-16T13:47:28.128Z claude
 For the owner: should Shift+→ and Shift+← in Normal move by a word, as stock vim does?
 
 Today each moves one character. In stock vim 9.2, with no vimrc, Shift+→ from the start of `alpha beta gamma` lands on `beta`. This sentence came from the implementer's note c8.2 on 7vdep2z4. No note of yours records it.
 
+:: 1
+@2026-10-16T14:07:55.970Z Operator
+Yes, harmless read-only, please add it.
 ```
 
-```comment c16
+```comment c16 resolved
 :: 0
 @2026-10-16T13:47:28.279Z claude
 For the owner: should an arrow in Insert end the undo step, as it does in stock vim?
 
 On the page, `i`, `xx`, ↓, `yy`, Escape, then one `u` takes back both `xx` and `yy`. In stock vim 9.2, with no vimrc, the same keys take back only `yy`, and a second `u` takes back `xx`. Enter and a pause do not end the step in either. This sentence came from the implementer's note c22.2 on 7vdep2z4. No note of yours records it.
 
+:: 1
+@2026-10-16T14:06:43.804Z Operator
+Obsidian's is a bit friendlier, if that's feasible to do.
 ```
 
 ```comment c17
@@ -349,4 +355,7 @@ For the owner: should Tab and Shift+Tab leave the text alone in Normal and Visua
 
 Today Tab indents the line and Shift+Tab outdents it. On 7vdep2z4 your note c3.0 says Tab does not belong in vim mode, and c25.1 asks that Shift+Tab do what vim does. In stock vim 9.2, with no vimrc, neither key changes the text in Normal. The implementer's later notes c25.5 and c26.0 record the indent and outdent as your decision. No note of yours records it.
 
+:: 1
+@2026-10-16T14:09:05.212Z Operator
+Leave it, it's a variation but useful.
 ```
