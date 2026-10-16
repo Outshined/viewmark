@@ -6,8 +6,8 @@ import { AGENT, REPO, USER, cli, launchBrowser, Page, startHub } from "./harness
 // Ticket 4m94ewju: a comment on a source fence, an image, or a diagram is a comment fence that
 // follows that block. Its token is a line range for a source fence and an x,y pin from the top
 // left for an image or a diagram. Each test is an acceptance item or a page behavior in the
-// ticket's Syntax section. The pin source is dropped with dispatched drag events, because
-// Firefox over BiDi cannot drag.
+// ticket's Syntax section. A pin is dragged with real input, and only the drop is dispatched (see
+// dragPinOnto).
 
 const FENCE = "```javascript\nfunction f() {\n  return 1;\n  return 2;\n}\n```\n";
 const note = (id, token, text) => `\`\`\`comment ${id}${token ? ` ${token}` : ""}\n:: 0\n@2026-10-16T15:00:00.000Z qa\n${text}\n\`\`\`\n`;
@@ -111,7 +111,10 @@ test("4m94ewju: a highlight over lines 2 and 3 of a fence and Add comment write 
   await addCommentFromButton(page, "Two lines.");
   const after = (await hub.show(file)).text;
   assert.ok(after.startsWith(`Intro.\n\n${FENCE}\`\`\`comment c1 2-3\n`), JSON.stringify(after));
-  assert.ok(await page.eval(box(".md-comment-bar")), "no bar is drawn");
+  // The bar is drawn on the closed fence, so the caret leaves it first.
+  assert.ok(await page.clickOffset(after.indexOf("End.") + 1));
+  await page.quiet();
+  assert.ok(await waitFor(() => page.eval(box(".md-comment-bar")), "the bar"), "no bar is drawn");
 });
 
 test("4m94ewju: a second range on the same fence is the next comment fence, and one line is stored as a single number", async (t) => {
@@ -127,7 +130,7 @@ test("4m94ewju: a second range on the same fence is the next comment fence, and 
   assert.ok(after.includes(`Both returns.\n\`\`\`\n\`\`\`comment c2 4\n`), JSON.stringify(after));
 });
 
-test("4m94ewju: with vim keys on, V and j from line 2 to line 3 of a fence, then gc, write the range 2-3", async (t) => {
+test("g92jk6em, 4m94ewju: with vim keys on, V and j from line 2 to line 3 of a fence, then gc, write the range 2-3", async (t) => {
   const text = `Intro.\n\n${FENCE}\nEnd.\n`;
   const { hub, page, file } = await setup(t, text, { vim: true });
   assert.ok(await page.clickOffset(text.indexOf("  return 1;") + 2));
@@ -144,6 +147,48 @@ test("4m94ewju: with vim keys on, V and j from line 2 to line 3 of a fence, then
 });
 
 // ---- Pins on an image or a diagram -----------------------------------------------------------
+
+// A pointer over a picture shows the pin in its top right corner, which a person drags.
+async function hoverPin(page, img) {
+  await page.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: img.left + img.width / 2, y: img.top + img.height / 2 });
+  await waitFor(() => page.eval(`!!document.querySelector(".md-pin-corner")`), "the corner pin");
+}
+
+// The person's gesture with real input: the pointer over the picture shows its corner pin, a press
+// on the pin and moves to the target start a real drag, and the page must accept it over the
+// picture. Firefox under automation does not finish a native drop, in cage or headless, on either
+// event path, so the drop itself is dispatched at the release point with the real drag's data.
+async function dragPinOnto(page, img, fx, fy) {
+  const to = { x: img.left + fx * img.width, y: img.top + fy * img.height };
+  const send = async (type, x, y, extra = {}) => {
+    await page.session.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1, ...extra });
+    await page.eval("1");
+    await sleep(60);
+  };
+  await hoverPin(page, img);
+  await page.eval(`(() => {
+    const drag = window.__pinDrag = { started: false, accepted: null, over: null, data: null };
+    window.addEventListener("dragstart", (e) => { drag.started = true; drag.data = e.dataTransfer; }, true);
+    window.addEventListener("dragover", (e) => { drag.accepted = e.defaultPrevented; drag.over = e.target && e.target.tagName; drag.data = e.dataTransfer || drag.data; }, false);
+    return true;
+  })()`);
+  const pin = await page.eval(box(".md-pin-corner"));
+  await send("mouseMoved", pin.left + pin.width / 2, pin.top + pin.height / 2);
+  await send("mousePressed", pin.left + pin.width / 2, pin.top + pin.height / 2, { buttons: 1 });
+  for (let i = 1; i <= 8; i += 1) {
+    await send("mouseMoved", pin.left + pin.width / 2 + ((to.x - pin.left - pin.width / 2) * i) / 8, pin.top + pin.height / 2 + ((to.y - pin.top - pin.height / 2) * i) / 8, { buttons: 1 });
+  }
+  const drag = await page.eval(`({ started: window.__pinDrag.started, accepted: window.__pinDrag.accepted, over: window.__pinDrag.over })`);
+  assert.ok(drag.started, "pressing and moving the corner pin did not start a drag");
+  assert.equal(drag.over, "IMG", `the drag is over ${drag.over}, not the picture`);
+  assert.equal(drag.accepted, true, "the page does not accept the pin over the picture");
+  await page.eval(`(() => {
+    const target = document.elementFromPoint(${to.x}, ${to.y});
+    target.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, clientX: ${to.x}, clientY: ${to.y}, dataTransfer: window.__pinDrag.data }));
+    return true;
+  })()`);
+  await send("mouseReleased", to.x, to.y, { buttons: 0 });
+}
 
 // The balloon's tip is its bottom center.
 const tip = (pin) => ({ x: pin.left + pin.width / 2, y: pin.bottom });
@@ -184,17 +229,7 @@ test("4m94ewju: dropping the comment pin on a picture writes a pin at the drop p
   const text = `Intro.\n\n![box](box.svg)\n\nEnd.\n`;
   const { hub, page, file } = await setup(t, text);
   const img = await waitFor(() => page.eval(`(() => { const i = document.querySelector(".md-image img"); if (!i || !i.complete || !i.naturalWidth) return null; const r = i.getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width, height: r.height }; })()`), "the picture drawn");
-  const x = img.left + 0.3 * img.width;
-  const y = img.top + 0.2 * img.height;
-  await page.eval(`(() => {
-    const source = document.querySelector(".md-pin-source");
-    const data = new DataTransfer();
-    source.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: data }));
-    const target = document.elementFromPoint(${x}, ${y});
-    for (const type of ["dragenter", "dragover", "drop"]) target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, clientX: ${x}, clientY: ${y}, dataTransfer: data }));
-    source.dispatchEvent(new DragEvent("dragend", { bubbles: true, cancelable: true, dataTransfer: data }));
-    return true;
-  })()`);
+  await dragPinOnto(page, img, 0.3, 0.2);
   let after = "";
   await page.until(async () => {
     after = (await hub.show(file)).text;
@@ -244,7 +279,7 @@ test("4m94ewju: editing the text of a line in the range does not change the numb
 
 // ---- What the hub refuses ----------------------------------------------------------------------
 
-test("4m94ewju: a prose comment still wraps its words in brace markers, and brace markers over a fence are still 409", async (t) => {
+test("4m94ewju: a prose comment still wraps its words in brace markers, and a comment on code text puts no brace markers in the fence", async (t) => {
   const hub = await startHub();
   t.after(() => hub.close());
   const text = `Intro words.\n\n${FENCE}`;
@@ -255,7 +290,10 @@ test("4m94ewju: a prose comment still wraps its words in brace markers, and brac
   const now = (await hub.show(file)).text;
   const line = now.split("\n").findIndex((l) => l === "function f() {") + 1;
   const over = await run(hub, ["comment", "add", file, "--start", `${line}:0`, "--end", `${line}:8`, "--expect", "function"], "In code.\n");
-  assert.equal(over.code, 153, `exit ${over.code}: ${over.stderr}`);
+  assert.equal(over.code, 0, `exit ${over.code}: ${over.stderr}`);
+  const after = (await hub.show(file)).text;
+  assert.ok(after.includes(`${FENCE}\`\`\`comment c2 1\n`), `the comment is not the range 1 after the fence: ${JSON.stringify(after)}`);
+  assert.ok(!/\{\/?c2\}/.test(after), `brace markers were written: ${JSON.stringify(after)}`);
 });
 
 for (const [name, token] of [
@@ -302,16 +340,7 @@ test("4m94ewju: after a pin is dropped on a picture, the picture stays drawn and
   const img = await waitFor(() => pictureBox(page), "the picture drawn");
   assert.ok(await page.clickOffset(text.indexOf("End.") + 2));
   await page.quiet();
-  const x = img.left + 0.5 * img.width;
-  const y = img.top + 0.5 * img.height;
-  await page.eval(`(() => {
-    const source = document.querySelector(".md-pin-source") || [...document.querySelectorAll("[draggable=true]")].find((el) => el.closest(".md-image"));
-    const data = new DataTransfer();
-    source.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: data }));
-    const target = document.elementFromPoint(${x}, ${y});
-    for (const type of ["dragenter", "dragover", "drop"]) target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, clientX: ${x}, clientY: ${y}, dataTransfer: data }));
-    return true;
-  })()`);
+  await dragPinOnto(page, img, 0.5, 0.5);
   await page.quiet();
   await sleep(500);
   assert.ok(await pictureBox(page), "the picture is not drawn after the pin");
