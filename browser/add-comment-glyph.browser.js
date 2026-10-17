@@ -190,3 +190,34 @@ test("nzemzu3s: after the comment added from the balloon is deleted, the balloon
   await sleep(300);
   assert.equal((await hub.show("doc.md")).text, TEXT);
 });
+
+// ---- Ticket nzemzu3s: a hidden balloon is not drawn --------------------------------------------
+
+const balloonDrawn = (page) => page.eval(`[...document.querySelectorAll(".md-add-comment")].some((b) => b.getClientRects().length > 0 && getComputedStyle(b).display !== "none" && getComputedStyle(b).visibility !== "hidden")`);
+
+test("nzemzu3s: after a comment is added from the balloon and then deleted from its card, no balloon is drawn", async (t) => {
+  const { hub, page } = await setup(t);
+  const at = await page.eval(`(() => { const r = document.querySelector(".md-add-comment").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  await page.click(at.x, at.y);
+  await page.until(() => page.eval(`document.activeElement && document.activeElement.classList.contains("md-comment-body")`), "the note box");
+  await page.type("A note.");
+  await page.key("Enter", ["Ctrl"]);
+  await page.quiet();
+  const del = `.md-comment-card[data-comment="c1"] button[aria-label="Delete"]`;
+  await page.until(() => page.eval(`(() => { const b = document.querySelector('${del}'); return !!b && b.getClientRects().length > 0; })()`), "the card's Delete button");
+  const pt = await page.eval(`(() => { const r = document.querySelector('${del}').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  await page.click(pt.x, pt.y);
+  await page.quiet();
+  await sleep(300);
+  assert.ok(!(await hub.show("doc.md")).text.includes("{c1}"), "the comment was not deleted");
+  assert.equal(await balloonDrawn(page), false, "the balloon is still drawn after the comment was deleted");
+});
+
+test("nzemzu3s: a click away from the highlight collapses it, and the balloon is not drawn", async (t) => {
+  const { page } = await setup(t);
+  assert.equal(await balloonDrawn(page), true, "no balloon on the highlight");
+  assert.ok(await page.clickOffset(TEXT.indexOf("End.") + 1));
+  await page.quiet();
+  await sleep(300);
+  assert.equal(await balloonDrawn(page), false, "the balloon is still drawn after the highlight collapsed");
+});

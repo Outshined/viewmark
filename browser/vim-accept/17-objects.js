@@ -63,9 +63,10 @@ async function status(page) {
   return page.eval(`document.querySelector(".md-vim-status").textContent`);
 }
 
-async function run(hub, page, id, file, start, keys, want, revDelta, mode) {
+async function run(hub, page, id, name, start, keys, want, revDelta, mode) {
   const { bytes, focus } = marked(start);
-  await hub.create(file, bytes);
+  // The hub normalizes a new document's name (96wy2aby), so the page opens the stored path.
+  const file = await hub.create(name, bytes);
   await page.open(file);
   assert.equal(await page.eval(`localStorage.getItem(${JSON.stringify(VIM)})`), "1", id);
   assert.ok(await page.clickOffset(focus), `${id}: no point at ${focus}`);
