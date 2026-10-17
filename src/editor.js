@@ -10577,6 +10577,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const key = ticketStructureKey(ticket);
     if (key === ticketFormKey && findDeep(form, "md-ticket-assignee")) {
       refreshTicketForm(ticket);
+      // The body box moves with the form. Cards were placed against the box from before this change.
+      layoutComments();
       return;
     }
     const held = heldTicketField();
@@ -10980,6 +10982,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (typeof titleInput.focus === "function") titleInput.focus();
       selectInput(titleInput, 0, titleInput.value.length);
     }
+    // The body box moves with the form. Cards were placed against the box from before this change.
+    layoutComments();
   }
 
   function revertTicketForm() {
@@ -11001,6 +11005,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!ticketForm) return;
     hideElement(ticketForm);
     if (typeof ticketForm.replaceChildren === "function") ticketForm.replaceChildren();
+    // Hiding the form lifts the body back up. Place the cards against that box.
+    layoutComments();
   }
 
   function clearOpenTicket() {
