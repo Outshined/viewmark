@@ -352,8 +352,10 @@ cell("VN.16", async (t) => {
   const focus = "alpha\nbe".length;
   await runMoves(page, hub, "a.md", [
     { label: "gg", focus, keys: ["g", "g"], expect: "‸alpha\nbeta\n" },
-    // Stock vim puts G on the last line's first non-blank (startofline is on by default).
-    { label: "G", focus, keys: ["G"], expect: "alpha\n‸beta\n" },
+    // Stock vim puts G on the last line's first non-blank (startofline is on by default). In the
+    // rendered view alpha and beta are one paragraph, one vim line (R112), so that is alpha's a.
+    // In the raw view each source line is a vim line, so it is beta's b.
+    { label: "G", focus, keys: ["G"], expect: "‸alpha\nbeta\n" },
     { label: "raw G", focus, raw: true, keys: ["G"], expect: "alpha\n‸beta\n" },
   ]);
 });
