@@ -520,8 +520,49 @@ test("VN.15", () => {
 
 test("VN.16", () => {
   assert.equal(run("alpha\nbe‸ta\n", ["g", "g"]).show, "‸alpha\nbeta\n");
-  assert.equal(run("alpha\nbe‸ta\n", ["G"]).show, "alpha\nbeta\n‸");
-  assert.equal(run("alpha\nbe‸ta\n", ["G"]).cursor, "alpha\nbeta\n".length);
+  assert.equal(run("alpha\nbe‸ta\n", ["G"]).show, "alpha\nbeta‸\n");
+  assert.equal(run("alpha\nbe‸ta\n", ["G"]).cursor, "alpha\nbeta".length);
+  assert.equal(run("alpha\nbe‸ta\n", ["G"], { raw: true }).show, "alpha\nbeta‸\n");
+  assert.equal(run("alpha\nbe‸ta", ["G"]).show, "alpha\nbeta‸");
+});
+
+test("r5kwsdqr G lands on the last line, not past a final newline or a comment fence", () => {
+  const list = run("P‸ara one.\n\n- item\n", ["G"]);
+  assert.equal(list.show, "Para one.\n\n- item‸\n");
+  assert.equal(list.cursor, "Para one.\n\n- item".length);
+  const doc = [
+    "Para {c1}one{/c1}.",
+    "",
+    "- item",
+    "",
+    "```comment c1",
+    ":: 0",
+    "@2026-10-05T16:00:00.000Z Ada",
+    "A note.",
+    "```",
+    "",
+  ].join("\n");
+  const marked = `${doc.slice(0, 1)}${CARET}${doc.slice(1)}`;
+  const rendered = run(marked, ["G"]);
+  const item = rendered.doc.indexOf("- item");
+  const fence = rendered.doc.indexOf("```comment");
+  assert.ok(rendered.cursor >= item && rendered.cursor <= item + "- item".length);
+  assert.ok(rendered.cursor < fence);
+  assert.equal(rendered.show.includes("- item‸\n"), true);
+  const raw = run(marked, ["G"], { raw: true });
+  const close = raw.doc.lastIndexOf("```");
+  assert.ok(raw.cursor >= close && raw.cursor < raw.doc.length);
+  assert.equal(raw.show.endsWith("```‸\n"), true);
+  const opened = run(marked, ["G", "o"]);
+  const openedFence = opened.doc.indexOf("```comment");
+  assert.equal(opened.vim.mode, "insert");
+  assert.ok(opened.cursor < openedFence);
+  assert.ok(opened.doc.slice(0, openedFence).includes("- item\n"));
+  assert.ok(opened.doc.endsWith("```\n"));
+  assert.equal(run("al‸pha\n\n\n", ["G"]).show, "alpha\n\n‸\n");
+  assert.equal(run("al‸pha\n\n\n", ["G"], { raw: true }).show, "alpha\n\n‸\n");
+  assert.equal(run("‸\n", ["G"]).show, "‸\n");
+  assert.equal(run("‸alpha\nbeta\n", ["9", "G"], { raw: true }).show, "alpha\n‸beta\n");
 });
 
 test("VN.17", () => {

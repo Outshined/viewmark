@@ -174,6 +174,14 @@ function vimLines(doc, cursor, raw) {
   return raw ? rawLines(doc) : renderedLines(doc, cursor);
 }
 
+// A final newline ends the last line. The empty row at length is not one.
+function gLines(doc, cursor, raw) {
+  const lines = vimLines(doc, cursor, raw);
+  const last = lines[lines.length - 1];
+  if (lines.length > 1 && last.start === doc.length && doc.endsWith("\n")) return lines.slice(0, -1);
+  return lines;
+}
+
 // A rendered caret past the last block is the empty row after a final newline.
 // j does not step onto that row. k from it returns to the last block.
 function lineIndex(lines, doc, cursor, raw) {
@@ -644,14 +652,14 @@ function runMotion(id, spec) {
     return { kind: "caret", cursor: at, column: null, linewise: true, inclusive: false, past: false, word: false };
   }
   if (id === "gg" || id === "G") {
-    const lines = vimLines(doc, cursor, raw);
+    const lines = gLines(doc, cursor, raw);
     const numbered = typedCount(spec.vim);
     if (numbered == null) {
       if (id === "gg") {
         const at = legal(doc, lines[0] ? lines[0].start : 0, 1, raw);
         return { kind: "caret", cursor: at, column: null, linewise: true, inclusive: false, past: false, word: false };
       }
-      const at = doc.endsWith("\n") ? doc.length : lineDollar(doc, lines[lines.length - 1]);
+      const at = lineDollar(doc, lines[lines.length - 1]);
       return { kind: "caret", cursor: legal(doc, at, -1, raw), column: null, linewise: true, inclusive: false, past: false, word: false };
     }
     const index = Math.max(0, Math.min(lines.length - 1, numbered - 1));
