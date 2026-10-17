@@ -15398,7 +15398,8 @@ test("a dropped socket retries until close", () => {
   dropped.sockets[0].emit("close");
   assert.equal(dropped.timers.length, 1);
   assert.equal(dropped.timers[0].ms, 250);
-  dropped.transport.send({ type: "list" });
+  assert.equal(dropped.transport.ready(), false);
+  assert.equal(dropped.transport.send({ type: "list" }), false);
   dropped.timers[0].fn();
   assert.equal(dropped.sockets.length, 2);
   dropped.transport.send({ type: "tickets" });
@@ -15407,6 +15408,9 @@ test("a dropped socket retries until close", () => {
     { type: "hello", username: "Ada" },
     { type: "repos", username: "Ada" },
   ]);
+  assert.equal(dropped.transport.ready(), true);
+  assert.equal(dropped.transport.send({ type: "pong" }), true);
+  assert.equal(dropped.sockets[1].sent.at(-1).type, "pong");
   assert.deepEqual(seen, [{ type: "reconnect" }]);
   const scheduled = dropped.timers.length;
   dropped.transport.close();
@@ -15739,6 +15743,310 @@ test("reconnect keeps the open document and sends no edit", () => {
     assert.equal(view.getState().doc, "ab");
     view.destroy();
   } finally {
+    mounted.restore();
+  }
+});
+
+function socketGate() {
+  const transport = holdingTransport();
+  let up = true;
+  transport.ready = () => up;
+  transport.send = (message) => {
+    if (!up) return false;
+    transport.sent.push(message);
+    return true;
+  };
+  transport.setUp = (next) => {
+    up = next;
+  };
+  return transport;
+}
+
+test("keys typed while the socket is down are sent in order after the file", () => {
+  const mounted = mountEditor();
+  const transport = socketGate();
+  try {
+    const text = "ab";
+    const view = createEditor(mounted.root, text, 1, transport);
+    transport.deliver({ type: "file", path: "a.md", rev: 4, text, cursor: 1, anchor: 1, locks: [] });
+    transport.sent.length = 0;
+    transport.setUp(false);
+    insertText(mounted, "Q");
+    insertText(mounted, "R");
+    assert.equal(transport.sent.some((message) => message.type === "edit"), false);
+    assert.equal(view.getState().doc, text);
+    assert.equal(view.getState().cursor, 1);
+    transport.deliver({ type: "reconnect" });
+    assert.equal(transport.sent.some((message) => message.type === "edit"), false);
+    transport.setUp(true);
+    transport.deliver({ type: "file", path: "a.md", rev: 4, text, cursor: 1, anchor: 1, locks: [] });
+    let edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].op, "insert");
+    assert.equal(edits[0].text, "Q");
+    assert.equal(edits[0].cursor, 1);
+    assert.equal(edits[0].anchor, 1);
+    assert.equal(edits[0].rev, 4);
+    assert.equal(view.getState().doc, text);
+    transport.deliver(docMessage(5, "aQb", 2, "Q"));
+    edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 2);
+    assert.equal(edits[1].text, "R");
+    assert.equal(edits[1].cursor, 2);
+    assert.equal(edits[1].anchor, 2);
+    assert.equal(edits[1].rev, 5);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a key the hub already applied is not sent again after the drop", () => {
+  const mounted = mountEditor();
+  const transport = socketGate();
+  try {
+    const text = "ab";
+    const view = createEditor(mounted.root, text, 1, transport);
+    transport.deliver({ type: "file", path: "a.md", rev: 2, text, cursor: 1, anchor: 1, locks: [] });
+    transport.sent.length = 0;
+    insertText(mounted, "X");
+    assert.deepEqual(transport.sent.filter((message) => message.type === "edit").map((message) => message.text), ["X"]);
+    transport.setUp(false);
+    insertText(mounted, "Y");
+    transport.deliver({ type: "reconnect" });
+    transport.setUp(true);
+    transport.deliver({ type: "file", path: "a.md", rev: 3, text: "aXb", cursor: 2, anchor: 2, locks: [] });
+    const edits = transport.sent.filter((message) => message.type === "edit");
+    assert.deepEqual(edits.map((message) => message.text), ["X", "Y"]);
+    assert.equal(edits[1].cursor, 2);
+    assert.equal(edits[1].rev, 3);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a key sent into a socket that then drops is sent again when the file lacks it", () => {
+  const mounted = mountEditor();
+  const transport = socketGate();
+  try {
+    const text = "ab";
+    const view = createEditor(mounted.root, text, 1, transport);
+    transport.deliver({ type: "file", path: "a.md", rev: 2, text, cursor: 1, anchor: 1, locks: [] });
+    transport.sent.length = 0;
+    insertText(mounted, "X");
+    transport.setUp(false);
+    insertText(mounted, "Y");
+    transport.deliver({ type: "reconnect" });
+    transport.setUp(true);
+    transport.deliver({ type: "file", path: "a.md", rev: 2, text, cursor: 1, anchor: 1, locks: [] });
+    let edits = transport.sent.filter((message) => message.type === "edit");
+    assert.deepEqual(edits.map((message) => message.text), ["X", "X"]);
+    assert.equal(edits[1].cursor, 1);
+    assert.equal(edits[1].rev, 2);
+    transport.deliver(docMessage(3, "aXb", 2, "X"));
+    edits = transport.sent.filter((message) => message.type === "edit");
+    assert.deepEqual(edits.map((message) => message.text), ["X", "X", "Y"]);
+    assert.equal(edits[2].cursor, 2);
+    assert.equal(edits[2].rev, 3);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a key typed after reconnect, before the file, is sent at the file caret", () => {
+  const mounted = mountEditor();
+  const transport = holdingTransport();
+  try {
+    const text = "ab";
+    const view = createEditor(mounted.root, text, 1, transport);
+    transport.deliver({ type: "file", path: "a.md", rev: 2, text, cursor: 1, anchor: 1, locks: [] });
+    transport.sent.length = 0;
+    transport.deliver({ type: "reconnect" });
+    insertText(mounted, "Q");
+    assert.equal(transport.sent.some((message) => message.type === "edit"), false);
+    assert.equal(view.getState().doc, text);
+    transport.deliver({ type: "file", path: "a.md", rev: 2, text, cursor: 0, anchor: 0, locks: [] });
+    const edit = transport.sent.find((message) => message.type === "edit");
+    assert.equal(edit.op, "insert");
+    assert.equal(edit.text, "Q");
+    assert.equal(edit.cursor, 0);
+    assert.equal(edit.anchor, 0);
+    assert.equal(edit.rev, 2);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("undo typed while the socket is down is sent after the file", () => {
+  const mounted = mountEditor();
+  const transport = socketGate();
+  try {
+    const view = createEditor(mounted.root, "ab", 1, transport);
+    transport.deliver({ type: "file", path: "a.md", rev: 2, text: "ab", cursor: 1, anchor: 1, locks: [] });
+    transport.sent.length = 0;
+    transport.setUp(false);
+    mounted.listeners.keydown({
+      key: "z",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+    });
+    assert.equal(transport.sent.some((message) => message.type === "undo"), false);
+    transport.deliver({ type: "reconnect" });
+    transport.setUp(true);
+    transport.deliver({ type: "file", path: "a.md", rev: 2, text: "ab", cursor: 1, anchor: 1, locks: [] });
+    const undo = transport.sent.filter((message) => message.type === "undo");
+    assert.equal(undo.length, 1);
+    assert.equal(undo[0].rev, 2);
+    assert.equal(undo[0].path, "a.md");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a refused replay after reconnect flashes the holder and drops the keys behind it", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mounted = mountEditor();
+  const transport = socketGate();
+  transport.username = "me";
+  const doc = "one\n\ntwo\n";
+  const locks = [
+    { index: 0, username: "qa-two" },
+    { index: 2, username: "ada" },
+  ];
+  const lockNamed = (name) => {
+    const marks = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-lock") && node.textContent === name);
+    assert.equal(marks.length, 1);
+    return marks[0];
+  };
+  try {
+    const view = createEditor(mounted.root, doc, 6, transport);
+    transport.deliver({ type: "file", path: "a.md", rev: 4, text: doc, cursor: 6, anchor: 6, locks: [] });
+    transport.deliver({ type: "locks", lines: locks });
+    assert.equal(lockNamed("qa-two").className, "md-lock");
+    transport.sent.length = 0;
+    transport.setUp(false);
+    insertText(mounted, "X");
+    insertText(mounted, "Y");
+    transport.deliver({ type: "reconnect" });
+    transport.setUp(true);
+    transport.deliver({ type: "file", path: "a.md", rev: 4, text: doc, cursor: 6, anchor: 6, locks });
+    const edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].text, "X");
+    assert.equal(edits[0].cursor, 6);
+    transport.deliver({ type: "error", status: 409, heldBy: "qa-two" });
+    const flashed = lockNamed("qa-two");
+    assert.equal(flashed.classList.contains("md-flash"), true);
+    assert.notEqual(flashed.className, "md-lock");
+    assert.equal(transport.sent.filter((message) => message.type === "edit").some((message) => message.text === "Y"), false);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, 6);
+    assert.equal(view.getState().anchor, 6);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("keys typed on a dropped page socket are sent in order at the kept caret", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mounted = mountEditor();
+  document.getElementById = (id) => (id === "editor" ? mounted.root : null);
+  document.body = document.createElement("body");
+  const storage = {
+    data: { "viewmark.username": "Ada" },
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(this.data, key) ? this.data[key] : null;
+    },
+    setItem(key, value) {
+      this.data[key] = String(value);
+    },
+  };
+  const sockets = [];
+  function factory(url) {
+    const handlers = {};
+    const socket = {
+      url,
+      sent: [],
+      closed: false,
+      addEventListener(type, fn) {
+        handlers[type] = fn;
+      },
+      removeEventListener(type, fn) {
+        if (handlers[type] === fn) delete handlers[type];
+      },
+      send(data) {
+        this.sent.push(JSON.parse(data));
+      },
+      close() {
+        this.closed = true;
+      },
+      emit(type, event) {
+        if (handlers[type]) handlers[type](event);
+      },
+    };
+    sockets.push(socket);
+    return socket;
+  }
+  let page = null;
+  try {
+    page = startPage({
+      document: globalThis.document,
+      sessionStorage: storage,
+      socketFactory: factory,
+      location: { protocol: "http:", host: "viewmark.test" },
+    });
+    const text = "ab";
+    const editsOf = (socket) => socket.sent.filter((message) => message.type === "edit");
+    sockets[0].emit("open");
+    sockets[0].emit("message", { data: JSON.stringify({ type: "file", rev: 3, text, path: "a.md", cursor: 1, anchor: 1, locks: [] }) });
+    assert.equal(editsOf(sockets[0]).length, 0);
+    sockets[0].emit("close");
+    insertText(mounted, "Q");
+    insertText(mounted, "R");
+    assert.equal(editsOf(sockets[0]).length, 0);
+    assert.equal(sockets.length, 1);
+    t.mock.timers.tick(500);
+    assert.equal(sockets.length, 2);
+    sockets[1].emit("open");
+    assert.equal(editsOf(sockets[1]).length, 0);
+    sockets[1].emit("message", { data: JSON.stringify({ type: "file", rev: 3, text, path: "a.md", cursor: 0, anchor: 0, locks: [] }) });
+    let edits = editsOf(sockets[1]);
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].text, "Q");
+    assert.equal(edits[0].cursor, 1);
+    assert.equal(edits[0].anchor, 1);
+    assert.equal(edits[0].rev, 3);
+    const token = sockets[1].sent[0].session;
+    sockets[1].emit("message", {
+      data: JSON.stringify({
+        type: "doc",
+        rev: 4,
+        text: "aQb",
+        path: "a.md",
+        from: 1,
+        to: 1,
+        inserted: "Q",
+        actor: "Ada",
+        token,
+        cursor: 2,
+        anchor: 2,
+      }),
+    });
+    edits = editsOf(sockets[1]);
+    assert.equal(edits.length, 2);
+    assert.equal(edits[1].text, "R");
+    assert.equal(edits[1].cursor, 2);
+    assert.equal(edits[1].rev, 4);
+  } finally {
+    if (page) page.close();
     mounted.restore();
   }
 });
