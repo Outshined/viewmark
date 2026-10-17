@@ -1094,6 +1094,81 @@ test("insert none", () => {
   assert.equal(arrow.steps[0].effect, null);
 });
 
+test("s4sgk32f escape from insert backs onto the previous character", () => {
+  const insert = (extra = {}) => ({
+    mode: "insert",
+    input: { prefixRepeat: "", operator: null, motionRepeat: "", motion: null, keyBuffer: "" },
+    register: { text: "kept", linewise: false },
+    search: { pattern: "a", forward: true },
+    find: { ch: "p", forward: true, till: false },
+    column: 4,
+    once: false,
+    ...extra,
+  });
+
+  const end = run("alphax‸\n", ["Escape"], { vim: insert() });
+  assert.equal(end.show, "alpha‸x\n");
+  assert.equal(end.vim.mode, "normal");
+  assert.equal(end.vim.column, null);
+  assert.equal(end.vim.register.text, "kept");
+  assert.equal(end.vim.search.pattern, "a");
+  assert.equal(end.vim.find.ch, "p");
+
+  const bracket = run("alphax‸\n", [{ key: "[", ctrl: true }], { mode: "insert" });
+  assert.equal(bracket.show, "alpha‸x\n");
+  assert.equal(bracket.vim.mode, "normal");
+  const ctrlEsc = run("alphax‸\n", [{ key: "Escape", ctrl: true }], { mode: "insert" });
+  assert.equal(ctrlEsc.show, "alpha‸x\n");
+  assert.equal(ctrlEsc.vim.mode, "normal");
+
+  const mid = run("al‸pha\n", ["Escape"], { mode: "insert" });
+  assert.equal(mid.show, "a‸lpha\n");
+
+  const start = run("‸alpha\n", ["Escape"], { vim: insert() });
+  assert.equal(start.show, "‸alpha\n");
+  assert.equal(start.vim.mode, "normal");
+  assert.equal(start.vim.column, 4);
+  assert.equal(run("alpha\n‸beta\n", ["Escape"], { mode: "insert" }).show, "alpha\n‸beta\n");
+  assert.equal(run("alpha\n‸\n", ["Escape"], { mode: "insert" }).show, "alpha\n‸\n");
+  assert.equal(run("‸\n", ["Escape"], { mode: "insert" }).show, "‸\n");
+
+  const typed = run("alpha betaxy‸\n", ["Escape", "x"], { mode: "insert" });
+  assert.equal(typed.show, "alpha betax‸\n");
+  assert.equal(typed.vim.mode, "normal");
+
+  const word = run("alpha key bindings‸ to\n", ["Escape", "x"], { mode: "insert" });
+  assert.equal(word.show, "alpha key binding‸ to\n");
+
+  const cr = run("alpha‸\r\n", ["Escape"], { mode: "insert" });
+  assert.equal(cr.show, "alph‸a\r\n");
+  const onBreak = run("alpha\r‸\n", ["Escape"], { mode: "insert" });
+  assert.equal(onBreak.show, "alph‸a\r\n");
+  assert.equal(run("‸\r\n", ["Escape"], { mode: "insert" }).show, "‸\r\n");
+  assert.equal(run("\r‸\n", ["Escape"], { mode: "insert" }).show, "\r‸\n");
+
+  const grin = "\uD83D\uDE00";
+  assert.equal(run(`a${grin}‸\n`, ["Escape"], { mode: "insert" }).show, `a‸${grin}\n`);
+  assert.equal(run(`a${grin}\r‸\n`, ["Escape"], { mode: "insert" }).show, `a‸${grin}\r\n`);
+
+  const once = run("al‸pha\n", ["i", { key: "o", ctrl: true }, "Escape"]);
+  assert.equal(once.show, "al‸pha\n");
+  assert.equal(once.vim.mode, "insert");
+  assert.equal(once.vim.once, false);
+
+  const visual = run("al«p‸ha\n", ["Escape"], { mode: "visual" });
+  assert.equal(visual.show, "alp‸ha\n");
+  assert.equal(visual.vim.mode, "normal");
+  const line = run("al‸pha\n", ["V", "Escape"]);
+  assert.equal(line.show, "alpha‸\n");
+  assert.equal(line.vim.mode, "normal");
+
+  const pending = run("al‸pha\n", ["d", "Escape"]);
+  assert.equal(pending.show, "al‸pha\n");
+  assert.equal(pending.vim.mode, "normal");
+  assert.equal(pending.vim.input.operator, null);
+  assert.equal(run("al‸pha\n", ["Escape"]).show, "al‸pha\n");
+});
+
 test("VB.1", () => {
   const inner = run("alpha b‸eta gamma\n", ["d", "i", "w"]);
   assert.equal(inner.steps[1].match, "partial");

@@ -18844,11 +18844,11 @@ test("vim flag wires keydown and leaves typing alone when it is off", () => {
     assert.equal(inserted.getState().doc, "");
     assert.equal(typeKey("a"), false);
     assert.equal(inserted.getState().doc, "a");
-    const caret = inserted.getState().cursor;
+    assert.equal(inserted.getState().cursor, 1);
     typeKey("Escape");
     assert.equal(statusText(), "N");
     assert.equal(mounted.root.classList.contains("md-vim-block"), true);
-    assert.equal(inserted.getState().cursor, caret);
+    assert.equal(inserted.getState().cursor, 0);
     assert.equal(typeKey("a"), true);
     assert.equal(inserted.getState().doc, "a");
     inserted.destroy();
@@ -19074,7 +19074,7 @@ test("vim insert groups a pause, an arrow, Enter, and Backspace into one undo", 
     vimType(mounted, "i");
     vimType(mounted, "y");
     vimType(mounted, "Escape");
-    assert.equal(view.getState().doc, "alphaxy\n");
+    assert.equal(view.getState().doc, "alphayx\n");
     vimType(mounted, "u");
     assert.equal(view.getState().doc, "alphax\n");
     vimType(mounted, "u");

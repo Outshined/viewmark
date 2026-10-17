@@ -139,7 +139,7 @@ test("VM.2 (ticket 7vdep2z4)", { timeout: LIMIT }, async (t) => {
   expectState(got, "alphax‸\n", "I", before.rev + 1);
   await press(page, [ESC]);
   got = await finish(page, hub);
-  expectState(got, "alphax‸\n", "N", before.rev + 1);
+  expectState(got, "alpha‸x\n", "N", before.rev + 1);
   expectEdits(page, since, 1, got);
 });
 
@@ -155,7 +155,7 @@ test("VM.3 (ticket 7vdep2z4)", { timeout: LIMIT }, async (t) => {
     const since = page.frames.length;
     await press(page, ["i", "x", key]);
     const got = await finish(page, hub, file);
-    expectState(got, "alphax‸\n", "N", before.rev + 1);
+    expectState(got, "alpha‸x\n", "N", before.rev + 1);
     expectEdits(page, since, 1, got);
   }
 
