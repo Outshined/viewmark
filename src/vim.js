@@ -2330,15 +2330,15 @@ function commandFromKey(key) {
 }
 
 function finishFind(vim, doc, anchor, cursor, raw, layout, key) {
-  if (isEscape(key)) return doEscape(vim, anchor, cursor);
+  if (isEscape(key)) return doEscape(vim, doc, anchor, cursor);
   if (key.ctrl || key.meta || key.key.length < 1 || key.key.length > 2) return pack("none", true, clearInput(vim), null);
   const which = vim.input.keyBuffer;
   const ready = { ...vim, input: { ...vim.input, keyBuffer: "" } };
   return dispatchResolved(ready, doc, anchor, cursor, raw, layout, which, { ch: key.key });
 }
 
-function finishQuote(vim, anchor, cursor, key) {
-  if (isEscape(key)) return doEscape(vim, anchor, cursor);
+function finishQuote(vim, doc, anchor, cursor, key) {
+  if (isEscape(key)) return doEscape(vim, doc, anchor, cursor);
   if (key.key === '"' && !key.ctrl && !key.meta) {
     const next = clearInput(vim);
     next.input = emptyInput();
@@ -2373,7 +2373,7 @@ function commentHoldingRange(doc, anchor, cursor) {
 }
 
 function finishG(vim, doc, anchor, cursor, raw, layout, key) {
-  if (isEscape(key)) return doEscape(vim, anchor, cursor);
+  if (isEscape(key)) return doEscape(vim, doc, anchor, cursor);
   if (!key.ctrl && !key.meta && !key.alt && (key.key === "n" || key.key === "N" || key.key === "*" || key.key === "#")) {
     // An operator is not a search motion. dgn writes nothing.
     if (vim.input.operator) return pack("none", true, clearInput(vim), null);
@@ -2448,7 +2448,7 @@ function finishG(vim, doc, anchor, cursor, raw, layout, key) {
 }
 
 function finishZ(vim, doc, anchor, cursor, raw, layout, key) {
-  if (isEscape(key)) return doEscape(vim, anchor, cursor);
+  if (isEscape(key)) return doEscape(vim, doc, anchor, cursor);
   let id = null;
   let also = false;
   if (key.key === "z") id = "zz";
@@ -2474,7 +2474,7 @@ function finishZ(vim, doc, anchor, cursor, raw, layout, key) {
 
 // ]p is linewise p and [p is linewise P. The indent shift is the same splice.
 function finishBracket(vim, doc, anchor, cursor, raw, key) {
-  if (isEscape(key)) return doEscape(vim, anchor, cursor);
+  if (isEscape(key)) return doEscape(vim, doc, anchor, cursor);
   const which = vim.input.keyBuffer;
   if (key.ctrl || key.meta || key.alt || key.key !== "p" || vim.input.operator) {
     return pack("none", true, clearInput(vim), null);
@@ -2604,7 +2604,7 @@ function objectSpan(doc, cursor, ch, around) {
 }
 
 function finishObject(vim, doc, anchor, cursor, key) {
-  if (isEscape(key)) return doEscape(vim, anchor, cursor);
+  if (isEscape(key)) return doEscape(vim, doc, anchor, cursor);
   const ch = key.key;
   if (key.ctrl || key.meta || key.alt || ch.length !== 1) return pack("none", true, clearInput(vim), null);
   const span = objectSpan(doc, cursor, ch, vim.input.keyBuffer === "a");
@@ -2632,7 +2632,20 @@ function finishObject(vim, doc, anchor, cursor, key) {
   return pack("full", true, next, applied.effect);
 }
 
-function doEscape(vim, anchor, cursor) {
+// Insert leaves the caret after the character just typed. Vim puts the cursor
+// on that character, and a caret already at column 0 stays there.
+function insertStop(doc, cursor) {
+  if (cursor <= 0 || doc[cursor - 1] === "\n") return cursor;
+  const prev = stepBack(doc, cursor);
+  // The CR of a CRLF is the break, not a character to land on.
+  if (doc[prev] === "\r" && doc[prev + 1] === "\n") {
+    if (prev === 0 || doc[prev - 1] === "\n") return cursor;
+    return stepBack(doc, prev);
+  }
+  return prev;
+}
+
+function doEscape(vim, doc, anchor, cursor) {
   const next = clearInput(vim);
   next.find = vim.find;
   next.search = vim.search;
@@ -2647,8 +2660,13 @@ function doEscape(vim, anchor, cursor) {
     next.mode = "normal";
     return pack("full", true, next, { type: "caret", anchor: cursor, cursor });
   }
-  if (vim.mode === "insert") next.mode = "normal";
-  return pack("full", true, next, { type: "caret", anchor: cursor, cursor });
+  let at = cursor;
+  if (vim.mode === "insert") {
+    next.mode = "normal";
+    at = insertStop(typeof doc === "string" ? doc : "", cursor);
+    if (at !== cursor) next.column = null;
+  }
+  return pack("full", true, next, { type: "caret", anchor: at, cursor: at });
 }
 
 // The caret was on a character. A tab added or removed at the source start
@@ -2679,7 +2697,7 @@ function insertTab(vim, doc, cursor, add) {
 }
 
 function insertKey(vim, doc, cursor, key) {
-  if (isEscape(key)) return doEscape(vim, cursor, cursor);
+  if (isEscape(key)) return doEscape(vim, doc, cursor, cursor);
   const id = key.key.length === 1 ? key.key.toLowerCase() : key.key;
   if ((key.ctrl || key.meta) && id === "w") return pack("full", true, clearInput(vim), { type: "word-delete" });
   if (key.ctrl && id === "t") return insertTab(vim, doc, cursor, true);
@@ -2730,7 +2748,7 @@ export function vimKey(input) {
   if (key.key === "Tab") return pack("none", false, vim, null);
   if (vim.mode === "insert" && !vim.once) return insertKey(vim, doc, cursor, key);
   if (pageChord(key)) return pack("none", false, vim, null);
-  if (isEscape(key)) return doEscape(vim, anchor, cursor);
+  if (isEscape(key)) return doEscape(vim, doc, anchor, cursor);
   // Firefox sends this keydown before the key it changes. It is not a command.
   if (key.key === "Shift" || key.key === "Control" || key.key === "Alt" || key.key === "Meta") {
     return pack("none", false, vim, null);
@@ -2743,7 +2761,7 @@ export function vimKey(input) {
     return finishFind(vim, doc, anchor, cursor, raw, layout, key);
   }
   if (vim.input.keyBuffer === "r") return finishReplace(vim, doc, cursor, raw, key);
-  if (vim.input.keyBuffer === '"') return finishQuote(vim, anchor, cursor, key);
+  if (vim.input.keyBuffer === '"') return finishQuote(vim, doc, anchor, cursor, key);
   if (vim.input.keyBuffer === "g") return finishG(vim, doc, anchor, cursor, raw, layout, key);
   if (vim.input.keyBuffer === "z") return finishZ(vim, doc, anchor, cursor, raw, layout, key);
   if (vim.input.keyBuffer === "]" || vim.input.keyBuffer === "[") return finishBracket(vim, doc, anchor, cursor, raw, key);

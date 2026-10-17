@@ -268,7 +268,7 @@ cell("VT.5", async (t) => {
   await enterInsert(page);
   await page.key("Escape");
   const got = await view(ctx.hub, page);
-  assert.equal(got.show, "al‸pha\n");
+  assert.equal(got.show, "a‸lpha\n");
   assert.equal(got.rev, before.rev);
   assert.equal(got.caret.focused, true);
   assert.equal(await status(page), "N");
