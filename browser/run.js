@@ -760,7 +760,12 @@ export async function runCell(suite, cell, routeName, serial) {
   }
   // A cell that wants a holder's label to flash wants the 409 naming that holder (D26).
   const refusedBy = new Set(cell.flashes.map((flash) => flash.name));
-  const errors = page.frames.filter((frame) => frame.dir === "exception" || (frame.dir === "in" && frame.data && frame.data.type === "error" && !(frame.data.status === 409 && refusedBy.has(frame.data.heldBy))));
+  // A cell that takes the page offline makes the page's own reconnect attempts fail while it is
+  // off. Firefox logs each of those as an error, and how many fall inside that window depends on
+  // timing, so they are not counted. Any other error still is.
+  const offline = cell.keys.some((token) => token.key === "offline");
+  const expected = (frame) => offline && frame.dir === "exception" && /establish a connection to the server at ws:\/\/127\.0\.0\.1:\d+\/api\/ws/.test(String(frame.data));
+  const errors = page.frames.filter((frame) => !expected(frame) && (frame.dir === "exception" || (frame.dir === "in" && frame.data && frame.data.type === "error" && !(frame.data.status === 409 && refusedBy.has(frame.data.heldBy)))));
   if (errors.length) result.failed.push(`I7 quiet: ${errors.map((frame) => JSON.stringify(frame.data)).join(", ")}`);
   for (const flash of cell.flashes) {
     const flashed = await page.eval(`window.__qa.flashes.some((seen) => seen.name.includes(${JSON.stringify(flash.name)}) && seen.block.includes(${JSON.stringify(flash.text)}))`);
@@ -847,6 +852,12 @@ export async function runCell(suite, cell, routeName, serial) {
   if (result.failed.length) {
     result.status = "FAIL";
     result.observed.html = await page.eval("window.__qaRoot().outerHTML");
+    // What else happened to the page while the cell ran, so a failure says whether the page's
+    // socket dropped or the page started over, not only what came out wrong.
+    const hellos = page.frames.filter((frame) => frame.dir === "in" && frame.data && frame.data.type === "hello").length;
+    const closes = page.frames.filter((frame) => frame.dir === "exception" && /connection|WebSocket/i.test(String(frame.data))).length;
+    // The cell's own open is one hello. Each one after it is the page reconnecting.
+    if (hellos > 1 || closes > 0) result.failed.push(`diag: the page reconnected ${Math.max(0, hellos - 1)} time(s) during the cell, and ${closes} connection error(s) were logged`);
   }
   return result;
 }
