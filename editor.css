@@ -666,6 +666,34 @@ button.md-doc-menu-item {
   cursor: pointer;
 }
 
+/* The slot stays the same size with or without the mark, so the label does not move. */
+button.md-doc-menu-item.md-vim-keys {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+button.md-doc-menu-item.md-vim-keys .md-vim-label {
+  flex: none;
+}
+
+button.md-doc-menu-item.md-vim-keys .md-vim-check {
+  display: block;
+  flex: none;
+  width: 1.1em;
+  height: 1.1em;
+  min-width: 1.1em;
+  min-height: 1.1em;
+  overflow: hidden;
+  color: #8fdb8a;
+}
+
+button.md-doc-menu-item.md-vim-keys .md-vim-check svg {
+  display: block;
+  width: 1.1em;
+  height: 1.1em;
+}
+
 button.md-doc-menu-item[hidden] {
   display: none;
 }

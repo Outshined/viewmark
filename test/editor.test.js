@@ -18520,6 +18520,9 @@ test("vim keys checkbox, status, and caret", () => {
   assert.equal(editorRule.includes("caret-shape"), false);
   assert.match(css, /\.editor\.md-vim-block\s*\{[^}]*caret-shape:\s*block/);
   assert.equal(css.split("caret-shape").length, 2);
+  assert.match(css, /button\.md-doc-menu-item\.md-vim-keys\s*\{[^}]*display:\s*flex;/);
+  assert.match(css, /button\.md-doc-menu-item\.md-vim-keys \.md-vim-check\s*\{[^}]*width:\s*1\.1em;[^}]*height:\s*1\.1em;[^}]*min-width:\s*1\.1em;[^}]*min-height:\s*1\.1em;[^}]*color:\s*#8fdb8a;/);
+  assert.match(css, /button\.md-doc-menu-item\.md-vim-keys \.md-vim-check svg\s*\{[^}]*width:\s*1\.1em;[^}]*height:\s*1\.1em;/);
   assert.equal(src.includes("vimKey"), true);
   assert.match(src, /typedAt - typingRun\.at <= 1000/);
 
@@ -18552,6 +18555,43 @@ test("vim keys checkbox, status, and caret", () => {
   const mounted = mountEditor();
   const click = (node) => node.listeners.click({ preventDefault() {}, stopPropagation() {} });
   const vimButton = () => walkNodes(mounted.root, (node) => node.tagName === "BUTTON" && node.textContent === "Vim keys")[0];
+  const vimMark = (button) => {
+    const kids = button.childNodes || [];
+    const label = kids.find((node) => node.classList && node.classList.contains("md-vim-label"));
+    const slot = kids.find((node) => node.classList && node.classList.contains("md-vim-check"));
+    const svgs = walkNodes(button, (node) => node.localName === "svg");
+    return { label, slot, svgs };
+  };
+  const assertVimMark = (button, on) => {
+    const mark = vimMark(button);
+    assert.equal(button.textContent, "Vim keys");
+    assert.equal(button.childNodes.length, 2);
+    assert.equal(mark.label, button.childNodes[0]);
+    assert.equal(mark.label.textContent, "Vim keys");
+    assert.equal(mark.slot, button.childNodes[1]);
+    assert.equal(mark.svgs.length, on ? 1 : 0);
+    if (!on) {
+      assert.equal(mark.slot.childNodes.length, 0);
+      return mark;
+    }
+    const svg = mark.svgs[0];
+    assert.equal(svg.parentElement, mark.slot);
+    assert.equal(svg.getAttribute("viewBox"), "0 0 24 24");
+    assert.equal(svg.getAttribute("aria-hidden"), "true");
+    assert.equal(svg.getAttribute("fill"), "none");
+    assert.equal(svg.getAttribute("stroke"), "currentColor");
+    assert.equal(svg.getAttribute("stroke-width"), "2");
+    assert.equal(svg.getAttribute("stroke-linecap"), "round");
+    assert.equal(svg.getAttribute("stroke-linejoin"), "round");
+    const path = svg.childNodes.find((node) => node.localName === "path");
+    assert.equal(path.getAttribute("d"), "M20 6 9 17l-5-5");
+    assert.equal(path.getAttribute("fill"), "none");
+    assert.equal(path.getAttribute("stroke"), "currentColor");
+    assert.equal(path.getAttribute("stroke-width"), "2");
+    assert.equal(path.getAttribute("stroke-linecap"), "round");
+    assert.equal(path.getAttribute("stroke-linejoin"), "round");
+    return mark;
+  };
   const statuses = () => byClass(mounted.root, "md-vim-status");
   const letter = (key) => {
     let prevented = false;
@@ -18574,7 +18614,7 @@ test("vim keys checkbox, status, and caret", () => {
     const item = vimButton();
     assert.equal(item.getAttribute("role"), "menuitemcheckbox");
     assert.equal(item.getAttribute("aria-checked"), "false");
-    assert.equal(walkNodes(item, (node) => node.localName === "svg").length, 0);
+    const offMark = assertVimMark(item, false);
     assert.equal(statuses().length, 0);
     assert.equal(mounted.root.classList.contains("md-vim-block"), false);
     assert.equal(store.reads.includes("viewmark.vim"), true);
@@ -18584,6 +18624,9 @@ test("vim keys checkbox, status, and caret", () => {
     assert.equal(transport.sent.length, before);
     assert.equal(store.getItem("viewmark.vim"), "1");
     assert.equal(item.getAttribute("aria-checked"), "true");
+    const onMark = assertVimMark(item, true);
+    assert.equal(onMark.label, offMark.label);
+    assert.equal(onMark.slot, offMark.slot);
     assert.equal(statuses().length, 1);
     const status = statuses()[0];
     assert.equal(status.textContent, "N");
@@ -18602,6 +18645,7 @@ test("vim keys checkbox, status, and caret", () => {
 
     const again = createEditor(mounted.root, "alpha\n", 0, null, store);
     assert.equal(vimButton().getAttribute("aria-checked"), "true");
+    const keptMark = assertVimMark(vimButton(), true);
     assert.equal(statuses().length, 1);
     assert.equal(statuses()[0].getAttribute("contenteditable"), "false");
     assert.equal(statuses()[0].textContent, "N");
@@ -18660,14 +18704,41 @@ test("vim keys checkbox, status, and caret", () => {
     click(vimButton());
     assert.equal(store.getItem("viewmark.vim"), null);
     assert.equal(vimButton().getAttribute("aria-checked"), "false");
+    const cleared = assertVimMark(vimButton(), false);
+    assert.equal(cleared.label, keptMark.label);
+    assert.equal(cleared.slot, keptMark.slot);
     assert.equal(statuses().length, 0);
     assert.equal(mounted.root.classList.contains("md-vim-block"), false);
     assert.equal(again.getState().doc, selected);
     assert.equal(again.getState().anchor, again.getState().cursor);
     click(vimButton());
     assert.equal(store.getItem("viewmark.vim"), "1");
+    assert.equal(vimMark(vimButton()).label, keptMark.label);
+    assertVimMark(vimButton(), true);
     assert.equal(statuses().length, 1);
     again.destroy();
+
+    const ticketStore = mapStorage({ "viewmark.vim": "1" });
+    const ticketTransport = holdingTransport();
+    const ticketView = createEditor(mounted.root, "alpha\n", 0, ticketTransport, ticketStore);
+    const ticketOn = assertVimMark(vimButton(), true);
+    assert.equal(vimButton().getAttribute("aria-checked"), "true");
+    ticketTransport.deliver({ type: "file", rev: 1, text: "Body\n", path: "tickets/abcd1234.md", cursor: 0, anchor: 0, locks: [] });
+    assert.equal(vimButton().getAttribute("aria-checked"), "true");
+    const ticketKept = assertVimMark(vimButton(), true);
+    assert.equal(ticketKept.label, ticketOn.label);
+    assert.equal(ticketKept.slot, ticketOn.slot);
+    const ticketPanel = byClass(mounted.root, "md-doc-menu-panel")[0];
+    assert.equal(ticketPanel.childNodes[1].hidden, true);
+    assert.equal(ticketPanel.childNodes.map((node) => node.textContent)[2], "Vim keys");
+    click(vimButton());
+    assert.equal(vimMark(vimButton()).label, ticketOn.label);
+    assertVimMark(vimButton(), false);
+    assert.equal(vimButton().getAttribute("aria-checked"), "false");
+    click(vimButton());
+    assertVimMark(vimButton(), true);
+    assert.equal(vimButton().getAttribute("aria-checked"), "true");
+    ticketView.destroy();
 
     const off = createEditor(mounted.root, "alpha\n", 0);
     assert.equal(statuses().length, 0);
@@ -18681,6 +18752,7 @@ test("vim keys checkbox, status, and caret", () => {
       const other = mapStorage({ "viewmark.vim": value });
       const closed = createEditor(mounted.root, "alpha\n", 0, null, other);
       assert.equal(vimButton().getAttribute("aria-checked"), "false", value);
+      assertVimMark(vimButton(), false);
       assert.equal(statuses().length, 0, value);
       assert.equal(mounted.root.classList.contains("md-vim-block"), false, value);
       closed.destroy();
@@ -18698,6 +18770,7 @@ test("vim keys checkbox, status, and caret", () => {
     assert.equal(session.reads.includes("viewmark.vim"), false);
     click(vimButton());
     assert.equal(globalThis.localStorage.getItem("viewmark.vim"), "1");
+    assertVimMark(vimButton(), true);
     assert.equal(statuses()[0].textContent, "N");
     assert.deepEqual(session.data, sessionBefore);
     assert.equal(session.writes.includes("viewmark.vim"), false);
@@ -18718,12 +18791,14 @@ test("vim keys checkbox, status, and caret", () => {
     assert.equal(statuses()[0].textContent, "N");
     assert.equal(statuses()[0].getAttribute("contenteditable"), "false");
     assert.equal(vimButton().getAttribute("aria-checked"), "true");
+    assertVimMark(vimButton(), true);
     assert.equal(mounted.root.classList.contains("md-vim-block"), true);
     assert.deepEqual(session.data, kept);
     thrown.destroy();
     const reloaded = createEditor(mounted.root, "alpha\n", 0, holdingTransport(), session);
     assert.equal(statuses().length, 0);
     assert.equal(vimButton().getAttribute("aria-checked"), "false");
+    assertVimMark(vimButton(), false);
     assert.equal(mounted.root.classList.contains("md-vim-block"), false);
     reloaded.destroy();
   } finally {

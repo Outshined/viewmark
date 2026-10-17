@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { launchBrowser, Page, startHub } from "../harness.js";
+import { REPO, USER, cli, launchBrowser, Page, startHub } from "../harness.js";
 
 // The flag is read once, when the editor is created. A later write does not turn keys on.
 const FILE = "a.md";
@@ -92,6 +92,54 @@ async function openMenu(page) {
   await page.until(() => page.eval(MENU_OPEN), "document menu");
 }
 
+async function clickVimItem(page) {
+  const point = await page.eval(`(() => {
+    const el = [...document.querySelectorAll("[role='menuitemcheckbox']")].find((node) => (node.textContent || "").trim() === "Vim keys");
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (!(r.width > 0) || !(r.height > 0)) return null;
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`);
+  assert.ok(point, "Vim keys item");
+  await page.click(point.x, point.y);
+  await page.quiet();
+}
+
+function assertGreen(color) {
+  const match = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(color || "");
+  assert.ok(match, color);
+  const red = Number(match[1]);
+  const green = Number(match[2]);
+  const blue = Number(match[3]);
+  assert.ok(green > red + 40 && green > blue + 40 && green > 140, color);
+}
+
+function assertCheckGlyph(glyph) {
+  assert.ok(glyph, "no check");
+  assert.equal(glyph.viewBox, "0 0 24 24");
+  assert.equal(glyph.hidden, "true");
+  assert.equal(glyph.fill, "none");
+  assert.equal(glyph.stroke, "currentColor");
+  assert.equal(glyph.width, "2");
+  assert.equal(glyph.cap, "round");
+  assert.equal(glyph.join, "round");
+  assert.equal(glyph.d, "M20 6 9 17l-5-5");
+  assert.equal(glyph.pathFill, "none");
+  assert.equal(glyph.pathWidth, "2px");
+  assert.equal(glyph.pathCap, "round");
+  assert.equal(glyph.pathJoin, "round");
+  assert.equal(glyph.pathStroke, glyph.color);
+  assertGreen(glyph.color);
+}
+
+function samePlace(before, after, label) {
+  assert.ok(before && after, label);
+  assert.ok(Math.abs(before.x - after.x) < 1, `${label} x ${before.x} -> ${after.x}`);
+  assert.ok(Math.abs(before.y - after.y) < 1, `${label} y ${before.y} -> ${after.y}`);
+  assert.ok(Math.abs(before.w - after.w) < 1, `${label} w ${before.w} -> ${after.w}`);
+  assert.ok(Math.abs(before.h - after.h) < 1, `${label} h ${before.h} -> ${after.h}`);
+}
+
 function wholeDiff(before, after) {
   const lines = (text) => {
     const parts = text.split("\n");
@@ -155,20 +203,49 @@ function assertCorner(label, row) {
 }
 
 test("VC.1 (ticket 7vdep2z4)", async (t) => {
-  const { page } = await setup(t, { vim: false });
+  const { hub, page } = await setup(t, { vim: false });
   const read = () => page.eval(`(() => {
     const panel = document.querySelector(".md-doc-menu-panel");
     const boxes = panel ? [...panel.querySelectorAll("[role='menuitemcheckbox']")] : [];
-    const named = panel ? [...panel.querySelectorAll("button")].filter((button) => button.textContent === "Vim keys") : [];
+    const named = panel ? [...panel.querySelectorAll("button")].filter((button) => (button.textContent || "").trim() === "Vim keys") : [];
     const item = named[0] || null;
+    const label = item ? item.querySelector(".md-vim-label") : null;
+    const slot = item ? item.querySelector(".md-vim-check") : null;
+    const svg = slot ? slot.querySelector("svg") : null;
+    const path = svg ? svg.querySelector("path") : null;
+    const itemBox = item ? item.getBoundingClientRect() : null;
+    const place = (el) => {
+      if (!el || !itemBox) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.left - itemBox.left, y: r.top - itemBox.top, w: r.width, h: r.height };
+    };
+    const drawn = path ? getComputedStyle(path) : null;
     return {
       open: !!panel && !panel.hidden && panel.getClientRects().length > 0,
       boxes: boxes.length,
       named: named.length,
-      text: item ? item.textContent : null,
+      text: item ? item.textContent.trim() : null,
       role: item ? item.getAttribute("role") : null,
       checked: item ? item.getAttribute("aria-checked") : null,
       svgs: item ? item.querySelectorAll("svg").length : null,
+      label: place(label),
+      slot: place(slot),
+      glyph: svg && {
+        viewBox: svg.getAttribute("viewBox"),
+        hidden: svg.getAttribute("aria-hidden"),
+        fill: svg.getAttribute("fill"),
+        stroke: svg.getAttribute("stroke"),
+        width: svg.getAttribute("stroke-width"),
+        cap: svg.getAttribute("stroke-linecap"),
+        join: svg.getAttribute("stroke-linejoin"),
+        d: path ? path.getAttribute("d") : null,
+        color: getComputedStyle(svg).color,
+        pathFill: drawn.fill,
+        pathStroke: drawn.stroke,
+        pathWidth: drawn.strokeWidth,
+        pathCap: drawn.strokeLinecap,
+        pathJoin: drawn.strokeLinejoin,
+      },
       flag: localStorage.getItem(${JSON.stringify(VIM)}),
     };
   })()`);
@@ -182,6 +259,32 @@ test("VC.1 (ticket 7vdep2z4)", async (t) => {
   assert.equal(off.role, "menuitemcheckbox");
   assert.equal(off.checked, "false");
   assert.equal(off.svgs, 0);
+  assert.equal(off.glyph, null);
+  assert.ok(off.slot.w > 8 && off.slot.h > 8, JSON.stringify(off.slot));
+  assert.ok(off.label.x + off.label.w <= off.slot.x + 1, JSON.stringify({ label: off.label, slot: off.slot }));
+
+  await clickVimItem(page);
+  assert.equal(await page.eval(`localStorage.getItem(${JSON.stringify(VIM)})`), "1");
+  await openMenu(page);
+  const toggled = await read();
+  assert.equal(toggled.open, true);
+  assert.equal(toggled.checked, "true");
+  assert.equal(toggled.svgs, 1);
+  assert.equal(toggled.text, "Vim keys");
+  assertCheckGlyph(toggled.glyph);
+  samePlace(off.label, toggled.label, "label");
+  samePlace(off.slot, toggled.slot, "slot");
+  assert.ok(toggled.label.x + toggled.label.w <= toggled.slot.x + 1, JSON.stringify({ label: toggled.label, slot: toggled.slot }));
+
+  await clickVimItem(page);
+  assert.equal(await page.eval(`localStorage.getItem(${JSON.stringify(VIM)})`), null);
+  await openMenu(page);
+  const cleared = await read();
+  assert.equal(cleared.checked, "false");
+  assert.equal(cleared.svgs, 0);
+  assert.equal(cleared.glyph, null);
+  samePlace(off.label, cleared.label, "label");
+  samePlace(off.slot, cleared.slot, "slot");
 
   await armVim(page);
   await page.open(FILE);
@@ -194,7 +297,44 @@ test("VC.1 (ticket 7vdep2z4)", async (t) => {
   assert.equal(on.text, "Vim keys");
   assert.equal(on.role, "menuitemcheckbox");
   assert.equal(on.checked, "true");
-  assert.equal(on.svgs, 0);
+  assert.equal(on.svgs, 1);
+  assertCheckGlyph(on.glyph);
+  assert.ok(on.label.x + on.label.w <= on.slot.x + 1, JSON.stringify({ label: on.label, slot: on.slot }));
+
+  const made = await cli(hub.port, ["--user", USER, "--repo", REPO, "ticket", "create", "--title", "Alpha"], "Alpha body.\n");
+  assert.equal(made.code, 0, made.stderr);
+  const id = made.stdout.trim().split("\n")[0];
+  const since = page.frames.length;
+  page.loads = (page.loads || 0) + 1;
+  await page.session.send("Page.navigate", { url: `http://127.0.0.1:${page.port}/?load=${page.loads}#${REPO}/ticket/${encodeURIComponent(id)}` });
+  await page.until(() => page.frames.slice(since).some((frame) => frame.dir === "in" && frame.data && frame.data.type === "file" && frame.data.path === `tickets/${id}.md`), `ticket ${id}`);
+  await page.quiet();
+  await openMenu(page);
+  const ticket = await read();
+  const shown = await page.eval(`(() => {
+    const panel = document.querySelector(".md-doc-menu-panel");
+    return panel ? [...panel.querySelectorAll("button")].filter((el) => !el.hidden && el.getClientRects().length > 0).map((el) => el.textContent.trim()) : [];
+  })()`);
+  assert.deepEqual(shown, ["Attach image", "Vim keys"]);
+  assert.equal(ticket.checked, "true");
+  assert.equal(ticket.svgs, 1);
+  assert.equal(ticket.text, "Vim keys");
+  assertCheckGlyph(ticket.glyph);
+  await clickVimItem(page);
+  await openMenu(page);
+  const ticketOff = await read();
+  assert.equal(ticketOff.checked, "false");
+  assert.equal(ticketOff.svgs, 0);
+  assert.equal(ticketOff.glyph, null);
+  samePlace(ticket.label, ticketOff.label, "ticket label");
+  samePlace(ticket.slot, ticketOff.slot, "ticket slot");
+  await clickVimItem(page);
+  await openMenu(page);
+  const ticketOn = await read();
+  assert.equal(ticketOn.checked, "true");
+  assert.equal(ticketOn.svgs, 1);
+  assertCheckGlyph(ticketOn.glyph);
+  samePlace(ticket.label, ticketOn.label, "ticket label");
 });
 
 test("VC.2 (ticket 7vdep2z4)", async (t) => {
