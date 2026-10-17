@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -196,9 +197,17 @@ export function parseCell(line) {
 }
 
 // VIEWMARK_PLAN_PORT names the hub that holds the plan when it is not on the default port.
+// VIEWMARK_PLAN_FILE names a copy of the plan read from the hub when a run began, so every suite
+// of that run reads the same cells even if the plan changes during it.
 export function loadCells(prefix) {
-  const port = process.env.VIEWMARK_PLAN_PORT ? ["--port", process.env.VIEWMARK_PLAN_PORT] : [];
-  const shown = spawnSync(process.execPath, [CLI, ...port, "--user", "qa-bot", "--repo", PLAN.repo, "show", PLAN.path], { encoding: "utf8" });
-  if (shown.status !== 0) throw new Error(`cannot read ${PLAN.path} from the ${PLAN.repo} hub repo: ${shown.stderr.trim()}`);
-  return shown.stdout.split("\n").map(parseCell).filter((cell) => cell && cell.id.startsWith(prefix));
+  let text;
+  if (process.env.VIEWMARK_PLAN_FILE) {
+    text = readFileSync(process.env.VIEWMARK_PLAN_FILE, "utf8");
+  } else {
+    const port = process.env.VIEWMARK_PLAN_PORT ? ["--port", process.env.VIEWMARK_PLAN_PORT] : [];
+    const shown = spawnSync(process.execPath, [CLI, ...port, "--user", "qa-bot", "--repo", PLAN.repo, "show", PLAN.path], { encoding: "utf8" });
+    if (shown.status !== 0) throw new Error(`cannot read ${PLAN.path} from the ${PLAN.repo} hub repo: ${shown.stderr.trim()}`);
+    text = shown.stdout;
+  }
+  return text.split("\n").map(parseCell).filter((cell) => cell && cell.id.startsWith(prefix));
 }
