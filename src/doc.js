@@ -1973,11 +1973,12 @@ function matchLinkOrImage(text, index, image) {
   };
 }
 
-function parseMarks(text, base, plainClass) {
+function parseMarks(text, base, plainClass, holes) {
   const root = { delim: null, marks: [], runs: [], openAt: 0 };
   const stack = [root];
   let index = 0;
   let buf = 0;
+  let holeAt = 0;
 
   function flush(upto) {
     if (upto <= buf) return;
@@ -1993,6 +1994,22 @@ function parseMarks(text, base, plainClass) {
   }
 
   while (index < text.length) {
+    // A code span is a hole. Its characters are not markers, and a pair outside it still matches.
+    if (holes && holeAt < holes.length && index === holes[holeAt].open) {
+      const hole = holes[holeAt];
+      holeAt += 1;
+      flush(index);
+      stack[stack.length - 1].runs.push({
+        type: "run",
+        text: text.slice(hole.open + 1, hole.close),
+        start: base + hole.open + 1,
+        end: base + hole.close,
+        classes: ["md-code"],
+      });
+      index = hole.close + 1;
+      buf = index;
+      continue;
+    }
     const top = stack[stack.length - 1];
     if (top.delim && text.startsWith(top.delim, index)) {
       flush(index);
@@ -2048,12 +2065,14 @@ function parseInlines(text, base, plainClass) {
   const parts = [];
   let index = 0;
   let textStart = 0;
+  let holes = [];
 
   function flushText(upto) {
     if (upto <= textStart) return;
-    const runs = parseMarks(text.slice(textStart, upto), base + textStart, plainClass);
+    const runs = parseMarks(text.slice(textStart, upto), base + textStart, plainClass, holes);
     for (const run of runs) parts.push(run);
     textStart = upto;
+    holes = [];
   }
 
   while (index < text.length) {
@@ -2091,16 +2110,8 @@ function parseInlines(text, base, plainClass) {
     if (text[index] === "`") {
       const close = text.indexOf("`", index + 1);
       if (close > index + 1) {
-        flushText(index);
-        parts.push({
-          type: "run",
-          text: text.slice(index + 1, close),
-          start: base + index + 1,
-          end: base + close,
-          classes: ["md-code"],
-        });
+        holes.push({ open: index - textStart, close: close - textStart });
         index = close + 1;
-        textStart = index;
         continue;
       }
     }
