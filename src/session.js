@@ -224,9 +224,16 @@ export function createSocketTransport({ username, socketFactory, location, rando
   const sessionToken = typeof session === "string" ? session : "";
 
   function transmit(message) {
-    // A dropped socket does not queue. The next open sends hello and repos only.
-    if (closed || !socketOpen || !socket || typeof socket.send !== "function") return;
-    socket.send(JSON.stringify({ ...message, username: name }));
+    // The editor holds a key this socket cannot take. A frame queued here would
+    // still carry the rev from before the file that follows the reconnect.
+    if (closed || !socketOpen || !socket || typeof socket.send !== "function") return false;
+    try {
+      socket.send(JSON.stringify({ ...message, username: name }));
+    } catch {
+      // A socket that has just closed throws. False means the editor still has the key.
+      return false;
+    }
+    return true;
   }
 
   function transmitBinary(bytes) {
@@ -327,9 +334,12 @@ export function createSocketTransport({ username, socketFactory, location, rando
     token: sessionToken,
     memory: false,
     url,
+    ready() {
+      return socketOpen && !closed;
+    },
     send(message) {
-      if (!message || message.type === "hello") return;
-      transmit(message);
+      if (!message || message.type === "hello") return false;
+      return transmit(message);
     },
     sendBinary(bytes) {
       transmitBinary(bytes);

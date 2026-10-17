@@ -2439,8 +2439,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const fileWaiters = [];
   // The hub rejects an edit that repeats the mirror rev. Remember the op and
   // send it after this actor's doc advances rev and the caret. A noop keeps
-  // the rev, so the next op goes at once. Silence reopens; the file brings
-  // the caret and only then does the queue move.
+  // the rev, so the next op goes at once. Silence, or a dropped socket, reopens;
+  // the file brings the caret and only then does the queue move.
   const pendingEdits = [];
   // This page's typing run. The hub still publishes each key; only undo groups.
   let typingRun = null;
@@ -2463,6 +2463,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // The refused edit stays marked for one second. render builds new nodes, so the mark is applied there.
   let refusal = null;
   let resumeAfterFile = false;
+  // True from the reconnect frame until its file. Keys in that gap stay queued.
+  let reconnecting = false;
+  // An unsent key opens the file again. This stops that open from looping.
+  let reopening = false;
+  // The edit handed to the socket and not yet answered. A drop can lose it
+  // after send returns, so the next file says whether it has to be sent again.
+  let inflightEdit = null;
   let lockTable = [];
   let expectNewComment = false;
   let unsubscribe = () => {};
@@ -2611,10 +2618,23 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return line.username === selfName();
   }
 
+  // False only when this transport can say the socket is not taking frames.
+  // A holding transport has no socket, so it is up.
+  function socketDown() {
+    return active.memory !== true && typeof active.ready === "function" && active.ready() !== true;
+  }
+
+  function offline() {
+    return reconnecting || socketDown();
+  }
+
   function emit(message, track = true) {
     const framed = { ...message, username: selfName() };
     const type = framed.type;
-    if (type === "lock" || type === "edit" || type === "undo" || type === "redo" || type === "open") {
+    const needsReply = type === "edit" || type === "undo" || type === "redo";
+    // sendEdit queues these. A frame that cannot leave has no reply to wait on.
+    if (needsReply && offline()) return false;
+    if (type === "lock" || needsReply || type === "open") {
       if (framed.path == null) framed.path = openPath;
       framed.rev = rev;
     }
@@ -2625,7 +2645,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // A snapshot restates a caret it already stored. Waiting on that lock
     // would stand in front of a later ticket.set and turn its 409 into a caret restore.
     if (type === "lock" && track) conflictWaiters.push("lock");
-    if (type === "edit" || type === "undo" || type === "redo") {
+    if (needsReply) {
       conflictWaiters.push("edit");
       // The memory transport answers in send. A socket that stays quiet is reopened.
       if (active.memory !== true) armEditTimer();
@@ -2634,7 +2654,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // The caller puts rev on ticket.set. A later 400 or 409 is a rejected field, not a lost caret.
     if (type === "ticket.set") conflictWaiters.push("ticket");
     if (type === "delete" || type === "ticket.delete") conflictWaiters.push("delete");
-    active.send(framed);
+    let delivered = true;
+    try {
+      if (active.send(framed) === false) delivered = false;
+    } catch {
+      delivered = false;
+    }
+    if (delivered) return true;
+    if (needsReply) {
+      const index = conflictWaiters.lastIndexOf("edit");
+      if (index >= 0) conflictWaiters.splice(index, 1);
+      clearEditTimer();
+      return false;
+    }
+    if (type === "open") {
+      const at = fileWaiters.lastIndexOf("open");
+      if (at >= 0) fileWaiters.splice(at, 1);
+    }
+    return false;
   }
 
   // Comment edits rewrite the trailing fence, so the lock runs through the
@@ -2669,6 +2706,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function dropPendingEdits() {
     pendingEdits.length = 0;
     resumeAfterFile = false;
+    reconnecting = false;
+    reopening = false;
+    inflightEdit = null;
     clearEditTimer();
     typingRun = null;
     vimInsertOpen = false;
@@ -2798,7 +2838,39 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       || op === "comment.add" || op === "comment.pin" || op === "comment.save" || op === "comment.delete" || op === "comment.resolve";
   }
 
+  function queuePartial(partial, splicePrior, holdForFile) {
+    const queued = { edit: partial };
+    if (splicePrior) queued.splicePrior = splicePrior;
+    pendingEdits.push(queued);
+    if (holdForFile) resumeAfterFile = true;
+  }
+
+  // The socket took nothing, so the caret has to come from a file before the key is tried again.
+  function reopenForHeldKeys() {
+    if (socketDown() || reopening || !openPath) return;
+    reopening = true;
+    waitingForFile = true;
+    followCaret = null;
+    followPath = false;
+    emit({ type: "open", path: openPath });
+    reopening = false;
+  }
+
+  function putBackEdit(partial, splicePrior) {
+    // This op was taken off the front to send. The socket did not take it,
+    // so it has to lead the queue or the keys behind it would go first.
+    const queued = { edit: partial };
+    if (splicePrior) queued.splicePrior = splicePrior;
+    pendingEdits.unshift(queued);
+    resumeAfterFile = true;
+    reopenForHeldKeys();
+  }
+
   function sendEdit(partial, splicePrior) {
+    if (offline()) {
+      putBackEdit(partial, splicePrior);
+      return;
+    }
     // Set before emit. The memory transport answers inside send.
     if (splicePrior) vimEditRegister = splicePrior;
     const body = { ...partial };
@@ -2839,7 +2911,36 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // The hub's insert refuses a splice that cuts a comment mark. Raw mode
     // draws that mark, so the key is stored as typed.
     if (sourceMode && message.op === "insert") message.raw = true;
-    emit(message);
+    const sent = {
+      edit: { ...partial, anchor: message.anchor, cursor: message.cursor },
+      splicePrior,
+      baseText: state.doc,
+    };
+    inflightEdit = sent;
+    if (emit(message) === false) {
+      if (inflightEdit === sent) inflightEdit = null;
+      putBackEdit(partial, splicePrior);
+      return;
+    }
+    // A memory transport answers inside send and may already have cleared this.
+    if (inflightEdit !== sent) return;
+  }
+
+  // The bytes the hub would have stored, or null when this op cannot be previewed.
+  function previewEdit(item) {
+    const partial = item && item.edit;
+    if (!partial || typeof item.baseText !== "string") return null;
+    const cursor = Number.isFinite(partial.cursor) ? partial.cursor : null;
+    const anchor = Number.isFinite(partial.anchor) ? partial.anchor : cursor;
+    if (cursor == null || anchor == null) return null;
+    const base = { ...createState(item.baseText, cursor), anchor, cursor };
+    if (partial.op === "insert") {
+      const text = typeof partial.text === "string" ? partial.text : "";
+      return insert(base, text, partial.paste === true, partial.raw === true);
+    }
+    if (partial.op === "backspace") return backspace(base);
+    if (partial.op === "delete") return deleteForward(base);
+    return null;
   }
 
   function emitEdit(partial, splicePrior) {
@@ -2847,18 +2948,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (boundaryNoop(partial)) return;
     goalX = null;
     rawColumn = null;
-    if (!live) return;
+    const away = offline();
+    if (!live && !away) return;
     // Stamp group before the queue. Escape can leave Insert while a splice is still waiting.
     const vimSplice = partial.op === "insert" || partial.op === "backspace" || partial.op === "delete";
     if (vimOn && vimMode === "insert" && vimSplice) {
       if (vimInsertOpen) partial = { ...partial, group: true };
       vimInsertOpen = true;
     }
-    if (!editHeld()) drainEndRuns();
-    if (editHeld()) {
-      const queued = { edit: partial };
-      if (splicePrior) queued.splicePrior = splicePrior;
-      pendingEdits.push(queued);
+    if (!away && !editHeld()) drainEndRuns();
+    if (away || editHeld()) {
+      queuePartial(partial, splicePrior, away);
       return;
     }
     sendEdit(partial, splicePrior);
@@ -2866,14 +2966,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function emitHistory(type) {
     endTypingRunLater();
-    if (!live) return;
-    if (!editHeld()) drainEndRuns();
-    if (editHeld() || pendingEdits.length > 0) {
+    const away = offline();
+    if (!live && !away) return;
+    if (!away && !editHeld()) drainEndRuns();
+    if (away || editHeld() || pendingEdits.length > 0) {
       pendingEdits.push({ history: type });
+      if (away) resumeAfterFile = true;
       return;
     }
     if (vimOn) vimHistoryPending = type;
-    emit({ type });
+    if (emit({ type }) === false) {
+      vimHistoryPending = null;
+      pendingEdits.push({ history: type });
+      resumeAfterFile = true;
+    }
   }
 
   function flushPendingEdit() {
@@ -2881,9 +2987,22 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     drainEndRuns();
     if (editHeld() || pendingEdits.length === 0) return;
     const next = pendingEdits.shift();
+    if (next.edit && typeof next.baseText === "string") {
+      const preview = previewEdit(next);
+      // The file already contains this edit. Sending it again would duplicate the key.
+      if (preview && preview.refused == null && preview.doc === state.doc) {
+        flushPendingEdit();
+        return;
+      }
+    }
     if (next.history) {
       if (vimOn) vimHistoryPending = next.history;
-      emit({ type: next.history });
+      if (emit({ type: next.history }) === false) {
+        vimHistoryPending = null;
+        pendingEdits.unshift(next);
+        resumeAfterFile = true;
+        reopenForHeldKeys();
+      }
     } else if (next.edit) sendEdit(next.edit, next.splicePrior);
   }
 
@@ -6702,11 +6821,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (message.type === "reconnect") {
       // The mirror stays up. Blanking would wipe the open document before its file frame.
-      dropPendingEdits();
+      // Keys typed on the dead socket stay queued. This open's file places the caret,
+      // and those keys are sent against that caret, in order.
+      reconnecting = true;
+      // send can return while the socket is already dead. Keep that edit in front
+      // of keys typed after it. The file drops it when the bytes are already there.
+      if (inflightEdit) {
+        pendingEdits.unshift(inflightEdit);
+        inflightEdit = null;
+        resumeAfterFile = true;
+      }
+      clearEditTimer();
+      clearVimHistoryFlight();
       conflictWaiters.length = 0;
       fileWaiters.length = 0;
       outstandingLock = null;
+      vimEditRegister = null;
       live = false;
+      if (pendingEdits.length > 0) resumeAfterFile = true;
       if (activeRepo) sendRepoFrames(activeRepo);
       if (openPath) {
         waitingForFile = true;
@@ -6792,6 +6924,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (index >= 0) {
         conflictWaiters.splice(index, 1);
         vimEditRegister = null;
+        inflightEdit = null;
       }
       flushPendingEdit();
       return;
@@ -6912,6 +7045,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           conflictWaiters.splice(index, 1);
           ownEdit = true;
           vimEditRegister = null;
+          inflightEdit = null;
         }
       }
     }
@@ -6922,10 +7056,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (message.type === "doc" && ownActor(message)) stageVimHistory(message);
     if (message.type === "doc" || message.type === "file") applySnapshot(message);
     if (message.type === "doc" && typingRun) typingRun.blocks = lineSet(state.anchor, state.cursor);
-    if (message.type === "file") syncFileTicket(message);
-    if (message.type === "file" && resumeAfterFile) {
-      resumeAfterFile = false;
-      flushPendingEdit();
+    if (message.type === "file") {
+      syncFileTicket(message);
+      reconnecting = false;
+      if (resumeAfterFile) {
+        resumeAfterFile = false;
+        flushPendingEdit();
+      }
     }
     if (ownEdit) flushPendingEdit();
   }
@@ -11915,7 +12052,7 @@ export function startPage(env = {}) {
     const send = transport.send.bind(transport);
     transport.send = (message) => {
       if (message && message.type === "open" && typeof message.path === "string" && message.path !== shownPath) shownPath = "";
-      send(message);
+      return send(message);
     };
     const subscribe = transport.subscribe.bind(transport);
     transport.subscribe = (fn) => subscribe((message) => {
