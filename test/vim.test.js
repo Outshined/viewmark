@@ -2911,6 +2911,18 @@ test("dd stores the line", () => {
   assert.equal(out.vim.register.linewise, true);
 });
 
+test("dd after G on a trailing comment fence stays on a drawn row", () => {
+  const fence = "```comment c9 resolved\n:: 0\n@2026-10-05T16:00:00.000Z qa\nNote.\n```\n";
+  const doc = `They can be the same.\n\`\`\`\ncode\n\`\`\`\n\n${fence}`;
+  const out = run(`‸${doc}`, ["G", "d", "d"]);
+  const effect = oneSplice(out);
+  assert.equal(effect.text, "");
+  assert.equal(doc.slice(effect.from, effect.to), "\n");
+  assert.equal(out.doc.includes("```\n```comment c9"), true);
+  assert.equal(out.cursor, out.doc.length);
+  assert.equal(out.doc.endsWith("\n"), true);
+});
+
 test("ctrl-o none clears once", () => {
   const out = run("al‸pha\n", ["i", { key: "o", ctrl: true }, "Q"]);
   assert.equal(out.doc, "alpha\n");

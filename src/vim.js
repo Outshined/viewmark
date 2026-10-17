@@ -1059,6 +1059,42 @@ function applyIndent(vim, doc, from, to, operator) {
   });
 }
 
+// plan does not draw a comment fence. A caret left on one has no line, so the
+// page paints it at the start of the editor. The empty row after a final newline
+// is the bottom when nothing drawn follows the fence.
+function offsetOnDrawn(doc, offset) {
+  const at = Math.max(0, Math.min(doc.length, Number.isFinite(offset) ? Math.trunc(offset) : 0));
+  const blocks = plan(doc, at).blocks;
+  const drawn = [];
+  for (const block of blocks) {
+    if (!block || typeof block.start !== "number" || typeof block.end !== "number") continue;
+    if (block.classes && block.classes.includes("md-paragraph-gap")) continue;
+    drawn.push(block);
+    if (at >= block.start && at <= block.end) return at;
+  }
+  if (doc.endsWith("\n") && at >= doc.length) return doc.length;
+  let prev = null;
+  let next = null;
+  for (const block of drawn) {
+    if (block.end < at) prev = block.end;
+    else if (block.start > at && next == null) next = block.start;
+  }
+  if (next == null && doc.endsWith("\n")) return doc.length;
+  if (prev == null) return next == null ? at : next;
+  if (next == null) return prev;
+  return at - prev <= next - at ? prev : next;
+}
+
+function drawnDeleteCaret(doc, from, to, inserted, wanted) {
+  const nextDoc = doc.slice(0, from) + inserted + doc.slice(to);
+  let at = wanted;
+  if (at >= to) at += inserted.length - (to - from);
+  else if (at > from) at = from + inserted.length;
+  if (at < 0) at = 0;
+  if (at > nextDoc.length) at = nextDoc.length;
+  return offsetOnDrawn(nextDoc, at);
+}
+
 function applyRange(op, doc, range, motion, vim) {
   let { from, to } = range;
   // cw drops one trailing run of spaces when the cut is not only whitespace.
@@ -1091,7 +1127,8 @@ function applyRange(op, doc, range, motion, vim) {
   }
   const kept = keptMarker(doc, from, to);
   const text = kept ? kept.text : "";
-  const caret = kept ? kept.caret : legal(doc, from, 1, false);
+  let caret = kept ? kept.caret : legal(doc, from, 1, false);
+  if (op === "d" && !kept) caret = drawnDeleteCaret(doc, from, to, text, caret);
   if (op === "d") {
     return {
       effect: { type: "splice", from, to, text, caret, yank: { text: stored, linewise } },

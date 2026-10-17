@@ -2552,6 +2552,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // placeCaret and moveCaret write the selection from state. The selectionchange
   // those writes fire must not copy that selection back over state.
   let placingCaret = false;
+  let strayRestores = 0;
   let goalX = null;
   // The column ArrowUp and ArrowDown keep after a shorter line clamps the caret.
   let rawColumn = null;
@@ -3185,8 +3186,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return atEnd;
   }
 
+  // A collapsed range on a br is a 0×0 box at the origin, and Firefox scrolls that
+  // box to the top of the page. The caret before the br is the same offset.
   function placePoint(range, point) {
-    range.setStart(point.node, point.offset);
+    const node = point.node;
+    if (isBreak(node) && node.parentNode && node.parentNode.childNodes) {
+      const children = node.parentNode.childNodes;
+      let index = 0;
+      for (; index < children.length; index += 1) if (children[index] === node) break;
+      if (index < children.length) {
+        range.setStart(node.parentNode, index);
+        range.collapse(true);
+        return;
+      }
+    }
+    range.setStart(node, point.offset);
     range.collapse(true);
   }
 
@@ -3259,6 +3273,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       // Firefox can drop the range while the line scrolls. Put it back before
       // selectionchange is allowed to adopt that drop.
       if (!domSelectionMatches()) placeCaretFromState();
+      // The br's box is the origin. The browser scrolls to it on the next frame.
+      if (!caretRect()) keepLineInView(node);
     } finally {
       placingCaret = false;
       // selectionchange does not run while the caret is placed. An arrow-key
@@ -3292,6 +3308,34 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     // scrollIntoView leaves a line that overflows a fixed grid row where it was.
     bringRectIntoView(elementBox(host));
+  }
+
+  // Firefox scrolls a caret it cannot measure to the origin after placeCaret returns.
+  function keepLineInView(node) {
+    const line = lineBox(node) || (node && node.parentElement) || node;
+    const view = typeof window !== "undefined" ? window : null;
+    if (!line || !view || typeof view.requestAnimationFrame !== "function") return;
+    if (typeof line.getBoundingClientRect !== "function") return;
+    const y = typeof view.scrollY === "number" ? view.scrollY : 0;
+    const correct = () => {
+      if (closed || line.isConnected === false) return;
+      let rect = null;
+      try {
+        rect = line.getBoundingClientRect();
+      } catch {
+        return;
+      }
+      if (!rect || !(rect.height > 0)) return;
+      const height = view.innerHeight;
+      if (!(height > 0)) return;
+      if (rect.bottom > 0 && rect.top < height) return;
+      if (!(typeof view.scrollY === "number") || !(view.scrollY + 1 < y)) return;
+      bringRectIntoView(elementBox(line));
+    };
+    view.requestAnimationFrame(() => {
+      correct();
+      if (typeof view.requestAnimationFrame === "function") view.requestAnimationFrame(correct);
+    });
   }
 
   function focusEditor() {
@@ -3406,7 +3450,37 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         return null;
       }
     }
-    return null;
+    // No block covers this offset. A comment fence is the usual gap. The nearest
+    // drawn line is where the caret is painted, and where the next letter goes.
+    const snapped = nearestDrawnCaret(caret);
+    if (snapped == null) return null;
+    const again = pointFor(snapped);
+    if (!again) return null;
+    state = { ...state, anchor: snapped, cursor: snapped };
+    const placed = document.createRange();
+    placePoint(placed, again);
+    sel.removeAllRanges();
+    sel.addRange(placed);
+    return again.node;
+  }
+
+  function nearestDrawnCaret(offset) {
+    let best = null;
+    let bestDist = Infinity;
+    const nodes = root.querySelectorAll(".md-line, .md-atom");
+    for (const el of nodes) {
+      if (!el.dataset || el.dataset.start == null || el.dataset.start === "") continue;
+      const start = Number(el.dataset.start);
+      const end = el.dataset.end == null || el.dataset.end === "" ? start : Number(el.dataset.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      const at = offset <= start ? start : offset >= end ? end : (offset - start <= end - offset ? start : end);
+      const dist = Math.abs(at - offset);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = at;
+      }
+    }
+    return best;
   }
 
   function selectedImageLine(sel) {
@@ -3448,6 +3522,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     };
   }
 
+  // Insert typing reads the DOM selection. A dropped range at the top of a long
+  // file would store the rest of the word there. A click sets pointer, so it still lands.
+  function strayCaret(mapped) {
+    if (pointer || !vimInsertKeys() || !mapped) return false;
+    if (mapped.anchor !== mapped.cursor) return false;
+    return mapped.cursor < state.cursor - 200;
+  }
+
+  function restoreStrayCaret() {
+    if (strayRestores > 2) return;
+    strayRestores += 1;
+    placeCaret();
+  }
+
   function adoptDomSelection() {
     if (gestureHold) return true;
     const sel = window.getSelection();
@@ -3456,6 +3544,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!holder || !root.contains(holder)) return true;
     const mapped = selectionFromDom(sel);
     if (!mapped) return true;
+    if (strayCaret(mapped)) {
+      restoreStrayCaret();
+      return true;
+    }
     // The drawn range omits glyph-less markers. A cut or paste keeps the
     // source selection, which still owns those markers.
     const next = sourceMode ? mapped : withMarkerEdges(state.doc, state, mapped);
@@ -3491,6 +3583,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!holder || !root.contains(holder)) return;
     const mapped = selectionFromDom(sel);
     if (!mapped) return;
+    if (strayCaret(mapped)) {
+      restoreStrayCaret();
+      return;
+    }
     const snapped = sourceMode || pointer ? mapped : homeSnap(mapped);
     const next = sourceMode ? snapped : withMarkerEdges(state.doc, state, snapped);
     if (sourceMode || (next.anchor === state.anchor && next.cursor === state.cursor)) goalX = keptX;
@@ -8913,6 +9009,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   listen("keydown", (event) => {
+    strayRestores = 0;
     retainedCaret = null;
     if (keyEndsRun(event)) endTypingRunLater();
     gestureHold = false;
