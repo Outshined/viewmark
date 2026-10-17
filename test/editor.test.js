@@ -7949,6 +7949,94 @@ test("comment cards follow highlight order", () => {
   }
 });
 
+test("cpe85tzs: a ticket comment card stays level with its anchor", () => {
+  const mounted = mountTicketPage();
+  const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
+  const mark = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment") && node.dataset && node.dataset.comment === "c1" && !node.classList.contains("md-comment-marker"))[0];
+  const cardTop = () => Number.parseFloat(cards()[0].styleProps.top);
+  const FORM = 217;
+  let scrollY = 0;
+  const inEditor = (el) => {
+    let node = el;
+    while (node) {
+      if (node === mounted.root) return true;
+      node = node.parentElement;
+    }
+    return false;
+  };
+  try {
+    globalThis.window.matchMedia = () => ({ matches: false });
+    const create = document.createElement.bind(document);
+    document.createElement = (tag) => {
+      const el = create(tag);
+      const raw = el.getBoundingClientRect.bind(el);
+      el.getBoundingClientRect = () => {
+        const rect = raw();
+        const form = mounted.root.parentElement.childNodes.find((node) => node.classList && node.classList.contains("ticket-form"));
+        const shift = form && form.hidden !== true && inEditor(el) ? FORM : 0;
+        const top = rect.top + shift - scrollY;
+        return { ...rect, top, bottom: top + rect.height };
+      };
+      return el;
+    };
+    mounted.aside.getBoundingClientRect = () => ({ top: -scrollY, left: 0, right: 320, bottom: -scrollY + 900, width: 320, height: 900 });
+    const lead = "x".repeat(400);
+    const doc = `${lead} {c1}anchor{/c1}\n\n\`\`\`comment c1\n:: 0\n@2026-10-05T16:00:00.000Z qa\nNote.\n\`\`\`\n`;
+    const transport = holdingTransport();
+    const view = createEditor(mounted.root, doc, 0, transport);
+    const form = mounted.root.parentElement.childNodes.find((node) => node.classList && node.classList.contains("ticket-form"));
+    const level = () => {
+      const asideTop = mounted.aside.getBoundingClientRect().top;
+      const anchorTop = mark().getBoundingClientRect().top;
+      return { asideTop, anchorTop, card: cardTop(), delta: asideTop + cardTop() - anchorTop };
+    };
+    assert.equal(form.hidden, true);
+    const onDocument = level();
+    assert.equal(onDocument.delta, 0);
+    assert.ok(onDocument.anchorTop > 12);
+
+    transport.deliver({
+      type: "file",
+      rev: 1,
+      text: doc,
+      path: "tickets/abcd1234.md",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+      ticket: ticketFixture("abcd1234", "Alpha", "new", T0, "", [], "qa"),
+    });
+    assert.equal(form.hidden, false);
+    const onTicket = level();
+    assert.equal(onTicket.anchorTop - onDocument.anchorTop, FORM);
+    assert.equal(onTicket.delta, 0);
+    assert.equal(onTicket.card - onDocument.card, FORM);
+
+    scrollY = 480;
+    const scrolled = level();
+    assert.equal(scrolled.delta, 0);
+    assert.equal(scrolled.card, onTicket.card);
+    scrollY = 0;
+
+    transport.deliver({
+      type: "file",
+      rev: 1,
+      text: doc,
+      path: "notes.md",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+    });
+    assert.equal(form.hidden, true);
+    const restored = level();
+    assert.equal(restored.delta, 0);
+    assert.equal(restored.card, onDocument.card);
+    assert.equal(restored.anchorTop, onDocument.anchorTop);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("comment cards stay near their anchors", () => {
   const mounted = mountSheet();
   const cards = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"));
