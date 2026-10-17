@@ -858,6 +858,11 @@ export async function runCell(suite, cell, routeName, serial) {
     const closes = page.frames.filter((frame) => frame.dir === "exception" && /connection|WebSocket/i.test(String(frame.data))).length;
     // The cell's own open is one hello. Each one after it is the page reconnecting.
     if (hellos > 1 || closes > 0) result.failed.push(`diag: the page reconnected ${Math.max(0, hellos - 1)} time(s) during the cell, and ${closes} connection error(s) were logged`);
+    // Which keys reached the page, and how many edits it sent, so a lost key shows whether the
+    // browser never delivered it or the page dropped it.
+    const seen = await page.eval(`(window.__qa.log || []).filter((e) => e.type === "keydown").map((e) => e.key)`).catch(() => null);
+    const edits = page.frames.filter((frame) => frame.dir === "out" && frame.data && frame.data.type === "edit").length;
+    result.failed.push(`diag: the page saw keydown for ${JSON.stringify(seen)}, and sent ${edits} edit(s)`);
   }
   return result;
 }

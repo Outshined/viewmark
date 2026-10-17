@@ -121,9 +121,10 @@ function onLine(visual, line, label) {
     mid >= line.top - 1 && mid <= line.bottom + 1,
     `${label}: caret at ${mid.toFixed(1)} is not on the line ${line.top.toFixed(1)}–${line.bottom.toFixed(1)} (${visual.kind})`,
   );
+  // G and k land on the line's first non-blank, as stock vim does, and these lines are not indented.
   assert.ok(
-    visual.left >= line.left - 4 && visual.left <= line.right + 4,
-    `${label}: caret x ${visual.left.toFixed(1)} is outside the line ${line.left.toFixed(1)}–${line.right.toFixed(1)}`,
+    Math.abs(visual.left - line.left) <= 4,
+    `${label}: caret x ${visual.left.toFixed(1)} is not the line's x ${line.left.toFixed(1)}`,
   );
   assert.ok(
     visual.top >= -1 && visual.bottom <= line.innerHeight + 1,
@@ -159,7 +160,7 @@ test("G on a long ticket (ticket 3549946q)", async (t) => {
   last.innerHeight = seen.innerHeight;
   assert.equal(seen.status, "N");
   assert.equal(seen.focused, true, "the editor lost focus");
-  assert.ok(caret.focus >= last.start && caret.focus <= last.end, `caret ${caret.focus} is not on the last line ${last.start}–${last.end}`);
+  assert.equal(caret.focus, last.start, `caret ${caret.focus} is not at the start of the last line, ${last.start}`);
   assert.equal(caret.anchor, caret.focus);
   onLine(seen.visual, last, "G");
   assert.equal((await hub.show(`tickets/${id}.md`)).rev, rev);

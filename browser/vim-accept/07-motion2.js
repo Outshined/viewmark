@@ -352,8 +352,9 @@ cell("VN.16", async (t) => {
   const focus = "alpha\nbe".length;
   await runMoves(page, hub, "a.md", [
     { label: "gg", focus, keys: ["g", "g"], expect: "‸alpha\nbeta\n" },
-    { label: "G", focus, keys: ["G"], expect: "alpha\nbeta‸\n" },
-    { label: "raw G", focus, raw: true, keys: ["G"], expect: "alpha\nbeta‸\n" },
+    // Stock vim puts G on the last line's first non-blank (startofline is on by default).
+    { label: "G", focus, keys: ["G"], expect: "alpha\n‸beta\n" },
+    { label: "raw G", focus, raw: true, keys: ["G"], expect: "alpha\n‸beta\n" },
   ]);
 });
 
