@@ -1071,6 +1071,44 @@ function markerEdgeStop(doc, before, landed, forward) {
   return landed;
 }
 
+function atMarkerEdge(doc, offset) {
+  if (!Number.isFinite(offset)) return false;
+  for (const span of findSpans(doc)) {
+    if (offset === span.openStart || offset === span.openEnd || offset === span.closeStart || offset === span.closeEnd) return true;
+  }
+  return false;
+}
+
+// Chromium's collapsed range on a zero-width marker is an element boundary and
+// has no client rect. The text at that edge is the caret's box.
+function markerCaretUnboxed(doc, offset) {
+  if (!atMarkerEdge(doc, offset)) return false;
+  const view = typeof window !== "undefined" ? window : null;
+  const sel = view && typeof view.getSelection === "function" ? view.getSelection() : null;
+  if (!sel || !sel.rangeCount || typeof sel.getRangeAt !== "function") return false;
+  let range = null;
+  try {
+    range = sel.getRangeAt(0);
+  } catch {
+    return false;
+  }
+  if (!range || range.collapsed !== true || typeof range.getClientRects !== "function") return false;
+  let rects = null;
+  try {
+    rects = range.getClientRects();
+  } catch {
+    return false;
+  }
+  if (!rects || rects.length === 0) return true;
+  for (let i = 0; i < rects.length; i += 1) {
+    const rect = rects[i];
+    const height = rect && Number.isFinite(rect.height) ? rect.height : 0;
+    const width = rect && Number.isFinite(rect.width) ? rect.width : 0;
+    if (height > 0 || width > 0) return false;
+  }
+  return true;
+}
+
 // The drawn selection uses the visible text. Endpoints that only cover a
 // glyph-less marker still belong to the source selection.
 function visibleSelectionOffset(doc, offset, other) {
@@ -5053,7 +5091,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   // Splitting a run for the preview moves the caret hit onto the previous
-  // character. The boxes are the glyphs from when the drag began.
+  // character. The boxes are the glyphs from when the drag began. The left half
+  // of a glyph is the boundary before it, and the right half is the boundary
+  // after it, where a click there puts the caret.
   function offsetAtDragGlyph(event) {
     const slots = handleDrag && handleDrag.slots;
     if (!slots || !event || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return null;
@@ -5068,7 +5108,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       bestDy = dy;
     }
     if (!best || bestDy > 12) return null;
-    return best.offset;
+    const mid = (best.left + best.right) / 2;
+    return event.clientX < mid ? best.offset : best.offset + 1;
   }
 
   // The preview split can put the release on the previous character. The edit is
@@ -7391,8 +7432,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const drawn = pointFor(next);
     // modify stops on the marker edge, which is this same offset. The gap's end
     // is where the next letter is drawn, so the caret has to be placed there.
+    // A zero-width marker's own stop has no box, so the caret is placed on the text.
     if (before !== after) render();
-    else if (anchor !== next || next !== landed || inRawGap(drawn && drawn.node)) placeCaret();
+    else if (anchor !== next || next !== landed || inRawGap(drawn && drawn.node) || markerCaretUnboxed(state.doc, next)) placeCaret();
     // The selection is already on this stop, so the caret is not placed again.
     // Firefox's block is a separate mark and would stay where it was.
     else syncVimBlockMark();
