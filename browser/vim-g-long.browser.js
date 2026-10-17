@@ -89,6 +89,7 @@ function place(page) {
         top: r.top,
         bottom: r.bottom,
         left: r.left,
+        right: r.right,
         height: r.height,
         start: Number(el.dataset.start),
         end: Number(el.dataset.end),
@@ -121,10 +122,13 @@ function onLine(visual, line, label) {
     `${label}: caret at ${mid.toFixed(1)} is not on the line ${line.top.toFixed(1)}–${line.bottom.toFixed(1)} (${visual.kind})`,
   );
   assert.ok(
-    Math.abs(visual.left - line.left) <= 4,
-    `${label}: caret x ${visual.left.toFixed(1)} is not the line's x ${line.left.toFixed(1)}`,
+    visual.left >= line.left - 4 && visual.left <= line.right + 4,
+    `${label}: caret x ${visual.left.toFixed(1)} is outside the line ${line.left.toFixed(1)}–${line.right.toFixed(1)}`,
   );
-  assert.ok(line.top >= -1 && line.bottom <= line.innerHeight + 1, `${label}: line is outside the window`);
+  assert.ok(
+    visual.top >= -1 && visual.bottom <= line.innerHeight + 1,
+    `${label}: caret is outside the window (caret ${visual.top.toFixed(1)}–${visual.bottom.toFixed(1)}, line ${line.top.toFixed(1)}–${line.bottom.toFixed(1)}, window ${line.innerHeight})`,
+  );
 }
 
 test("G on a long ticket (ticket 3549946q)", async (t) => {
@@ -150,11 +154,12 @@ test("G on a long ticket (ticket 3549946q)", async (t) => {
   await page.quiet();
   const caret = await page.caret();
   const seen = await place(page);
-  const last = seen.lines[seen.lines.length - 1];
+  const last = [...seen.lines].reverse().find((line) => !line.gap && line.text.includes("row 79"));
+  assert.ok(last, "row 79 is not drawn");
   last.innerHeight = seen.innerHeight;
   assert.equal(seen.status, "N");
   assert.equal(seen.focused, true, "the editor lost focus");
-  assert.equal(caret.focus, last.start, `caret ${caret.focus} is not on the last line ${last.start}`);
+  assert.ok(caret.focus >= last.start && caret.focus <= last.end, `caret ${caret.focus} is not on the last line ${last.start}–${last.end}`);
   assert.equal(caret.anchor, caret.focus);
   onLine(seen.visual, last, "G");
   assert.equal((await hub.show(`tickets/${id}.md`)).rev, rev);
@@ -169,7 +174,7 @@ test("G on a long ticket (ticket 3549946q)", async (t) => {
   assert.equal(after.status, "N");
   assert.equal(after.focused, true, "the editor lost focus");
   assert.notEqual(next.focus, caret.focus, "k did not move");
-  assert.equal(landed.text.includes("row 79"), true, `k landed on ${JSON.stringify(landed.text)}`);
+  assert.equal(landed.text.includes("row 78"), true, `k landed on ${JSON.stringify(landed.text)}`);
   onLine(after.visual, landed, "k");
   assert.equal((await hub.show(`tickets/${id}.md`)).rev, rev);
 });

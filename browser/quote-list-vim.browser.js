@@ -48,7 +48,6 @@ test("czp4tesp: with vim keys on, j steps from a quote's line onto each list ite
 });
 
 test("czp4tesp: with vim keys on, k steps up from below a quote onto each list item inside it, then onto the quote's line", async (t) => {
-  // A click on After. rather than G, which lands after the final newline today (r5kwsdqr).
   const page = await setup(t, TEXT.indexOf("After.") + 1);
   for (const stop of STOPS.slice(0, 3).reverse()) await expectOn(page, stop, "k");
 });
