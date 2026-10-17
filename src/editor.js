@@ -3167,6 +3167,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (root && typeof root.focus === "function") root.focus();
   }
 
+  // Hiding the new-file name field leaves focus on the page body, so keys
+  // never reach the document that create just opened.
+  function focusCreatedFile() {
+    const view = typeof window !== "undefined" ? window : null;
+    const sel = view && typeof view.getSelection === "function" ? view.getSelection() : null;
+    // No selection object means this host cannot place a range. Leave the flag
+    // unset so a later render does not treat that miss as a focus to restore.
+    if (sel) restoreEditorFocus = true;
+    focusEditor();
+    placeCaret();
+    retainCaret();
+  }
+
   function placeCaretFromState() {
     const sel = window.getSelection();
     if (!sel) return;
@@ -6851,12 +6864,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       return;
     }
+    let createdFile = false;
     if (message.type === "file") {
       if (fileWaiters.length > 0) {
         const waiter = fileWaiters.shift();
         if (waiter === "create") {
           const index = conflictWaiters.indexOf("create");
           if (index >= 0) conflictWaiters.splice(index, 1);
+          createdFile = true;
         }
       }
       // Both lists mark openPath. Assign it before this render, or the previous
@@ -6928,6 +6943,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       flushPendingEdit();
     }
     if (ownEdit) flushPendingEdit();
+    if (createdFile) focusCreatedFile();
   }
 
   function showNotice(text) {

@@ -11124,6 +11124,41 @@ test("a new file opens the stored path and a heading labels it", () => {
   }
 });
 
+test("5febwdbd: a created document focuses the editor with the caret at offset 0", () => {
+  const mounted = mountEditor();
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const sheet = document.createElement("div");
+  sheet.append(nav, mounted.root);
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "hello\n", 5, transport);
+    transport.deliver({ type: "docs", files: ["hello.md"] });
+    const button = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"))[0];
+    const field = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name"))[0];
+    button.listeners.click({ preventDefault() {} });
+    field.value = "fresh";
+    field.listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.equal(mounted.root.focused, false);
+    assert.equal(view.getState().cursor, 5);
+    transport.deliver({ type: "file", path: "fresh.md", rev: 0, text: "", locks: [] });
+    assert.equal(view.getState().doc, "");
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(mounted.root.focused, true);
+
+    mounted.root.focused = false;
+    const open = walkNodes(nav, (node) => node.tagName === "BUTTON" && node.dataset && node.dataset.path === "hello.md")[0];
+    open.listeners.click({ preventDefault() {} });
+    transport.deliver({ type: "file", path: "hello.md", rev: 1, text: "hello\n", locks: [] });
+    assert.equal(view.getState().doc, "hello\n");
+    assert.equal(mounted.root.focused, false);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("createEditor without activeElement does not throw", () => {
   const mounted = mountEditor();
   try {
