@@ -1543,6 +1543,10 @@ a.md-link {
   cursor: pointer;
 }
 
+button.icon-btn.md-add-comment[hidden] {
+  display: none;
+}
+
 .md-comment-card {
   box-sizing: border-box;
   width: 100%;

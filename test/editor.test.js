@@ -7255,6 +7255,83 @@ test("agrd2gk6: the highlight add-comment control draws the corner pin's balloon
   }
 });
 
+test("nzemzu3s: a hidden highlight balloon is display none, and adding then deleting the comment leaves it hidden", () => {
+  const mounted = mountSheet();
+  const doc = "hello fox two deer\n";
+  const rect = { top: 40, left: 8, right: 72, bottom: 58, width: 64, height: 18 };
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const block = css.match(/\.md-add-comment\s*\{[^}]*\}/);
+  const hiddenRule = css.match(/button\.icon-btn\.md-add-comment\[hidden\]\s*\{[^}]*\}/);
+  const iconRule = css.indexOf("button.icon-btn:not(.md-file):not(.md-dir-toggle)");
+  assert.ok(block);
+  assert.equal(/display\s*:/.test(block[0]), false);
+  assert.ok(hiddenRule);
+  assert.match(hiddenRule[0], /display:\s*none/);
+  assert.ok(iconRule >= 0 && css.indexOf(hiddenRule[0]) > iconRule);
+  const buttons = () => mounted.findAll((node) => node.classList && node.classList.contains("md-add-comment"));
+  const foxNode = () => mounted.findAll((node) => node.nodeType === 3 && node.textContent === "hello fox two deer")[0];
+  try {
+    globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+    const view = createEditor(mounted.root, doc, 0);
+    const select = (start, end) => {
+      const text = foxNode();
+      mounted.setSelection({
+        rangeCount: 1,
+        anchorNode: text,
+        anchorOffset: start,
+        focusNode: text,
+        focusOffset: end,
+        getRangeAt() {
+          return {
+            collapsed: start === end,
+            startContainer: text,
+            endContainer: text,
+            startOffset: start,
+            endOffset: end,
+            commonAncestorContainer: text,
+            getClientRects() {
+              return start === end ? [] : [rect];
+            },
+          };
+        },
+      });
+      mounted.listeners.selectionchange();
+    };
+    const at = doc.indexOf("fox");
+    select(at, at + 3);
+    const button = buttons()[0];
+    assert.ok(button);
+    assert.equal(button.hidden, false);
+    assert.equal(button.classList.contains("icon-btn"), true);
+    assert.equal(button.getAttribute("aria-label"), "Add comment");
+    assert.equal(button.getAttribute("title"), "Add comment");
+    assert.equal(button.textContent, "");
+    const path = button.childNodes.find((node) => node.localName === "svg").childNodes.find((node) => node.localName === "path");
+    assert.equal(path.getAttribute("d"), "M12 19l-2-3H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-3l-2 3z");
+    select(at, at);
+    assert.equal(view.getState().anchor, view.getState().cursor);
+    assert.equal(button.hidden, true);
+    select(at, at + 3);
+    assert.equal(button.hidden, false);
+    button.listeners.mousedown({ button: 0, preventDefault() {} });
+    assert.equal(view.getState().anchor, view.getState().cursor);
+    assert.equal(button.hidden, true);
+    assert.ok(view.getState().doc.includes("{c1}fox{/c1}"));
+    const cancel = mounted.findAll((node) => node.tagName === "BUTTON" && node.textContent === "Cancel")[0];
+    assert.ok(cancel);
+    cancel.listeners.click({ preventDefault() {} });
+    assert.equal(view.getState().doc, doc);
+    assert.equal(button.hidden, true);
+    select(at, at + 3);
+    assert.equal(button.hidden, false);
+    assert.equal(button.getAttribute("aria-label"), "Add comment");
+    assert.equal(button.getAttribute("title"), "Add comment");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("the add-comment button sits half a line under the highlight and clear of comment cards", () => {
   const mounted = mountSheet();
   const doc = "See {c1}this{/c1} now and more words here.\n\n```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nNote.\n```\n";

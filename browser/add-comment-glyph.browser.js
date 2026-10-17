@@ -94,3 +94,99 @@ test("agrd2gk6: a click on the balloon still adds a comment on the highlight", a
   await sleep(300);
   assert.ok((await hub.show("doc.md")).text.startsWith("Alpha {c1}beta{/c1} gamma delta."));
 });
+
+// Ticket nzemzu3s: a hidden highlight balloon is display none. Adding a comment from it, deleting
+// that comment, or collapsing the highlight leaves the balloon undrawn. A highlight that can take
+// a comment still shows the same balloon.
+const BALLOON_D = "M12 19l-2-3H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-3l-2 3z";
+
+const balloonState = `(() => {
+  const b = document.querySelector("button.md-add-comment");
+  const sel = getSelection();
+  const base = {
+    collapsed: !sel || sel.isCollapsed,
+    selected: sel ? sel.toString() : "",
+  };
+  if (!b) return { present: false, ...base };
+  const s = getComputedStyle(b);
+  const rects = [...b.getClientRects()];
+  const path = b.querySelector("path");
+  return {
+    present: true,
+    hidden: b.hidden,
+    display: s.display,
+    rects: rects.length,
+    w: rects[0] ? rects[0].width : 0,
+    label: b.getAttribute("aria-label"),
+    title: b.getAttribute("title"),
+    text: (b.textContent || "").trim(),
+    d: path ? path.getAttribute("d") : "",
+    ...base,
+  };
+})()`;
+
+function assertDrawn(state, what) {
+  assert.equal(state.present, true, `${what}: ${JSON.stringify(state)}`);
+  assert.equal(state.hidden, false, `${what}: ${JSON.stringify(state)}`);
+  assert.notEqual(state.display, "none", `${what}: ${JSON.stringify(state)}`);
+  assert.ok(state.rects > 0 && state.w > 0, `${what}: ${JSON.stringify(state)}`);
+  assert.equal(state.label, "Add comment", what);
+  assert.equal(state.title, "Add comment", what);
+  assert.equal(state.text, "", what);
+  assert.equal(state.d, BALLOON_D, what);
+}
+
+function assertNotDrawn(state, what) {
+  assert.equal(state.present, true, `${what}: ${JSON.stringify(state)}`);
+  assert.equal(state.hidden, true, `${what}: ${JSON.stringify(state)}`);
+  assert.equal(state.display, "none", `${what}: ${JSON.stringify(state)}`);
+  assert.equal(state.rects, 0, `${what}: ${JSON.stringify(state)}`);
+}
+
+async function balloonAt(page) {
+  return page.eval(`(() => { const b = document.querySelector(".md-add-comment"); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height }; })()`);
+}
+
+test("nzemzu3s: collapsing the highlight hides the balloon, and a highlight that can take a comment still shows it", async (t) => {
+  const { hub, page } = await setup(t);
+  assertDrawn(await page.eval(balloonState), "the highlight shows the balloon");
+  await page.clickOffset(TEXT.indexOf("Alpha") + 1);
+  await page.quiet();
+  assertNotDrawn(await page.eval(balloonState), "collapsing the highlight");
+  const again = await page.eval(`window.__qaClickPoint(${TEXT.indexOf("beta") + 2})`);
+  await page.click(again.x, again.y, { clickCount: 2 });
+  await page.quiet();
+  await page.until(() => page.eval(`(() => { const b = document.querySelector(".md-add-comment"); return !!b && !b.hidden && b.getClientRects().length > 0; })()`), "the balloon again");
+  assertDrawn(await page.eval(balloonState), "the highlight shows the balloon again");
+  const at = await balloonAt(page);
+  assert.ok(at && at.w > 0 && at.h > 0, "the balloon has no box to click");
+  await page.click(at.x, at.y);
+  await page.until(() => page.eval(`document.activeElement && document.activeElement.classList.contains("md-comment-body")`), "the note box");
+  await page.quiet();
+  assertNotDrawn(await page.eval(balloonState), "after adding a comment from the balloon");
+  assert.ok((await hub.show("doc.md")).text.startsWith("Alpha {c1}beta{/c1} gamma delta."));
+});
+
+test("nzemzu3s: after the comment added from the balloon is deleted, the balloon is not drawn", async (t) => {
+  const { hub, page } = await setup(t);
+  const at = await balloonAt(page);
+  await page.click(at.x, at.y);
+  await page.until(() => page.eval(`document.activeElement && document.activeElement.classList.contains("md-comment-body")`), "the note box");
+  await page.quiet();
+  assertNotDrawn(await page.eval(balloonState), "after adding a comment from the balloon");
+  await page.type("A note.");
+  await page.key("Enter", ["Ctrl"]);
+  await page.quiet();
+  const card = await page.eval(`(() => { const c = document.querySelector('.md-comment-card[data-comment="c1"]'); if (!c) return null; const r = c.getBoundingClientRect(); return { x: r.left + 20, y: r.top + 12 }; })()`);
+  assert.ok(card, "no card for the comment");
+  await page.click(card.x, card.y);
+  await page.quiet();
+  const button = `.md-comment-card[data-comment="c1"] button[aria-label="Delete"]`;
+  await page.until(() => page.eval(`(() => { const b = document.querySelector('${button}'); return !!b && b.getClientRects().length > 0; })()`), "the Delete button");
+  const del = await page.eval(`(() => { const r = document.querySelector('${button}').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  await page.click(del.x, del.y);
+  await page.quiet();
+  assertNotDrawn(await page.eval(balloonState), "after deleting the comment");
+  await sleep(300);
+  assert.equal((await hub.show("doc.md")).text, TEXT);
+});
