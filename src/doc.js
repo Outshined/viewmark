@@ -683,6 +683,24 @@ function bodyLinesOf(doc, fence) {
   return body;
 }
 
+// Source lines of code between a fence's opener and closer. A diagram and a
+// comment fence are not code. The opener and the closer are not lines of code.
+export function codeFenceBodies(doc) {
+  const text = typeof doc === "string" ? doc : "";
+  const out = [];
+  for (const fence of fenceContentRanges(text)) {
+    if (fence.lang === "comment" || fence.diagram) continue;
+    const lines = bodyLinesOf(text, fence);
+    if (lines.length === 0) continue;
+    out.push({
+      start: fence.start,
+      end: fence.end,
+      lines: lines.map((line) => ({ start: line.start, end: line.end })),
+    });
+  }
+  return out;
+}
+
 function hostsOf(doc) {
   const hosts = [];
   for (const fence of fenceContentRanges(doc)) {

@@ -1,5 +1,5 @@
 // Pure key match. The page applies the effect. This module does not touch the editor.
-import { codeSpanAt, createState, deleteForward, endBeforeTail, findSpans, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, wordStop } from "./doc.js";
+import { codeFenceBodies, codeSpanAt, createState, deleteForward, endBeforeTail, findSpans, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, wordStop } from "./doc.js";
 
 const REPEAT_CAP = 10000;
 const PAGE = 20;
@@ -155,12 +155,21 @@ function sourceRows(doc, start, end) {
   return rows;
 }
 
-function renderedLines(doc, cursor) {
+function renderedLines(doc, cursor, expandFences) {
   const blocks = plan(doc, cursor).blocks;
+  const bodies = expandFences ? codeFenceBodies(doc) : null;
   const lines = [];
   for (const block of blocks) {
     if (block.classes && block.classes.includes("md-paragraph-gap")) continue;
     if (typeof block.start !== "number" || typeof block.end !== "number") continue;
+    // j and k step a line of code. The fence stays one block for a linewise delete.
+    if (bodies && block.fence) {
+      const fence = bodies.find((item) => item.start === block.start);
+      if (fence) {
+        for (const line of fence.lines) lines.push({ start: line.start, end: line.end });
+        continue;
+      }
+    }
     const line = { start: block.start, end: block.end };
     // k lands on the last row. The block stays one vim line for a linewise delete.
     if (block.type === "table") line.table = true;
@@ -168,6 +177,45 @@ function renderedLines(doc, cursor) {
   }
   if (lines.length === 0) lines.push({ start: 0, end: Math.min(doc.length, 0) });
   return lines;
+}
+
+// The caret is on a line of code. Opener and closer are not.
+function fenceBodyAt(doc, offset) {
+  for (const fence of codeFenceBodies(doc)) {
+    for (const line of fence.lines) {
+      if (offset >= line.start && offset <= line.end) return line;
+    }
+  }
+  return null;
+}
+
+// Both ends sit on lines of one code fence. A motion that starts outside does not.
+function fenceBodyLines(doc, fromOff, toOff) {
+  const lo = Math.min(fromOff, toOff);
+  const hi = Math.max(fromOff, toOff);
+  for (const fence of codeFenceBodies(doc)) {
+    const lines = fence.lines;
+    if (lo >= lines[0].start && hi <= lines[lines.length - 1].end) return lines;
+  }
+  return null;
+}
+
+// The caret is on the opener or the closer, which j and k do not land on.
+function fenceMarkerGap(doc, lines, cursor) {
+  for (const fence of codeFenceBodies(doc)) {
+    if (cursor < fence.start || cursor > fence.end) continue;
+    for (const line of fence.lines) {
+      if (cursor >= line.start && cursor <= line.end) return null;
+    }
+    let prev = -1;
+    let next = lines.length;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (lines[i].end < cursor) prev = i;
+      else if (lines[i].start > cursor && next === lines.length) next = i;
+    }
+    return { prev, next };
+  }
+  return null;
 }
 
 function vimLines(doc, cursor, raw) {
@@ -339,12 +387,53 @@ function backwardTableRow(doc, line) {
   return rows.length > 0 ? rows[rows.length - 1] : line;
 }
 
+// One step from a fence marker lands on the code line beside it. A count keeps going.
+function stepMarkerGap(gap, delta, count, length) {
+  const steps = count < 1 ? 1 : count;
+  if (delta > 0) {
+    if (gap.next >= length) return -1;
+    if (steps === 1) return gap.next;
+    return stepLine(gap.next, 1, steps - 1, length);
+  }
+  if (gap.prev < 0) return -1;
+  if (steps === 1) return gap.prev;
+  return stepLine(gap.prev, -1, steps - 1, length);
+}
+
 function moveVertical(doc, cursor, delta, count, raw, column) {
-  const lines = vimLines(doc, cursor, raw);
-  const index = lineIndex(lines, doc, cursor, raw);
-  const col = column == null ? columnOf(doc, cursor, raw) : column;
-  const next = stepLine(index, delta, count, lines.length);
-  if (next === index || next >= lines.length) return { cursor, column: col, linewise: true };
+  const lines = raw ? rawLines(doc) : renderedLines(doc, cursor, true);
+  let index = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (cursor >= lines[i].start && cursor <= lines[i].end) {
+      index = i;
+      break;
+    }
+  }
+  let col = column;
+  if (col == null) {
+    if (index >= 0) col = cursor - lines[index].start;
+    else if (!raw && fenceMarkerGap(doc, lines, cursor)) col = cursor - sourceLine(doc, cursor).start;
+    else col = columnOf(doc, cursor, raw);
+  }
+  let next;
+  if (index >= 0) next = stepLine(index, delta, count, lines.length);
+  else if (!raw && doc.endsWith("\n") && cursor >= doc.length) {
+    index = lines.length;
+    next = stepLine(index, delta, count, lines.length);
+  } else if (!raw) {
+    const gap = fenceMarkerGap(doc, lines, cursor);
+    if (gap) {
+      index = -2;
+      next = stepMarkerGap(gap, delta, count, lines.length);
+    } else {
+      index = lineIndex(lines, doc, cursor, false);
+      next = stepLine(index, delta, count, lines.length);
+    }
+  } else {
+    index = lineIndex(lines, doc, cursor, true);
+    next = stepLine(index, delta, count, lines.length);
+  }
+  if (next === index || next < 0 || next >= lines.length) return { cursor, column: col, linewise: true };
   let line = lines[next];
   if (!raw && delta < 0) line = backwardTableRow(doc, line);
   const landed = placeColumn(doc, line, col, raw, delta);
@@ -596,6 +685,10 @@ function moveSection(doc, cursor, delta, count, raw) {
 }
 
 function lineBounds(doc, offset, raw) {
+  if (!raw) {
+    const body = fenceBodyAt(doc, offset);
+    if (body) return body;
+  }
   const lines = vimLines(doc, offset, raw);
   const index = lineIndex(lines, doc, offset, raw);
   if (index >= lines.length) return { start: doc.length, end: doc.length };
@@ -734,8 +827,11 @@ function opensTable(doc, offset) {
 function linewiseRange(doc, fromOff, toOff, raw) {
   // Planning at the caret inside the table opens it and drops the blank under
   // that one line, so a delete started below the table runs through the line after.
+  // A visual line that stays inside one code fence covers those code lines.
+  // A motion from outside still names the fence as one block.
+  const bodies = !raw ? fenceBodyLines(doc, fromOff, toOff) : null;
   const planAt = !raw && opensTable(doc, toOff) && !opensTable(doc, fromOff) ? fromOff : Math.min(fromOff, toOff);
-  const origin = vimLines(doc, planAt, raw);
+  const origin = bodies || vimLines(doc, planAt, raw);
   const a = lineIndex(origin, doc, fromOff, raw);
   const b = lineIndex(origin, doc, toOff, raw);
   const lo = Math.min(a, b);

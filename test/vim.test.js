@@ -851,6 +851,66 @@ test("pn4hbr22 dk from below a table deletes that table line", () => {
   assert.equal(into.doc, "\nAfter.\n");
 });
 
+// The fence in the rendered view is one block. j, k, and V still move one line of code.
+test("g92jk6em j and k move one line of a code fence and keep the column", () => {
+  const start = "Intro.\n\n```javascript\nfunction f() {\n  ‸return 1;\n  return 2;\n}\n```\n\nEnd.\n";
+  const down = run(start, ["j"]);
+  assert.equal(down.doc, marked(start).doc);
+  assert.equal(lineAtCaret(down), "  return 2;");
+  assert.equal(down.cursor - down.doc.indexOf("  return 2;"), 2);
+  const up = run(down.show, ["k"], { vim: down.vim });
+  assert.equal(lineAtCaret(up), "  return 1;");
+  assert.equal(up.cursor - up.doc.indexOf("  return 1;"), 2);
+  const back = run(up.show, ["k"], { vim: up.vim });
+  assert.equal(lineAtCaret(back), "function f() {");
+  assert.equal(back.cursor - back.doc.indexOf("function f() {"), 2);
+  const before = run(back.show, ["k"], { vim: back.vim });
+  assert.equal(lineAtCaret(before), "Intro.");
+  const into = run(before.show, ["j"], { vim: before.vim });
+  assert.equal(lineAtCaret(into), "function f() {");
+  const two = run(start, ["2", "j"]);
+  assert.equal(lineAtCaret(two), "}");
+  assert.equal(two.vim.column, 2);
+  const restored = run("```javascript\n  ‸return 1;\n}\n  return 2;\n```\n", ["j", "j"]);
+  assert.equal(lineAtCaret(restored), "  return 2;");
+  assert.equal(restored.cursor - restored.doc.indexOf("  return 2;"), 2);
+  const last = run(start, ["j", "j", "j"]);
+  assert.equal(lineAtCaret(last), "");
+  const fromBlank = run(last.show, ["k"], { vim: last.vim });
+  assert.equal(lineAtCaret(fromBlank), "}");
+  const fromEnd = run("Intro.\n\n```javascript\nfunction f() {\n  return 1;\n}\n```\n\nEn‸d.\n", ["k", "k"]);
+  assert.equal(lineAtCaret(fromEnd), "}");
+});
+
+test("g92jk6em V selects one line of a code fence and Vj selects the next", () => {
+  const start = "Intro.\n\n```javascript\nfunction f() {\n  ‸return 1;\n  return 2;\n}\n```\n\nEnd.\n";
+  const line = run(start, ["V"]);
+  assert.equal(line.vim.mode, "visual-line");
+  assert.equal(line.anchor, line.doc.indexOf("  return 1;"));
+  assert.equal(line.cursor, line.doc.indexOf("  return 1;") + "  return 1;".length);
+  const two = run(line.show, ["j"], { vim: line.vim });
+  assert.equal(two.vim.mode, "visual-line");
+  assert.equal(two.anchor, line.anchor);
+  assert.ok(two.cursor >= two.doc.indexOf("  return 2;") && two.cursor <= two.doc.indexOf("  return 2;") + "  return 2;".length);
+  const effect = last(run(two.show, ["g", "c"], { vim: two.vim })).effect;
+  assert.equal(effect.type, "comment-add");
+  assert.equal(effect.anchor, two.doc.indexOf("  return 1;"));
+  assert.equal(effect.cursor, two.doc.indexOf("}"));
+  const cut = run(start, ["V", "j", "d"]);
+  assert.equal(cut.doc, "Intro.\n\n```javascript\nfunction f() {\n}\n```\n\nEnd.\n");
+});
+
+test("g92jk6em raw j still moves one source line", () => {
+  const opener = run("Before.\n‸\n```js\none\ntwo\n```\n", ["j"], { raw: true });
+  assert.equal(lineAtCaret(opener), "```js");
+  const body = run(opener.show, ["j"], { raw: true, vim: opener.vim });
+  assert.equal(lineAtCaret(body), "one");
+  const next = run(body.show, ["j"], { raw: true, vim: body.vim });
+  assert.equal(lineAtCaret(next), "two");
+  const rendered = run("Be‸fore.\n\n```js\none\ntwo\n```\n", ["j"]);
+  assert.equal(lineAtCaret(rendered), "one");
+});
+
 test("VW.10", () => {
   const out = run("‸x\n\n```mermaid\ngraph TD\nA-->B\n```\n", ["j"]);
   assert.equal(out.show.startsWith("x\n\n‸```mermaid\n"), true);
