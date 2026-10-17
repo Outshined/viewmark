@@ -659,8 +659,10 @@ function runMotion(id, spec) {
         const at = legal(doc, lines[0] ? lines[0].start : 0, 1, raw);
         return { kind: "caret", cursor: at, column: null, linewise: true, inclusive: false, past: false, word: false };
       }
-      const at = lineDollar(doc, lines[lines.length - 1]);
-      return { kind: "caret", cursor: legal(doc, at, -1, raw), column: null, linewise: true, inclusive: false, past: false, word: false };
+      // G is the first non-blank, the same stop as + and ^. The end is $.
+      const line = lines[lines.length - 1];
+      const at = line ? firstNonBlank(doc, line, raw) : 0;
+      return { kind: "caret", cursor: at, column: null, linewise: true, inclusive: false, past: false, word: false };
     }
     const index = Math.max(0, Math.min(lines.length - 1, numbered - 1));
     const moved = placeColumn(doc, lines[index], keep == null ? columnOf(doc, cursor, raw) : keep, raw, 1);

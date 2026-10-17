@@ -520,16 +520,29 @@ test("VN.15", () => {
 
 test("VN.16", () => {
   assert.equal(run("alpha\nbe‸ta\n", ["g", "g"]).show, "‸alpha\nbeta\n");
-  assert.equal(run("alpha\nbe‸ta\n", ["G"]).show, "alpha\nbeta‸\n");
-  assert.equal(run("alpha\nbe‸ta\n", ["G"]).cursor, "alpha\nbeta".length);
-  assert.equal(run("alpha\nbe‸ta\n", ["G"], { raw: true }).show, "alpha\nbeta‸\n");
-  assert.equal(run("alpha\nbe‸ta", ["G"]).show, "alpha\nbeta‸");
+  // One rendered line. G is its first non-blank, which is the start.
+  assert.equal(run("alpha\nbe‸ta\n", ["G"]).show, "‸alpha\nbeta\n");
+  assert.equal(run("alpha\nbe‸ta\n", ["G"]).cursor, 0);
+  assert.equal(run("alpha\nbe‸ta\n", ["G"], { raw: true }).show, "alpha\n‸beta\n");
+  assert.equal(run("alpha\nbe‸ta", ["G"]).show, "‸alpha\nbeta");
+});
+
+test("G lands on the first non-blank of the last drawn line", () => {
+  const doc = ["row 00 stays", "row 01 stays", "row 02 stays"].join("\n\n") + "\n";
+  const out = run(`‸${doc}`, ["G"]);
+  const start = doc.lastIndexOf("row 02 stays");
+  assert.equal(out.cursor, start);
+  assert.equal(out.show, `${doc.slice(0, start)}‸${doc.slice(start)}`);
+  assert.notEqual(out.cursor, doc.length - 1);
+  const indented = run("al‸pha\n\n  beta\n", ["G"]);
+  assert.equal(indented.show, "alpha\n\n  ‸beta\n");
+  assert.equal(indented.cursor, "alpha\n\n  ".length);
 });
 
 test("r5kwsdqr G lands on the last line, not past a final newline or a comment fence", () => {
   const list = run("P‸ara one.\n\n- item\n", ["G"]);
-  assert.equal(list.show, "Para one.\n\n- item‸\n");
-  assert.equal(list.cursor, "Para one.\n\n- item".length);
+  assert.equal(list.show, "Para one.\n\n‸- item\n");
+  assert.equal(list.cursor, "Para one.\n\n".length);
   const doc = [
     "Para {c1}one{/c1}.",
     "",
@@ -548,11 +561,11 @@ test("r5kwsdqr G lands on the last line, not past a final newline or a comment f
   const fence = rendered.doc.indexOf("```comment");
   assert.ok(rendered.cursor >= item && rendered.cursor <= item + "- item".length);
   assert.ok(rendered.cursor < fence);
-  assert.equal(rendered.show.includes("- item‸\n"), true);
+  assert.equal(rendered.show.includes("\n‸- item\n"), true);
   const raw = run(marked, ["G"], { raw: true });
   const close = raw.doc.lastIndexOf("```");
   assert.ok(raw.cursor >= close && raw.cursor < raw.doc.length);
-  assert.equal(raw.show.endsWith("```‸\n"), true);
+  assert.equal(raw.show.endsWith("\n‸```\n"), true);
   const opened = run(marked, ["G", "o"]);
   const openedFence = opened.doc.indexOf("```comment");
   assert.equal(opened.vim.mode, "insert");
