@@ -656,6 +656,7 @@ const ICON_PATHS = {
   ],
   delete: ["M18 6 6 18M6 6l12 12"],
   filter: ["M22 3H2l8 9.46V19l4 2v-6.54L22 3z"],
+  check: ["M20 6 9 17l-5-5"],
 };
 
 function strokePath(d) {
@@ -677,6 +678,17 @@ function iconSvg(action) {
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
   for (const d of paths) svg.appendChild(strokePath(d));
+  return svg;
+}
+
+function checkGlyph() {
+  const svg = iconSvg("check");
+  if (!svg || typeof svg.setAttribute !== "function") return svg;
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
   return svg;
 }
 
@@ -5789,9 +5801,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         const path = openPath;
         showConfirm(pathBase(path), () => emit({ type: "delete", path }));
       });
-      const vimItem = plainButton("md-doc-menu-item", "Vim keys");
+      const vimItem = plainButton("md-doc-menu-item md-vim-keys", "Vim keys");
       docMenuVim = vimItem;
       if (typeof vimItem.setAttribute === "function") vimItem.setAttribute("role", "menuitemcheckbox");
+      const vimLabel = document.createElement("span");
+      vimLabel.className = "md-vim-label";
+      vimLabel.textContent = "Vim keys";
+      const vimCheck = document.createElement("span");
+      vimCheck.className = "md-vim-check";
+      // The slot keeps its box while the mark is absent, so the label does not move.
+      if (typeof vimItem.replaceChildren === "function") vimItem.replaceChildren(vimLabel, vimCheck);
       onItem(vimItem, () => {
         setVimOn(!vimOn);
       });
@@ -5818,6 +5837,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function syncVimItem() {
     if (!docMenuVim || typeof docMenuVim.setAttribute !== "function") return;
     docMenuVim.setAttribute("aria-checked", vimOn ? "true" : "false");
+    const slot = findClassChild(docMenuVim, "md-vim-check");
+    if (!slot || typeof slot.appendChild !== "function") return;
+    const mark = childArray(slot).find((node) => node && node.localName === "svg");
+    if (vimOn) {
+      if (mark) return;
+      const svg = checkGlyph();
+      if (svg) slot.appendChild(svg);
+      return;
+    }
+    if (mark) detachNode(mark);
   }
 
   function openDocMenu() {
