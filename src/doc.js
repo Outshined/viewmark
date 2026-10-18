@@ -2869,6 +2869,18 @@ function trimTail(parts, hide) {
   return out;
 }
 
+// Spaces the caret has moved through stay drawn. A hard-break tail has no glyph,
+// and a caret left in it is placed at the top of the editor. A backslash and a
+// line of only spaces stay hidden: the caret there is the line start.
+function shownHide(line, doc, hide, cursor, revealTail) {
+  if (!revealTail || hide <= 0 || !line || !/^[ \t]*\S/.test(line.text) || line.text.endsWith("\\")) return hide;
+  const cr = line.end > line.start && doc[line.end - 1] === "\r" ? 1 : 0;
+  const end = line.end - cr;
+  const tailStart = end - hide;
+  if (tailStart < line.start || !(cursor > tailStart && cursor <= end)) return hide;
+  return end - cursor;
+}
+
 function breakPart(offset) {
   return {
     type: "break",
@@ -2978,7 +2990,7 @@ function linePieces(slot, spans, raw) {
   return source.map(clonePart);
 }
 
-function hardenBreak(block, line, doc, hideCount) {
+function hardenBreak(block, line, doc, hideCount, cursor, revealTail) {
   if (!block || block.type !== "line" || block.hr || block.empty || block.collapsed) return;
   if (!line || line.end >= doc.length || doc[line.end] !== "\n") return;
   let hide = typeof hideCount === "number" ? hideCount : hardHideCount(line.text);
@@ -2986,7 +2998,7 @@ function hardenBreak(block, line, doc, hideCount) {
   // spaces-only slot is a whole line of spaces, and that marker is not one.
   if (typeof hideCount !== "number" && /^[ \t]+$/.test(line.text) && hide !== line.text.length) hide = line.text.length;
   if (hide <= 0) return;
-  const parts = trimTail((block.parts || []).map(clonePart), hide);
+  const parts = trimTail((block.parts || []).map(clonePart), shownHide(line, doc, hide, cursor, revealTail));
   parts.push(breakPart(line.end));
   block.parts = parts;
   block.runs = parts.filter((part) => part.type === "run");
@@ -3107,7 +3119,7 @@ function foldOlIndent(pieces, lineStart, leading) {
   return placed ? out : pieces;
 }
 
-function wrappedBlock(group, doc, cursor, spans) {
+function wrappedBlock(group, doc, cursor, spans, revealTail) {
   const start = group[0].line.start;
   const end = group[group.length - 1].line.end;
   const raw = cursor >= start && cursor <= end;
@@ -3120,8 +3132,9 @@ function wrappedBlock(group, doc, cursor, spans) {
     const marker = openerMarker(slot, i);
     const source = marker > 0 ? slot.line.text.slice(Math.min(marker, slot.line.text.length)) : slot.line.text;
     const hide = newline ? hardHideCount(source) : 0;
+    const drawn = shownHide(slot.line, doc, hide, cursor, revealTail);
     let pieces = linePieces(slot, spans, raw);
-    if (hide > 0) pieces = trimTail(pieces, hide);
+    if (drawn > 0) pieces = trimTail(pieces, drawn);
     // A raw list keeps its marker in the text. A rendered list hides it and draws one bullet.
     // The quote mark is never text. A quoted item still shows its list marker when raw.
     if (marker > 0 && (slot.mode.kind === "quote" || !raw)) {
@@ -3256,25 +3269,25 @@ function addQuoteBar(block) {
   block.classes = names;
 }
 
-function pushLine(blocks, slot, text, cursor, spans) {
+function pushLine(blocks, slot, text, cursor, spans, revealTail) {
   const { line, mode, parsed } = slot;
   const onLine = cursor >= line.start && cursor <= line.end;
   const block = onLine ? rawBlock(line, mode, parsed, spans) : renderedBlock(line, mode, parsed, spans);
-  if (mode.kind === "p" && !imageLine(line.text)) hardenBreak(block, line, text);
+  if (mode.kind === "p" && !imageLine(line.text)) hardenBreak(block, line, text, undefined, cursor, revealTail);
   // plainJoin stops at the next quote, and a lone item has no next line, so
   // this line is not wrapped. The tail is still syntax. The count stops at the marker.
-  else if (hidesBreak(text, line)) hardenBreak(block, line, text, contentBreakHide(line.text));
+  else if (hidesBreak(text, line)) hardenBreak(block, line, text, contentBreakHide(line.text), cursor, revealTail);
   blocks.push(block);
 }
 
 // A line that is only a hard-break marker is its own caret slot. Leaving it inside
 // the wrap gives that offset no element the caret can sit on.
-function pushGroup(blocks, group, text, cursor, spans) {
+function pushGroup(blocks, group, text, cursor, spans, revealTail) {
   let chunk = [];
   const flush = () => {
     if (chunk.length === 0) return;
-    if (chunk.length > 1) blocks.push(wrappedBlock(chunk, text, cursor, spans));
-    else pushLine(blocks, chunk[0], text, cursor, spans);
+    if (chunk.length > 1) blocks.push(wrappedBlock(chunk, text, cursor, spans, revealTail));
+    else pushLine(blocks, chunk[0], text, cursor, spans, revealTail);
     chunk = [];
   };
   for (const item of group) {
@@ -3471,8 +3484,9 @@ function markBlockGaps(blocks) {
   }
 }
 
-export function plan(doc, cursor) {
+export function plan(doc, cursor, revealTail) {
   const text = typeof doc === "string" ? doc : "";
+  const reveal = revealTail === true;
   const built = structures(text);
   const { slots } = built;
   const comments = built.comments || [];
@@ -3506,12 +3520,12 @@ export function plan(doc, cursor) {
         next += 1;
       }
       if (group.length > 1) {
-        pushGroup(blocks, group, text, cursor, spans);
+        pushGroup(blocks, group, text, cursor, spans, reveal);
         index = next;
         continue;
       }
     }
-    pushLine(blocks, slot, text, cursor, spans);
+    pushLine(blocks, slot, text, cursor, spans, reveal);
     index += 1;
   }
   // A blank run between two quoted blocks keeps the bar. The blanks stay blocks.

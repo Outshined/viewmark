@@ -228,6 +228,70 @@ test("wrapped paragraph hard break hides its marker", () => {
   assert.equal(proseBlocks("red\\", 0)[0].parts.some((part) => part.type === "break"), false);
 });
 
+test("spaces typed into a hard-break tail stay drawn up to the caret", () => {
+  const shown = (doc, cursor, reveal) => {
+    const block = plan(doc, cursor, reveal).lines.find((line) => line.type === "line" && !line.hr && (line.parts || []).some((part) => part.type === "break"));
+    return {
+      text: block.runs.map((run) => run.text).join(""),
+      breaks: block.parts.filter((part) => part.type === "break").length,
+    };
+  };
+  const three = "# Notes\n\nalpha beta   \n";
+  const inside = three.indexOf("beta") + 5;
+  assert.equal(three[inside - 1], " ");
+  assert.equal(three[inside], " ");
+  assert.deepEqual(shown(three, inside, false), { text: "alpha beta", breaks: 1 });
+  assert.deepEqual(shown(three, inside, true), { text: "alpha beta ", breaks: 1 });
+
+  const end = "alpha beta.  \nblue\n";
+  const nl = end.indexOf("\n");
+  assert.equal(end[nl], "\n");
+  assert.deepEqual(shown(end, nl, false), { text: "alpha beta.blue", breaks: 1 });
+  assert.deepEqual(shown(end, nl, true), { text: "alpha beta.  blue", breaks: 1 });
+
+  const slash = "alpha beta.\\\nblue\n";
+  assert.deepEqual(shown(slash, slash.indexOf("\n"), true), { text: "alpha beta.blue", breaks: 1 });
+  const bare = "  \n";
+  assert.deepEqual(shown(bare, bare.indexOf("\n"), true), { text: "", breaks: 1 });
+});
+
+test("typing a space into a hard-break tail draws that space and leaves the caret after it", () => {
+  const mounted = mountEditor();
+  const press = (data) => {
+    mounted.listeners.beforeinput({
+      inputType: "insertText",
+      data,
+      preventDefault() {},
+    });
+  };
+  const textOf = (needle) => mounted.findAll((node) => node.nodeType === 3 && typeof node.textContent === "string" && node.textContent.includes(needle)).map((node) => node.textContent);
+  try {
+    const doc = "# Notes\n\nalpha beta  \n";
+    const at = doc.indexOf("beta") + 4;
+    const view = createEditor(mounted.root, doc, at);
+    assert.deepEqual(textOf("alpha"), ["alpha beta"]);
+    press(" ");
+    assert.equal(view.getState().doc, "# Notes\n\nalpha beta   \n");
+    assert.equal(view.getState().cursor, at + 1);
+    assert.deepEqual(textOf("alpha"), ["alpha beta "]);
+    view.destroy();
+
+    const end = "# Notes\n\nalpha beta\n";
+    const tail = createEditor(mounted.root, end, end.indexOf("\n", end.indexOf("alpha")));
+    press(".");
+    press(" ");
+    press(" ");
+    const after = tail.getState();
+    const line = "# Notes\n\nalpha beta.  \n";
+    assert.equal(after.doc, line);
+    assert.equal(after.cursor, line.indexOf("\n", line.indexOf("alpha")));
+    assert.deepEqual(textOf("alpha"), ["alpha beta.  "]);
+    tail.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("wrapped paragraph maps the joining space and edits at that newline", () => {
   const mounted = mountEditor();
   globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
