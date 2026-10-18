@@ -2430,6 +2430,99 @@ test("BG.ws.tab", () => {
   assert.equal(lineCaret(doc, 6), 5);
 });
 
+// Firefox's line step from the paragraph under a spaces-only or tab-only line
+// reports the paragraph above. The line is one caret, at its start.
+test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
+  const mounted = mountEditor();
+  const textNode = (value) => mounted.findAll((node) => node.nodeType === 3 && node.textContent === value)[0];
+  const gapBr = () => mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.classList && node.parentElement.classList.contains("md-paragraph-gap") && node.parentElement.dataset.start === "4")[0];
+  const slotBr = (start) => mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.dataset && node.parentElement.dataset.start === String(start) && node.parentElement.dataset.end === String(start))[0];
+  const cases = [
+    { name: "BG.ws.1", doc: "one\n\n \n\ntwo\n", at: 8, stop: 5 },
+    { name: "BG.ws.2", doc: "one\n\n\t\n\ntwo\n", at: 8, stop: 5 },
+    { name: "BG.ws.4", doc: "one\n\n  \n\ntwo\n", at: 9, stop: 5 },
+  ];
+  try {
+    for (const item of cases) {
+      for (const land of ["end", "start", "gap"]) {
+        const view = createEditor(mounted.root, item.doc, item.at);
+        firefoxSelection(mounted, (sel) => {
+          if (land === "gap") {
+            const br = gapBr();
+            assert.ok(br, item.name);
+            sel.place(br, 0);
+            return;
+          }
+          const one = textNode("one");
+          assert.ok(one, item.name);
+          sel.place(one, land === "end" ? one.length : 0);
+        });
+        keyDown(mounted, "ArrowUp");
+        assert.equal(view.getState().doc, item.doc, item.name);
+        assert.equal(view.getState().cursor, item.stop, `${item.name} ${land}`);
+        assert.equal(view.getState().anchor, item.stop, `${item.name} ${land}`);
+        view.destroy();
+      }
+    }
+
+    const stayed = createEditor(mounted.root, cases[0].doc, cases[0].at);
+    firefoxSelection(mounted, (sel) => {
+      const br = slotBr(5);
+      assert.ok(br);
+      sel.place(br, 0);
+    });
+    keyDown(mounted, "ArrowUp");
+    assert.equal(stayed.getState().cursor, 5);
+    assert.equal(stayed.getState().anchor, 5);
+    stayed.destroy();
+
+    const leave = createEditor(mounted.root, cases[0].doc, cases[0].at);
+    firefoxSelection(mounted, (sel) => {
+      const one = textNode("one");
+      sel.place(one, one.length);
+    });
+    keyDown(mounted, "ArrowUp");
+    assert.equal(leave.getState().cursor, 5);
+    keyDown(mounted, "ArrowUp");
+    assert.equal(leave.getState().cursor, 3);
+    assert.equal(leave.getState().anchor, 3);
+    leave.destroy();
+
+    const extend = createEditor(mounted.root, cases[0].doc, cases[0].at);
+    firefoxSelection(mounted, (sel) => {
+      const one = textNode("one");
+      sel.place(one, one.length);
+    });
+    keyDown(mounted, "ArrowUp", { shiftKey: true });
+    assert.equal(extend.getState().anchor, cases[0].at);
+    assert.equal(extend.getState().cursor, 5);
+    extend.destroy();
+
+    const down = createEditor(mounted.root, cases[0].doc, 0);
+    firefoxSelection(mounted, (sel) => {
+      const two = textNode("two");
+      assert.ok(two);
+      sel.place(two, 0);
+    });
+    keyDown(mounted, "ArrowDown");
+    assert.equal(down.getState().cursor, 5);
+    assert.equal(down.getState().anchor, 5);
+    down.destroy();
+
+    const plain = createEditor(mounted.root, "one\n\ntwo\n", 5);
+    firefoxSelection(mounted, (sel) => {
+      const one = textNode("one");
+      sel.place(one, one.length);
+    });
+    keyDown(mounted, "ArrowUp");
+    assert.equal(plain.getState().cursor, 3);
+    assert.equal(plain.getState().anchor, 3);
+    plain.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("a tab on a blank line shares that line with its break", () => {
   const doc = "one\n\n\t\n\ntwo\n";
   const mounted = mountEditor();

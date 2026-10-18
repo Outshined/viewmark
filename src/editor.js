@@ -996,6 +996,31 @@ function bareBreakNewline(doc, offset) {
   return lineCaret(doc, offset) === offset && offset < doc.length && lineCaret(doc, offset + 1) === offset;
 }
 
+// Firefox's line step skips a line of only spaces or a tab and reports the
+// paragraph above it. That line is drawn empty, so the step stops on its start.
+function whitespaceLineStop(doc, from, to) {
+  const text = typeof doc === "string" ? doc : "";
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from === to) return null;
+  const origin = lineSpan(text, from);
+  const dest = lineSpan(text, to);
+  if (origin[0] === dest[0]) return null;
+  const earlier = origin[0] < dest[0] ? origin : dest;
+  const later = origin[0] < dest[0] ? dest : origin;
+  let best = null;
+  let at = earlier[1] + 1;
+  while (at < later[0] && at <= text.length) {
+    const [start, end] = lineSpan(text, at);
+    if (start >= later[0]) break;
+    if (/^[ \t]+$/.test(text.slice(start, end))) {
+      if (best == null || Math.abs(start - from) < Math.abs(best - from)) best = start;
+    }
+    const nextAt = end + 1;
+    if (nextAt <= at) break;
+    at = nextAt;
+  }
+  return best;
+}
+
 // selectNode reports the atom as a child index on its parent, not a text offset.
 export function mapOffset(startOrNode, offset) {
   if (typeof startOrNode === "number") return startOrNode + offset;
@@ -7454,7 +7479,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (landed == null) return;
     let next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
     // Up and down on a line drawn empty rest on its start.
-    if (granularity === "line") next = lineCaret(state.doc, next);
+    if (granularity === "line") {
+      next = lineCaret(state.doc, next);
+      const held = whitespaceLineStop(state.doc, beforeCursor, next);
+      if (held != null) next = held;
+    }
     // Firefox's lineboundary stops on the br, which is the hidden tail.
     if (!sourceMode && granularity === "lineboundary" && forward) next = endBeforeTail(state.doc, next);
     // Rendered markers have no glyphs, so one press crosses the whole marker.
