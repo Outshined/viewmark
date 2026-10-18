@@ -8,6 +8,14 @@ const VIM = "viewmark.vim";
 const FILE = "a.md";
 const MOVE = "alpha beta\n\ngamma delta\n\nepsilon\n";
 const AT = "alpha beta\n\nga".length;
+// Long enough to wrap in the test window. A block on each side is what j and k step to.
+const WRAP_FILE = "wrap.md";
+const WRAP_LEAD = "lead\n\n";
+const WRAP_PARA = `${"alpha ".repeat(80).trim()}`;
+const WRAP = `${WRAP_LEAD}${WRAP_PARA}\n\nbeta\n`;
+const WRAP_AT = WRAP_LEAD.length + 10;
+const WRAP_START = WRAP_LEAD.length;
+const WRAP_END = WRAP_LEAD.length + WRAP_PARA.length;
 
 // The cells each start a browser. One at a time keeps them from opening every browser at once.
 let tail = Promise.resolve();
@@ -103,6 +111,35 @@ async function enterInsert(page) {
   assert.equal(await status(page), "I");
 }
 
+// Offsets where each drawn row of [from, to) starts, from the glyphs as laid out now.
+async function rowStarts(page, from, to) {
+  const mids = await page.eval(`(() => {
+    const out = [];
+    for (let o = ${from}; o < ${to}; o += 1) {
+      const g = window.__qaGlyph(o);
+      out.push(g && g.bottom > g.top ? (g.top + g.bottom) / 2 : null);
+    }
+    return out;
+  })()`);
+  const starts = [];
+  let prev = null;
+  for (let i = 0; i < mids.length; i += 1) {
+    const mid = mids[i];
+    if (mid == null) continue;
+    if (prev == null || Math.abs(mid - prev) > 3) starts.push(from + i);
+    prev = mid;
+  }
+  return starts;
+}
+
+function rowOf(starts, offset, end) {
+  for (let i = 0; i < starts.length; i += 1) {
+    const next = i + 1 < starts.length ? starts[i + 1] : end;
+    if (offset >= starts[i] && offset < next) return i;
+  }
+  return -1;
+}
+
 cell("VT.1", async (t) => {
   const hub = await startHub();
   const browsers = [];
@@ -111,6 +148,7 @@ cell("VT.1", async (t) => {
     await hub.close();
   });
   await hub.create(FILE, MOVE);
+  await hub.create(WRAP_FILE, WRAP);
   const plain = await (async () => {
     const browser = await launchBrowser();
     browsers.push(browser);
@@ -135,8 +173,38 @@ cell("VT.1", async (t) => {
     return { home: home.focus, end: end.focus };
   }
 
+  async function plainStep(page, offset, key) {
+    await place(page, offset);
+    await page.key(key);
+    await page.quiet();
+    const caret = await page.caret();
+    assert.equal(caret.anchor, caret.focus, `${key} selected a range`);
+    return caret.focus;
+  }
+
   const off = await ends(plain.page);
   assert.notEqual(off.home, off.end, `flag-off Home and End both left the caret at ${off.home}`);
+  const offUp = await plainStep(plain.page, AT, "↑");
+  const offDown = await plainStep(plain.page, AT, "↓");
+  assert.notEqual(offUp, AT, "flag-off ↑ did not move");
+  assert.notEqual(offDown, AT, "flag-off ↓ did not move");
+  assert.equal((await hub.show(FILE)).text, MOVE);
+
+  // j and k leave this paragraph. The flag-off arrows stay on it, one drawn row each.
+  await plain.page.open(WRAP_FILE);
+  await place(plain.page, WRAP_AT);
+  await plain.page.key("↓");
+  await plain.page.quiet();
+  const downCaret = await plain.page.caret();
+  assert.equal(downCaret.anchor, downCaret.focus, "↓ selected a range");
+  const wrapDown = downCaret.focus;
+  const starts = await rowStarts(plain.page, WRAP_START, WRAP_END);
+  assert.ok(starts.length >= 2, `the paragraph drew ${starts.length} rows`);
+  assert.equal(rowOf(starts, WRAP_AT, WRAP_END), 0, `offset ${WRAP_AT} is not on the first drawn row`);
+  assert.equal(rowOf(starts, wrapDown, WRAP_END), 1, `flag-off ↓ landed at ${wrapDown}, not the second drawn row`);
+  const wrapUp = await plainStep(plain.page, wrapDown, "↑");
+  assert.equal(rowOf(starts, wrapUp, WRAP_END), 0, `flag-off ↑ from the second row landed at ${wrapUp}`);
+  assert.equal((await hub.show(WRAP_FILE)).text, WRAP);
   await closeBrowser(browsers, plain.browser);
 
   const browser = await launchBrowser();
@@ -178,8 +246,8 @@ cell("VT.1", async (t) => {
   assert.notEqual(down, AT, "j did not move");
   assert.equal(await motion("←", true), left, "Insert left did not move as h");
   assert.equal(await motion("→", true), right, "Insert right did not move as l");
-  assert.equal(await motion("↑", true), up, "Insert up did not move as k");
-  assert.equal(await motion("↓", true), down, "Insert down did not move as j");
+  assert.equal(await motion("↑", true), offUp, "Insert ↑ did not move one drawn row");
+  assert.equal(await motion("↓", true), offDown, "Insert ↓ did not move one drawn row");
 
   await place(page, AT);
   if ((await status(page)) !== "I") await enterInsert(page);
@@ -195,6 +263,41 @@ cell("VT.1", async (t) => {
   assert.equal(home, off.home, `Insert Home went to ${home}, flag-off Home went to ${off.home}`);
   assert.equal(end, off.end, `Insert End went to ${end}, flag-off End went to ${off.end}`);
   assert.equal((await hub.show(FILE)).text, MOVE);
+
+  await page.open(WRAP_FILE);
+  assert.equal(await status(page), "N");
+  async function blockStep(offset, key) {
+    await place(page, offset);
+    if ((await status(page)) !== "N") {
+      await page.key("Escape");
+      await page.quiet();
+      assert.equal(await status(page), "N");
+    }
+    await page.key(key);
+    await page.quiet();
+    assert.equal(await status(page), "N");
+    const caret = await page.caret();
+    assert.equal(caret.anchor, caret.focus, `${key} selected a range`);
+    assert.equal((await hub.show(WRAP_FILE)).text, WRAP);
+    return caret.focus;
+  }
+  async function insertStep(offset, key) {
+    await place(page, offset);
+    if ((await status(page)) !== "I") await enterInsert(page);
+    await page.key(key);
+    await page.quiet();
+    assert.equal(await status(page), "I");
+    const caret = await page.caret();
+    assert.equal(caret.anchor, caret.focus, `${key} selected a range`);
+    assert.equal((await hub.show(WRAP_FILE)).text, WRAP);
+    return caret.focus;
+  }
+  const jumped = await blockStep(WRAP_AT, "j");
+  assert.ok(jumped >= WRAP_END + 2 && jumped < WRAP.length, `j landed at ${jumped}, not on the next block`);
+  const climbed = await blockStep(wrapDown, "k");
+  assert.ok(climbed <= WRAP_LEAD.indexOf("\n"), `k landed at ${climbed}, not on the block above`);
+  assert.equal(await insertStep(WRAP_AT, "↓"), wrapDown, "Insert ↓ did not move one drawn row");
+  assert.equal(await insertStep(wrapDown, "↑"), wrapUp, "Insert ↑ did not move one drawn row");
 }, 180000);
 
 cell("VT.2", async (t) => {
