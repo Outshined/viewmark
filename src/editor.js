@@ -5384,6 +5384,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   // The empty line after a final newline exists only while the caret is on it.
+  // A fence's trail would leave this row a half line below the letter that lands here.
   function blocksForCaret(blocks) {
     const doc = state.doc;
     if (state.cursor !== doc.length || !doc.endsWith("\n")) return blocks;
@@ -5394,7 +5395,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       start: doc.length,
       end: doc.length,
       text: "",
-      classes: ["md-raw", "md-p"],
+      classes: ["md-raw", "md-p", "md-caret-row"],
       runs: [],
       parts: [],
       indent: 0,
@@ -5599,6 +5600,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (!line || !line.classList || !line.classList.contains("md-line") || !line.style) continue;
       const start = Number(line.dataset && line.dataset.start);
       if (!indentAt.has(start)) continue;
+      // A gap keeps the item's trail. This row is the caret, and the next letter
+      // is drawn on the item, so the trail must not sit between them.
+      if (line.classList.contains("md-raw") && !line.classList.contains("md-paragraph-gap")) {
+        line.classList.add("md-list-cont");
+      }
       const indent = indentAt.get(start);
       const computed = readComputedStyle(line);
       if (!computed) continue;
@@ -9255,6 +9261,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return start;
   }
 
+  // A rendered rule is the border on the blank's edge, so the blank's hit box
+  // would take the press. The rule's own element is the rule's start.
+  function rulePress(event) {
+    if (sourceMode || !event) return null;
+    const node = event.target;
+    const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    if (!el || typeof el.closest !== "function") return null;
+    const rule = el.closest(".md-hr");
+    if (!rule || !root.contains(rule) || hasClass(rule, "md-raw")) return null;
+    const start = Number(rule.dataset && rule.dataset.start);
+    return Number.isFinite(start) ? start : null;
+  }
+
   // The blank has no box, so a press on its edge hits the block under it.
   // The stop is that blank. A press on the block's text is not the edge.
   function gapUnderPoint(event) {
@@ -9295,6 +9314,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function pressOffset(event) {
+    const rule = rulePress(event);
+    if (rule != null) return rule;
     const gap = gapUnderPoint(event);
     if (gap != null) return gap;
     const mapped = pointMapped(event);

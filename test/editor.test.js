@@ -3120,6 +3120,162 @@ test("EN.fu.1", () => {
   assert.equal(insert(createState(doc, doc.length), "y").doc, "```js\nlet xy");
 });
 
+function editorLines(mounted) {
+  return mounted.findAll((node) => node.classList && node.classList.contains("md-line") && !node.classList.contains("md-source-line"));
+}
+
+function installGapQuery(mounted) {
+  mounted.root.querySelectorAll = (selector) => {
+    if (selector !== ".md-paragraph-gap") return [];
+    return mounted.findAll((node) => node.classList && node.classList.contains("md-paragraph-gap"));
+  };
+}
+
+function pressPoint(mounted, target, x, y) {
+  const event = {
+    target,
+    clientX: x,
+    clientY: y,
+    detail: 1,
+    button: 0,
+    shiftKey: false,
+    preventDefault() {},
+  };
+  mounted.listeners.mousedown(event);
+  mounted.listeners.click(event);
+}
+
+function setBox(el, top, bottom, left = 0, right = 120) {
+  el.getBoundingClientRect = () => ({ top, bottom, left, right, width: right - left, height: bottom - top });
+}
+
+// The blank and the rule share the border until the blank's hit box is the padding above it.
+// caretPositionFromPoint reports the blank, which is what an empty rule returns.
+function clickRule(mounted, doc, ruleStart) {
+  const view = createEditor(mounted.root, doc, 0);
+  installGapQuery(mounted);
+  const lines = editorLines(mounted);
+  const gap = lines.find((node) => node.classList.contains("md-paragraph-gap"));
+  const rule = lines.find((node) => node.classList.contains("md-hr"));
+  assert.ok(gap);
+  assert.ok(rule);
+  assert.equal(rule.classList.contains("md-raw"), false);
+  assert.equal(rule.textContent, "");
+  assert.equal(Number(rule.dataset.start), ruleStart);
+  setBox(gap, 40, 40);
+  const br = gap.childNodes.find((node) => String(node.nodeName).toUpperCase() === "BR");
+  assert.ok(br);
+  globalThis.document.caretPositionFromPoint = () => ({ offsetNode: br, offset: 0 });
+  pressPoint(mounted, rule, 8, 40);
+  return { view, ruleStart };
+}
+
+test("CK.hr.1", () => {
+  const mounted = mountEditor();
+  try {
+    const { view } = clickRule(mounted, "x\n\n---\n", 3);
+    assert.equal(view.getState().cursor, 3);
+    assert.equal(view.getState().anchor, 3);
+    const raw = editorLines(mounted).find((node) => node.classList.contains("md-hr"));
+    assert.equal(raw.classList.contains("md-raw"), true);
+    const glyph = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "---")[0];
+    assert.ok(glyph);
+    assert.equal(mapOffset(glyph, 0), 3);
+    mounted.listeners.beforeinput({ inputType: "insertText", data: "Q", preventDefault() {} });
+    assert.equal(view.getState().doc, "x\n\nQ---\n");
+    view.destroy();
+
+    const rawView = createEditor(mounted.root, "x\n\n---\n", 3);
+    const text = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "---")[0];
+    assert.ok(text);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: text, offset: 2 });
+    pressPoint(mounted, text, 24, 18);
+    assert.equal(rawView.getState().cursor, mapOffset(text, 2));
+    assert.equal(rawView.getState().anchor, mapOffset(text, 2));
+    rawView.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
+    mounted.restore();
+  }
+});
+
+test("TY.hr.1", () => {
+  const mounted = mountEditor();
+  try {
+    const { view } = clickRule(mounted, "one\n\n---\n", 5);
+    assert.equal(view.getState().cursor, 5);
+    assert.equal(view.getState().anchor, 5);
+    const glyph = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "---")[0];
+    assert.ok(glyph);
+    assert.equal(mapOffset(glyph, 0), 5);
+    mounted.listeners.beforeinput({ inputType: "insertText", data: "x", preventDefault() {} });
+    assert.equal(view.getState().doc, "one\n\nx---\n");
+    view.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
+    mounted.restore();
+  }
+});
+
+test("BG.p-hr", () => {
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(
+    css,
+    /\.md-line\.md-paragraph-gap:has\(\+ \.md-line\.md-hr\)\s*\{[^}]*height:\s*var\(--p\);[^}]*min-height:\s*var\(--p\);[^}]*margin-top:\s*calc\(-1 \* var\(--p\)\);[^}]*overflow:\s*hidden;/,
+  );
+  const mounted = mountEditor();
+  try {
+    const doc = "one\n\n---\n";
+    const view = createEditor(mounted.root, doc, 0);
+    installGapQuery(mounted);
+    const before = editorLines(mounted);
+    const gap = before.find((node) => node.classList.contains("md-paragraph-gap"));
+    const rule = before.find((node) => node.classList.contains("md-hr"));
+    assert.ok(gap);
+    assert.equal(Number(gap.dataset.start), 4);
+    assert.equal(rule.textContent, "");
+    assert.equal(mounted.findAll((node) => node.nodeType === 3 && mapOffset(node, 0) === 5).length, 0);
+    // The blank's box is the padding above the rule, so its center is not the border.
+    setBox(gap, 20, 33);
+    setBox(rule, 33, 34);
+    const word = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "one")[0];
+    assert.ok(word);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: word, offset: 1 });
+    pressPoint(mounted, gap, 8, 26.5);
+    assert.equal(view.getState().cursor, 4);
+    assert.equal(view.getState().anchor, 4);
+    assert.equal(editorLines(mounted).find((node) => node.classList.contains("md-hr")).textContent, "");
+    const ruled = editorLines(mounted).find((node) => node.classList.contains("md-hr"));
+    const blankBr = editorLines(mounted).find((node) => node.dataset && node.dataset.start === "4").childNodes[0];
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: blankBr, offset: 0 });
+    pressPoint(mounted, ruled, 8, 33.5);
+    assert.equal(view.getState().cursor, 5);
+    assert.equal(view.getState().anchor, 5);
+    const drawn = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "---")[0];
+    assert.ok(drawn);
+    assert.equal(mapOffset(drawn, 0), 5);
+    view.destroy();
+
+    const headed = createEditor(mounted.root, "one\n\n# H\n", 0);
+    installGapQuery(mounted);
+    const headGap = editorLines(mounted).find((node) => node.classList.contains("md-paragraph-gap"));
+    const title = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "H")[0];
+    assert.ok(headGap);
+    assert.ok(title);
+    setBox(headGap, 10, 10);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: title, offset: 0 });
+    pressPoint(mounted, title, 12, 10);
+    assert.equal(headed.getState().cursor, Number(headGap.dataset.start));
+    pressPoint(mounted, title, 12, 48);
+    assert.equal(headed.getState().cursor, mapOffset(title, 0));
+    assert.notEqual(headed.getState().cursor, Number(headGap.dataset.start));
+    headed.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
+    mounted.restore();
+  }
+});
+
 test("a letter at the end of the file stays where the line above does not join", () => {
   assert.equal(insert(createState("# Title\n", 8), "Q").doc, "# Title\nQ");
   assert.equal(insert(createState("```\ncode\n", 9), "Q").doc, "```\ncode\nQ");
@@ -5449,6 +5605,109 @@ test("an empty list continuation takes the list gutter", () => {
     const quotedItem = emptyLine("> - alpha\\\n\n", 11);
     assert.equal(quotedItem.length, 1);
     assert.equal(quotedItem[0].style.marginLeft || "", "");
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("SE.li.1 the caret row is the list continuation", () => {
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(
+    css,
+    /\.md-line\.md-run-end\.md-block-list:not\(\.md-raw\):has\(\+ \.md-line\.md-list-cont\)\s*\{[^}]*padding-bottom:\s*0;/,
+  );
+  const mounted = mountEditor();
+  try {
+    const doc = "- alpha\\\n\n";
+    const view = createEditor(mounted.root, doc, 9);
+    const lines = editorLines(mounted);
+    assert.equal(lines.length, 2);
+    const item = lines[0];
+    const row = lines[1];
+    assert.equal(item.classList.contains("md-raw"), false);
+    assert.equal(item.classList.contains("md-li"), true);
+    assert.equal(item.classList.contains("md-run-end"), true);
+    assert.equal(item.classList.contains("md-block-list"), true);
+    assert.equal(item.classList.contains("md-trail-p"), true);
+    const br = mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.classList && node.parentElement.classList.contains("md-break"))[0];
+    assert.ok(br);
+    assert.equal(br.parentElement.parentElement, item);
+    assert.equal(row.classList.contains("md-list-cont"), true);
+    assert.equal(row.classList.contains("md-raw"), true);
+    assert.equal(row.classList.contains("md-p"), true);
+    assert.equal(row.classList.contains("md-paragraph"), false);
+    assert.equal(row.classList.contains("md-paragraph-gap"), false);
+    assert.equal(row.classList.contains("md-caret-row"), false);
+    assert.equal(row.dataset.start, "9");
+    assert.equal(row.dataset.end, "9");
+    assert.equal(row.textContent, "");
+    view.destroy();
+
+    const followed = "- alpha\\\n\nbeta\n";
+    const away = createEditor(mounted.root, followed, followed.indexOf("beta"));
+    const awayLines = editorLines(mounted);
+    const awayItem = awayLines.find((node) => node.classList.contains("md-li") && !node.classList.contains("md-raw"));
+    const gap = awayLines.find((node) => node.classList.contains("md-paragraph-gap"));
+    assert.ok(awayItem);
+    assert.equal(awayItem.classList.contains("md-trail-p"), true);
+    assert.ok(gap);
+    assert.equal(gap.classList.contains("md-list-cont"), false);
+    assert.equal(awayLines.some((node) => node.classList.contains("md-list-cont")), false);
+    away.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("EN.fu.1 the caret row sits on the fence", () => {
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(
+    css,
+    /\.md-line\.md-block-fence:not\(\.md-raw\):has\(\+ \.md-line\.md-caret-row\)\s*\{[^}]*margin-bottom:\s*0;/,
+  );
+  assert.equal(/md-paragraph[^{}]*md-caret-row/.test(css), false);
+  const mounted = mountEditor();
+  try {
+    const doc = "```js\nlet x\n";
+    const view = createEditor(mounted.root, doc, doc.length);
+    const lines = editorLines(mounted);
+    assert.equal(lines.length, 2);
+    const fence = lines[0];
+    const row = lines[1];
+    assert.equal(fence.classList.contains("md-block-fence"), true);
+    assert.equal(fence.classList.contains("md-raw"), false);
+    assert.equal(fence.textContent.includes("let x"), true);
+    assert.equal(fence.textContent.includes("`"), false);
+    assert.equal(row.classList.contains("md-caret-row"), true);
+    assert.equal(row.classList.contains("md-raw"), true);
+    assert.equal(row.classList.contains("md-p"), true);
+    assert.equal(row.classList.contains("md-paragraph"), false);
+    assert.equal(row.classList.contains("md-paragraph-gap"), false);
+    assert.equal(row.classList.contains("md-list-cont"), false);
+    assert.equal(row.dataset.start, String(doc.length));
+    assert.equal(row.dataset.end, String(doc.length));
+    assert.equal(row.textContent, "");
+    assert.equal(fence.parentElement, mounted.root);
+    assert.equal(row.parentElement, mounted.root);
+    view.destroy();
+
+    const followed = "```js\nlet x\n```\nnext\n";
+    const next = createEditor(mounted.root, followed, followed.indexOf("next"));
+    const nextLines = editorLines(mounted);
+    const closed = nextLines.find((node) => node.classList.contains("md-block-fence"));
+    assert.ok(closed);
+    assert.equal(closed.classList.contains("md-raw"), false);
+    assert.equal(nextLines.some((node) => node.classList.contains("md-caret-row")), false);
+    next.destroy();
+
+    const paragraph = createEditor(mounted.root, "one\n", 4);
+    const paraLines = editorLines(mounted);
+    assert.equal(paraLines.length, 2);
+    assert.equal(paraLines[0].classList.contains("md-paragraph"), true);
+    assert.equal(paraLines[0].classList.contains("md-caret-row"), false);
+    assert.equal(paraLines[1].classList.contains("md-caret-row"), true);
+    assert.equal(paraLines[1].classList.contains("md-list-cont"), false);
+    paragraph.destroy();
   } finally {
     mounted.restore();
   }
