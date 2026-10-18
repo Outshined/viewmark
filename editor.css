@@ -1125,6 +1125,11 @@ a.md-link {
   margin-left: calc(1.3em + var(--indent, 0) * 1ch);
 }
 
+/* The bullet font lengthens a disc item past one line box. */
+.md-line.md-li:not(.md-raw)::marker {
+  line-height: 1;
+}
+
 .md-line.md-ol {
   display: list-item;
   list-style: none;
