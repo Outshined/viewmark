@@ -159,7 +159,8 @@ function renderedLines(doc, cursor, expandFences) {
   const blocks = plan(doc, cursor).blocks;
   const bodies = expandFences ? codeFenceBodies(doc) : null;
   const lines = [];
-  for (const block of blocks) {
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = blocks[i];
     if (block.classes && block.classes.includes("md-paragraph-gap")) continue;
     if (typeof block.start !== "number" || typeof block.end !== "number") continue;
     // j and k step a line of code. The fence stays one block for a linewise delete.
@@ -170,6 +171,11 @@ function renderedLines(doc, cursor, expandFences) {
         continue;
       }
     }
+    // plan leaves the blank after a fence unmarked, because the block before it
+    // is the fence. A blank between blocks is not a vim line. The blank before
+    // the fence is already a paragraph gap. A further blank stays a line, and
+    // so does the row when nothing drawn follows the fence.
+    if (block.empty && blocks[i - 1] && blocks[i - 1].fence && i + 1 < blocks.length) continue;
     const line = { start: block.start, end: block.end };
     // k lands on the last row. The block stays one vim line for a linewise delete.
     if (block.type === "table") line.table = true;
@@ -341,8 +347,21 @@ function drawnColumn(doc, line, offset, direction, raw, limit) {
   return snapped;
 }
 
+// lineDollar is the newline, so a column past a code line would sit on the
+// break after the last glyph. Stock vim stops on the glyph. $ keeps the
+// newline: a forward delete through it still takes that glyph.
+function codeColumnLimit(doc, line, limit) {
+  if (!fenceBodyAt(doc, line.start)) return limit;
+  let end = limit;
+  if (end > line.start && end < doc.length && (doc[end] === "\n" || doc[end] === "\r")) end -= 1;
+  else if (end > line.start && end === doc.length) end -= 1;
+  if (end > line.start && doc[end] === "\r") end -= 1;
+  return end;
+}
+
 function placeColumn(doc, line, column, raw, direction) {
-  const limit = lineDollar(doc, line);
+  let limit = lineDollar(doc, line);
+  if (!raw) limit = codeColumnLimit(doc, line, limit);
   let offset = line.start + (column < 0 ? 0 : column);
   if (offset > limit) offset = limit;
   if (offset < line.start) offset = line.start;

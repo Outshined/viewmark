@@ -871,15 +871,98 @@ test("g92jk6em j and k move one line of a code fence and keep the column", () =>
   const two = run(start, ["2", "j"]);
   assert.equal(lineAtCaret(two), "}");
   assert.equal(two.vim.column, 2);
+  assert.equal(two.doc[two.cursor], "}");
   const restored = run("```javascript\n  ‸return 1;\n}\n  return 2;\n```\n", ["j", "j"]);
   assert.equal(lineAtCaret(restored), "  return 2;");
   assert.equal(restored.cursor - restored.doc.indexOf("  return 2;"), 2);
   const last = run(start, ["j", "j", "j"]);
-  assert.equal(lineAtCaret(last), "");
-  const fromBlank = run(last.show, ["k"], { vim: last.vim });
-  assert.equal(lineAtCaret(fromBlank), "}");
-  const fromEnd = run("Intro.\n\n```javascript\nfunction f() {\n  return 1;\n}\n```\n\nEn‸d.\n", ["k", "k"]);
+  assert.equal(lineAtCaret(last), "End.");
+  const backToBrace = run(last.show, ["k"], { vim: last.vim });
+  assert.equal(lineAtCaret(backToBrace), "}");
+  assert.equal(backToBrace.doc[backToBrace.cursor], "}");
+  const fromEnd = run("Intro.\n\n```javascript\nfunction f() {\n  return 1;\n}\n```\n\nEn‸d.\n", ["k"]);
   assert.equal(lineAtCaret(fromEnd), "}");
+  assert.equal(fromEnd.doc[fromEnd.cursor], "}");
+  const above = run(fromEnd.show, ["k"], { vim: fromEnd.vim });
+  assert.equal(lineAtCaret(above), "  return 1;");
+});
+
+// Column 13 is the 13th glyph. The line under it is shorter, so stock vim stops
+// on its last glyph. The blank after the fence is the space between blocks.
+test("g92jk6em j stops on the last glyph of a short code line and skips the blank after the fence", () => {
+  const text = "Before the fence.\n\n```js\nconst alpha = 1;\nlet b = 2;\nconst gamma = 3;\n```\n\nAfter the fence.\n";
+  const line1 = text.indexOf("const alpha");
+  const line2 = text.indexOf("let b");
+  const line3 = text.indexOf("const gamma");
+  const after = text.indexOf("After");
+  assert.equal(line1, 25);
+  assert.equal(line2, 42);
+  assert.equal(text[51], ";");
+  assert.equal(text[52], "\n");
+  assert.equal(line3, 53);
+  assert.equal(text[74], "\n");
+  assert.equal(after, 75);
+
+  const at = (offset) => text.slice(0, offset) + "‸" + text.slice(offset);
+  const down = run(at(line1 + 12), ["j"]);
+  assert.equal(down.cursor, 51);
+  assert.equal(down.vim.column, 12);
+  const third = run(down.show, ["j"], { vim: down.vim });
+  assert.equal(third.cursor, line3 + 12);
+  const back = run(third.show, ["k"], { vim: third.vim });
+  assert.equal(back.cursor, 51);
+  const top = run(back.show, ["k"], { vim: back.vim });
+  assert.equal(top.cursor, line1 + 12);
+  const two = run(at(line1 + 12), ["2", "j"]);
+  assert.equal(two.cursor, line3 + 12);
+
+  const fromLast = run(at(line3), ["j"]);
+  assert.ok(fromLast.cursor >= after && fromLast.cursor <= after + "After the fence.".length);
+  assert.notEqual(fromLast.cursor, 74);
+  const fromAfter = run(at(after), ["k"]);
+  assert.ok(fromAfter.cursor >= line3 && fromAfter.cursor <= line3 + "const gamma = 3;".length);
+  assert.notEqual(fromAfter.cursor, 74);
+  const before = run(at(0), ["j"]);
+  assert.equal(before.cursor, line1);
+
+  const crlf = "```js\nconst alpha = 1;\r\nlet b = 2;\r\nconst gamma = 3;\r\n```\r\n";
+  const crlfSemi = crlf.indexOf("let b = 2;") + "let b = 2;".length - 1;
+  const crlfDown = run(crlf.slice(0, crlf.indexOf("const alpha") + 12) + "‸" + crlf.slice(crlf.indexOf("const alpha") + 12), ["j"]);
+  assert.equal(crlfDown.cursor, crlfSemi);
+  assert.equal(crlfDown.doc[crlfDown.cursor], ";");
+
+  const blankBody = "```js\nconst alpha = 1;\n\nlet b = 2;\n```\n";
+  const emptyAt = blankBody.indexOf(";\n\n") + 2;
+  const ontoEmpty = run(blankBody.slice(0, blankBody.indexOf("const alpha") + 12) + "‸" + blankBody.slice(blankBody.indexOf("const alpha") + 12), ["j"]);
+  assert.equal(ontoEmpty.cursor, emptyAt);
+  assert.equal(ontoEmpty.doc[ontoEmpty.cursor], "\n");
+
+  const second = "```js\nlet b = 2;\n```\n\n\nAfter.\n";
+  const secondBlank = second.indexOf("\n\n\n") + 2;
+  const ontoSecond = run(second.slice(0, second.indexOf("let b")) + "‸" + second.slice(second.indexOf("let b")), ["j"]);
+  assert.equal(ontoSecond.cursor, secondBlank);
+  assert.notEqual(ontoSecond.cursor, second.indexOf("After"));
+  const fromSecondAfter = run(second.slice(0, second.indexOf("After")) + "‸" + second.slice(second.indexOf("After")), ["k"]);
+  assert.equal(fromSecondAfter.cursor, secondBlank);
+
+  const between = "```js\nlet b = 2;\n```\n\n```js\nconst gamma = 3;\n```\n";
+  const nextFence = between.indexOf("const gamma");
+  const across = run(between.slice(0, between.indexOf("let b")) + "‸" + between.slice(between.indexOf("let b")), ["j"]);
+  assert.equal(across.cursor, nextFence);
+
+  const trail = "```js\nlet b = 2;\n```\n\n";
+  const onTrail = run(trail.slice(0, trail.indexOf("let b")) + "‸" + trail.slice(trail.indexOf("let b")), ["j"]);
+  assert.equal(onTrail.cursor, trail.lastIndexOf("\n"));
+  assert.equal(lineAtCaret(onTrail), "");
+
+  const diagramDoc = "‸x\n\n```mermaid\ngraph TD\nA-->B\n```\n\nAfter.\n";
+  const diagram = run(diagramDoc, ["j"]);
+  assert.equal(diagram.doc.slice(diagram.cursor, diagram.cursor + 3), "```");
+  const over = run(diagramDoc, ["2", "j"]);
+  assert.equal(lineAtCaret(over), "");
+  assert.ok(over.cursor > over.doc.indexOf("A-->B"));
+  assert.equal(run("abcde‸f\n\nhi\n", ["j"]).show, "abcdef\n\nhi‸\n");
+  assert.equal(run("abcde‸f\nhi\n", ["j"], { raw: true }).show, "abcdef\nhi‸\n");
 });
 
 test("g92jk6em V selects one line of a code fence and Vj selects the next", () => {
