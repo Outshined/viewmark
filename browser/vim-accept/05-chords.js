@@ -240,14 +240,21 @@ test("VK.10 (ticket 7vdep2z4)", { timeout: 180000 }, async (t) => {
   shot = await snap(hub, page);
   expectShot(shot, "VK.10 Shift+Left", { text: body, focus: byB, anchor: byB, rev: before.rev, status: "N", collapsed: true });
 
+  // Shift+↓ and Shift+↑ go where Ctrl-F and Ctrl-B do from the same place, as in stock vim
+  // (editing.md, ticket swhggkdt).
+  await place(page, 2);
+  await page.key("f", ["Ctrl"]);
+  const byPageDown = (await snap(hub, page)).focus;
+  await page.key("b", ["Ctrl"]);
+  const byPageUp = (await snap(hub, page)).focus;
   await place(page, 2);
   await page.key("↓", ["Shift"]);
   shot = await snap(hub, page);
-  expectShot(shot, "VK.10 Shift+Down", { text: body, focus: 9, anchor: 9, rev: before.rev, status: "N", collapsed: true });
+  expectShot(shot, "VK.10 Shift+Down", { text: body, focus: byPageDown, anchor: byPageDown, rev: before.rev, status: "N", collapsed: true });
 
   await page.key("↑", ["Shift"]);
   shot = await snap(hub, page);
-  expectShot(shot, "VK.10 Shift+Up", { text: body, focus: 2, anchor: 2, rev: before.rev, status: "N", collapsed: true });
+  expectShot(shot, "VK.10 Shift+Up", { text: body, focus: byPageUp, anchor: byPageUp, rev: before.rev, status: "N", collapsed: true });
 
   const off = await setup(t, body, { vim: false });
   await place(off.page, 2);
