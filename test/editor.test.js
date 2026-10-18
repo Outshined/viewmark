@@ -20646,7 +20646,7 @@ function withVimFlag(on, fn) {
     });
 }
 
-test("vim insert groups a pause, an arrow, Enter, and Backspace into one undo", () => {
+test("vim insert groups a pause, Enter, and Backspace into one undo, and an arrow starts another", () => {
   const now = Date.now;
   let clock = 50_000;
   Date.now = () => clock;
@@ -20694,7 +20694,9 @@ test("vim insert groups a pause, an arrow, Enter, and Backspace into one undo", 
     vimType(mounted, "Escape");
     globalThis.window.getSelection = () => null;
     assert.equal(view.getState().doc, "alphaxzy\n");
-    assert.deepEqual(opened.edits.map((edit) => edit.group), [undefined, true, true]);
+    assert.deepEqual(opened.edits.map((edit) => edit.group), [undefined, true, undefined]);
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, "alphaxy\n");
     vimType(mounted, "u");
     assert.equal(view.getState().doc, "alpha\n");
 
@@ -20761,6 +20763,64 @@ test("vim insert groups a pause, an arrow, Enter, and Backspace into one undo", 
   };
   return withVimFlag(true, run).finally(() => {
     Date.now = now;
+  });
+});
+
+// i, xx, down, yy, Escape. One u takes back yy. The next takes back xx.
+// Ctrl-R puts xx back, then yy.
+test("with vim keys on, an arrow in Insert ends the undo step (ticket ehfygfdk)", () => {
+  return withVimFlag(true, (mounted) => {
+    globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+    const opened = recordingTransport("alpha\n\nbeta", 0);
+    const view = createEditor(mounted.root, "alpha\n\nbeta", 0, opened.transport);
+    try {
+      vimType(mounted, "i");
+      vimType(mounted, "x");
+      vimType(mounted, "x");
+      assert.equal(view.getState().doc, "xxalpha\n\nbeta");
+      assert.equal(view.getState().cursor, 2);
+      const line = () => mounted.findAll((node) => node.nodeType === 3 && node.textContent.includes("alpha"))[0];
+      assert.ok(line());
+      let lineOffset = 0;
+      globalThis.window.getSelection = () => ({
+        rangeCount: 1,
+        collapse() {},
+        modify(_action, direction, granularity) {
+          if (granularity !== "line") return;
+          lineOffset = direction === "forward" || direction === "right" ? 9 : 0;
+        },
+        getRangeAt() {
+          const node = line();
+          return {
+            startContainer: node,
+            startOffset: lineOffset,
+            endContainer: node,
+            endOffset: lineOffset,
+            collapsed: true,
+          };
+        },
+      });
+      vimType(mounted, "ArrowDown");
+      assert.notEqual(view.getState().cursor, 2);
+      vimType(mounted, "y");
+      vimType(mounted, "y");
+      vimType(mounted, "Escape");
+      const edited = view.getState().doc;
+      assert.equal(edited.includes("xx"), true);
+      assert.equal(edited.includes("yy"), true);
+      assert.deepEqual(opened.edits.map((edit) => edit.group), [undefined, true, undefined, true]);
+      vimType(mounted, "u");
+      assert.equal(view.getState().doc, "xxalpha\n\nbeta");
+      vimType(mounted, "u");
+      assert.equal(view.getState().doc, "alpha\n\nbeta");
+      keyDown(mounted, "r", { ctrlKey: true });
+      assert.equal(view.getState().doc, "xxalpha\n\nbeta");
+      keyDown(mounted, "r", { ctrlKey: true });
+      assert.equal(view.getState().doc, edited);
+      view.destroy();
+    } finally {
+      globalThis.window.getSelection = () => null;
+    }
   });
 });
 

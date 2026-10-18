@@ -2523,9 +2523,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // The caret after spaces just typed. Their hard-break tail stays drawn until
   // the caret leaves, so the next paint has a glyph to put it on.
   let typedTail = null;
-  // Insert, from the command that entered it until Escape, is one undo.
-  // The first splice opens the entry. A pause, an arrow, Backspace, or Enter
-  // ends an ordinary typing run, so those stay on this flag instead.
+  // Insert, from the command that entered it until Escape, is one undo,
+  // including a pause, Backspace, and Enter. An arrow ends that step.
+  // The first splice of a step opens the entry.
   let vimInsertOpen = false;
   // A vim splice records anchor and cursor as the range, so undo restores a selection.
   // These stacks put back the caret from before that command, collapsed.
@@ -9141,15 +9141,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // selection path below.
   function vimInsertArrow(event) {
     if (!event || event.ctrlKey || event.metaKey || event.altKey) return false;
-    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+    const vertical = event.key === "ArrowUp" || event.key === "ArrowDown";
+    const command = event.key === "ArrowLeft" ? "h"
+      : event.key === "ArrowRight" ? "l"
+        : "";
+    if (!vertical && !command) return false;
+    // An arrow ends the open Insert undo step. The next splice is its own undo.
+    vimInsertOpen = false;
+    if (vertical) {
       if (sourceMode) moveRawCaret(event.key, false, false);
       else moveCaret(event.key === "ArrowDown" ? "forward" : "backward", "line", false);
       return true;
     }
-    const command = event.key === "ArrowLeft" ? "h"
-      : event.key === "ArrowRight" ? "l"
-        : "";
-    if (!command) return false;
     const snap = vimSnapshot();
     snap.mode = "normal";
     snap.once = false;
