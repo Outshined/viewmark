@@ -2609,7 +2609,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // that window still describes the DOM replaceChildren just tore down.
   let gestureHold = false;
   // Chromium moves the selection back a frame after a click replaces the lines.
+  // generation lets the 200 ms window follow a caret a later edit has moved.
   let retainedCaret = null;
+  let retainGeneration = 0;
   // A remote insert above the first block. Firefox puts the collapsed caret back
   // at its old offset, and addRange does not move a caret that is already there.
   // The lock uses the shifted offset. This keeps the drawn caret on that offset
@@ -3697,6 +3699,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       state = { ...state, anchor: remoteCaret.anchor, cursor: remoteCaret.cursor };
       placeCaret();
       return;
+    }
+    // The click's offsets are stale once a delete, a paste, a composition, a
+    // remote edit, or a refused claim has moved the caret. Chromium's restore
+    // must not put that move back.
+    if (retainedCaret && (state.anchor !== retainedCaret.anchor || state.cursor !== retainedCaret.cursor)) {
+      retainedCaret = { anchor: state.anchor, cursor: state.cursor, generation: retainedCaret.generation };
     }
     if (retainedCaret && (next.cursor !== retainedCaret.cursor || next.anchor !== retainedCaret.anchor)) {
       state = { ...state, anchor: retainedCaret.anchor, cursor: retainedCaret.cursor };
@@ -9806,14 +9814,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function retainCaret() {
+    retainGeneration += 1;
+    const generation = retainGeneration;
     const anchor = state.anchor;
     const cursor = state.cursor;
-    retainedCaret = { anchor, cursor };
+    retainedCaret = { anchor, cursor, generation };
     const view = typeof window !== "undefined" ? window : null;
     if (!view || typeof view.setTimeout !== "function") return;
     view.setTimeout(() => {
       if (closed) return;
-      if (retainedCaret && retainedCaret.anchor === anchor && retainedCaret.cursor === cursor) retainedCaret = null;
+      if (retainedCaret && retainedCaret.generation === generation) retainedCaret = null;
     }, 200);
   }
 

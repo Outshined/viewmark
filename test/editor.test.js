@@ -22504,3 +22504,351 @@ test("2q8vxkb8 Ctrl+End before a trailing comment fence lands on the last drawn 
     mounted.restore();
   }
 });
+
+// A click remembers its caret so a selectionchange in the next 200 ms can put
+// back the selection Chromium restores a frame after the lines are replaced.
+// A caret moved in that window is the one that sticks.
+function retainTransport() {
+  const transport = holdingTransport();
+  transport.username = "me";
+  return transport;
+}
+
+function retainStorage(vimOn) {
+  const data = {};
+  if (vimOn) data["viewmark.vim"] = "1";
+  return {
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(data, key) ? data[key] : null;
+    },
+    setItem(key, value) {
+      data[key] = String(value);
+    },
+    removeItem(key) {
+      delete data[key];
+    },
+  };
+}
+
+function hideLocalStorage() {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: undefined });
+  return () => {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else delete globalThis.localStorage;
+  };
+}
+
+function retainTimers(t, armed) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  if (!armed) return;
+  globalThis.window.setTimeout = (fn, ms) => setTimeout(fn, ms);
+  globalThis.window.clearTimeout = (id) => clearTimeout(id);
+}
+
+function pressRetainKey(mounted, key) {
+  mounted.listeners.keydown({
+    key,
+    shiftKey: false,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    preventDefault() {},
+  });
+}
+
+function clickSource(mounted, source) {
+  const point = domPointAt(mounted.root, source);
+  if (!point) throw new Error(`no drawn point for ${source}`);
+  globalThis.document.caretPositionFromPoint = (x, y) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const live = domPointAt(mounted.root, source);
+    if (!live) throw new Error(`no drawn point for ${source}`);
+    return live;
+  };
+  const event = {
+    target: point.offsetNode,
+    clientX: 8,
+    clientY: 8,
+    detail: 1,
+    button: 0,
+    shiftKey: false,
+    preventDefault() {},
+  };
+  mounted.listeners.mousedown(event);
+  mounted.listeners.mouseup(event);
+  mounted.listeners.click(event);
+}
+
+function reportSelection(mounted, source) {
+  const point = domPointAt(mounted.root, source);
+  if (!point) throw new Error(`no drawn point for ${source}`);
+  const node = point.offsetNode;
+  const offset = point.offset;
+  globalThis.window.getSelection = () => ({
+    rangeCount: 1,
+    anchorNode: node,
+    anchorOffset: offset,
+    focusNode: node,
+    focusOffset: offset,
+    isCollapsed: true,
+    removeAllRanges() {},
+    addRange() {},
+    setBaseAndExtent() {},
+    collapse() {},
+    getRangeAt() {
+      return {
+        startContainer: node,
+        startOffset: offset,
+        endContainer: node,
+        endOffset: offset,
+        collapsed: true,
+        commonAncestorContainer: node,
+      };
+    },
+  });
+  fireDocument(mounted, "selectionchange");
+}
+
+function ownDoc(rev, text, cursor) {
+  return {
+    type: "doc",
+    rev,
+    text,
+    actor: "me",
+    cursor,
+    anchor: cursor,
+    from: 0,
+    to: 0,
+    inserted: "",
+  };
+}
+
+test("3qbtw8kg: a click keeps its caret when the selection jumps back within 200 ms, and a later move is not undone", (t) => {
+  const mounted = mountEditor();
+  const restoreLocal = hideLocalStorage();
+  retainTimers(t, true);
+  try {
+    const transport = retainTransport();
+    const doc = "alpha\n\nbeta\n";
+    const view = createEditor(mounted.root, doc, 0, transport, retainStorage(false));
+    clickSource(mounted, 2);
+    assert.equal(view.getState().cursor, 2);
+    assert.equal(view.getState().anchor, 2);
+    reportSelection(mounted, 0);
+    assert.equal(view.getState().cursor, 2);
+    assert.equal(view.getState().anchor, 2);
+    t.mock.timers.tick(199);
+    reportSelection(mounted, 0);
+    assert.equal(view.getState().cursor, 2);
+    t.mock.timers.tick(1);
+    reportSelection(mounted, 0);
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(view.getState().anchor, 0);
+    view.destroy();
+
+    const moved = createEditor(mounted.root, doc, 2, transport, retainStorage(false));
+    clickSource(mounted, 2);
+    assert.equal(moved.getState().cursor, 2);
+    const next = "alpha\nzero\n\nbeta\n";
+    transport.deliver(ownDoc(1, next, 14));
+    assert.equal(moved.getState().cursor, 14);
+    reportSelection(mounted, 2);
+    assert.equal(moved.getState().cursor, 14, "the click selection put the caret back");
+    reportSelection(mounted, 14);
+    assert.equal(moved.getState().cursor, 14);
+    reportSelection(mounted, 0);
+    assert.equal(moved.getState().cursor, 14);
+    t.mock.timers.tick(200);
+    reportSelection(mounted, 0);
+    assert.equal(moved.getState().cursor, 0);
+    moved.destroy();
+  } finally {
+    restoreLocal();
+    mounted.restore();
+  }
+});
+
+for (const vimOn of [false, true]) {
+  const flag = vimOn ? "on" : "off";
+
+  test(`3qbtw8kg: vim keys ${flag}, a card delete does not put the caret back`, (t) => {
+    const mounted = mountEditor();
+    const restoreLocal = hideLocalStorage();
+    retainTimers(t, false);
+    const sheet = globalThis.document.createElement("div");
+    const aside = globalThis.document.createElement("aside");
+    aside.className = "comments";
+    sheet.appendChild(mounted.root);
+    sheet.appendChild(aside);
+    const marked = "See {c1}this{/c1} now.\n\n```comment c1\nhi\n```\n";
+    const clicked = marked.indexOf("this") + 2;
+    try {
+      const transport = retainTransport();
+      const view = createEditor(mounted.root, marked, 0, transport, retainStorage(vimOn));
+      clickSource(mounted, clicked);
+      assert.equal(view.getState().cursor, clicked);
+      const button = walkNodes(aside, (node) => node.tagName === "BUTTON" && node.getAttribute && node.getAttribute("aria-label") === "Delete")[0];
+      assert.ok(button, "the card has no Delete");
+      button.listeners.click({ preventDefault() {}, target: button });
+      const edit = transport.sent.filter((message) => message.type === "edit").at(-1);
+      assert.equal(edit.op, "comment.delete");
+      assert.equal(edit.id, "c1");
+      const cleared = "See this now.\n";
+      transport.deliver(ownDoc(1, cleared, "See th".length));
+      assert.equal(view.getState().doc, cleared);
+      assert.equal(view.getState().cursor, "See th".length);
+      reportSelection(mounted, "See th".length);
+      assert.equal(view.getState().cursor, "See th".length);
+      reportSelection(mounted, clicked);
+      assert.equal(view.getState().cursor, "See th".length, "the click selection put the caret back");
+      view.destroy();
+    } finally {
+      restoreLocal();
+      mounted.restore();
+    }
+  });
+
+  test(`3qbtw8kg: vim keys ${flag}, a composition's caret is not put back`, (t) => {
+    const mounted = mountEditor();
+    const restoreLocal = hideLocalStorage();
+    retainTimers(t, false);
+    const cases = [
+      { doc: "- alpha\n", at: "- al".length, text: "é", next: "- alépha\n", caret: "- alé".length },
+      { doc: "# Title\n", at: "# ".length, text: "ñ", next: "# ñTitle\n", caret: "# ñ".length },
+    ];
+    try {
+      const transport = retainTransport();
+      for (const item of cases) {
+        const view = createEditor(mounted.root, item.doc, 0, transport, retainStorage(vimOn));
+        if (vimOn) {
+          pressRetainKey(mounted, "i");
+          const status = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-vim-status"));
+          assert.equal(status.length === 0 ? "" : status[0].textContent, "I");
+        }
+        clickSource(mounted, item.at);
+        assert.equal(view.getState().cursor, item.at);
+        mounted.listeners.compositionstart();
+        mounted.listeners.compositionend({ data: item.text });
+        const edit = transport.sent.filter((message) => message.type === "edit").at(-1);
+        assert.equal(edit.op, "insert");
+        assert.equal(edit.text, item.text);
+        assert.equal(edit.cursor, item.at);
+        transport.deliver(ownDoc(1, item.next, item.caret));
+        assert.equal(view.getState().cursor, item.caret);
+        reportSelection(mounted, item.caret);
+        assert.equal(view.getState().cursor, item.caret, "the click selection put the caret back");
+        reportSelection(mounted, item.at);
+        assert.equal(view.getState().cursor, item.caret);
+        view.destroy();
+      }
+    } finally {
+      restoreLocal();
+      mounted.restore();
+    }
+  });
+
+  test(`3qbtw8kg: vim keys ${flag}, a paste's caret is not put back`, (t) => {
+    const mounted = mountEditor();
+    const restoreLocal = hideLocalStorage();
+    retainTimers(t, false);
+    const doc = "alpha beta\n";
+    const at = "alpha be".length;
+    try {
+      const transport = retainTransport();
+      const view = createEditor(mounted.root, doc, 0, transport, retainStorage(vimOn));
+      if (vimOn) pressRetainKey(mounted, "i");
+      clickSource(mounted, at);
+      assert.equal(view.getState().cursor, at);
+      mounted.listeners.paste({
+        preventDefault() {},
+        clipboardData: { getData() { return "Z"; } },
+      });
+      const edit = transport.sent.filter((message) => message.type === "edit").at(-1);
+      assert.equal(edit.op, "insert");
+      assert.equal(edit.text, "Z");
+      assert.equal(edit.paste, true);
+      const next = "alpha beZta\n";
+      const caret = at + 1;
+      transport.deliver(ownDoc(1, next, caret));
+      assert.equal(view.getState().doc, next);
+      assert.equal(view.getState().cursor, caret);
+      reportSelection(mounted, caret);
+      assert.equal(view.getState().cursor, caret, "the click selection put the caret back");
+      reportSelection(mounted, at);
+      assert.equal(view.getState().cursor, at + 1);
+      view.destroy();
+    } finally {
+      restoreLocal();
+      mounted.restore();
+    }
+  });
+
+  test(`3qbtw8kg: vim keys ${flag}, a remote edit's caret is not put back`, (t) => {
+    const mounted = mountEditor();
+    const restoreLocal = hideLocalStorage();
+    retainTimers(t, false);
+    const doc = "alpha\n\nbeta\n";
+    const at = doc.indexOf("beta") + 2;
+    try {
+      const transport = retainTransport();
+      const view = createEditor(mounted.root, doc, 0, transport, retainStorage(vimOn));
+      clickSource(mounted, at);
+      assert.equal(view.getState().cursor, at);
+      const next = "alpha\nzero\n\nbeta\n";
+      transport.deliver({
+        type: "doc",
+        rev: 1,
+        text: next,
+        from: doc.indexOf("\n\n"),
+        to: doc.indexOf("\n\n"),
+        inserted: "zero\n",
+        actor: "other",
+        cursor: 0,
+        anchor: 0,
+      });
+      const caret = at + "zero\n".length;
+      assert.equal(view.getState().cursor, caret);
+      assert.equal(view.getState().anchor, caret);
+      reportSelection(mounted, caret);
+      assert.equal(view.getState().cursor, caret, "the click selection put the caret back");
+      reportSelection(mounted, at);
+      assert.equal(view.getState().cursor, caret);
+      view.destroy();
+    } finally {
+      restoreLocal();
+      mounted.restore();
+    }
+  });
+
+  test(`3qbtw8kg: vim keys ${flag}, a refused click does not put the caret into the held block`, (t) => {
+    const mounted = mountEditor();
+    const restoreLocal = hideLocalStorage();
+    retainTimers(t, false);
+    const doc = "alpha\n\nbeta\n";
+    const held = doc.indexOf("beta") + 2;
+    const home = 2;
+    try {
+      const transport = retainTransport();
+      const view = createEditor(mounted.root, doc, home, transport, retainStorage(vimOn));
+      assert.equal(view.getState().cursor, home);
+      clickSource(mounted, held);
+      assert.equal(view.getState().cursor, held);
+      const lock = transport.sent.filter((message) => message.type === "lock").at(-1);
+      assert.equal(lock.cursor, held);
+      transport.deliver({ type: "error", status: 409 });
+      assert.equal(view.getState().cursor, home);
+      assert.equal(view.getState().anchor, home);
+      reportSelection(mounted, home);
+      assert.equal(view.getState().cursor, home, "the click selection put the caret into the held block");
+      reportSelection(mounted, held);
+      assert.equal(view.getState().cursor, home);
+      assert.equal(view.getState().anchor, home);
+      view.destroy();
+    } finally {
+      restoreLocal();
+      mounted.restore();
+    }
+  });
+}
