@@ -9477,6 +9477,37 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     dragRange = null;
   });
 
+  // Firefox reports a drag's end short of the boundary a click at that point
+  // reports. The miss is the right half of a line's last glyph, and a
+  // zero-height gap before the line can leave the selection on the block
+  // above. The release uses the click mapping. A range that already reaches
+  // that boundary stays, so a host that included the glyph is unchanged.
+  function dragRelease(mapped, event) {
+    if (!mapped) return mapped;
+    const detail = event && event.detail ? event.detail : 1;
+    if (detail >= 2) return mapped;
+    const release = pressOffset(event);
+    if (release == null || release === mapped.cursor) return mapped;
+    if (gestureOffset != null && gestureOffset !== mapped.anchor) return mapped;
+    const span = mapped.cursor - mapped.anchor;
+    const next = release - mapped.anchor;
+    if (span === 0 || next === 0 || Math.sign(next) !== Math.sign(span)) return mapped;
+    if (Math.abs(next) <= Math.abs(span)) return mapped;
+    return { anchor: mapped.anchor, cursor: release };
+  }
+
+  // The release stayed on the focus line, so this mouseup does not render.
+  // The browser selection is still the short range, and the click after
+  // mouseup adopts whatever range is left there.
+  function placeDragCaret() {
+    const anchor = state.anchor;
+    const cursor = state.cursor;
+    const from = pointFor(visibleSelectionOffset(state.doc, anchor, cursor));
+    const to = pointFor(visibleSelectionOffset(state.doc, cursor, anchor));
+    if (!from || !to) return;
+    placeCaret();
+  }
+
   listen("mouseup", (event) => {
     if (handleDrag) {
       finishHandleDrag(event);
@@ -9493,13 +9524,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (mapped) {
           didDrag = true;
           gestureArmed = false;
+          const chosen = dragRelease(mapped, event);
           gestureOffset = null;
           const before = lineIndexAt(state.doc, state.cursor);
-          state = { ...state, anchor: mapped.anchor, cursor: mapped.cursor };
-          if (!claimLines(mapped.anchor, mapped.cursor)) return;
+          state = { ...state, anchor: chosen.anchor, cursor: chosen.cursor };
+          if (!claimLines(chosen.anchor, chosen.cursor)) return;
           if (state.anchor !== state.cursor) useVimSelection("visual");
           const after = lineIndexAt(state.doc, state.cursor);
           if (before !== after) render();
+          else if (chosen.anchor !== mapped.anchor || chosen.cursor !== mapped.cursor) placeDragCaret();
           else updateCommentButton();
           return;
         }
