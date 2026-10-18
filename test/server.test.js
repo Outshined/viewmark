@@ -1182,6 +1182,99 @@ test("comment.reply and comment.edit keep a caret that is not at the top", async
   });
 });
 
+test("a page edit that changes a comment fence or the blank between fences answers 409 and writes nothing", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const fence = (id) => `\`\`\`comment ${id} resolved\n:: 0\n@2026-10-05T16:00:00.000Z qa\nNote.\n\`\`\`\n`;
+    const text = `See {c7}this{/c7} and {c8}that{/c8}.\n\n${fence("c7")}\n${fence("c8")}`;
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const a = await hello(port, "A");
+    const opened = await openDoc(a, "A", "a.md");
+    const rev = opened.rev;
+    const opener = text.indexOf("```comment c8");
+    const blank = opener - 1;
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev,
+      op: "insert",
+      text: "x",
+      anchor: opener,
+      cursor: opener,
+      exact: true,
+    });
+    assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "doc" || msg.type === "noop"), {
+      type: "error",
+      status: 409,
+      reason: "changes a comment fence",
+    });
+    assert.equal(await readDoc(dir, "a.md"), text);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev,
+      op: "insert",
+      text: "",
+      anchor: blank,
+      cursor: blank + 1,
+      exact: true,
+    });
+    assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "doc" || msg.type === "noop"), {
+      type: "error",
+      status: 409,
+      reason: "changes a comment fence",
+    });
+    assert.equal(await readDoc(dir, "a.md"), text);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev,
+      op: "backspace",
+      anchor: text.length,
+      cursor: text.length,
+    });
+    assert.deepEqual(await a.next((msg) => msg.type === "error" || msg.type === "doc" || msg.type === "noop"), {
+      type: "error",
+      status: 409,
+      reason: "changes a comment fence",
+    });
+    assert.equal(await readDoc(dir, "a.md"), text);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev,
+      op: "insert",
+      text: "Hello",
+      anchor: text.length,
+      cursor: text.length,
+    });
+    const typed = await takeDoc(a);
+    assert.equal(typed.text.startsWith(text), true);
+    assert.equal(typed.text.endsWith("Hello"), true);
+    assert.equal(typed.text.includes("```comment c7 resolved"), true);
+    assert.equal(typed.text.includes("```comment c8 resolved"), true);
+    assert.equal(await readDoc(dir, "a.md"), typed.text);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev: typed.rev,
+      op: "comment.save",
+      id: "c8",
+      body: ":: 0\n@2026-10-05T16:00:00.000Z qa\nSaved.\n",
+    });
+    const saved = await takeDoc(a);
+    // replaceCommentBody appends a newline after the body the card sent.
+    assert.match(saved.text, /```comment c8 resolved\n:: 0\n@2026-10-05T16:00:00.000Z qa\nSaved.\n\n```\nHello$/);
+    assert.match(saved.text, /```comment c7 resolved\n:: 0\n@2026-10-05T16:00:00.000Z qa\nNote.\n```/);
+    assert.equal(await readDoc(dir, "a.md"), saved.text);
+    a.ws.close();
+  });
+});
+
 test("an insert that cuts a comment marker answers 409 and the file stays", async () => {
   await withDocs(async ({ port, dir }) => {
     const text = "See {c1}this{/c1} now.\n\n```comment c1\n:: 0\nnote\n```\n";

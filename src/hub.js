@@ -21,6 +21,7 @@ import {
   parseUnifiedDiff,
   planDiff,
   commentNoteDiffReason,
+  commentStorageReason,
   removeCommentThread,
   replaceCommentBody,
   reviseCommentNote,
@@ -2597,6 +2598,16 @@ export async function createHub(stateDir, sourceRoot) {
     };
     // comment.save, resolve, and delete rewrite the fence after the caret
     // hold has shrunk. edit claims every free span the change list touches.
+    const commentOp = msg.op === "comment.save" || msg.op === "comment.resolve" || msg.op === "comment.delete"
+      || msg.op === "comment.add" || msg.op === "comment.pin";
+    if (!commentOp) {
+      const stored = commentStorageReason(file.text, changes);
+      if (stored) {
+        session.cursor = savedCursor;
+        session.anchor = savedAnchor;
+        return fail(socket, 409, { reason: stored });
+      }
+    }
     const mode = msg.op === "comment.save" || msg.op === "comment.resolve" || msg.op === "comment.delete"
       ? "comment"
       : "edit";

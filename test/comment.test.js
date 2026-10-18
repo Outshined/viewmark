@@ -20,6 +20,7 @@ import {
   settleSplice,
   splitCommentNote,
   commentDragPreview,
+  commentStorageReason,
 } from "../src/doc.js";
 
 const GROK_AT = "@2026-10-05T04:14:24.392Z Grok";
@@ -793,4 +794,39 @@ test("a line edit rebases the following range and leaves a pin and a prose brace
   const pinResolved = setCommentResolved(createState(`${image}\`\`\`comment c1 0.62,0.18\n\n\`\`\`\n`, 0), "c1", true);
   assert.equal(pinResolved.doc.includes("```comment c1 0.62,0.18 resolved\n"), true);
   assert.equal(addComment("```python\nx\n```\n", 12, 13), null);
+});
+
+test("a page edit does not change a comment fence or the blank between fences", () => {
+  const fence = (id) => `\`\`\`comment ${id} resolved\n:: 0\n@2026-10-05T16:00:00.000Z qa\nNote.\n\`\`\`\n`;
+  const doc = `See {c7}this{/c7} and {c8}that{/c8}.\n\n${fence("c7")}\n${fence("c8")}`;
+  const c8 = doc.indexOf("```comment c8");
+  const blank = c8 - 1;
+  assert.equal(doc[blank], "\n");
+  assert.equal(commentStorageReason(doc, [{ from: c8, to: c8, inserted: "x" }]), "changes a comment fence");
+  assert.equal(commentStorageReason(doc, [{ from: blank, to: blank + 1, inserted: "" }]), "changes a comment fence");
+  assert.equal(commentStorageReason(doc, [{ from: blank, to: blank, inserted: "x" }]), "changes a comment fence");
+  assert.equal(commentStorageReason(doc, [{ from: doc.length, to: doc.length, inserted: "Hello" }]), null);
+  assert.equal(commentStorageReason(doc, [{ from: 0, to: 0, inserted: "X" }]), null);
+
+  const typed = editBytes(doc, doc.length, doc.length, "Hello");
+  assert.equal(typed.refused, undefined);
+  assert.equal(commentStorageReason(doc, typed.changes), null);
+  assert.equal(typed.doc.endsWith("```\nHello"), true);
+  assert.equal(typed.doc.includes("```comment c7 resolved"), true);
+  assert.equal(typed.doc.includes("```comment c8 resolved"), true);
+
+  const above = editBytes(RANGED, RANGED.indexOf("two"), RANGED.indexOf("two"), "X\n");
+  assert.equal(commentStorageReason(RANGED, above.changes), null);
+  const gone = editBytes(RANGED, RANGED.indexOf("two"), RANGED.indexOf("three") + "three\n".length, "");
+  assert.equal(commentStorageReason(RANGED, gone.changes), null);
+  assert.equal(gone.doc.includes("```comment"), false);
+
+  const marked = "A {c1}x{/c1} B\n\n```comment c1\nhi\n```\n";
+  const emptied = backspace(createState(marked, 7));
+  assert.equal(emptied.doc, "A  B\n\n");
+  assert.equal(commentStorageReason(marked, emptied.changes), null);
+
+  const opener = doc.indexOf("```comment c7");
+  const broken = editBytes(doc, opener, opener, "x");
+  assert.equal(commentStorageReason(doc, broken.changes), "changes a comment fence");
 });

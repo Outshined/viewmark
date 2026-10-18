@@ -4683,6 +4683,109 @@ function commentFences(doc) {
   return fenceContentRanges(doc).filter((fence) => fence.lang === "comment" && fence.commentId);
 }
 
+function openerLineText(doc, thread) {
+  let end = thread.start;
+  while (end < thread.end && end < doc.length && doc[end] !== "\n") end += 1;
+  return doc.slice(thread.start, end);
+}
+
+function fenceRest(doc, thread, opener) {
+  return doc.slice(thread.start + opener.length, thread.end);
+}
+
+// The hub rewrites a line range when the anchored lines move. Anything else on
+// the opener, including resolved and a pin, is the fence's own bytes.
+function openerEquivalent(beforeLine, afterLine) {
+  if (beforeLine === afterLine) return true;
+  const before = fenceOpen(beforeLine);
+  const after = fenceOpen(afterLine);
+  if (!before || !after || before.commentId !== after.commentId) return false;
+  if (before.resolved !== after.resolved) return false;
+  if (!before.anchor || before.anchor.kind !== "lines" || !after.anchor || after.anchor.kind !== "lines") return false;
+  return afterLine === commentHead(after.commentId, after.anchor, after.resolved === true);
+}
+
+function sameStoredThread(beforeDoc, before, afterDoc, after) {
+  if (before.id !== after.id || before.resolved !== after.resolved) return false;
+  const beforeOpener = openerLineText(beforeDoc, before);
+  const afterOpener = openerLineText(afterDoc, after);
+  if (!openerEquivalent(beforeOpener, afterOpener)) return false;
+  return fenceRest(beforeDoc, before, beforeOpener) === fenceRest(afterDoc, after, afterOpener);
+}
+
+function lineAnchorFits(thread) {
+  if (!thread || !thread.lines || thread.hostKind !== "fence" || !Number.isInteger(thread.bodyCount)) return false;
+  const { start, end } = thread.lines;
+  return start >= 1 && end >= start && end <= thread.bodyCount;
+}
+
+// Brace cleanup and a line range that no longer fits delete the fence in one
+// piece. A pin, or a fence deleted around text that is still there, is not that.
+function fenceRemovalAllowed(before, thread, from, to, inserted, originallyMarked) {
+  if (inserted !== "" || from !== thread.start || to !== thread.end) return false;
+  if (thread.pin) return false;
+  if (thread.lines) return !lineAnchorFits(thread);
+  return originallyMarked.has(thread.id);
+}
+
+function blankBetween(doc, left, right) {
+  if (!left || !right || right.start < left.end) return null;
+  const gap = doc.slice(left.end, right.start);
+  if (gap.length === 0 || !/^[\r\n]+$/.test(gap)) return null;
+  return gap;
+}
+
+function storedStepOk(before, after, from, to, inserted, originallyMarked) {
+  const oldThreads = commentThreads(before);
+  const newThreads = commentThreads(after);
+  const used = new Set();
+  const matched = new Map();
+  for (let i = 0; i < oldThreads.length; i += 1) {
+    const old = oldThreads[i];
+    let found = -1;
+    for (let j = 0; j < newThreads.length; j += 1) {
+      if (used.has(j) || newThreads[j].id !== old.id) continue;
+      found = j;
+      break;
+    }
+    if (found < 0) {
+      if (!fenceRemovalAllowed(before, old, from, to, inserted, originallyMarked)) return false;
+      continue;
+    }
+    used.add(found);
+    matched.set(i, found);
+    if (!sameStoredThread(before, old, after, newThreads[found])) return false;
+  }
+  for (let i = 0; i + 1 < oldThreads.length; i += 1) {
+    const gap = blankBetween(before, oldThreads[i], oldThreads[i + 1]);
+    if (gap == null) continue;
+    const left = matched.get(i);
+    const right = matched.get(i + 1);
+    if (left == null || right == null) continue;
+    if (after.slice(newThreads[left].end, newThreads[right].start) !== gap) return false;
+  }
+  return true;
+}
+
+// Page edits shift fences and may refresh a line range. They do not rewrite a
+// fence or the blank line between two fences. Comment commands do that themselves.
+export function commentStorageReason(doc, changes) {
+  const original = typeof doc === "string" ? doc : "";
+  if (!Array.isArray(changes) || changes.length === 0) return null;
+  const originallyMarked = new Set();
+  for (const span of findSpans(original)) originallyMarked.add(span.id);
+  let text = original;
+  for (const change of changes) {
+    if (!change || !Number.isInteger(change.from) || !Number.isInteger(change.to)) return "changes a comment fence";
+    const inserted = typeof change.inserted === "string" ? change.inserted : "";
+    if (change.from < 0 || change.to < change.from || change.to > text.length) return "changes a comment fence";
+    const next = text.slice(0, change.from) + inserted + text.slice(change.to);
+    if (!storedStepOk(text, next, change.from, change.to, inserted, originallyMarked)) return "changes a comment fence";
+    text = next;
+  }
+  return null;
+}
+
 function noteBoundaryLines(doc, fence) {
   const lines = [];
   for (const line of bodyLinesOf(doc, fence)) {

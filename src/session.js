@@ -17,6 +17,7 @@ import {
   setCommentResolved,
   replaceDocument,
   commentThreads,
+  commentStorageReason,
   appendCommentReply,
   reviseCommentNote,
 } from "./doc.js";
@@ -169,6 +170,14 @@ export function createMemoryTransport(doc, cursor = 0) {
       if (next === base) {
         deliverNoop(message);
         return;
+      }
+      const pageOp = message.op === "insert" || message.op === "backspace" || message.op === "delete" || message.op === "move";
+      if (pageOp) {
+        const stored = commentStorageReason(base.doc, next.changes);
+        if (stored) {
+          for (const fn of listeners) fn({ type: "error", status: 409, reason: stored });
+          return;
+        }
       }
       // The op already pushed a snapshot. group drops it, so one undo returns to the
       // bytes before the run. A backspace or a break counts, not only an appending insert.

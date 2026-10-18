@@ -1,5 +1,5 @@
 // Pure key match. The page applies the effect. This module does not touch the editor.
-import { codeFenceBodies, codeSpanAt, createState, deleteForward, endBeforeTail, findSpans, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, wordStop } from "./doc.js";
+import { codeFenceBodies, codeSpanAt, commentStorageReason, commentThreads, createState, deleteForward, endBeforeTail, findSpans, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, wordStop } from "./doc.js";
 
 const REPEAT_CAP = 10000;
 const PAGE = 20;
@@ -913,11 +913,31 @@ function linewiseRange(doc, fromOff, toOff, raw) {
   return { from: start, to: endPast(doc, last) };
 }
 
+function pastLastCommentFence(doc, cursor) {
+  const threads = commentThreads(typeof doc === "string" ? doc : "");
+  let end = -1;
+  for (const thread of threads) {
+    if (typeof thread.end === "number" && thread.end > end) end = thread.end;
+  }
+  return end >= 0 && cursor >= end;
+}
+
+// A caret past the last fence is not on a row inside the stored comments.
+// The last drawn row there is the blank between fences, and deleting it
+// would leave the caret with no line.
 function countedLines(doc, origin, count, raw) {
   const lines = vimLines(doc, origin, raw);
-  const index = Math.min(lineIndex(lines, doc, origin, raw), lines.length - 1);
+  let index = lineIndex(lines, doc, origin, raw);
+  if (index >= lines.length) {
+    if (!raw && pastLastCommentFence(doc, origin)) return { from: origin, to: origin };
+    index = lines.length - 1;
+  }
+  if (index < 0 || lines.length === 0) return { from: origin, to: origin };
   const last = Math.min(lines.length - 1, index + count - 1);
-  return { from: lines[index].start, to: endPast(doc, lines[last]) };
+  const from = lines[index].start;
+  const to = endPast(doc, lines[last]);
+  if (!raw && from < to && commentStorageReason(doc, [{ from, to, inserted: "" }])) return { from: origin, to: origin };
+  return { from, to };
 }
 
 // dw and cw stay on the vim line. w itself may leave. A rendered line is one

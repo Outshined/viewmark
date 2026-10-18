@@ -3234,6 +3234,26 @@ test("dd after G on a trailing comment fence stays on a drawn row", () => {
   assert.equal(out.doc.endsWith("\n"), true);
 });
 
+test("dd past the last comment fence deletes nothing and leaves the caret", () => {
+  const fence = (id) => `\`\`\`comment ${id} resolved\n:: 0\n@2026-10-05T16:00:00.000Z qa\nNote.\n\`\`\`\n`;
+  const doc = `Para.\n\n${fence("c7")}\n${fence("c8")}\n${fence("c9")}`;
+  const atEnd = run(`${doc}‸`, ["d", "d"]);
+  assert.equal(atEnd.doc, doc);
+  assert.equal(atEnd.cursor, doc.length);
+  assert.equal(atEnd.steps.some((step) => step.effect && step.effect.type === "splice"), false);
+
+  const between = run(`‸${doc}`, ["G", "d", "d"]);
+  assert.equal(between.doc, doc);
+  assert.notEqual(between.cursor, 0);
+  assert.equal(between.steps.some((step) => step.effect && step.effect.type === "splice"), false);
+
+  const followed = `Para.\n\n${fence("c1")}After.\n`;
+  const cut = run(`‸${followed}`, ["G", "d", "d"]);
+  assert.equal(cut.doc.includes("After"), false);
+  assert.equal(cut.doc.includes("```comment c1 resolved"), true);
+  assert.notEqual(cut.cursor, 0);
+});
+
 test("ctrl-o none clears once", () => {
   const out = run("al‸pha\n", ["i", { key: "o", ctrl: true }, "Q"]);
   assert.equal(out.doc, "alpha\n");
