@@ -224,14 +224,23 @@ test("VK.10 (ticket 7vdep2z4)", { timeout: 180000 }, async (t) => {
   const { hub, page } = await setup(t, body);
   await place(page, 2);
   const before = await snap(hub, page);
+  // Shift+→ and Shift+← move where w and b do from the same place, as in stock vim (the owner's
+  // c15 in editing.md, ticket vgf3mkb2).
+  await page.key("w");
+  const byW = (await snap(hub, page)).focus;
+  assert.ok(byW > 3, `VK.10 w from 2 went to ${byW}, not to the next word`);
+  await page.key("b");
+  const byB = (await snap(hub, page)).focus;
+  await place(page, 2);
   await page.key("→", ["Shift"]);
   let shot = await snap(hub, page);
-  expectShot(shot, "VK.10 Shift+Right", { text: body, focus: 3, anchor: 3, rev: before.rev, status: "N", collapsed: true });
+  expectShot(shot, "VK.10 Shift+Right", { text: body, focus: byW, anchor: byW, rev: before.rev, status: "N", collapsed: true });
 
   await page.key("←", ["Shift"]);
   shot = await snap(hub, page);
-  expectShot(shot, "VK.10 Shift+Left", { text: body, focus: 2, anchor: 2, rev: before.rev, status: "N", collapsed: true });
+  expectShot(shot, "VK.10 Shift+Left", { text: body, focus: byB, anchor: byB, rev: before.rev, status: "N", collapsed: true });
 
+  await place(page, 2);
   await page.key("↓", ["Shift"]);
   shot = await snap(hub, page);
   expectShot(shot, "VK.10 Shift+Down", { text: body, focus: 9, anchor: 9, rev: before.rev, status: "N", collapsed: true });
@@ -563,10 +572,10 @@ test("VK.14 (ticket 7vdep2z4)", { timeout: 180000 }, async (t) => {
 
   await normal(page);
   const delta = shot.text.indexOf("delta");
+  // a on delta's last character inserts after it. l there stays put, as in stock vim (R109,
+  // ticket qvqa6h7q).
   await place(page, delta + 4);
-  await page.key("l");
-  await page.quiet();
-  await page.key("i");
+  await page.key("a");
   before = await snap(hub, page);
   assert.equal(before.focus, delta + 5, `VK.14 insert Meta caret ${before.focus}`);
   assert.equal(before.status, "I");

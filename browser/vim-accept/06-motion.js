@@ -150,8 +150,9 @@ test(cell("VN.1"), async (t) => {
     await runMove(page, hub, FILE, "al‸pha\n", ["→"], "alp‸ha\n", rev);
     await runMove(page, hub, FILE, "al‸pha\n", ["h"], "a‸lpha\n", rev);
     await runMove(page, hub, FILE, "al‸pha\n", ["←"], "a‸lpha\n", rev);
-    await runMove(page, hub, FILE, "al‸pha\n", ["3", "l"], "alpha‸\n", rev);
-    await runMove(page, hub, FILE, "al‸pha\n", ["→", "→", "→"], "alpha‸\n", rev);
+    // l stops on the line's last character, as in stock vim (R109, qvqa6h7q).
+    await runMove(page, hub, FILE, "al‸pha\n", ["3", "l"], "alph‸a\n", rev);
+    await runMove(page, hub, FILE, "al‸pha\n", ["→", "→", "→"], "alph‸a\n", rev);
   }
 });
 
@@ -183,7 +184,8 @@ test(cell("VN.4"), async (t) => {
   const body = `${LONG}\n\nnext\n`;
   const nextEnd = body.indexOf("next") + "next".length;
   const start = shown(body, 5);
-  const down = shown(body, nextEnd);
+  // j onto a shorter line stops on its last character, as in stock vim (R109, qvqa6h7q).
+  const down = shown(body, nextEnd - 1);
   const { hub, page, connect } = await setup(t, body);
   const rev = (await hub.show(FILE)).rev;
   await runMove(page, hub, FILE, start, ["↓"], down, rev);
@@ -241,10 +243,12 @@ test(cell("VN.5"), async (t) => {
   await runMove(page, hub, FILE, "alpha‸\nab\nalpha\n", ["j"], "alpha‸\nab\nalpha\n", rev);
   await page.open("b.md");
   const revB = (await hub.show("b.md")).rev;
-  await runMove(page, hub, "b.md", "alpha‸\n\nab\n\nalpha\n", ["j"], "alpha\n\nab‸\n\nalpha\n", revB);
-  await follow(page, hub, "b.md", ["j"], "alpha\n\nab\n\nalpha‸\n", revB);
+  // j onto a shorter line stops on its last character, and the column comes back on a longer
+  // line; h clears it, as in stock vim (R109, qvqa6h7q).
+  await runMove(page, hub, "b.md", "alpha‸\n\nab\n\nalpha\n", ["j"], "alpha\n\na‸b\n\nalpha\n", revB);
+  await follow(page, hub, "b.md", ["j"], "alpha\n\nab\n\nalph‸a\n", revB);
   await page.open("b.md");
-  await runMove(page, hub, "b.md", "alpha‸\n\nab\n\nalpha\n", ["j", "h", "j"], "alpha\n\nab\n\na‸lpha\n", revB);
+  await runMove(page, hub, "b.md", "alpha‸\n\nab\n\nalpha\n", ["j", "h", "j"], "alpha\n\nab\n\n‸alpha\n", revB);
 });
 
 test(cell("VN.6"), async (t) => {
@@ -393,7 +397,8 @@ test(cell("VN.13"), async (t) => {
   const revB = (await hub.show("b.md")).rev;
   await runMove(page, hub, FILE, "- al‸pha\n", ["Home"], "‸- alpha\n", revA);
   await page.open("b.md");
-  await runMove(page, hub, "b.md", shown(LONG, 5), ["End"], shown(LONG, LONG.length), revB);
+  // End is $, which stops on the line's last character (R109, qvqa6h7q).
+  await runMove(page, hub, "b.md", shown(LONG, 5), ["End"], shown(LONG, LONG.length - 1), revB);
   await page.open(FILE);
   await runMove(page, hub, FILE, "- al‸pha\n", ["v", "Home"], "‸- al«pha\n", revA, "V");
   await page.open("b.md");

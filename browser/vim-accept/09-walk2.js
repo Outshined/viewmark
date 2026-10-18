@@ -298,8 +298,11 @@ test("VW.10 (ticket 7vdep2z4)", async (t) => {
 });
 
 test("VW.11 (ticket 7vdep2z4)", async (t) => {
+  // l stops on the line's last character, as in stock vim (R109, qvqa6h7q). w crosses the
+  // \r\n as one break.
   const start = marked("al‸pha\r\nbeta\r\n");
-  const want = marked("alpha\r\n‸beta\r\n");
+  const want = marked("alph‸a\r\nbeta\r\n");
+  const crossed = marked("alpha\r\n‸beta\r\n");
   const file = "11.md";
   const { hub, page } = await setup(t, { [file]: start.bytes });
   await openFile(page, file);
@@ -312,6 +315,9 @@ test("VW.11 (ticket 7vdep2z4)", async (t) => {
   assert.equal(after.text, want.bytes, `VW.11 bytes\n${shown(after)}`);
   assert.equal(after.rev, before.rev, `VW.11 rev ${before.rev} -> ${after.rev}\n${shown(after)}`);
   assert.equal(shown(after), withCaret(want.bytes, want.focus), `VW.11 caret\n${shown(after)}`);
+  await press(page, ["w"]);
+  const next = await snap(hub, page, file);
+  assert.equal(shown(next), withCaret(crossed.bytes, crossed.focus), `VW.11 w\n${shown(next)}`);
 });
 
 test("VW.12 (ticket 7vdep2z4)", async (t) => {

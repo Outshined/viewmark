@@ -148,14 +148,16 @@ test("VO.13 (ticket 7vdep2z4)", async (t) => {
     status: "N",
     frames: oneOp("delete"),
   });
+  // x stops before the line's newline (R119, qvqa6h7q), so x past one's last character writes
+  // nothing.
   await openPlaced(page, "end.md", "one".length);
   await command(hub, page, "end.md", ["x"], {
     label: "VO.13",
-    text: "onetwo\n",
+    text: "one\n\ntwo\n",
     focus: "one".length,
-    rev: 1,
+    rev: 0,
     status: "N",
-    frames: oneOp("delete"),
+    frames: noFrames,
   });
 });
 
@@ -210,14 +212,15 @@ test("VO.15 (ticket 7vdep2z4)", async (t) => {
     status: "N",
     frames: oneOp("backspace"),
   });
+  // X never deletes a line break (R119, qvqa6h7q), so X at two's start writes nothing.
   await openPlaced(page, "gap.md", "one\n\n".length);
   await command(hub, page, "gap.md", ["X"], {
     label: "VO.15",
-    text: "onetwo\n",
-    focus: "one".length,
-    rev: 1,
+    text: "one\n\ntwo\n",
+    focus: "one\n\n".length,
+    rev: 0,
     status: "N",
-    frames: oneOp("backspace"),
+    frames: noFrames,
   });
   await openPlaced(page, "three.md", "alp".length);
   await command(hub, page, "three.md", ["3", "X"], {
