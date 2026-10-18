@@ -2,12 +2,14 @@ import { after, test } from "node:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { launchBrowser, OTHER, Page, startHub, startProxy } from "./harness.js";
+import { otherUser } from "./other.js";
 import { loadCells } from "./cells.js";
 import { routesFor, runCell } from "./run.js";
 
 // One suite: its own test hub process, a proxy in front of it, its own browser, and the plan's
-// cells whose ids start with one of the prefixes. A second page, logged in as another user, is
-// opened only when a cell needs it. VIEWMARK_QA_RESULTS names a directory for <name>.json.
+// cells whose ids start with one of the prefixes. The browser has one page. A second user, B,
+// talks to the hub directly, and joins only when a cell needs it. VIEWMARK_QA_RESULTS names a
+// directory for <name>.json.
 export function defineSuite(name, prefixes) {
   const cells = loadCells("").filter((cell) => prefixes.some((prefix) => cell.id.startsWith(prefix)));
   const results = [];
@@ -27,12 +29,8 @@ export function defineSuite(name, prefixes) {
     await suite.page.login();
     suite.hasOther = () => otherPage != null;
     suite.other = async () => {
-      if (!otherPage) {
-        const { session } = await suite.browser.newSession();
-        otherPage = new Page(session, suite.proxy.port);
-        await otherPage.init();
-        await otherPage.login(OTHER);
-      }
+      // B connects to the hub, not through the proxy, so a reconnect drops only the page.
+      if (!otherPage) otherPage = await otherUser(suite.hub.port, OTHER);
       return otherPage;
     };
   })());
@@ -45,7 +43,7 @@ export function defineSuite(name, prefixes) {
     // Each close runs even when an earlier one fails, so no hub or browser is left holding the
     // test process open.
     const failures = [];
-    for (const part of [suite.browser, suite.proxy, suite.hub]) {
+    for (const part of [otherPage, suite.browser, suite.proxy, suite.hub]) {
       if (!part) continue;
       try {
         await part.close();

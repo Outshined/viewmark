@@ -6,6 +6,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
+import { lockIndexAt } from "../src/doc.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = path.join(ROOT, "cli.js");
@@ -142,6 +143,102 @@ export async function startHub() {
 
 // A TCP proxy in front of the test hub. The pages connect through it, so the harness can drop
 // their sockets the way a network would.
+// A second user who talks to the hub over its socket, with no browser. A browser test drives one
+// browser session. When a page behavior needs another user, that user is this, or the CLI.
+export async function apiUser(port, username, { repo = REPO, session } = {}) {
+  if (port === LIVE_PORT) throw new Error(`apiUser on ${LIVE_PORT}, the live hub's port`);
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/api/ws`);
+  const queue = [];
+  const waiters = [];
+  // The last doc and locks message for each path, kept apart from the queue that next() takes
+  // from, and anyone listening to every message.
+  const lastDoc = new Map();
+  const lastLocks = new Map();
+  const listeners = [];
+  const drain = () => {
+    for (let i = 0; i < waiters.length; i += 1) {
+      const at = queue.findIndex(waiters[i].pred);
+      if (at < 0) continue;
+      const [msg] = queue.splice(at, 1);
+      const [waiter] = waiters.splice(i, 1);
+      clearTimeout(waiter.timer);
+      waiter.resolve(msg);
+      i -= 1;
+    }
+  };
+  ws.addEventListener("message", (event) => {
+    const msg = JSON.parse(String(event.data));
+    if (msg.type === "ping") {
+      ws.send(JSON.stringify({ type: "pong", username }));
+      return;
+    }
+    if (msg.type === "doc") lastDoc.set(msg.path, msg);
+    if (msg.type === "locks") lastLocks.set(msg.path, msg);
+    for (const fn of listeners) fn(msg);
+    queue.push(msg);
+    drain();
+  });
+  await new Promise((resolve, reject) => {
+    ws.addEventListener("open", resolve, { once: true });
+    ws.addEventListener("error", () => reject(new Error(`apiUser ${username}: the socket did not open`)), { once: true });
+  });
+  const send = (msg) => ws.send(JSON.stringify({ username, ...msg }));
+  const next = (pred, what = "a message", timeout = 5000) => new Promise((resolve, reject) => {
+    const waiter = { pred, resolve, timer: setTimeout(() => {
+      waiters.splice(waiters.indexOf(waiter), 1);
+      reject(new Error(`apiUser ${username}: timed out waiting for ${what}`));
+    }, timeout) };
+    waiters.push(waiter);
+    drain();
+  });
+  send(session ? { type: "hello", session } : { type: "hello" });
+  await next((msg) => msg.type === "hello", "hello");
+  send({ type: "repo", name: repo });
+  let file = null;
+  return {
+    username,
+    send,
+    next,
+    // Opens a document, as a page does, and returns the hub's file message.
+    async open(path) {
+      send({ type: "open", path });
+      file = await next((msg) => msg.type === "file" && msg.path === path, `the file ${path}`);
+      return file;
+    },
+    // Puts this user's caret at offset in the open document, which holds its block. Returns the
+    // hub's answer: the locks message, or the error that refused it.
+    async hold(offset, anchor = offset) {
+      const { rev, text } = await this.latest();
+      // The hub numbers what a caret holds by lock span (lockSpans in src/doc.js).
+      const index = lockIndexAt(text, offset);
+      send({ type: "lock", path: file.path, anchor, cursor: offset, rev });
+      return next((msg) => (msg.type === "locks" && msg.path === file.path && msg.lines.some((line) => line.username === username && line.index === index)) || msg.type === "error", "the lock's answer");
+    },
+    // Types text at offset, as a key in a page does. Returns the hub's doc, or the error.
+    async insert(offset, text) {
+      const rev = (await this.latest()).rev;
+      send({ type: "edit", path: file.path, rev, anchor: offset, cursor: offset, op: "insert", text });
+      return next((msg) => (msg.type === "doc" && msg.path === file.path && msg.rev > rev) || msg.type === "error", "the edit's answer");
+    },
+    // The document's text and rev as this user last heard them.
+    async latest() {
+      const doc = lastDoc.get(file.path);
+      return doc && doc.rev > file.rev ? doc : file;
+    },
+    // The holders the hub last named on the open document: [{ index, username, token }].
+    locks() {
+      const msg = lastLocks.get(file.path);
+      return msg ? msg.lines : [];
+    },
+    listen(fn) {
+      listeners.push(fn);
+    },
+    close() {
+      ws.close();
+    },
+  };
+}
+
 export async function startProxy(target) {
   const open = new Set();
   let accepting = true;

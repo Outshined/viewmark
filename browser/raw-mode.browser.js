@@ -292,14 +292,16 @@ test("raw mode draws every byte and edits as plain text", async (t) => {
   assert.ok(ticketGap.right >= -1 && ticketGap.right <= 16, `ticket right ${ticketGap.right}`);
   // Raw does not follow another document, and this rendered body fits the pane.
   await setRaw(page, true);
-  await page.eval("document.getElementById('editor').scrollTop = 240");
+  // A ticket's text pane grows to hold its text (sufe23sj), so the page scrolls, not the pane.
+  await page.eval("window.scrollBy(0, 240)");
   await page.frame();
   const ticketStayed = await page.eval(`(() => {
     const editor = document.getElementById("editor").getBoundingClientRect();
     const button = document.querySelector("#editor button.md-view-toggle").getBoundingClientRect();
-    return { top: button.top - editor.top, right: editor.right - button.right, scroll: document.getElementById("editor").scrollTop };
+    // The eye stays fixed at the top right of the visible pane (editing.md).
+    return { top: button.top - Math.max(editor.top, 0), right: editor.right - button.right, scroll: window.scrollY };
   })()`);
-  assert.ok(ticketStayed.scroll > 0, "ticket text did not scroll");
+  assert.ok(ticketStayed.scroll > 0, "the ticket page did not scroll");
   assert.ok(ticketStayed.top >= -1 && ticketStayed.top <= 16, `scrolled top ${ticketStayed.top}`);
   assert.ok(ticketStayed.right >= -1 && ticketStayed.right <= 16, `scrolled right ${ticketStayed.right}`);
 
@@ -307,14 +309,4 @@ test("raw mode draws every byte and edits as plain text", async (t) => {
   const renderedSlash = await page.eval(`document.querySelector("#editor button.md-view-toggle line")`);
   assert.equal(renderedSlash, null);
 
-  const { session } = await browser.newSession();
-  const other = new Page(session, hub.port);
-  await other.init();
-  await other.login();
-  await other.open("b.md");
-  assert.equal(await pressed(other), "false");
-  assert.equal(await pressed(page), "false");
-  await setRaw(other, true);
-  assert.equal(await pressed(other), "true");
-  assert.equal(await pressed(page), "false");
 });

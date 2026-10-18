@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
-import { AGENT, OTHER, REPO, USER, cli, launchBrowser, Page, startHub, supports } from "./harness.js";
+import { AGENT, OTHER, REPO, USER, apiUser, cli, launchBrowser, Page, startHub, supports } from "./harness.js";
 
 // Acceptance for ticket awtyv87s, the raw view, from the Acceptance section of its body.
 // Each test names the part it checks. A title that names R107 checks a point the owner
@@ -37,14 +37,6 @@ async function setup(t, docs) {
   await page.init();
   await page.login();
   return { hub, page, browser };
-}
-
-async function secondTab(browser, hub, user = USER) {
-  const { session } = await browser.newSession();
-  const page = new Page(session, hub.port);
-  await page.init();
-  await page.login(user);
-  return page;
 }
 
 async function open(page, file) {
@@ -180,20 +172,6 @@ test("toggle: the focus is back in the editor, and the next letter goes in at th
   assert.equal(await typedWhereCaret(page, hub, "a.md", "rendered after the toggle"), 8);
 });
 
-test("toggle: another tab on the same file keeps its own mode", async (t) => {
-  const { hub, page: A, browser } = await setup(t, { "a.md": "alpha\n\nbeta\n" });
-  await open(A, "a.md");
-  await toggle(A);
-  const B = await secondTab(browser, hub);
-  await open(B, "a.md");
-  assert.equal(await isRaw(B), false, "a second tab opened in raw mode");
-  await toggle(B);
-  assert.equal(await isRaw(A), true);
-  await toggle(A);
-  await sleep(300);
-  assert.equal(await isRaw(B), true, "a toggle in the first tab changed the second");
-});
-
 test("toggle: one undo history covers both modes", async (t) => {
   const { hub, page } = await setup(t, { "a.md": "alpha\n" });
   await open(page, "a.md");
@@ -210,8 +188,8 @@ test("toggle: one undo history covers both modes", async (t) => {
   assert.equal((await page.caret()).focus, 5, "the second undo did not restore the caret");
 });
 
-test("toggle: the mode does not stick across another file, a reload, or a new tab", async (t) => {
-  const { hub, page, browser } = await setup(t, { "a.md": "alpha\n", "b.md": "beta\n" });
+test("toggle: the mode does not stick across another file or a reload", async (t) => {
+  const { page } = await setup(t, { "a.md": "alpha\n", "b.md": "beta\n" });
   await open(page, "a.md");
   await toggle(page);
   const since = page.frames.length;
@@ -223,9 +201,6 @@ test("toggle: the mode does not stick across another file, a reload, or a new ta
   assert.equal(await isRaw(page), false, "opening another file stayed in raw mode");
   await open(page, "a.md");
   assert.equal(await isRaw(page), false, "a reload stayed in raw mode");
-  const C = await secondTab(browser, hub);
-  await open(C, "a.md");
-  assert.equal(await isRaw(C), false, "a new tab did not start rendered");
 });
 
 // ---- Nothing is rendered ------------------------------------------------------------------
@@ -279,13 +254,14 @@ test("nothing rendered: comment cards stay up", async (t) => {
 
 test("sharing: a block another session holds shows that user's name, a click does not take it, and a key that would touch it is refused and flashed", async (t) => {
   const doc = "alpha\n\nbeta\n";
-  const { hub, page: A, browser } = await setup(t, { "a.md": doc });
+  const { hub, page: A } = await setup(t, { "a.md": doc });
   await open(A, "a.md");
   await toggle(A);
-  const B = await secondTab(browser, hub, OTHER);
-  await open(B, "a.md");
-  await B.clickOffset(doc.indexOf("beta") + 2);
-  await B.quiet();
+  // The other session talks to the hub directly.
+  const B = await apiUser(hub.port, OTHER);
+  t.after(() => B.close());
+  await B.open("a.md");
+  assert.equal((await B.hold(doc.indexOf("beta") + 2)).type, "locks", "the other session could not hold beta");
   await A.until(() => A.eval(`[...document.querySelectorAll("#editor .md-line")].some((l) => l.textContent.includes("beta") && [...l.querySelectorAll(".md-lock")].some((x) => x.textContent.includes(${JSON.stringify(OTHER)})))`), "the raw tab names qa-two on beta", 3000);
   await place(A, 2);
   await A.clickOffset(doc.indexOf("beta") + 1);
@@ -302,7 +278,7 @@ test("sharing: a block another session holds shows that user's name, a click doe
 
 test("sharing: an edit from the CLI or another tab shows in the raw tab within one second, and the caret keeps its place", async (t) => {
   const doc = "alpha\n\nbeta\n";
-  const { hub, page: A, browser } = await setup(t, { "a.md": doc });
+  const { hub, page: A } = await setup(t, { "a.md": doc });
   await open(A, "a.md");
   await toggle(A);
   const n = doc.indexOf("beta") + 2;
@@ -313,11 +289,11 @@ test("sharing: an edit from the CLI or another tab shows in the raw tab within o
   await A.until(async () => (await lines(A)).includes("zero"), "the CLI edit shows", 1000);
   assert.ok(Date.now() - started <= 1500);
   assert.equal((await A.caret()).focus, n + "zero\n".length, "the caret did not keep its place in the text");
-  const B = await secondTab(browser, hub);
-  await open(B, "a.md");
-  await B.clickOffset(1);
-  await B.quiet();
-  await B.key("Z");
+  // The other tab is the same user with its own session, talking to the hub directly.
+  const B = await apiUser(hub.port, USER, { session: "the-other-tab" });
+  t.after(() => B.close());
+  await B.open("a.md");
+  assert.equal((await B.insert(1, "Z")).type, "doc", "the other tab's key was refused");
   await A.until(async () => (await lines(A))[0].includes("Z"), "the other tab's edit shows", 1000);
 });
 
@@ -769,21 +745,6 @@ test("source: a comment added in rendered mode shows in raw mode as its markers 
   const raw = await lines(page);
   assert.ok(raw.includes("alpha {c1}beta{/c1} gamma"), `the markers are not drawn: ${JSON.stringify(raw)}`);
   assert.ok(raw.includes("```comment c1"), `the fence is not drawn: ${JSON.stringify(raw)}`);
-});
-
-test("source: an edit made in rendered mode in another tab shows in the raw tab within one second", async (t) => {
-  const { hub, page: A, browser } = await setup(t, { "a.md": "alpha\n\nbeta\n" });
-  await open(A, "a.md");
-  await toggle(A);
-  const B = await secondTab(browser, hub);
-  await open(B, "a.md");
-  await B.clickOffset("alpha\n\nbe".length);
-  await B.quiet();
-  const started = Date.now();
-  await B.key("Z");
-  await A.until(async () => (await lines(A)).includes("beZta"), "the edit shows in the raw tab", 1000);
-  assert.ok(Date.now() - started <= 1500);
-  assert.equal(await show(hub, "a.md"), "alpha\n\nbeZta\n");
 });
 
 // ---- The font ------------------------------------------------------------------------------

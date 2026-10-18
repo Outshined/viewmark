@@ -297,12 +297,14 @@ async function reconnect(page, context) {
 
 async function act(page, token, interval, context) {
   if (token.key && token.key.startsWith("B: ")) {
+    // B is a second user who talks to the hub directly (browser/other.js).
     const inner = token.key.slice(3);
     const other = await context.other();
     const literal = literalIn(inner);
-    if (POINTER.test(inner)) return pointer(other, inner, interval);
-    if (literal && literal.end === inner.length) return other.type(literal.value);
-    return act(other, { key: inner }, interval, context);
+    const typed = !POINTER.test(inner) && literal && literal.end === inner.length;
+    const done = await other.act(typed ? literal.value : inner);
+    if (done && done.unsupported) throw new NotAutomated(`B: ${done.unsupported}`);
+    return;
   }
   if (token.key && token.key.startsWith("agent: ")) return agent(context, token.key.slice(7));
   // A pause between keys, for rules that depend on time, such as an undo run (D33).
@@ -648,11 +650,6 @@ const range = (anchor, focus) => (anchor === focus ? `${focus}` : `${anchor}..${
 const shift = (marked, before, after) => marked && { bytes: before + marked.bytes + after, focus: marked.focus + before.length, anchor: marked.anchor + before.length };
 const usesOther = (cell) => !!cell.other || cell.labels.length > 0 || cell.keys.some((token) => token.key && token.key.startsWith("B: "));
 
-// Does page B draw the lock label `name` on the block holding `text`?
-function labelShown(other, name, text) {
-  return other.eval(`[...window.__qaRoot().querySelectorAll(".md-line, .md-atom")].some((block) => block.textContent.includes(${JSON.stringify(text)}) && [...block.querySelectorAll(".md-lock")].some((label) => label.textContent.includes(${JSON.stringify(name)})))`);
-}
-
 export async function runCell(suite, cell, routeName, serial) {
   const { hub, page } = suite;
   const [route, wait] = routeName.split("@");
@@ -686,7 +683,6 @@ export async function runCell(suite, cell, routeName, serial) {
   }
   if (usesOther(cell)) {
     const other = await suite.other();
-    other.frames.length = 0;
     await other.open(file);
   }
   const placedCaret = await page.caret();
@@ -714,7 +710,7 @@ export async function runCell(suite, cell, routeName, serial) {
     for (const key of walking ? [] : cell.keys) {
       await act(page, key, interval, context);
       await page.quiet();
-      if (suite.hasOther()) await (await suite.other()).quiet();
+      if (suite.hasOther()) await (await suite.other()).settle(sent(page, file).rev);
     }
   } catch (err) {
     if (err instanceof NotAutomated || err?.unsupported) return { ...result, status: "BLOCKED", failed: [`not automated: ${err.message}`] };
@@ -774,14 +770,14 @@ export async function runCell(suite, cell, routeName, serial) {
   if (usesOther(cell)) {
     const other = await suite.other();
     if (cell.other) {
-      const otherCaret = await other.caret();
-      const otherSent = sent(other, file);
+      const otherCaret = other.caret();
+      const otherSent = { text: other.text() };
       if (otherSent.text !== cell.other.bytes) result.failed.push(`B bytes: wanted ${JSON.stringify(cell.other.bytes)}, got ${JSON.stringify(otherSent.text)}`);
       if (otherCaret.none || !otherCaret.inside) result.failed.push("B caret: no selection in B's editor");
       else if (otherCaret.focus !== cell.other.focus || otherCaret.anchor !== cell.other.anchor) result.failed.push(`B caret: wanted ${range(cell.other.anchor, cell.other.focus)}, got ${range(otherCaret.anchor, otherCaret.focus)} at ${otherCaret.focusPath || "the editor root"}`);
     }
     for (const label of cell.labels) {
-      const shownLabel = await labelShown(other, label.name, label.text);
+      const shownLabel = other.holds(label.name, label.text);
       if (shownLabel !== label.shown) result.failed.push(`B label: wanted ${label.shown ? "" : "no "}${label.name} on ${JSON.stringify(label.text)}, got ${shownLabel ? "it" : "none"}`);
     }
   }

@@ -9,7 +9,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
-import { AGENT, OTHER, REPO, USER, cli, launchBrowser, Page, startHub, supports } from "./harness.js";
+import { AGENT, OTHER, REPO, USER, apiUser, cli, launchBrowser, Page, startHub, supports } from "./harness.js";
 
 // The test plan in the body of ticket vurzujkx, cases IMG.a1 to IMG.f2, with the owner's
 // answers c1 to c4 there. Pictures live beside their document, in a directory named for it, and
@@ -139,8 +139,10 @@ async function openPage(ctx, file, user = USER) {
     ctx.browser = await launchBrowser();
     ctx.cleanup.push(() => ctx.browser.close());
   }
-  const session = ctx.pages ? (await ctx.browser.newSession()).session : ctx.browser.session;
-  ctx.pages = (ctx.pages || 0) + 1;
+  // A browser test drives one browser session. Another user talks to the hub directly.
+  if (ctx.pages) throw new Error("openPage: a test opens one page; another user is apiUser or the CLI");
+  const session = ctx.browser.session;
+  ctx.pages = 1;
   const page = new Page(session, ctx.hub.port);
   await page.init();
   await page.login(user);
@@ -643,11 +645,12 @@ test("IMG.u8 a paste where another session holds the block is refused, writes no
   const ctx = await setup(t, { "held.md": doc });
   // B holds alpha beta, and then A opens the file and pastes into that block. Before R7 the
   // test held the blank line between the paragraphs, but that line is now the gap under alpha
-  // beta, where no caret can stop.
+  // beta, where no caret can stop. B talks to the hub directly.
   const a = await openPage(ctx);
-  const b = await openPage(ctx, "held.md", OTHER);
-  assert.ok(await b.clickOffset("alpha be".length));
-  await b.quiet();
+  const b = await apiUser(ctx.hub.port, OTHER);
+  ctx.cleanup.push(() => b.close());
+  await b.open("held.md");
+  assert.equal((await b.hold("alpha be".length)).type, "locks", "B could not hold alpha beta");
   await openFile(a, "held.md");
   await a.until(() => a.eval(`[...document.querySelectorAll(".md-lock")].some((l) => l.textContent.includes(${JSON.stringify(OTHER)}))`), "A sees B's lock", 3000).catch(() => {});
   await grantClipboard(a);
@@ -670,22 +673,25 @@ test("IMG.u8 a paste where another session holds the block is refused, writes no
   assert.ok(flashed, "the holder's name neither flashed (D26) nor showed in a notice (c4)");
 });
 
-test("IMG.u9 a second session sees the picture without a reload, and the frames carry the line, not the bytes", async (t) => {
-  const ctx = await setup(t, { "seen.md": "alpha beta\n\ngamma delta\n" });
-  const b = await openPage(ctx, "seen.md", OTHER);
-  // The second session's caret holds gamma delta, away from where the picture goes.
-  assert.ok(await b.clickOffset("alpha beta\n\ngamma".length));
-  await b.quiet();
-  const rec = recordFrames(b);
-  ctx.page = await openPage(ctx);
-  const { after } = await pastePicture(ctx, "seen.md", 3, png(200, 80, { noise: true }));
-  const [img] = imageLines(after.text);
-  await waitFor(() => b.eval(`(() => { const el = document.querySelector("#editor .md-image img"); return !!el && el.complete && el.naturalWidth > 0; })()`), "the picture in the second session");
+test("IMG.u9 another user's picture shows without a reload, and the frames carry the line, not the bytes", async (t) => {
+  const text = "alpha beta\n\ngamma delta\n";
+  const ctx = await setup(t, { "seen.md": text });
+  const page = await openPage(ctx, "seen.md");
+  // The page's caret holds gamma delta, away from where the picture goes.
+  assert.ok(await page.clickOffset("alpha beta\n\ngamma".length));
+  await page.quiet();
+  const rec = recordFrames(page);
+  // Another user adds the picture after alpha beta, through the CLI.
+  const out = await attach(ctx.hub, "seen.md", text, 0, "alpha".length, png(200, 80, { noise: true }));
+  assert.equal(out.code, 0, out.stderr);
+  const [img] = imageLines((await showDoc(ctx.hub, "seen.md")).text);
+  assert.ok(img, "no image line after the attach");
+  await waitFor(() => page.eval(`(() => { const el = document.querySelector("#editor .md-image img"); return !!el && el.complete && el.naturalWidth > 0; })()`), "the picture drawn on the page", 5000);
   rec.stop();
   const inbound = rec.frames.filter((f) => f.dir === "in");
   assert.ok(inbound.some((f) => f.text.includes(img.address)), "no frame named the image line");
   const biggest = Math.max(...inbound.map((f) => f.size));
-  assert.ok(biggest < 16 * 1024, `a frame to the second session was ${biggest} bytes`);
+  assert.ok(biggest < 16 * 1024, `a frame to the page was ${biggest} bytes`);
 });
 
 // Ticket hup4797q: a pasted picture showed at first and was gone after a forced reload.

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import { commentDragPreview } from "../src/doc.js";
-import { OTHER, launchBrowser, Page, startHub } from "./harness.js";
+import { OTHER, apiUser, launchBrowser, Page, startHub } from "./harness.js";
 
 // A comment highlight grows a handle at each end. Dragging one handle moves
 // that marker; the note and the fence stay. One edit.
@@ -264,18 +264,16 @@ test("dragging a comment handle moves that end, and an empty drag writes nothing
 
 test("a handle dragged into a block another session holds is refused with that user's name", async (t) => {
   const doc = `${P}\n\nHeld line stays.\n`;
-  const { hub, browser, page: A } = await setup(t, { "a.md": doc + CM("c1") });
-  const { session } = await browser.newSession();
-  const B = new Page(session, hub.port);
-  await B.init();
-  await B.login(OTHER);
+  const { hub, page: A } = await setup(t, { "a.md": doc + CM("c1") });
+  // The other session talks to the hub directly.
+  const B = await apiUser(hub.port, OTHER);
+  t.after(() => B.close());
   await A.open("a.md");
   await B.open("a.md");
   const held = doc.indexOf("Held") + 2;
   assert.ok(await A.clickOffset(P.indexOf("this") + 2));
   await A.quiet();
-  assert.ok(await B.clickOffset(held));
-  await B.quiet();
+  assert.equal((await B.hold(held)).type, "locks", "the other session could not hold the line");
   await sleep(300);
   await hover(A, P.indexOf("this") + 2);
   const into = await A.eval(`window.__qaClickPoint(${held})`);

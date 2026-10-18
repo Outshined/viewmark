@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
-import { OTHER, REPO, cli, launchBrowser, Page, startHub, supports } from "./harness.js";
+import { OTHER, REPO, apiUser, cli, launchBrowser, Page, startHub, supports } from "./harness.js";
 
 // Comments in the page: deleting a thread, and moving or cutting text that holds comment
 // markers. Every action is a real key or mouse event. After each one the bytes must keep every
@@ -498,15 +498,14 @@ test("handles: a drag that would empty the comment, cross another, or reach into
 
 test("handles: a drag into a block another session holds is refused with 409, and that session's name flashes", async (t) => {
   const doc = `${LEAD}${P}\n\nHeld line stays.\n`;
-  const { hub, browser, page: A } = await setup(t, { "a.md": doc + CM("c1") });
-  const { session } = await browser.newSession();
-  const B = new Page(session, hub.port);
-  await B.init();
-  await B.login(OTHER);
+  const { hub, page: A } = await setup(t, { "a.md": doc + CM("c1") });
+  // The other session talks to the hub directly.
+  const B = await apiUser(hub.port, OTHER);
+  t.after(() => B.close());
   await open(A, "a.md");
-  await open(B, "a.md");
+  await B.open("a.md");
   const held = doc.indexOf("Held") + 2;
-  await place(B, held);
+  assert.equal((await B.hold(held)).type, "locks", "the other session could not hold the line");
   await place(A, 3);
   await sleep(300);
   await hover(A, at("this", 2));

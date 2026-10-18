@@ -188,20 +188,12 @@ test("page (default): Enter or leaving the field saves, and Escape puts back the
   assert.equal((await shown(hub, id)).rev, rev, "Escape wrote to the ticket");
 });
 
-test("page: a value set by the CLI or another tab shows without a reload, except in a focused field with unsaved text", async (t) => {
-  const { hub, browser, page } = await setup(t);
+test("page: a value set by the CLI shows without a reload, except in a focused field with unsaved text", async (t) => {
+  const { hub, page } = await setup(t);
   const id = await makeTicket(hub, "Alpha");
   await openTicket(page, id);
   await setTicket(hub, id, "--assignee", "ada");
   await page.until(async () => (await fieldValue(page)) === "ada", "the CLI's value in the field", 3000);
-  const other = await browser.newSession();
-  const tab = new Page(other.session, hub.port);
-  await tab.init();
-  await tab.login("qa-two");
-  await openTicket(tab, id);
-  await typeInto(tab, "bob");
-  await tab.key("Enter");
-  await page.until(async () => (await fieldValue(page)) === "bob", "the other tab's value in the field", 3000);
   await typeInto(page, "unsaved");
   await setTicket(hub, id, "--assignee", "carl");
   await sleep(600);

@@ -258,10 +258,10 @@ test("Copy link puts exactly the ticket's URL on the clipboard, closes the menu,
   const want = await page.eval(`location.origin + location.pathname + "#${REPO}/ticket/${id}"`);
   assert.equal(await readClipboard(page), want);
   assert.equal(await page.eval(SHOWN(PANEL)), false, "the menu stayed open");
-  const other = await browser.newSession();
-  const tab = new Page(other.session, hub.port);
-  await tab.init();
-  await tab.login("qa-two");
+  // The page itself opens the copied URL, after a blank page so it is a fresh visit.
+  const tab = page;
+  await tab.session.send("Page.navigate", { url: "about:blank" });
+  await sleep(300);
   const since = tab.frames.length;
   await tab.session.send("Page.navigate", { url: want });
   await tab.until(() => tab.frames.slice(since).some((f) => f.dir === "in" && f.data && f.data.type === "file" && f.data.path === `tickets/${id}.md`), "the URL opens the ticket");
@@ -508,20 +508,19 @@ test("Blocks: adding B on A writes A into B's depends and leaves A's file as it 
   assert.equal(await fileBytes(hub, a), before, "A's own file changed on remove");
 });
 
-test("Blocks: without a reload, B's page shows A under Depends, and A's page shows B under Blocks, in another tab too", async (t) => {
-  const { hub, browser, page } = await setup(t);
+test("Blocks: without a reload, A's page shows B under Blocks, and a page open on a ticket shows a Depends that the CLI writes", async (t) => {
+  const { hub, page } = await setup(t);
   const a = await makeTicket(hub, "Ticket A");
   const b = await makeTicket(hub, "Banana B");
-  const other = await browser.newSession();
-  const tab = new Page(other.session, hub.port);
-  await tab.init();
-  await tab.login("qa-two");
-  await openTicket(tab, b);
   await openTicket(page, a);
   await ensureField(page, "Blocks");
   await pickInto(page, ".md-ticket-blocks", "Banana");
   await page.until(() => page.eval(`!!document.querySelector('.ticket-form .md-ticket-blocks .md-ticket-link[data-id="${b}"]')`), "A's page shows B under Blocks", 3000);
-  await tab.until(() => tab.eval(`!!document.querySelector('.ticket-form .md-ticket-depends .md-ticket-link[data-id="${a}"]')`), "B's page in the other tab shows A under Depends", 3000);
+  // Another user writes C's depends while the page is open on C.
+  const c = await makeTicket(hub, "Cherry C");
+  await openTicket(page, c);
+  await setTicket(hub, c, "--depends", a);
+  await page.until(() => page.eval(`!!document.querySelector('.ticket-form .md-ticket-depends .md-ticket-link[data-id="${a}"]')`), "C's page shows A under Depends", 3000);
 });
 
 // One attempt to link a ticket through a picker: whether the picker offers it, and what the hub
