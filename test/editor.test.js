@@ -14370,6 +14370,195 @@ test("detail 2 selects the word and detail 3 selects the block", () => {
   }
 });
 
+test("CB.5 TB.li.8 SX.4 a drag that ends on a line's last character includes that character", () => {
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const timers = [];
+  const sel = {
+    rangeCount: 1,
+    anchorNode: null,
+    anchorOffset: 0,
+    focusNode: null,
+    focusOffset: 0,
+    get isCollapsed() {
+      return this.anchorNode === this.focusNode && this.anchorOffset === this.focusOffset;
+    },
+    getRangeAt() {
+      const collapsed = sel.anchorNode === sel.focusNode && sel.anchorOffset === sel.focusOffset;
+      return {
+        collapsed,
+        commonAncestorContainer: mounted.root,
+        startContainer: sel.anchorNode,
+        startOffset: sel.anchorOffset,
+        endContainer: sel.focusNode,
+        endOffset: sel.focusOffset,
+      };
+    },
+    setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset) {
+      this.anchorNode = anchorNode;
+      this.anchorOffset = anchorOffset;
+      this.focusNode = focusNode;
+      this.focusOffset = focusOffset;
+      fireDocument(mounted, "selectionchange");
+    },
+    collapse(node, offset) {
+      this.setBaseAndExtent(node, offset, node, offset);
+    },
+  };
+  let hit = null;
+  globalThis.window.getSelection = () => sel;
+  globalThis.window.setTimeout = (fn) => {
+    timers.push(fn);
+    return timers.length;
+  };
+  globalThis.document.caretPositionFromPoint = () => hit;
+  globalThis.document.createTreeWalker = (rootNode) => {
+    const nodes = [];
+    const walk = (node) => {
+      if (!node) return;
+      if (node.nodeType === 3) nodes.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(rootNode);
+    let index = 0;
+    return { nextNode() { return index < nodes.length ? nodes[index++] : null; } };
+  };
+  const sourcePoint = (source) => {
+    let found = null;
+    const walk = (node) => {
+      if (found || !node) return;
+      if (node.nodeType === 3) {
+        const start = mapOffset(node, 0);
+        const end = mapOffset(node, node.length || 0);
+        if (end > start && source >= start && source <= end) found = { node, offset: source - start };
+      } else if (node.tagName === "BR" && mapOffset(node, 0) === source) {
+        found = { node, offset: 0 };
+      }
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(mounted.root);
+    return found;
+  };
+  const show = (anchorPoint, focusPoint) => {
+    sel.anchorNode = anchorPoint.node;
+    sel.anchorOffset = anchorPoint.offset;
+    sel.focusNode = focusPoint.node;
+    sel.focusOffset = focusPoint.offset;
+    sel.rangeCount = 1;
+  };
+  const flush = () => {
+    const batch = timers.splice(0, timers.length);
+    for (const fn of batch) fn();
+  };
+  const finishClick = (target) => {
+    mounted.listeners.click({
+      target,
+      clientX: 48,
+      clientY: 28,
+      detail: 1,
+      button: 0,
+      preventDefault() {},
+    });
+    flush();
+  };
+  // The drag's selectionchange has already stored the short focus. mouseup then
+  // maps the release the way a click would, and the click after it must keep
+  // that longer range in the DOM selection the harness reads.
+  const drag = (name, doc, cursor, anchor, firefox, release, detail = 1) => {
+    timers.length = 0;
+    const view = createEditor(mounted.root, doc, cursor);
+    try {
+      const press = sourcePoint(anchor);
+      const short = sourcePoint(firefox);
+      const want = sourcePoint(release);
+      assert.ok(press, `${name} press ${anchor}`);
+      assert.ok(short, `${name} focus ${firefox}`);
+      assert.ok(want, `${name} release ${release}`);
+      hit = { offsetNode: press.node, offset: press.offset };
+      mounted.listeners.mousedown({ clientX: 4, clientY: 8, detail: 1, button: 0, target: press.node });
+      show(press, short);
+      fireDocument(mounted, "selectionchange");
+      assert.equal(view.getState().anchor, anchor, `${name} stores the drag anchor`);
+      assert.equal(view.getState().cursor, firefox, `${name} stores the drag focus`);
+      hit = { offsetNode: want.node, offset: want.offset };
+      mounted.listeners.mouseup({ clientX: 48, clientY: 28, detail, button: 0, target: want.node });
+      finishClick(want.node);
+      return view.getState();
+    } finally {
+      view.destroy();
+    }
+  };
+  try {
+    const cells = [
+      { name: "CB.5", doc: "- a\n- b\n\n", cursor: 0, anchor: 0, firefox: 6, release: 7, text: "- a\n- b" },
+      { name: "TB.li.8", doc: "- a\n- b\n- c\n", cursor: 4, anchor: 4, firefox: 10, release: 11, text: "- b\n- c" },
+      { name: "SX.4", doc: "one\n\ntwo\n", cursor: 0, anchor: 0, firefox: 3, release: 8, text: "one\n\ntwo" },
+    ];
+    for (const cell of cells) {
+      const state = drag(cell.name, cell.doc, cell.cursor, cell.anchor, cell.firefox, cell.release);
+      assert.equal(state.anchor, cell.anchor, cell.name);
+      assert.equal(state.cursor, cell.release, cell.name);
+      assert.equal(selectedSlice(state), cell.text, cell.name);
+      assert.equal(mapOffset(sel.anchorNode, sel.anchorOffset), cell.anchor, `${cell.name} DOM anchor`);
+      assert.equal(mapOffset(sel.focusNode, sel.focusOffset), cell.release, `${cell.name} DOM focus`);
+    }
+    const backward = drag("backward", "one\n\ntwo\n", 0, 8, 1, 0);
+    assert.equal(backward.anchor, 8);
+    assert.equal(backward.cursor, 0);
+    assert.equal(selectedSlice(backward), "one\n\ntwo");
+    assert.equal(mapOffset(sel.anchorNode, sel.anchorOffset), 8);
+    assert.equal(mapOffset(sel.focusNode, sel.focusOffset), 0);
+
+    for (const cell of cells) {
+      const state = drag(`${cell.name} chromium`, cell.doc, cell.cursor, cell.anchor, cell.release, cell.release);
+      assert.equal(state.anchor, cell.anchor, cell.name);
+      assert.equal(state.cursor, cell.release, cell.name);
+      assert.equal(mapOffset(sel.anchorNode, sel.anchorOffset), cell.anchor, `${cell.name} chromium DOM anchor`);
+      assert.equal(mapOffset(sel.focusNode, sel.focusOffset), cell.release, `${cell.name} chromium DOM focus`);
+    }
+
+    const kept = drag("longer than the release", "- a\n- b\n\n", 0, 0, 8, 7);
+    assert.equal(kept.anchor, 0);
+    assert.equal(kept.cursor, 8);
+    assert.equal(mapOffset(sel.focusNode, sel.focusOffset), 8);
+
+    const word = drag("detail 2", "- a\n- b\n\n", 0, 0, 6, 7, 2);
+    assert.equal(word.anchor, 0);
+    assert.equal(word.cursor, 6);
+    assert.equal(mapOffset(sel.focusNode, sel.focusOffset), 6);
+
+    timers.length = 0;
+    const mismatch = createEditor(mounted.root, "hello fox\n", 0);
+    try {
+      const line = sourcePoint(0);
+      assert.ok(line);
+      const parent = {
+        nodeType: 1,
+        dataset: { start: "9", end: "10" },
+        classList: { contains() { return false; } },
+        parentElement: mounted.root,
+        closest() { return null; },
+      };
+      const past = { nodeType: 3, textContent: "x", length: 1, parentElement: parent, childNodes: [] };
+      hit = { offsetNode: line.node, offset: 0 };
+      mounted.listeners.mousedown({ clientX: 4, clientY: 8, detail: 1, button: 0, target: line.node });
+      show({ node: line.node, offset: 6 }, { node: line.node, offset: 9 });
+      fireDocument(mounted, "selectionchange");
+      hit = { offsetNode: past, offset: 1 };
+      mounted.listeners.mouseup({ clientX: 48, clientY: 28, detail: 1, button: 0, target: line.node });
+      finishClick(line.node);
+      assert.equal(mismatch.getState().anchor, 6);
+      assert.equal(mismatch.getState().cursor, 9);
+      assert.equal(mapOffset(sel.anchorNode, sel.anchorOffset), 6);
+      assert.equal(mapOffset(sel.focusNode, sel.focusOffset), 9);
+    } finally {
+      mismatch.destroy();
+    }
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("a double-click selects the word under the first press", () => {
   const mounted = mountEditor();
   const press = (target, detail) => {
