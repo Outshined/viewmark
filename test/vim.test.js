@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { vimKey, vimMatchStarts, vimSubmit, VIM_SEARCH_LIMIT } from "../src/vim.js";
-import { codeSpanAt, createState, deleteForward, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
+import { backspace, codeSpanAt, createState, deleteForward, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
 
 const CARET = "‸";
 
@@ -74,6 +74,11 @@ function run(start, keys, opts = {}) {
       anchor = Number.isInteger(effect.anchor) ? effect.anchor : effect.cursor;
     } else if (effect.type === "forward-delete") {
       const next = deleteForward(createState(doc, cursor, anchor));
+      doc = next.doc;
+      cursor = next.cursor;
+      anchor = next.anchor;
+    } else if (effect.type === "backspace") {
+      const next = backspace(createState(doc, cursor, anchor));
       doc = next.doc;
       cursor = next.cursor;
       anchor = next.anchor;
@@ -369,7 +374,8 @@ test("VN.1", () => {
   const left = run("al‸pha\n", ["h"]);
   assertView(left, "h", 1);
   const three = run("al‸pha\n", ["3", "l"]);
-  assertView(three, "l", 3);
+  assert.equal(three.show, "alph‸a\n");
+  assert.equal(last(three).effect.type, "caret");
   assert.equal(three.doc, "alpha\n");
 });
 
@@ -412,13 +418,13 @@ test("VN.5", () => {
   const joined = run("alpha‸\nab\nalpha\n", ["j"]);
   assert.equal(joined.show, "alpha‸\nab\nalpha\n");
   const once = run("alpha‸\n\nab\n\nalpha\n", ["j"]);
-  assert.equal(once.show, "alpha\n\nab‸\n\nalpha\n");
+  assert.equal(once.show, "alpha\n\na‸b\n\nalpha\n");
   assert.equal(once.vim.column, 5);
   const twice = run("alpha‸\n\nab\n\nalpha\n", ["j", "j"]);
-  assert.equal(twice.show, "alpha\n\nab\n\nalpha‸\n");
+  assert.equal(twice.show, "alpha\n\nab\n\nalph‸a\n");
   assert.equal(twice.vim.column, 5);
   const raw = run("alpha‸\nab\nalpha\n", ["j", "j"], { raw: true });
-  assert.equal(raw.show, "alpha\nab\nalpha‸\n");
+  assert.equal(raw.show, "alpha\nab\nalph‸a\n");
   const cleared = run("alpha‸\n\nab\n\nalpha\n", ["j", "h"]);
   assert.equal(cleared.steps[1].effect.command, "h");
   assert.equal(cleared.vim.column, null);
@@ -431,7 +437,7 @@ test("VN.5", () => {
     raw: false,
     layout: null,
   });
-  assert.equal(show(cleared.doc, placed.effect.cursor), "alpha\n\nab\n\na‸lpha\n");
+  assert.equal(show(cleared.doc, placed.effect.cursor), "alpha\n\nab\n\n‸alpha\n");
 });
 
 test("VN.6", () => {
@@ -486,7 +492,7 @@ test("VN.11", () => {
 
 test("VN.12", () => {
   const spaced = run("‸alpha \n", ["$"]);
-  assert.equal(spaced.show, "alpha ‸\n");
+  assert.equal(spaced.show, "alpha‸ \n");
   const broken = run("r‸ed  \nblue\n", ["$"]);
   assert.equal(broken.show, "red‸  \nblue\n");
   const line = sourceLine(broken.doc, 1);
@@ -494,12 +500,79 @@ test("VN.12", () => {
   assert.ok(broken.cursor < line.end);
 });
 
+// The Normal block covers the last glyph. x deletes that glyph and leaves the break.
+test("qvqa6h7q", () => {
+  assert.equal(run("a‸lpha\n", ["$"]).show, "alph‸a\n");
+  assert.equal(run("alpha b‸eta\n\ngamma\n", ["$"]).show, "alpha bet‸a\n\ngamma\n");
+  assert.equal(run("- o‸ne\n- two\n", ["$"]).show, "- on‸e\n- two\n");
+  assert.equal(run("‸alpha \n", ["$"]).show, "alpha‸ \n");
+  const stayed = run("alph‸a\n\ngamma\n", ["l"]);
+  assert.equal(stayed.show, "alph‸a\n\ngamma\n");
+  assert.equal(last(stayed).match, "full");
+  assert.equal(last(stayed).consumed, true);
+  assert.equal(last(stayed).effect, null);
+  assert.equal(run("# Hi\nA longer parag‸raph line.\n", ["k"]).show, "# H‸i\nA longer paragraph line.\n");
+  assert.equal(run("A longer parag‸raph line.\n\nShort.\n", ["j"]).show, "A longer paragraph line.\n\nShort‸.\n");
+
+  const cut = run("alpha b‸eta\n\ngamma\n", ["$", "x"]);
+  assert.equal(cut.doc, "alpha bet\n\ngamma\n");
+  assert.equal(cut.show, "alpha be‸t\n\ngamma\n");
+  assert.equal(last(cut).effect.type, "splice");
+  assert.equal(last(cut).effect.yank.text, "a");
+  const list = run("- o‸ne\n- two\n", ["$", "x"]);
+  assert.equal(list.doc, "- on\n- two\n");
+  assert.equal(list.show, "- o‸n\n- two\n");
+  const tail = run("a‸lpha\n", ["$", "x"]);
+  assert.equal(tail.doc, "alph\n");
+  assert.equal(tail.show, "alp‸h\n");
+  const space = run("‸alpha \n", ["$", "x"]);
+  assert.equal(space.doc, "alpha\n");
+  assert.equal(space.show, "alph‸a\n");
+
+  const empty = run("‸\n", ["x"]);
+  assert.equal(empty.doc, "\n");
+  assert.equal(empty.show, "‸\n");
+  assert.equal(last(empty).effect, null);
+  const gap = run("alpha‸\n\ngamma\n", ["x"]);
+  assert.equal(gap.doc, "alpha\n\ngamma\n");
+  assert.equal(last(gap).effect, null);
+  const between = run("alpha\n‸\nbeta\n", ["x"]);
+  assert.equal(between.doc, "alpha\n\nbeta\n");
+  assert.equal(last(between).effect, null);
+  const across = run("alpha\n‸gamma\n", ["X"]);
+  assert.equal(across.doc, "alpha\ngamma\n");
+  assert.equal(across.show, "alpha\n‸gamma\n");
+  assert.equal(last(across).effect, null);
+  const back = run("alp‸ha\n", ["X"]);
+  assert.equal(back.doc, "alha\n");
+  assert.equal(back.show, "al‸ha\n");
+  const bar = run("‸alpha\n", ["2", "0", "|", "x"]);
+  assert.equal(bar.doc, "alpha\n");
+  assert.equal(bar.show, "alpha‸\n");
+  assert.equal(last(bar).effect, null);
+  const word = run("alpha be‸ta\n", ["w", "x"]);
+  assert.equal(word.doc, "alpha beta\n");
+  assert.equal(word.show, "alpha beta‸\n");
+  assert.equal(last(word).effect, null);
+
+  const endDelete = run("alph‸a\n", ["d", "$"]);
+  assert.equal(endDelete.doc, "alph\n");
+  const append = run("al‸pha\n", ["A"]);
+  assert.equal(append.vim.mode, "insert");
+  assert.equal(append.show, "alpha‸\n");
+  const crlf = run("be‸ta\r\n", ["$"]);
+  assert.equal(crlf.show, "bet‸a\r\n");
+  const crlfCut = run("be‸ta\r\n", ["$", "x"]);
+  assert.equal(crlfCut.doc, "bet\r\n");
+  assert.equal(crlfCut.show, "be‸t\r\n");
+});
+
 test("VN.13", () => {
   assert.equal(run("- al‸pha\n", ["Home"]).show, "‸- alpha\n");
   const long = `${CARET}${"x".repeat(80)}`;
   const end = run(long, ["End"]);
-  assert.equal(end.cursor, 80);
-  assert.equal(end.show, `${"x".repeat(80)}${CARET}`);
+  assert.equal(end.cursor, 79);
+  assert.equal(end.show, `${"x".repeat(79)}${CARET}x`);
   const visual = run("- al‸pha\n", ["Home"], { mode: "visual" });
   assert.equal(visual.cursor, 0);
   assert.equal(visual.vim.mode, "visual");
@@ -595,7 +668,7 @@ test("VN.18", () => {
   assert.equal(plain.show, "‸  alpha\n");
   assert.equal(plain.steps[1].effect.type, "caret");
   assert.equal(run("  al‸pha\n", ["g", "^"]).show, "  ‸alpha\n");
-  assert.equal(run("ab‸c\n", ["g", "$"]).show, "abc‸\n");
+  assert.equal(run("ab‸c\n", ["g", "$"]).show, "ab‸c\n");
 });
 
 test("VN.19", () => {
@@ -824,7 +897,8 @@ test("pn4hbr22 k from below a table lands on the last row and steps up", () => {
   for (const text of up) {
     out = press(out, "k");
     assert.equal(lineAtCaret(out), text);
-    assert.equal(out.cursor - (out.doc.lastIndexOf("\n", Math.max(0, out.cursor - 1)) + 1), Math.min(4, text.length));
+    const room = text.length === 0 ? 0 : text.length - 1;
+    assert.equal(out.cursor - (out.doc.lastIndexOf("\n", Math.max(0, out.cursor - 1)) + 1), Math.min(4, room));
   }
   const under = run("Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\nAfte‸r.\n", ["k"]);
   assert.equal(lineAtCaret(under), "| 1 | 2 |");
@@ -961,8 +1035,8 @@ test("g92jk6em j stops on the last glyph of a short code line and skips the blan
   const over = run(diagramDoc, ["2", "j"]);
   assert.equal(lineAtCaret(over), "");
   assert.ok(over.cursor > over.doc.indexOf("A-->B"));
-  assert.equal(run("abcde‸f\n\nhi\n", ["j"]).show, "abcdef\n\nhi‸\n");
-  assert.equal(run("abcde‸f\nhi\n", ["j"], { raw: true }).show, "abcdef\nhi‸\n");
+  assert.equal(run("abcde‸f\n\nhi\n", ["j"]).show, "abcdef\n\nh‸i\n");
+  assert.equal(run("abcde‸f\nhi\n", ["j"], { raw: true }).show, "abcdef\nh‸i\n");
 });
 
 test("g92jk6em V selects one line of a code fence and Vj selects the next", () => {
@@ -1003,7 +1077,8 @@ test("VW.10", () => {
 test("VW.11", () => {
   const doc = "al‸pha\r\nbeta\r\n";
   const three = run(doc, ["3", "l"], { raw: true });
-  assertView(three, "l", 3);
+  assert.equal(three.show, "alph‸a\r\nbeta\r\n");
+  assert.equal(last(three).effect.type, "caret");
   const one = run(doc, ["l"], { raw: true });
   assertView(one, "l", 1);
   assert.equal(one.doc, "alpha\r\nbeta\r\n");
@@ -1330,7 +1405,7 @@ test("s4sgk32f escape from insert backs onto the previous character", () => {
   assert.equal(run("‸\n", ["Escape"], { mode: "insert" }).show, "‸\n");
 
   const typed = run("alpha betaxy‸\n", ["Escape", "x"], { mode: "insert" });
-  assert.equal(typed.show, "alpha betax‸\n");
+  assert.equal(typed.show, "alpha beta‸x\n");
   assert.equal(typed.vim.mode, "normal");
 
   const word = run("alpha key bindings‸ to\n", ["Escape", "x"], { mode: "insert" });
@@ -2226,7 +2301,7 @@ test("VS.11", () => {
   assert.equal(visual.doc, "one two one\n");
 
   const end = run(searched.show, ["$"], { vim: searched.vim });
-  assert.equal(end.show, "one two one‸\n");
+  assert.equal(end.show, "one two on‸e\n");
   const backward = run(end.show, ["g", "N"], { vim: end.vim });
   assert.equal(backward.show, "one ‸two« one\n");
   assert.equal(backward.vim.mode, "visual");

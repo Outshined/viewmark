@@ -126,6 +126,20 @@ function unitLen(doc, index) {
   return 1;
 }
 
+function unitsUntil(doc, from, to) {
+  let n = 0;
+  let at = from;
+  while (at < to && n < REPEAT_CAP) {
+    at += unitLen(doc, at);
+    n += 1;
+  }
+  return n;
+}
+
+function visualMode(vim) {
+  return !!vim && (vim.mode === "visual" || vim.mode === "visual-line");
+}
+
 function rawLines(doc) {
   const lines = [];
   let start = 0;
@@ -268,6 +282,13 @@ function lineDollar(doc, line) {
   return endBeforeTail(doc, end);
 }
 
+// The Normal block caret covers one glyph. A break is not a glyph, so a column
+// past the line stops on the last character. An empty line has only the break.
+function glyphOnLine(doc, at, line) {
+  if (at > line.start && (at >= doc.length || breaksLine(doc, at))) return stepBack(doc, at);
+  return at;
+}
+
 // $ is the vim line's end. A hard break inside that line stops on the tail's edge.
 function dollarOffset(doc, cursor, raw) {
   const line = lineBounds(doc, cursor, raw);
@@ -347,9 +368,8 @@ function drawnColumn(doc, line, offset, direction, raw, limit) {
   return snapped;
 }
 
-// lineDollar is the newline, so a column past a code line would sit on the
-// break after the last glyph. Stock vim stops on the glyph. $ keeps the
-// newline: a forward delete through it still takes that glyph.
+// lineDollar is the break after the last glyph. A column on a code line stops
+// on that glyph, the same as any other Normal line.
 function codeColumnLimit(doc, line, limit) {
   if (!fenceBodyAt(doc, line.start)) return limit;
   let end = limit;
@@ -359,21 +379,27 @@ function codeColumnLimit(doc, line, limit) {
   return end;
 }
 
-function placeColumn(doc, line, column, raw, direction) {
+function placeColumn(doc, line, column, raw, direction, exclusive) {
   let limit = lineDollar(doc, line);
   if (!raw) limit = codeColumnLimit(doc, line, limit);
+  const stop = exclusive ? limit : glyphOnLine(doc, limit, line);
   let offset = line.start + (column < 0 ? 0 : column);
-  if (offset > limit) offset = limit;
+  if (offset > stop) offset = stop;
   if (offset < line.start) offset = line.start;
   offset = lineCaret(doc, offset);
   offset = endBeforeTail(doc, offset);
+  // A bare break's caret is its newline. That choice stays. A snap past the
+  // last glyph of a line that has one does not.
+  const holdBreak = exclusive || offset > stop;
+  const finish = (at) => (!holdBreak && at > stop ? stop : at);
   const edged = hiddenEdge(doc, offset, direction, raw);
-  if (columnInLine(line, limit, edged)) return drawnColumn(doc, line, edged, direction, raw, limit);
+  if (columnInLine(line, limit, edged)) return finish(drawnColumn(doc, line, edged, direction, raw, limit));
   const back = hiddenEdge(doc, offset, -1, raw);
-  if (columnInLine(line, limit, back)) return drawnColumn(doc, line, back, -1, raw, limit);
+  if (columnInLine(line, limit, back)) return finish(drawnColumn(doc, line, back, -1, raw, limit));
   const fwd = hiddenEdge(doc, offset, 1, raw);
-  if (columnInLine(line, limit, fwd)) return drawnColumn(doc, line, fwd, 1, raw, limit);
+  if (columnInLine(line, limit, fwd)) return finish(drawnColumn(doc, line, fwd, 1, raw, limit));
   if (offset < line.start) return line.start;
+  if (!holdBreak && offset > stop) return stop;
   if (offset > limit) return limit;
   return offset;
 }
@@ -419,7 +445,7 @@ function stepMarkerGap(gap, delta, count, length) {
   return stepLine(gap.prev, -1, steps - 1, length);
 }
 
-function moveVertical(doc, cursor, delta, count, raw, column) {
+function moveVertical(doc, cursor, delta, count, raw, column, exclusive) {
   const lines = raw ? rawLines(doc) : renderedLines(doc, cursor, true);
   let index = -1;
   for (let i = 0; i < lines.length; i += 1) {
@@ -455,7 +481,7 @@ function moveVertical(doc, cursor, delta, count, raw, column) {
   if (next === index || next < 0 || next >= lines.length) return { cursor, column: col, linewise: true };
   let line = lines[next];
   if (!raw && delta < 0) line = backwardTableRow(doc, line);
-  const landed = placeColumn(doc, line, col, raw, delta);
+  const landed = placeColumn(doc, line, col, raw, delta, exclusive);
   return { cursor: landed, column: col, linewise: true };
 }
 
@@ -723,6 +749,19 @@ function runMotion(id, spec) {
   const { doc, cursor, raw, layout, count, column, find, anchor } = spec;
   const keep = column;
   if (id === "h" || id === "l") {
+    // l is a page step. Past the last glyph that step lands on the break, and
+    // the block caret covers nothing. Stop on the glyph instead.
+    if (id === "l" && !visualMode(spec.vim) && !(spec.vim && spec.vim.input && spec.vim.input.operator)) {
+      const line = lineBounds(doc, cursor, raw);
+      const end = dollarOffset(doc, cursor, raw);
+      const glyph = glyphOnLine(doc, end, line);
+      if (glyph < end) {
+        if (cursor >= glyph) return { kind: "stay", column: null };
+        if (unitsUntil(doc, cursor, glyph) < count) {
+          return { kind: "caret", cursor: glyph, column: null, linewise: false, inclusive: false, past: false, word: false };
+        }
+      }
+    }
     return { kind: "view", command: id, repeat: count, column: null };
   }
   if (id === "gj" || id === "gk" || id === "g0" || id === "g^" || id === "g$") {
@@ -738,11 +777,11 @@ function runMotion(id, spec) {
     if (layout) return { kind: "view", command: id, repeat: count, column: keep };
     const size = id === "ctrl-f" || id === "ctrl-b" ? PAGE : HALF;
     const delta = id === "ctrl-f" || id === "ctrl-d" ? 1 : -1;
-    const moved = moveVertical(doc, cursor, delta, size * count, raw, keep);
+    const moved = moveVertical(doc, cursor, delta, size * count, raw, keep, visualMode(spec.vim));
     return { kind: "caret", ...moved, inclusive: false, past: false, word: false };
   }
   if (id === "j" || id === "k") {
-    const moved = moveVertical(doc, cursor, id === "j" ? 1 : -1, count, raw, keep);
+    const moved = moveVertical(doc, cursor, id === "j" ? 1 : -1, count, raw, keep, visualMode(spec.vim));
     return { kind: "caret", ...moved, inclusive: false, past: false, word: false };
   }
   if (id === "+" || id === "-" || id === "enter") {
@@ -777,7 +816,7 @@ function runMotion(id, spec) {
       return { kind: "caret", cursor: at, column: null, linewise: true, inclusive: false, past: false, word: false };
     }
     const index = Math.max(0, Math.min(lines.length - 1, numbered - 1));
-    const moved = placeColumn(doc, lines[index], keep == null ? columnOf(doc, cursor, raw) : keep, raw, 1);
+    const moved = placeColumn(doc, lines[index], keep == null ? columnOf(doc, cursor, raw) : keep, raw, 1, visualMode(spec.vim));
     return { kind: "caret", cursor: moved, column: keep == null ? columnOf(doc, cursor, raw) : keep, linewise: true, inclusive: false, past: false, word: false };
   }
   if (id === "0") {
@@ -789,7 +828,21 @@ function runMotion(id, spec) {
     return { kind: "caret", cursor: firstNonBlank(doc, line, raw), column: null, linewise: false, inclusive: false, past: false, word: false };
   }
   if (id === "$") {
-    return { kind: "caret", cursor: dollarOffset(doc, cursor, raw), column: null, linewise: false, inclusive: true, past: true, word: false };
+    const end = dollarOffset(doc, cursor, raw);
+    const line = lineBounds(doc, cursor, raw);
+    const glyph = glyphOnLine(doc, end, line);
+    const parked = glyph !== end;
+    return {
+      kind: "caret",
+      cursor: parked ? glyph : end,
+      end,
+      column: null,
+      linewise: false,
+      inclusive: true,
+      past: !parked,
+      cover: parked,
+      word: false,
+    };
   }
   if (id === "|") {
     const line = lineBounds(doc, cursor, raw);
@@ -883,8 +936,8 @@ function charRange(doc, origin, motion) {
   const forward = motion.cursor >= origin;
   let from = forward ? origin : motion.cursor;
   let to = forward ? motion.cursor : origin;
-  if (forward && motion.inclusive && !motion.past && motion.cursor > origin && to < doc.length) {
-    to += unitLen(doc, to);
+  if (forward && motion.inclusive && !motion.past && to < doc.length) {
+    if (motion.cursor > origin || motion.cover) to += unitLen(doc, to);
   }
   if (!forward && motion.till) {
     const next = from + unitLen(doc, from);
@@ -1436,9 +1489,12 @@ function finishMotion(vim, doc, anchor, cursor, raw, motion, operator) {
   if (vim.mode === "visual" || vim.mode === "visual-line") {
     let landed = at;
     // e and w stop on the character the selection includes. The caret is the
-    // exclusive end, so it sits one unit later. $ is already past that character.
+    // exclusive end, so it sits one unit later. $ parks on the glyph and keeps
+    // that exclusive end on the motion.
     if (motion.word && at > cursor && at < doc.length && doc[at] !== "\n" && doc[at] !== "\r") {
       landed = at + unitLen(doc, at);
+    } else if (motion.cover && Number.isInteger(motion.end)) {
+      landed = motion.end;
     }
     return pack("full", true, leavingOnce(next, vim), { type: "caret", anchor, cursor: landed });
   }
@@ -2222,6 +2278,46 @@ function submitEx(vim, doc, cursor, raw, line) {
   return exIdle(vim);
 }
 
+// x and X stay on the line. A break is not a character, and an empty line has none.
+function refusesLineBreak(doc, cursor, backward) {
+  if (backward) {
+    if (cursor <= 0) return true;
+    if (doc[cursor - 1] === "\n") return true;
+    if (doc[cursor - 1] === "\r" && cursor < doc.length && doc[cursor] === "\n") return true;
+    return false;
+  }
+  if (cursor >= doc.length) return true;
+  return breaksLine(doc, cursor);
+}
+
+// The last glyph of the line. Cutting it with the page delete would leave the
+// caret on the break. The splice parks on the glyph that remains.
+function takesPlainGlyph(doc, cursor) {
+  if (cursor < 0 || cursor >= doc.length || breaksLine(doc, cursor)) return false;
+  if (markerChar(doc, cursor) || commentMarkerSpan(doc, cursor)) return false;
+  const atoms = plan(doc, cursor).atoms;
+  if (atoms && atoms.some((atom) => cursor >= atom.start && cursor < atom.end)) return false;
+  const next = cursor + unitLen(doc, cursor);
+  return next >= doc.length || breaksLine(doc, next);
+}
+
+function cutPlainGlyph(vim, prior, doc, cursor) {
+  const len = unitLen(doc, cursor);
+  const text = doc.slice(cursor, cursor + len);
+  const line = sourceLine(doc, cursor);
+  const caret = cursor > line.start ? stepBack(doc, cursor) : cursor;
+  const next = vim;
+  next.register = { text, linewise: false };
+  return pack("full", true, leavingOnce(next, prior), {
+    type: "splice",
+    from: cursor,
+    to: cursor + len,
+    text: "",
+    caret,
+    yank: { text, linewise: false },
+  });
+}
+
 function runAction(vim, doc, anchor, cursor, raw, layout, id) {
   if (id === "D" || id === "C") {
     const motion = runMotion("$", {
@@ -2264,6 +2360,8 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
       });
     }
     if (n <= 1) {
+      if (refusesLineBreak(doc, cursor, id === "X")) return pack("full", true, leavingOnce(next, vim), null);
+      if (id === "x" && takesPlainGlyph(doc, cursor)) return cutPlainGlyph(next, vim, doc, cursor);
       if (id === "x") {
         const text = forwardCut(doc, cursor);
         if (text) next.register = { text, linewise: false };
@@ -2354,7 +2452,8 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
     if (id === "i") return pack("full", true, next, { type: "caret", anchor: cursor, cursor });
     if (id === "I" || id === "A") {
       const motion = runMotion(id === "I" ? "^" : "$", { doc, cursor, raw, layout, count: 1, column: null, find: null, vim: next });
-      const at = motion.cursor;
+      // $ parks on the last glyph. Append still inserts after it.
+      const at = id === "A" && Number.isInteger(motion.end) ? motion.end : motion.cursor;
       return pack("full", true, next, { type: "caret", anchor: at, cursor: at });
     }
     return pack("full", true, next, { type: "view-motion", command: "l", repeat: 1 });
