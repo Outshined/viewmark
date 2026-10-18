@@ -185,10 +185,9 @@ function renderedLines(doc, cursor, expandFences) {
         continue;
       }
     }
-    // plan leaves the blank after a fence unmarked, because the block before it
-    // is the fence. A blank between blocks is not a vim line. The blank before
-    // the fence is already a paragraph gap. A further blank stays a line, and
-    // so does the row when nothing drawn follows the fence.
+    // A gap is already skipped. The first of two blanks after a fence is drawn
+    // while the caret stands on it, and that row is still not a vim line. A
+    // further blank stays a line, and so does the row when nothing follows.
     if (block.empty && blocks[i - 1] && blocks[i - 1].fence && i + 1 < blocks.length) continue;
     const line = { start: block.start, end: block.end };
     // k lands on the last row. The block stays one vim line for a linewise delete.

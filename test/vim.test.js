@@ -971,9 +971,9 @@ function press(out, key, opts) {
 test("pn4hbr22 k from below a table lands on the last row and steps up", () => {
   const doc = "Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nAfte‸r.\n";
   let out = run(doc, ["k"]);
-  assert.equal(lineAtCaret(out), "");
+  assert.equal(lineAtCaret(out), "| 3 | 4 |");
   assert.equal(out.vim.column, 4);
-  const up = ["| 3 | 4 |", "| 1 | 2 |", "|---|---|", "| a | b |", "Top."];
+  const up = ["| 1 | 2 |", "|---|---|", "| a | b |", "Top."];
   for (const text of up) {
     out = press(out, "k");
     assert.equal(lineAtCaret(out), text);
@@ -983,8 +983,9 @@ test("pn4hbr22 k from below a table lands on the last row and steps up", () => {
   const under = run("Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\nAfte‸r.\n", ["k"]);
   assert.equal(lineAtCaret(under), "| 1 | 2 |");
   assert.equal(under.cursor - under.doc.indexOf("| 1 | 2 |"), 4);
+  // A closed table counts as one line, so 2k from After reaches Top.
   const counted = run("Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nAfte‸r.\n", ["2", "k"]);
-  assert.equal(lineAtCaret(counted), "| 3 | 4 |");
+  assert.equal(lineAtCaret(counted), "Top.");
   const down = ["| a | b |", "|---|---|", "| 1 | 2 |", "| 3 | 4 |", "After."];
   let jay = run("‸Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nAfter.\n", ["j"]);
   for (const text of down) {
@@ -997,12 +998,38 @@ test("pn4hbr22 k from below a table lands on the last row and steps up", () => {
 
 test("pn4hbr22 dk from below a table deletes that table line", () => {
   const doc = "Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nAfter.\n";
-  const blank = run(doc.replace("\n\nAfter.", "\n‸\nAfter."), ["d", "k"]);
-  assert.equal(blank.doc, "Top.\n\nAfter.\n");
+  // k from After is the last row. The closed table is one line, so dk takes it and After.
   const after = run(doc.replace("After.", "‸After."), ["d", "k"]);
-  assert.equal(after.doc, "Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n");
+  assert.equal(after.doc, "Top.\n\n");
+  // j from Top is the table. dj takes Top, the table, and the gap under the table.
   const into = run(doc.replace("Top.", "‸Top."), ["d", "j"]);
-  assert.equal(into.doc, "\nAfter.\n");
+  assert.equal(into.doc, "After.\n");
+});
+
+test("6a2t6dy5 j and k skip the blank under a rule, an image, or a diagram", () => {
+  const cases = [
+    ["---\n\nAfter.\n", "---"],
+    ["![x](y)\n\nAfter.\n", "![x](y)"],
+  ];
+  for (const [doc, up] of cases) {
+    const fromAfter = run(doc.replace("After.", "‸After."), ["k"]);
+    assert.equal(lineAtCaret(fromAfter), up, doc);
+    assert.equal(lineAtCaret(press(fromAfter, "j")), "After.", doc);
+    const raw = run(doc.replace("After.", "‸After."), ["k"], { raw: true });
+    assert.equal(lineAtCaret(raw), "", doc);
+  }
+  // A diagram stays one block until the caret is on it. k from After lands on
+  // the opener. The following j then walks the opened source.
+  const diagram = "```mermaid\nA-->B\n```\n\nAfter.\n";
+  const blank = diagram.indexOf("\n\n") + 1;
+  const fromDiagram = run(diagram.replace("After.", "‸After."), ["k"]);
+  assert.equal(lineAtCaret(fromDiagram), "```mermaid");
+  assert.ok(fromDiagram.cursor < blank);
+  assert.equal(lineAtCaret(run(diagram.replace("After.", "‸After."), ["k"], { raw: true })), "");
+  const doubled = "---\n\n\nAfter.\n";
+  const onSecond = run(doubled.replace("After.", "‸After."), ["k"]);
+  assert.equal(lineAtCaret(onSecond), "");
+  assert.equal(lineAtCaret(press(onSecond, "j")), "After.");
 });
 
 // The fence in the rendered view is one block. j, k, and V still move one line of code.
@@ -1113,8 +1140,8 @@ test("g92jk6em j stops on the last glyph of a short code line and skips the blan
   const diagram = run(diagramDoc, ["j"]);
   assert.equal(diagram.doc.slice(diagram.cursor, diagram.cursor + 3), "```");
   const over = run(diagramDoc, ["2", "j"]);
-  assert.equal(lineAtCaret(over), "");
-  assert.ok(over.cursor > over.doc.indexOf("A-->B"));
+  assert.equal(lineAtCaret(over), "After.");
+  assert.ok(over.cursor >= over.doc.indexOf("After"));
   assert.equal(run("abcde‸f\n\nhi\n", ["j"]).show, "abcdef\n\nh‸i\n");
   assert.equal(run("abcde‸f\nhi\n", ["j"], { raw: true }).show, "abcdef\nh‸i\n");
 });

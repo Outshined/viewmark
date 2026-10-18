@@ -3351,22 +3351,36 @@ function apartBlock(block) {
   return classes.includes("md-li") || classes.includes("md-ol") || classes.includes("md-quote");
 }
 
+// A fence, a table, a diagram, an image, or a rule. The blank under it, before
+// the next block, is the same space as the blank between two paragraphs.
+function structuralPadBlock(block) {
+  if (!block || block.empty) return false;
+  if (block.type === "table" || block.type === "diagram") return true;
+  if (block.type !== "line") return false;
+  return block.fence === true || classHas(block, "md-hr") || imageOnlyLine(block);
+}
+
 // Padding is the blank before another paragraph, and the blank Enter writes when
-// the next line is the caret's and nothing follows that line. Every other blank
-// under a paragraph, an item, or a quote is a line the caret can take.
+// the next line is the caret's and nothing follows that line. The blank under a
+// fence, a table, a diagram, an image, or a rule is that same padding when a
+// block follows it. Every other blank under a paragraph, an item, or a quote is
+// a line the caret can take. A second blank in the run stays a line.
 function gapStop(blocks, index) {
   const next = blocks[index + 1];
   if (!next) return true;
   if (plainParagraph(next)) return false;
   if (blankBlock(next) && !blocks[index + 2]) return false;
+  if (structuralPadBlock(blocks[index - 1]) && !blankBlock(next)) return false;
   return true;
 }
 
 // The one blank under a paragraph, an item, or a quote takes no height whatever
 // follows, including the caret line Enter just wrote and a file that does not
-// end in a newline. A second blank stays a line. While the caret stands on a
-// blank it can take, that line keeps its height, so a typed letter stays with
-// the caret. A blank that carries the quote bar is that bar's line, not padding.
+// end in a newline. The blank under a fence, a table, a diagram, an image, or a
+// rule does the same when another block follows, and stays a line when nothing
+// does. A second blank stays a line. While the caret stands on a blank it can
+// take, that line keeps its height, so a typed letter stays with the caret. A
+// blank that carries the quote bar is that bar's line, not padding.
 function markParagraphSpace(blocks) {
   for (const block of blocks) {
     if (plainParagraph(block)) addClassName(block, "md-paragraph");
@@ -3374,7 +3388,8 @@ function markParagraphSpace(blocks) {
   for (let i = 1; i < blocks.length; i += 1) {
     if (!blankBlock(blocks[i]) || blankBlock(blocks[i - 1])) continue;
     if (blocks[i].classes && blocks[i].classes.includes("md-quote")) continue;
-    if (!plainParagraph(blocks[i - 1]) && !apartBlock(blocks[i - 1])) continue;
+    const underStructural = structuralPadBlock(blocks[i - 1]) && i + 1 < blocks.length;
+    if (!plainParagraph(blocks[i - 1]) && !apartBlock(blocks[i - 1]) && !underStructural) continue;
     if (blocks[i].raw && gapStop(blocks, i)) continue;
     addClassName(blocks[i], "md-paragraph-gap");
   }

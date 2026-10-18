@@ -691,7 +691,7 @@ test("a plain paragraph keeps its mark and a blank stays a line", () => {
   }
   assert.ok(plan("a\n\n![x](y)\n", 0).blocks[1].classes.includes("md-paragraph-gap"));
   assert.equal(plan("a\n\n![x](y)\n", 2).blocks[1].classes.includes("md-paragraph-gap"), false);
-  assert.equal(plan("![x](y)\n\nb\n", 0).blocks.find((block) => block.empty).classes.includes("md-paragraph-gap"), false);
+  assert.ok(plan("![x](y)\n\nb\n", 0).blocks.find((block) => block.empty).classes.includes("md-paragraph-gap"));
   assert.ok(plan("a\n\n![x](y)\n", 0).blocks[0].classes.includes("md-paragraph"));
   assert.ok(plan("![x](y)\n\nb\n", 0).blocks[2].classes.includes("md-paragraph"));
 
@@ -749,6 +749,92 @@ test("movement skips the blank between paragraphs", () => {
   assert.equal(skipHidden("one\n\ntwo\n", 4, "backward"), 3);
   assert.equal(skipHidden("one\n\ntwo\n", 4, "nearer"), 3);
   assert.equal(skipHidden("hello\n\n\n", 6, "nearer"), 5);
+});
+
+// Ticket 6a2t6dy5. The blank under one of these blocks is the space before the
+// next block, the same as the blank between two paragraphs. The block's own
+// trail is P; the blank adds no line. A second blank stays a line. Raw keeps
+// every source line.
+test("6a2t6dy5 the blank under a fence, a table, a diagram, an image, or a rule is not a caret stop", () => {
+  const docs = {
+    fence: "```js\nlet x\n```\n\nafter\n",
+    table: "| a | b |\n| --- | --- |\n| 1 | 2 |\n\nafter\n",
+    diagram: "```mermaid\nA-->B\n```\n\nafter\n",
+    image: "![x](y)\n\nafter\n",
+    rule: "---\n\nafter\n",
+    "fence then fence": "```\na\n```\n\n```\nb\n```\n",
+    "table then table": "| a |\n| --- |\n| 1 |\n\n| b |\n| --- |\n| 2 |\n",
+    "fence then heading": "```js\nlet x\n```\n\n# H\n",
+    "rule then fence": "---\n\n```js\nlet x\n```\n",
+  };
+  for (const [name, doc] of Object.entries(docs)) {
+    const blocks = plan(doc, doc.length).blocks;
+    const gapIndex = blocks.findIndex((block) => block.empty);
+    assert.ok(gapIndex > 0, name);
+    const gap = blocks[gapIndex];
+    const above = blocks[gapIndex - 1];
+    const below = blocks[gapIndex + 1];
+    assert.ok(gap.classes.includes("md-paragraph-gap"), name);
+    assert.equal(gap.classes.includes("md-paragraph"), false, name);
+    assert.ok(above.classes.includes("md-trail-p"), name);
+    assert.equal(plan(doc, gap.start).blocks[gapIndex].classes.includes("md-paragraph-gap"), true, name);
+    assert.equal(gapCaretStops(doc, doc.length).includes(gap.start), false, name);
+    assert.equal(placeMove(doc, above.end, gap.start, "forward", "line"), below.start, name);
+    assert.equal(placeMove(doc, below.start, gap.start, "backward", "line"), above.end, name);
+    assert.equal(placeMove(doc, above.end, gap.start, "forward", "character"), below.start, name);
+    assert.equal(placeMove(doc, below.start, gap.start, "backward", "character"), above.end, name);
+    assert.equal(skipHidden(doc, gap.start, "forward"), below.start, name);
+    assert.equal(skipHidden(doc, gap.start, "backward"), above.end, name);
+    assert.equal(skipHidden(doc, gap.start, "nearer"), above.end, name);
+    assert.equal(skipHidden(doc, gap.start, "forward", { gap: false }), gap.start, name);
+    assert.equal(skipHidden(doc, gap.start, "backward", { gap: false }), gap.start, name);
+
+    const doubled = doc.slice(0, gap.start) + "\n" + doc.slice(gap.start);
+    const wide = plan(doubled, doubled.length).blocks;
+    const first = wide[gapIndex];
+    const second = wide[gapIndex + 1];
+    assert.equal(first.empty, true, name);
+    assert.ok(first.classes.includes("md-paragraph-gap"), name);
+    assert.equal(second.empty, true, name);
+    assert.equal(second.classes.includes("md-paragraph-gap"), false, name);
+    assert.equal(placeMove(doubled, second.start, wide[gapIndex + 2].start, "forward", "line"), wide[gapIndex + 2].start, name);
+    assert.equal(placeMove(doubled, wide[gapIndex + 2].start, second.start, "backward", "line"), second.start, name);
+    // A closed block stops on the first of two blanks, as a paragraph does.
+    if (above.type !== "table" && above.type !== "diagram") {
+      assert.equal(placeMove(doubled, above.end, second.start, "forward", "line"), first.start, name);
+    }
+
+    const trail = doc.slice(0, gap.start + 1);
+    const trailed = plan(trail, trail.length).blocks;
+    const tail = trailed[trailed.length - 1];
+    assert.equal(tail.empty, true, name);
+    assert.equal(tail.classes.includes("md-paragraph-gap"), false, name);
+    assert.equal(placeMove(trail, trailed[trailed.length - 2].end, tail.start, "forward", "line"), tail.start, name);
+  }
+
+  const mounted = mountEditor();
+  try {
+    const doc = "```js\nlet x\n```\n\nafter\n---\n\n| a |\n| --- |\n| 1 |\n\n```mermaid\nA-->B\n```\n\n![x](y)\n\nnext\n";
+    const view = createEditor(mounted.root, doc, 0);
+    pressViewToggle(mounted.root);
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    const lines = sourceLinesOf(mounted.root);
+    assert.equal(lines.some((line) => line.className.includes("md-paragraph-gap")), false);
+    const blanks = [];
+    for (let i = 0; i < doc.length - 1; i += 1) {
+      if (doc[i] === "\n" && doc[i + 1] === "\n") blanks.push(i + 1);
+    }
+    assert.ok(blanks.length >= 5);
+    for (const at of blanks) {
+      const line = lines.find((item) => item.start === at);
+      assert.ok(line, String(at));
+      assert.equal(line.text, "");
+      assert.equal(line.className.includes("md-source-line"), true);
+    }
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
 });
 
 test("a blank under an item or a quote is a gap and Delete leaves the paragraph", () => {
