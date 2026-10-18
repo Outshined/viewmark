@@ -6200,6 +6200,200 @@ test("SE.fc.1", () => {
   }
 });
 
+// Ticket acc28bfp. A trailing backslash is a hard break only while text of the
+// block follows. Leaving the empty line Shift+Enter opened drops both.
+test("acc28bfp leaving an empty Shift+Enter line drops the block-ending backslash", () => {
+  const mounted = mountEditor();
+  const marked = (state) => state.doc.slice(0, state.cursor) + "‸" + state.doc.slice(state.cursor);
+  const pressBreak = () => {
+    mounted.listeners.beforeinput({ inputType: "insertLineBreak", preventDefault() {} });
+  };
+  const textOf = (value) => mounted.findAll((node) => node.nodeType === 3 && node.textContent === value)[0];
+  const texts = () => mounted.findAll((node) => node.nodeType === 3).map((node) => node.textContent).join("|");
+  const arrowTo = (value, key) => {
+    const node = textOf(value);
+    assert.ok(node, `${key} ${value} missing in ${texts()}`);
+    firefoxSelection(mounted, (sel) => {
+      sel.place(node, key === "ArrowUp" ? node.length : 0);
+    });
+    keyDown(mounted, key);
+  };
+  const clickText = (value) => {
+    const node = textOf(value);
+    assert.ok(node, `click ${value} missing in ${texts()}`);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: node, offset: 0 });
+    globalThis.window.getSelection = () => ({
+      rangeCount: 0,
+      isCollapsed: true,
+      removeAllRanges() {},
+      addRange() {},
+      collapse() {},
+    });
+    const event = {
+      target: node,
+      clientX: 8,
+      clientY: 8,
+      detail: 1,
+      button: 0,
+      shiftKey: false,
+      preventDefault() {},
+    };
+    mounted.listeners.mousedown(event);
+    mounted.listeners.click(event);
+  };
+  const open = (doc) => {
+    const view = createEditor(mounted.root, doc, doc.indexOf("\n"));
+    pressBreak();
+    return view;
+  };
+  try {
+    const cases = [
+      ["- alpha\n\nend\n", "- alpha\\\n‸\n\nend\n", "alpha", "end"],
+      ["> alpha\n\nend\n", "> alpha\\\n> ‸\n\nend\n", "alpha", "end"],
+      ["alpha\n\nend\n", "alpha\\\n‸\n\nend\n", "alpha", "end"],
+      ["- alpha\n- beta\n", "- alpha\\\n‸\n- beta\n", "alpha", "beta"],
+    ];
+    for (const [doc, held, head, tail] of cases) {
+      const up = open(doc);
+      assert.equal(marked(up.getState()), held, `held ${doc}`);
+      arrowTo(head, "ArrowUp");
+      assert.equal(up.getState().doc, doc, `up ${doc}`);
+      assert.equal(up.getState().anchor, up.getState().cursor);
+      assert.ok(up.getState().cursor <= doc.indexOf("\n"), `up caret ${marked(up.getState())}`);
+      up.destroy();
+
+      const down = open(doc);
+      arrowTo(tail, "ArrowDown");
+      assert.equal(down.getState().doc, doc, `down ${doc}`);
+      assert.equal(down.getState().anchor, down.getState().cursor);
+      assert.ok(down.getState().cursor > doc.indexOf("\n"), `down caret ${marked(down.getState())}`);
+      down.destroy();
+
+      const clicked = open(doc);
+      clickText(tail);
+      assert.equal(clicked.getState().doc, doc, `click ${doc}`);
+      assert.equal(clicked.getState().anchor, clicked.getState().cursor);
+      assert.ok(clicked.getState().cursor > doc.indexOf("\n"), `click caret ${marked(clicked.getState())}`);
+      clicked.destroy();
+    }
+
+    const end = open("alpha\n");
+    assert.equal(marked(end.getState()), "alpha\\\n‸\n");
+    arrowTo("alpha", "ArrowUp");
+    assert.equal(end.getState().doc, "alpha\n");
+    assert.equal(end.getState().anchor, end.getState().cursor);
+    assert.ok(end.getState().cursor <= "alpha".length);
+    end.destroy();
+
+    const endDown = open("alpha\n");
+    const row = mounted.findAll((node) => (
+      node.classList
+      && node.classList.contains("md-line")
+      && node.dataset
+      && node.dataset.start === node.dataset.end
+      && node.dataset.start === String(endDown.getState().cursor)
+    ))[0];
+    assert.ok(row, "empty caret row");
+    firefoxSelection(mounted, (sel) => {
+      sel.place(row, 0);
+    });
+    keyDown(mounted, "ArrowDown");
+    assert.equal(endDown.getState().doc, "alpha\n", `down eof ${marked(endDown.getState())}`);
+    assert.equal(endDown.getState().anchor, endDown.getState().cursor);
+    endDown.destroy();
+
+    const paired = createEditor(mounted.root, "alpha\r\n\r\nend\r\n", "alpha\r\n".length - 1);
+    pressBreak();
+    assert.equal(marked(paired.getState()), "alpha\\\r\n‸\r\nend\r\n");
+    arrowTo("alpha", "ArrowUp");
+    assert.equal(paired.getState().doc, "alpha\r\n\r\nend\r\n");
+    paired.destroy();
+
+    const pairedQuote = open("> alpha\r\n\r\nend\r\n");
+    assert.equal(marked(pairedQuote.getState()), "> alpha\\\r\n‸\r\nend\r\n");
+    arrowTo("alpha", "ArrowUp");
+    assert.equal(pairedQuote.getState().doc, "> alpha\r\n\r\nend\r\n");
+    pairedQuote.destroy();
+
+    const pairedItem = open("- alpha\r\n- beta\r\n");
+    assert.equal(marked(pairedItem.getState()), "- alpha\\\r\n‸\r\n- beta\r\n");
+    arrowTo("alpha", "ArrowUp");
+    assert.equal(pairedItem.getState().doc, "- alpha\r\n- beta\r\n");
+    pairedItem.destroy();
+
+    const pairedLoose = open("- alpha\r\n\r\n- beta\r\n");
+    assert.equal(marked(pairedLoose.getState()), "- alpha\\\r\n‸\r\n- beta\r\n");
+    arrowTo("alpha", "ArrowUp");
+    assert.equal(pairedLoose.getState().doc, "- alpha\r\n\r\n- beta\r\n");
+    pairedLoose.destroy();
+
+    const pairedEnd = open("alpha\r\n");
+    assert.equal(marked(pairedEnd.getState()), "alpha\\\r\n‸\r\n");
+    arrowTo("alpha", "ArrowUp");
+    assert.equal(pairedEnd.getState().doc, "alpha\r\n");
+    pairedEnd.destroy();
+
+    const pairedKept = open("alpha\r\nend\r\n");
+    assert.equal(marked(pairedKept.getState()), "alpha\\\r\n‸end\r\n");
+    arrowTo("alpha", "ArrowUp");
+    assert.equal(pairedKept.getState().doc, "alpha\\\r\nend\r\n");
+    pairedKept.destroy();
+
+    const pairedCleared = open("alpha\r\n\r\nend\r\n");
+    input(mounted, "insertText", "x");
+    input(mounted, "deleteContentBackward");
+    assert.equal(marked(pairedCleared.getState()), "alpha\\\r\n‸\r\nend\r\n");
+    arrowTo("end", "ArrowDown");
+    assert.equal(pairedCleared.getState().doc, "alpha\r\n\r\nend\r\n");
+    pairedCleared.destroy();
+
+    const typed = open("alpha\n\nend\n");
+    input(mounted, "insertText", "x");
+    assert.equal(typed.getState().doc, "alpha\\\nx\n\nend\n");
+    arrowTo("alpha", "ArrowUp");
+    assert.equal(typed.getState().doc, "alpha\\\nx\n\nend\n");
+    typed.destroy();
+
+    const cleared = open("alpha\n\nend\n");
+    input(mounted, "insertText", "x");
+    input(mounted, "deleteContentBackward");
+    assert.equal(marked(cleared.getState()), "alpha\\\n‸\n\nend\n");
+    arrowTo("end", "ArrowDown");
+    assert.equal(cleared.getState().doc, "alpha\n\nend\n");
+    cleared.destroy();
+
+    const quoteCleared = open("> alpha\n\nend\n");
+    input(mounted, "insertText", "x");
+    input(mounted, "deleteContentBackward");
+    assert.equal(marked(quoteCleared.getState()), "> alpha\\\n> ‸\n\nend\n");
+    arrowTo("alpha", "ArrowUp");
+    assert.equal(quoteCleared.getState().doc, "> alpha\n\nend\n");
+    quoteCleared.destroy();
+
+    const kept = createEditor(mounted.root, "alpha\\\nbeta\n", "alpha\\\n".length);
+    arrowTo("alpha", "ArrowUp");
+    assert.equal(kept.getState().doc, "alpha\\\nbeta\n");
+    kept.destroy();
+
+    const spaces = createEditor(mounted.root, "alpha  \n\nend\n", "alpha  \n".length);
+    arrowTo("alpha", "ArrowUp");
+    assert.equal(spaces.getState().doc, "alpha  \n\nend\n");
+    spaces.destroy();
+
+    const fenced = createEditor(mounted.root, "```\ncode\\\n\n```\n", "```\ncode\\\n".length);
+    arrowTo("code\\", "ArrowUp");
+    assert.equal(fenced.getState().doc, "```\ncode\\\n\n```\n");
+    fenced.destroy();
+
+    const heading = createEditor(mounted.root, "# Title\\\n\nend\n", "# Title\\\n".length);
+    arrowTo("Title\\", "ArrowUp");
+    assert.equal(heading.getState().doc, "# Title\\\n\nend\n");
+    heading.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("enter writes a blank line where the caret line would join", () => {
   const apply = (doc, cursor) => {
     const brk = enterBreak(doc, cursor, cursor);

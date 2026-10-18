@@ -41,6 +41,7 @@ import {
   ruleLineStop,
   gapCaretStops,
   imageLine,
+  sourceLine,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
 import { vimKey, vimMatchStarts, vimSubmit, VIM_SEARCH_LIMIT } from "./vim.js";
@@ -1956,6 +1957,67 @@ function offsetInFence(doc, offset) {
   return false;
 }
 
+// A heading, a rule, a fence, and a table cannot hold the Shift+Enter break.
+function hardBreakHost(text) {
+  if (text === "" || imageLine(text)) return false;
+  if (text.startsWith("|") || text.startsWith("```")) return false;
+  if (text === "---" || text === "***" || text === "___") return false;
+  if (/^#{1,6} /.test(text)) return false;
+  return true;
+}
+
+// An even run is escaped. Shift+Enter writes one backslash.
+function unescapedTrailingSlash(text) {
+  let count = 0;
+  for (let i = text.length - 1; i >= 0 && text[i] === "\\"; i -= 1) count += 1;
+  return count % 2 === 1;
+}
+
+// The line Shift+Enter opened. A quote keeps its "> " marker and nothing else.
+function breakLineEmpty(text) {
+  let rest = text;
+  if (rest.endsWith("\r")) rest = rest.slice(0, -1);
+  while (rest.startsWith("> ")) rest = rest.slice(2);
+  for (let i = 0; i < rest.length; i += 1) {
+    if (rest[i] !== " " && rest[i] !== "\t") return false;
+  }
+  return true;
+}
+
+function sameSourceLine(doc, a, b) {
+  if (typeof doc !== "string" || !Number.isFinite(a) || !Number.isFinite(b)) return false;
+  const left = Math.max(0, Math.min(doc.length, Math.trunc(a)));
+  const right = Math.max(0, Math.min(doc.length, Math.trunc(b)));
+  return sourceLine(doc, left).start === sourceLine(doc, right).start;
+}
+
+// CommonMark shows a trailing backslash when no text of the block follows.
+// The splice puts the previous line's break back and drops the empty line.
+function emptyBreakCut(doc, caret) {
+  if (typeof doc !== "string" || !Number.isFinite(caret)) return null;
+  const at = Math.max(0, Math.min(doc.length, Math.trunc(caret)));
+  const line = sourceLine(doc, at);
+  if (!breakLineEmpty(line.text) || line.start === 0 || doc[line.start - 1] !== "\n") return null;
+  const prev = sourceLine(doc, line.start - 1);
+  if (!prev.newline || !hardBreakHost(prev.text) || !unescapedTrailingSlash(prev.text)) return null;
+  if (offsetInFence(doc, prev.start) || offsetInFence(doc, line.start)) return null;
+  const slash = prev.start + prev.text.length - 1;
+  if (doc[slash] !== "\\") return null;
+  if (line.start === doc.length) return { from: slash, to: slash + 1, inserted: "" };
+  if (!line.newline) return null;
+  const inserted = doc.slice(slash + 1, prev.end + 1);
+  const to = line.end + 1;
+  if (to <= prev.end + 1) return null;
+  return { from: slash, to, inserted };
+}
+
+function mapBreakCaret(pos, cut) {
+  const at = Number.isFinite(pos) ? Math.trunc(pos) : cut.from;
+  if (at <= cut.from) return at;
+  if (at >= cut.to) return at - (cut.to - cut.from) + cut.inserted.length;
+  return cut.from;
+}
+
 function sourceLines(doc) {
   const lines = [];
   let start = 0;
@@ -2405,6 +2467,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // A supplied document is already the mirror. The page starts empty and waits for file.
   let live = !external || active.memory === true || (typeof doc === "string" && doc.length > 0);
   let granted = { anchor: state.anchor, cursor: state.cursor };
+  // claimLines re-enters while the empty-break splice is still in send.
+  let droppingBreak = false;
+  // A Shift+Enter that wrote only a backslash left the next line where it was.
+  // A CRLF blank is that line. Removing it would join the blocks.
+  let bareBreakAt = null;
   let outstandingLock = null;
   let lockRejected = false;
   let waitingForFile = false;
@@ -3187,10 +3254,39 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     emit({ type: "lock", release: true }, false);
   }
 
+  // The caret left the empty line a Shift+Enter break opened. The slash would
+  // end the block, so another viewer draws it. The line and the slash go.
+  function dropEmptyBreak(anchor, cursor) {
+    if (droppingBreak || anchor !== cursor || granted.anchor !== granted.cursor) return false;
+    const origin = granted.cursor;
+    if (!Number.isFinite(origin) || sameSourceLine(state.doc, origin, cursor)) return false;
+    let cut = emptyBreakCut(state.doc, origin);
+    if (!cut) return false;
+    // The backslash was written in front of a line that was already there.
+    if (bareBreakAt !== null && state.doc[bareBreakAt] !== "\\") bareBreakAt = null;
+    const slashOnly = bareBreakAt !== null && bareBreakAt === cut.from;
+    if (slashOnly) cut = { from: cut.from, to: cut.from + 1, inserted: "" };
+    const expect = state.doc.slice(0, cut.from) + cut.inserted + state.doc.slice(cut.to);
+    const caret = Math.max(0, Math.min(expect.length, mapBreakCaret(cursor, cut)));
+    const token = { text: expect, anchor: caret, cursor: caret };
+    const before = state.doc;
+    keptCaret = token;
+    droppingBreak = true;
+    try {
+      emitEdit({ op: "insert", text: cut.inserted, anchor: cut.from, cursor: cut.to, caret });
+    } finally {
+      droppingBreak = false;
+    }
+    if (keptCaret === token) keptCaret = null;
+    if (state.doc !== before && slashOnly) bareBreakAt = null;
+    return state.doc !== before;
+  }
+
   // The line set is granted when this user already holds it, or when the memory
   // transport accepts the lock before send returns. A 409 puts the caret back.
   function claimLines(anchor, cursor) {
     bodyCaretReleased = false;
+    if (dropEmptyBreak(anchor, cursor)) return true;
     const lines = lineSet(anchor, cursor);
     if (!live) {
       sentLines = lines;
@@ -7982,7 +8078,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   // Shift+Enter is a hard break. Enter stays emitBreak.
   function emitLineBreak() {
-    emitBreakResult(shiftBreak(state.doc, state.anchor, state.cursor));
+    const brk = shiftBreak(state.doc, state.anchor, state.cursor);
+    const inserted = typeof brk.text === "string" ? brk.text : "";
+    const from = typeof brk.anchor === "number" ? Math.min(brk.anchor, brk.cursor) : Math.min(state.anchor, state.cursor);
+    bareBreakAt = inserted === "\\" ? from : null;
+    emitBreakResult(brk);
   }
 
   listen("beforeinput", (event) => {
