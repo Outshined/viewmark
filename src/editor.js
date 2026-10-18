@@ -9390,6 +9390,32 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return offset - 1;
   }
 
+  // Firefox's caretPositionFromPoint on the blank above the final newline reports
+  // the line drawn for the offset after that newline. The blank's own box is the
+  // blank. A zero-height blank is handled with the gap stops; this is a blank
+  // that has a box, with that other line drawn under it.
+  function trailingBlankPress(event, offset) {
+    if (sourceMode || offset !== state.doc.length || !state.doc.endsWith("\n")) return offset;
+    if (!event || !Number.isFinite(event.clientY)) return offset;
+    const blankAt = state.doc.length - 1;
+    for (const el of childArray(root)) {
+      if (!hasClass(el, "md-line") || hasClass(el, "md-caret-row")) continue;
+      const start = Number(el.dataset && el.dataset.start);
+      const end = Number(el.dataset && el.dataset.end);
+      if (start !== blankAt || end !== blankAt) continue;
+      if (typeof el.getBoundingClientRect !== "function") continue;
+      const rect = el.getBoundingClientRect();
+      if (!rect || !(rect.bottom > rect.top)) continue;
+      if (event.clientY < rect.top || event.clientY > rect.bottom) continue;
+      if (Number.isFinite(event.clientX)) {
+        const right = rect.right > rect.left ? rect.right : rect.left;
+        if (event.clientX < rect.left - 4 || event.clientX > right + 4) continue;
+      }
+      return blankAt;
+    }
+    return offset;
+  }
+
   function pressOffset(event) {
     const rule = rulePress(event);
     if (rule != null) return rule;
@@ -9399,7 +9425,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (mapped == null) return null;
     const placed = tabHalf(event, mapped);
     if (sourceMode) return placed;
-    return blankLinePress(event, skipHidden(state.doc, placed, "nearer"));
+    return trailingBlankPress(event, blankLinePress(event, skipHidden(state.doc, placed, "nearer")));
   }
 
   function pointOffset(event) {
@@ -9607,7 +9633,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     if (belowLastBlock(event)) {
-      const end = state.doc.length;
+      // The blank under the last paragraph has no height, so its edge is a pixel
+      // under every box. Firefox reports that press as below the last line. The
+      // press is the blank. Padding farther under it is the line after the final newline.
+      const onBlank = gapUnderPoint(event);
+      const end = onBlank != null ? onBlank : state.doc.length;
       if (!keepCurrent) clearCurrentComment();
       if (event.detail === 1) gestureHold = true;
       state = { ...state, anchor: end, cursor: end };

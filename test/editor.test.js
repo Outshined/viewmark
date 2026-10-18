@@ -3276,6 +3276,159 @@ test("BG.p-hr", () => {
   }
 });
 
+// The trailing blank has no height. A press on its edge is a pixel under every
+// box, which is still that blank. Padding under the box is the end of the file.
+function boxDirectBlocks(mounted, heightOf) {
+  for (const el of mounted.root.childNodes) {
+    if (!el.classList) continue;
+    if (!el.classList.contains("md-line") && !el.classList.contains("md-atom")) continue;
+    const box = heightOf(el);
+    setBox(el, box.top, box.bottom, box.left, box.right);
+  }
+}
+
+function pressBlank(mounted, doc, cursor, y, fromPoint, heightOf) {
+  const view = createEditor(mounted.root, doc, cursor);
+  installGapQuery(mounted);
+  boxDirectBlocks(mounted, heightOf);
+  globalThis.document.caretPositionFromPoint = fromPoint;
+  pressPoint(mounted, mounted.root, 8, y);
+  return view;
+}
+
+test("BG.p-end", () => {
+  const mounted = mountEditor();
+  const doc = "one\n\n";
+  const blank = 4;
+  const edge = (el) => (el.classList.contains("md-paragraph-gap") ? { top: 40, bottom: 40 } : { top: 8, bottom: 40 });
+  try {
+    const gap = pressBlank(mounted, doc, 0, 41, () => null, edge);
+    assert.equal(gap.getState().cursor, blank);
+    assert.equal(gap.getState().anchor, blank);
+    assert.equal(editorLines(mounted).some((node) => node.classList.contains("md-caret-row")), false);
+    mounted.listeners.beforeinput({ inputType: "deleteContentBackward", preventDefault() {} });
+    assert.equal(gap.getState().doc, "one\n");
+    assert.equal(gap.getState().cursor, 3);
+    gap.destroy();
+
+    const br = () => {
+      const line = editorLines(mounted).find((node) => node.classList.contains("md-paragraph-gap"));
+      return line.childNodes.find((node) => String(node.nodeName).toUpperCase() === "BR");
+    };
+    const onEdge = pressBlank(mounted, doc, 0, 40, () => ({ offsetNode: br(), offset: 0 }), edge);
+    assert.equal(onEdge.getState().cursor, blank);
+    assert.equal(onEdge.getState().anchor, blank);
+    onEdge.destroy();
+
+    const below = pressBlank(mounted, doc, 0, 80, () => null, edge);
+    assert.equal(below.getState().cursor, doc.length);
+    assert.equal(below.getState().anchor, doc.length);
+    const row = editorLines(mounted).find((node) => node.classList.contains("md-caret-row"));
+    assert.ok(row);
+    assert.equal(row.dataset.start, String(doc.length));
+    below.destroy();
+
+    const paragraph = "Alpha\nBeta\n";
+    const under = pressBlank(mounted, paragraph, 0, 41, () => null, () => ({ top: 8, bottom: 40 }));
+    assert.equal(under.getState().cursor, paragraph.length);
+    assert.equal(under.getState().anchor, paragraph.length);
+    under.destroy();
+
+    const split = "one\n\ntwo\n";
+    const two = () => mounted.findAll((node) => node.nodeType === 3 && node.textContent === "two")[0];
+    const between = pressBlank(
+      mounted,
+      split,
+      0,
+      31,
+      () => ({ offsetNode: two(), offset: 0 }),
+      (el) => {
+        if (el.classList.contains("md-paragraph-gap")) return { top: 30, bottom: 30 };
+        if (String(el.textContent || "").includes("two")) return { top: 30, bottom: 50 };
+        return { top: 8, bottom: 30 };
+      },
+    );
+    assert.equal(between.getState().cursor, mapOffset(two(), 0));
+    assert.notEqual(between.getState().cursor, 4);
+    between.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
+    mounted.restore();
+  }
+});
+
+test("EN.tb.2 UR.9", () => {
+  const mounted = mountEditor();
+  const doc = "| a |\n| --- |\n| 1 |\n\n";
+  const blank = 20;
+  const edge = (el) => (Number(el.dataset.start) === blank && Number(el.dataset.end) === blank ? { top: 40, bottom: 40 } : { top: 8, bottom: 40 });
+  try {
+    assert.deepEqual(gapCaretStops(doc, 0), [blank]);
+    const gap = pressBlank(mounted, doc, 0, 41, () => null, edge);
+    assert.equal(gap.getState().cursor, blank);
+    assert.equal(gap.getState().anchor, blank);
+    assert.equal(editorLines(mounted).some((node) => node.dataset && node.dataset.start === String(doc.length)), false);
+    mounted.listeners.beforeinput({ inputType: "insertText", data: "|", preventDefault() {} });
+    assert.equal(gap.getState().doc, "| a |\n| --- |\n| 1 |\n|\n");
+    gap.destroy();
+
+    const atEnd = pressBlank(mounted, doc, doc.length, 42, () => {
+      const row = editorLines(mounted).find((node) => node.classList.contains("md-caret-row"));
+      const br = row.childNodes.find((node) => String(node.nodeName).toUpperCase() === "BR");
+      return { offsetNode: br, offset: 0 };
+    }, (el) => {
+      if (el.classList.contains("md-caret-row")) return { top: 54, bottom: 78 };
+      if (Number(el.dataset.start) === blank) return { top: 30, bottom: 54 };
+      return { top: 8, bottom: 30 };
+    });
+    assert.equal(atEnd.getState().cursor, blank);
+    assert.equal(atEnd.getState().anchor, blank);
+    atEnd.destroy();
+
+    const onRow = pressBlank(mounted, doc, doc.length, 66, () => {
+      const row = editorLines(mounted).find((node) => node.classList.contains("md-caret-row"));
+      const br = row.childNodes.find((node) => String(node.nodeName).toUpperCase() === "BR");
+      return { offsetNode: br, offset: 0 };
+    }, (el) => {
+      if (el.classList.contains("md-caret-row")) return { top: 54, bottom: 78 };
+      if (Number(el.dataset.start) === blank) return { top: 30, bottom: 54 };
+      return { top: 8, bottom: 30 };
+    });
+    assert.equal(onRow.getState().cursor, doc.length);
+    onRow.destroy();
+
+    const below = pressBlank(mounted, doc, 0, 80, () => null, edge);
+    assert.equal(below.getState().cursor, doc.length);
+    below.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
+    mounted.restore();
+  }
+});
+
+test("BS.tb.1 click", () => {
+  const mounted = mountEditor();
+  const doc = "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n";
+  const blank = 34;
+  const edge = (el) => (Number(el.dataset.start) === blank && Number(el.dataset.end) === blank ? { top: 40, bottom: 40 } : { top: 8, bottom: 40 });
+  try {
+    assert.deepEqual(gapCaretStops(doc, 0), [blank]);
+    const gap = pressBlank(mounted, doc, 0, 41, () => null, edge);
+    assert.equal(gap.getState().cursor, blank);
+    assert.equal(gap.getState().anchor, blank);
+    assert.equal(editorLines(mounted).some((node) => node.classList.contains("md-caret-row")), false);
+    gap.destroy();
+
+    const below = pressBlank(mounted, doc, 0, 80, () => null, edge);
+    assert.equal(below.getState().cursor, doc.length);
+    assert.equal(editorLines(mounted).some((node) => node.classList.contains("md-caret-row")), true);
+    below.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
+    mounted.restore();
+  }
+});
+
 test("a letter at the end of the file stays where the line above does not join", () => {
   assert.equal(insert(createState("# Title\n", 8), "Q").doc, "# Title\nQ");
   assert.equal(insert(createState("```\ncode\n", 9), "Q").doc, "```\ncode\nQ");
