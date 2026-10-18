@@ -64,8 +64,8 @@ export {
 };
 
 // A declaration, not `export { plan }`: the served file is checked for this text.
-export function plan(doc, cursor) {
-  return documentPlan(doc, cursor);
+export function plan(doc, cursor, revealTail) {
+  return documentPlan(doc, cursor, revealTail);
 }
 
 function sameLines(a, b) {
@@ -2494,6 +2494,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const pendingEdits = [];
   // This page's typing run. The hub still publishes each key; only undo groups.
   let typingRun = null;
+  // The caret after spaces just typed. Their hard-break tail stays drawn until
+  // the caret leaves, so the next paint has a glyph to put it on.
+  let typedTail = null;
   // Insert, from the command that entered it until Escape, is one undo.
   // The first splice opens the entry. A pause, an arrow, Backspace, or Enter
   // ends an ordinary typing run, so those stay on this flag instead.
@@ -6313,7 +6316,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         mountViewToggle();
         return;
       }
-      const planned = plan(state.doc, state.cursor);
+      if (typedTail != null && typedTail !== state.cursor) typedTail = null;
+      const planned = plan(state.doc, state.cursor, typedTail != null);
       let blocks = planned.blocks;
       if (rawSelectionLines) {
         rawSelectionLines = false;
@@ -6900,6 +6904,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     };
   }
 
+  // A typed run of spaces leaves the caret in a hard-break tail. Drawing that
+  // tail is what gives the caret a place. Any other edit, or someone else's, hides it again.
+  function noteTypedTail(message) {
+    if (message.type !== "doc" || !ownActor(message)) {
+      if (message.type === "doc" || message.type === "file") typedTail = null;
+      return;
+    }
+    const inserted = typeof message.inserted === "string" ? message.inserted : "";
+    typedTail = /^ +$/.test(inserted) ? state.cursor : null;
+  }
+
   // file and doc replace the mirror. The view does not paint a local edit.
   function applySnapshot(message) {
     const previousDoc = state.doc;
@@ -6928,6 +6943,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     outstandingLock = null;
     granted = { anchor: state.anchor, cursor: state.cursor };
+    noteTypedTail(message);
     const lines = lineSet(state.anchor, state.cursor);
     sentLines = bodyCaretReleased ? [] : lines;
     noteFreshComment(previousDoc, message);
