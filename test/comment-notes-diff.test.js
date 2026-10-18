@@ -81,3 +81,56 @@ test("a diff that changes only a comment note's text is accepted (ticket hnbdeuu
     assert.equal(shown.stdout, THREAD.replace("its own author", "its author"));
   });
 });
+
+test("a diff that adds a bare :: line inside a comment thread is 409 and writes nothing (ticket hnbdeuu8)", async () => {
+  await refused("@@ -4,1 +4,2 @@\n This note is the start of the thread.\n+::\n");
+});
+
+// Another session watching t.md, as a page does: it opens the file and keeps every message.
+async function watcher(port) {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/api/ws`);
+  const seen = [];
+  ws.addEventListener("message", (event) => seen.push(JSON.parse(String(event.data))));
+  await new Promise((resolve, reject) => {
+    ws.addEventListener("open", resolve, { once: true });
+    ws.addEventListener("error", reject, { once: true });
+  });
+  const send = (msg) => ws.send(JSON.stringify({ username: "Watcher", ...msg }));
+  const until = async (pred, what) => {
+    const started = Date.now();
+    while (!seen.some(pred)) {
+      if (Date.now() - started > 3000) throw new Error(`the watcher waited for ${what}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+  send({ type: "hello" });
+  await until((msg) => msg.type === "hello", "hello");
+  send({ type: "repo", name: "docs" });
+  send({ type: "open", path: "t.md" });
+  await until((msg) => msg.type === "file" && msg.path === "t.md", "the file");
+  return { seen, until, close: () => ws.close() };
+}
+
+// Case 72 of qa/lock-spans-test-plan.md: the refused hunk takes no lock. A session watching the
+// file is never told the CLI's user holds any of it, and gets no doc. A hunk that changes only a
+// note's text reaches that same watcher, which shows it is listening.
+test("a diff that merges or splits comment notes takes no lock (ticket hnbdeuu8, case 72)", async () => {
+  await withThread(async (port) => {
+    const watch = await watcher(port);
+    try {
+      for (const diff of ["@@ -4,2 +4,1 @@\n This note is the start of the thread.\n-:: 1\n", "@@ -4,1 +4,2 @@\n This note is the start of the thread.\n+:: 2\n"]) {
+        const edited = await run(port, ["--repo", "docs", "edit", "t.md"], diff);
+        assert.equal(edited.code, 409 % 256, `edit exited ${edited.code}: ${edited.stderr.trim()}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const held = watch.seen.filter((msg) => msg.type === "locks" && (msg.lines || []).some((line) => line.username === "qa"));
+      assert.deepEqual(held, [], "the watcher was told the CLI's user holds part of the thread");
+      assert.equal(watch.seen.some((msg) => msg.type === "doc"), false, "the watcher got a doc for a refused hunk");
+      const accepted = await run(port, ["--repo", "docs", "edit", "t.md"], "@@ -7,1 +7,1 @@\n-A reply keeps its own author line.\n+A reply keeps its author line.\n");
+      assert.equal(accepted.code, 0, accepted.stderr);
+      await watch.until((msg) => msg.type === "doc" && msg.path === "t.md", "the accepted edit");
+    } finally {
+      watch.close();
+    }
+  });
+});
