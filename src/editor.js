@@ -2584,6 +2584,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let gestureHold = false;
   // Chromium moves the selection back a frame after a click replaces the lines.
   let retainedCaret = null;
+  // A remote insert above the first block. Firefox puts the collapsed caret back
+  // at its old offset, and addRange does not move a caret that is already there.
+  // The lock uses the shifted offset. This keeps the drawn caret on that offset
+  // until the browser's restore has been replaced.
+  let remoteCaret = null;
   let pasteSeen = false;
   let pendingAttach = false;
   let noticeTimer = null;
@@ -3305,7 +3310,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     try {
       node = placeCaretFromState();
       if (!node || vimKeepScroll) return;
-      if (priorTop !== undefined) {
+      // An in-view rect can be the caret Firefox refused to move. Scrolling that
+      // is not a reason to keep it.
+      if (priorTop !== undefined && domSelectionMatches()) {
         const after = caretRect();
         if (after && caretInView(after)) return;
         if (priorTop != null && after && Number.isFinite(after.top) && Math.abs(after.top - priorTop) <= 3) return;
@@ -3456,13 +3463,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
     }
     const point = pointFor(caret);
-    if (point) {
-      const range = document.createRange();
-      placePoint(range, point);
-      sel.removeAllRanges();
-      sel.addRange(range);
-      return point.node;
-    }
+    if (point) return selectCollapsed(sel, point);
     const range = document.createRange();
     for (const el of root.querySelectorAll(".md-atom")) {
       const start = Number(el.dataset.start);
@@ -3498,11 +3499,41 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const again = pointFor(snapped);
     if (!again) return null;
     state = { ...state, anchor: snapped, cursor: snapped };
-    const placed = document.createRange();
-    placePoint(placed, again);
-    sel.removeAllRanges();
-    sel.addRange(placed);
-    return again.node;
+    return selectCollapsed(sel, again);
+  }
+
+  // placePoint's br sits on its parent. The same point is what collapse takes.
+  function collapsedTarget(point) {
+    const node = point && point.node;
+    if (!node) return null;
+    if (isBreak(node) && node.parentNode && node.parentNode.childNodes) {
+      const children = node.parentNode.childNodes;
+      let index = 0;
+      for (; index < children.length; index += 1) if (children[index] === node) break;
+      if (index < children.length) return { node: node.parentNode, offset: index };
+    }
+    return { node, offset: point.offset || 0 };
+  }
+
+  // addRange leaves a collapsed caret where it was. Firefox does that after a
+  // remote insert when the caret was in the first block, so the next key lands
+  // in the other session's text. collapse and setBaseAndExtent replace it.
+  function selectCollapsed(sel, point) {
+    const at = collapsedTarget(point);
+    if (!at || !at.node) return null;
+    if (typeof sel.setBaseAndExtent === "function") {
+      try { sel.setBaseAndExtent(at.node, at.offset, at.node, at.offset); } catch { /* a range still might take it */ }
+      if (domSelectionMatches()) return point.node;
+    }
+    if (typeof sel.collapse === "function") {
+      try { sel.collapse(at.node, at.offset); } catch { /* a range still might take it */ }
+      if (domSelectionMatches()) return point.node;
+    }
+    const range = document.createRange();
+    placePoint(range, point);
+    if (typeof sel.removeAllRanges === "function") sel.removeAllRanges();
+    if (typeof sel.addRange === "function") sel.addRange(range);
+    return point.node;
   }
 
   function nearestDrawnCaret(offset) {
@@ -3592,6 +3623,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // The drawn range omits glyph-less markers. A cut or paste keeps the
     // source selection, which still owns those markers.
     const next = sourceMode ? mapped : withMarkerEdges(state.doc, state, mapped);
+    if (remoteCaret && (next.anchor !== remoteCaret.anchor || next.cursor !== remoteCaret.cursor)) {
+      state = { ...state, anchor: remoteCaret.anchor, cursor: remoteCaret.cursor };
+      placeCaret();
+      return true;
+    }
     state = { ...state, anchor: next.anchor, cursor: next.cursor };
     return claimLines(next.anchor, next.cursor);
   }
@@ -3631,6 +3667,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const snapped = sourceMode || pointer ? mapped : homeSnap(mapped);
     const next = sourceMode ? snapped : withMarkerEdges(state.doc, state, snapped);
     if (sourceMode || (next.anchor === state.anchor && next.cursor === state.cursor)) goalX = keptX;
+    if (remoteCaret && (next.anchor !== remoteCaret.anchor || next.cursor !== remoteCaret.cursor)) {
+      state = { ...state, anchor: remoteCaret.anchor, cursor: remoteCaret.cursor };
+      placeCaret();
+      return;
+    }
     if (retainedCaret && (next.cursor !== retainedCaret.cursor || next.anchor !== retainedCaret.anchor)) {
       state = { ...state, anchor: retainedCaret.anchor, cursor: retainedCaret.cursor };
       placeCaret();
@@ -6954,6 +6995,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     sentLines = bodyCaretReleased ? [] : lines;
     noteFreshComment(previousDoc, message);
     if (message.type === "file") focusHashedComment(message.path, text);
+    if (message.type === "doc" && !ownActor(message)) holdRemoteCaret();
+    else remoteCaret = null;
     render();
     if (message.type === "file") publishHash();
     const claim = vimForceClaim;
@@ -6962,6 +7005,29 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (message.type === "file" || claim || !sameLines(lines, previousLines)) {
       emit({ type: "lock", anchor: state.anchor, cursor: state.cursor }, false);
     }
+  }
+
+  // Firefox restores the old offset after this turn, once the lines have been
+  // replaced. Correct again on the timers it uses, then drop the hold.
+  function holdRemoteCaret() {
+    const held = { anchor: state.anchor, cursor: state.cursor };
+    remoteCaret = held;
+    const view = typeof window !== "undefined" ? window : null;
+    if (!view || typeof view.setTimeout !== "function") return;
+    const correct = () => {
+      if (closed || remoteCaret !== held) return;
+      if (state.anchor !== held.anchor || state.cursor !== held.cursor) {
+        state = { ...state, anchor: held.anchor, cursor: held.cursor };
+      }
+      if (!domSelectionMatches()) placeCaret();
+    };
+    view.setTimeout(() => {
+      correct();
+      view.setTimeout(() => {
+        correct();
+        if (remoteCaret === held && domSelectionMatches()) remoteCaret = null;
+      }, 0);
+    }, 0);
   }
 
   // The history reply carries the splice range. Place the caret saved with that entry.
@@ -9072,8 +9138,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     else if (!quotedListSelection(state.doc, state.anchor, state.cursor)) emitEdit({ op: "insert", text: "\t" });
   }
 
+  function settleRemoteCaret() {
+    if (!remoteCaret) return;
+    const held = remoteCaret;
+    if (state.anchor !== held.anchor || state.cursor !== held.cursor) {
+      state = { ...state, anchor: held.anchor, cursor: held.cursor };
+    }
+    if (!domSelectionMatches()) placeCaret();
+    if (domSelectionMatches()) remoteCaret = null;
+  }
+
   listen("keydown", (event) => {
     strayRestores = 0;
+    settleRemoteCaret();
     retainedCaret = null;
     if (keyEndsRun(event)) endTypingRunLater();
     gestureHold = false;
@@ -9332,6 +9409,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   listen("mousedown", (event) => {
     endTypingRunLater();
     // A new press is a new gesture. The previous click's retained caret would collapse it.
+    remoteCaret = null;
     retainedCaret = null;
     if (beginHandleDrag(event)) return;
     didDrag = false;

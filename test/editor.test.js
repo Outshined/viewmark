@@ -9958,6 +9958,202 @@ test("another user's doc shifts a caret at or after to", () => {
   }
 });
 
+// Firefox keeps a collapsed caret at its old offset when that caret was in the
+// first block, and addRange does not move it. The drawn caret and the next key
+// have to use the shifted offset. A caret that was already past the first block
+// is the same shift.
+test("a remote insert above the first block moves the drawn caret and the next key", () => {
+  const added = "zero\n\n";
+  const cases = [
+    { name: "first paragraph", text: "alpha beta\n", at: 3, stuck: true },
+    { name: "empty line of a fence that is the first block", text: "```\na\n\nb\n```\n", at: 6, stuck: true },
+    { name: "after a in a fence that is the first block", text: "```\na\n\nb\n```\n", at: 5, stuck: true },
+    { name: "paragraph after another", text: "one\n\nalpha beta\n", at: 8, stuck: false },
+    { name: "fence after a paragraph", text: "one\n\n```\na\n\nb\n```\n", at: 10, stuck: false },
+  ];
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const originalReplace = mounted.root.replaceChildren.bind(mounted.root);
+  const timers = [];
+  let trap = null;
+  const selection = {
+    rangeCount: 0,
+    anchorNode: null,
+    anchorOffset: 0,
+    focusNode: null,
+    focusOffset: 0,
+    stick: false,
+    setBaseAndExtent(node, offset, focusNode, focusOffset) {
+      this.stick = false;
+      this.anchorNode = node;
+      this.anchorOffset = offset;
+      this.focusNode = focusNode == null ? node : focusNode;
+      this.focusOffset = focusOffset == null ? offset : focusOffset;
+      this.rangeCount = 1;
+    },
+    collapse(node, offset) {
+      this.setBaseAndExtent(node, offset, node, offset);
+    },
+    removeAllRanges() {
+      if (this.stick) return;
+      this.rangeCount = 0;
+      this.anchorNode = null;
+      this.focusNode = null;
+    },
+    addRange() {
+      if (this.stick) return;
+      this.rangeCount = 1;
+    },
+    getRangeAt() {
+      return {
+        startContainer: this.focusNode,
+        startOffset: this.focusOffset,
+        endContainer: this.focusNode,
+        endOffset: this.focusOffset,
+        collapsed: true,
+        commonAncestorContainer: this.focusNode,
+      };
+    },
+  };
+  function pointAt(offset) {
+    const nodes = walkNodes(mounted.root, () => true);
+    let textHit = null;
+    for (const node of nodes) {
+      if (node.nodeType !== 3 || !node.parentElement || !node.parentElement.dataset) continue;
+      const start = Number(node.parentElement.dataset.start);
+      const end = Number(node.parentElement.dataset.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || node.length !== end - start) continue;
+      if (offset < start || offset > end) continue;
+      if (offset < end) return { node, at: offset - start };
+      textHit = { node, at: offset - start };
+    }
+    if (textHit) return textHit;
+    for (const node of nodes) {
+      if (!node.tagName || node.tagName !== "BR" || !node.parentElement || !node.parentElement.dataset) continue;
+      const start = Number(node.parentElement.dataset.start);
+      const end = Number(node.parentElement.dataset.end);
+      if (start !== offset || (end !== start && end !== start + 1)) continue;
+      const children = node.parentElement.childNodes || [];
+      let index = 0;
+      for (; index < children.length; index += 1) if (children[index] === node) break;
+      return { node: node.parentElement, at: index };
+    }
+    return null;
+  }
+  function plant(offset) {
+    const point = pointAt(offset);
+    assert.ok(point, `no drawn point at ${offset}`);
+    selection.anchorNode = point.node;
+    selection.focusNode = point.node;
+    selection.anchorOffset = point.at;
+    selection.focusOffset = point.at;
+    selection.rangeCount = 1;
+    selection.stick = true;
+  }
+  function drawn() {
+    if (!selection.focusNode || selection.rangeCount === 0) return null;
+    return mapOffset(selection.focusNode, selection.focusOffset);
+  }
+  function flushTimers() {
+    for (let i = 0; i < 6 && timers.length > 0; i += 1) {
+      const batch = timers.splice(0, timers.length);
+      for (const fn of batch) fn();
+    }
+  }
+  globalThis.document.createTreeWalker = (start) => {
+    const nodes = [];
+    const walk = (node) => {
+      if (node.nodeType === 3) nodes.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(start);
+    let index = 0;
+    return { nextNode() { return index < nodes.length ? nodes[index++] : null; } };
+  };
+  globalThis.document.activeElement = mounted.root;
+  globalThis.window.getSelection = () => selection;
+  globalThis.window.setTimeout = (fn) => {
+    timers.push(fn);
+    return timers.length;
+  };
+  mounted.root.querySelectorAll = (selector) => {
+    const parts = String(selector).split(",").map((part) => part.trim());
+    const found = [];
+    const walk = (node) => {
+      if (node.nodeType === 1 && parts.some((part) => (
+        part.startsWith(".") ? node.classList.contains(part.slice(1)) : node.tagName === part.toUpperCase()
+      ))) found.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    for (const child of mounted.root.childNodes || []) walk(child);
+    return found;
+  };
+  mounted.root.replaceChildren = (...nodes) => {
+    originalReplace(...nodes);
+    if (trap == null) return;
+    const offset = trap;
+    plant(offset);
+    globalThis.window.setTimeout(() => {
+      plant(offset);
+      fireDocument(mounted, "selectionchange");
+    }, 0);
+  };
+  try {
+    for (const item of cases) {
+      timers.length = 0;
+      trap = null;
+      selection.stick = false;
+      selection.rangeCount = 0;
+      const transport = holdingTransport();
+      transport.username = "me";
+      const view = createEditor(mounted.root, item.text, item.at, transport);
+      assert.equal(view.getState().cursor, item.at, item.name);
+      transport.sent.length = 0;
+      trap = item.stuck ? item.at : null;
+      const next = added + item.text;
+      const shifted = item.at + added.length;
+      transport.deliver({
+        type: "doc",
+        rev: 1,
+        text: next,
+        from: 0,
+        to: 0,
+        inserted: added,
+        changes: [{ from: 0, to: 0, inserted: added }],
+        actor: "other",
+        cursor: added.length,
+        anchor: added.length,
+      });
+      assert.equal(view.getState().doc, next, item.name);
+      assert.equal(view.getState().cursor, shifted, item.name);
+      assert.equal(view.getState().anchor, shifted, item.name);
+      const lock = transport.sent.filter((message) => message.type === "lock" && message.release !== true).at(-1);
+      assert.ok(lock, item.name);
+      assert.equal(lock.cursor, shifted, item.name);
+      assert.equal(lock.anchor, shifted, item.name);
+      assert.equal(drawn(), shifted, `${item.name} draws the caret at its old offset`);
+      flushTimers();
+      assert.equal(view.getState().cursor, shifted, `${item.name} after the browser restores the selection`);
+      assert.equal(view.getState().anchor, shifted, item.name);
+      assert.equal(drawn(), shifted, `${item.name} stays drawn at the shifted offset`);
+      trap = null;
+      keyDown(mounted, "X");
+      input(mounted, "insertText", "X");
+      const edit = transport.sent.filter((message) => message.type === "edit").at(-1);
+      assert.equal(edit.op, "insert", item.name);
+      assert.equal(edit.text, "X", item.name);
+      assert.equal(edit.cursor, shifted, `${item.name} writes the next key at the old offset`);
+      assert.equal(edit.anchor, shifted, item.name);
+      const typed = insert({ ...view.getState(), anchor: edit.anchor, cursor: edit.cursor }, "X");
+      assert.equal(typed.doc, added + item.text.slice(0, item.at) + "X" + item.text.slice(item.at), item.name);
+      view.destroy();
+    }
+  } finally {
+    mounted.root.replaceChildren = originalReplace;
+    mounted.restore();
+  }
+});
+
 test("local undo snapshots omit change lists", () => {
   const mounted = mountEditor();
   try {
