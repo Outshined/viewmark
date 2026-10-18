@@ -379,7 +379,9 @@ test(cell("VN.11"), async (t) => {
 test(cell("VN.12"), async (t) => {
   const { hub, page } = await setup(t, { [FILE]: "alpha \n", "b.md": "red  \nblue\n" });
   const revA = (await hub.show(FILE)).rev;
-  await runMove(page, hub, FILE, "‸alpha \n", ["$"], "alpha ‸\n", revA);
+  // qvqa6h7q, settled by stock vim as the default (R109): with the block caret, $ lands on the
+  // trailing space, the line's last character.
+  await runMove(page, hub, FILE, "‸alpha \n", ["$"], "alpha‸ \n", revA);
   await page.open("b.md");
   const revB = (await hub.show("b.md")).rev;
   await runMove(page, hub, "b.md", "r‸ed  \nblue\n", ["$"], "red‸  \nblue\n", revB);
