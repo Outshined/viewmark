@@ -37,6 +37,7 @@ import {
   lineCaret,
   wordStop,
   endBeforeTail,
+  endBeforeTrailingCommentFence,
   ruleLineStop,
   gapCaretStops,
   imageLine,
@@ -9285,6 +9286,26 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const extend = event.shiftKey === true && !event.ctrlKey && !event.altKey && !event.metaKey;
       moveRawCaret(event.key, extend, event.ctrlKey === true || event.metaKey === true);
       return;
+    }
+    // A comment fence at the end of the file is not drawn. The blank before it
+    // is a paragraph gap with no box, so the browser's Ctrl+End paints a caret
+    // of 0 px. The last line drawn is the one above that blank.
+    if (!sourceMode && event.altKey !== true && (event.ctrlKey === true || event.metaKey === true) && event.key === "End") {
+      const end = endBeforeTrailingCommentFence(state.doc, state.cursor);
+      if (end != null) {
+        event.preventDefault();
+        goalX = null;
+        const extend = event.shiftKey === true;
+        const beforeCursor = state.cursor;
+        const anchor = extend ? state.anchor : end;
+        state = { ...state, cursor: end, anchor };
+        if (!claimLines(anchor, end)) return;
+        const lineMoved = lineIndexAt(state.doc, beforeCursor) !== lineIndexAt(state.doc, end)
+          || lineIndexAt(state.doc, anchor) !== lineIndexAt(state.doc, end);
+        if (lineMoved) render();
+        else placeCaret();
+        return;
+      }
     }
     // A hard-break line's End. Firefox's lineboundary stops after the hidden
     // tail. Other lines keep the browser's own End, which is the visual line.

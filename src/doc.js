@@ -3805,6 +3805,42 @@ export function endBeforeTail(doc, offset) {
   return edge;
 }
 
+// A comment fence is not drawn. The blank before one that runs to the end of
+// the file is a paragraph gap, and that gap is the last caret in the page.
+// Its box is 0 px, so Ctrl+End draws nothing. The stop is the end of the line
+// above. While the caret stands on that blank, the blank keeps its height and
+// is not a gap, so this returns null and the browser's own Ctrl+End stays there.
+function commentRunCovers(text, from) {
+  const threads = commentThreads(text)
+    .filter((thread) => thread.end > from && thread.start >= from)
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  if (threads.length === 0 || threads[0].start !== from) return false;
+  let covered = from;
+  for (const thread of threads) {
+    if (thread.start > covered) return false;
+    if (thread.end > covered) covered = thread.end;
+  }
+  return covered >= text.length;
+}
+
+export function endBeforeTrailingCommentFence(doc, cursor) {
+  const text = typeof doc === "string" ? doc : "";
+  const at = Number.isFinite(cursor) ? Math.max(0, Math.min(text.length, Math.trunc(cursor))) : 0;
+  const blocks = plan(text, at).blocks;
+  if (blocks.length === 0) return null;
+  const last = blocks[blocks.length - 1];
+  if (!paragraphGapBlock(last)) return null;
+  const gap = last.start;
+  if (gap < 0 || gap >= text.length || text[gap] !== "\n") return null;
+  if (!commentRunCovers(text, gap + 1)) return null;
+  for (let i = blocks.length - 2; i >= 0; i -= 1) {
+    const block = blocks[i];
+    if (!block || paragraphGapBlock(block) || typeof block.end !== "number") continue;
+    return endBeforeTail(text, block.end);
+  }
+  return null;
+}
+
 // A rule is drawn with no glyphs, so → from the end of the line above can land
 // past it. The stop is the rule's start, which draws the rule raw.
 export function ruleLineStop(doc, from) {

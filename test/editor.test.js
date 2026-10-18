@@ -27,7 +27,7 @@ import {
   vimDrawsBlockCaret,
   vimStatusText,
 } from "../src/editor.js";
-import { splitCommentNote, lockSpans, lockIndexAt, blockSpan, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, shiftBreak, moveText, endBeforeTail, ruleLineStop, gapCaretStops } from "../src/doc.js";
+import { splitCommentNote, lockSpans, lockIndexAt, blockSpan, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, shiftBreak, moveText, endBeforeTail, endBeforeTrailingCommentFence, ruleLineStop, gapCaretStops } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
 
 const A = "**hello**\nnext\n";
@@ -22328,4 +22328,179 @@ test("flag off, search paint is not drawn", () => {
     assert.equal(vimLineNode(), null);
     view.destroy();
   });
+});
+
+function trailingFence(id) {
+  return `\`\`\`comment ${id}\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nA note.\n\`\`\`\n`;
+}
+
+// Ticket 2q8vxkb8. The blank before a comment fence at the end of the file is a
+// paragraph gap of height 0. Ctrl+End was landing on that blank.
+test("2q8vxkb8 Ctrl+End before a trailing comment fence lands on the last drawn line", () => {
+  const doc = [
+    "Para {c1}one{/c1}.",
+    "",
+    "- item",
+    "",
+    "```comment c1",
+    ":: 0",
+    "@2026-10-05T16:00:00.000Z Ada",
+    "A note.",
+    "```",
+    "",
+  ].join("\n");
+  const itemEnd = doc.indexOf("- item") + "- item".length;
+  const gap = itemEnd + 1;
+  assert.equal(doc[itemEnd], "\n");
+  assert.equal(doc[gap], "\n");
+  assert.equal(doc.slice(gap + 1, gap + 12), "```comment ");
+  assert.equal(endBeforeTrailingCommentFence(doc, 1), itemEnd);
+  assert.equal(endBeforeTrailingCommentFence(doc, itemEnd), itemEnd);
+  // The caret is already on the blank, so that line has height and stays the browser's.
+  assert.equal(endBeforeTrailingCommentFence(doc, gap), null);
+  assert.equal(endBeforeTrailingCommentFence("Para one.\n\n- item\n", 1), null);
+  assert.equal(endBeforeTrailingCommentFence("alpha\n\n", 1), null);
+  const para = `Para one.\n\n${trailingFence("c1")}`;
+  assert.equal(endBeforeTrailingCommentFence(para, 1), "Para one.".length);
+  assert.equal(endBeforeTrailingCommentFence(`# Title\n\n${trailingFence("c1")}`, 1), null);
+  assert.equal(endBeforeTrailingCommentFence(`- item\n\n${trailingFence("c1")}After.\n`, 1), null);
+  assert.equal(endBeforeTrailingCommentFence(`- item\n\n${trailingFence("c1")}${trailingFence("c2")}`, 1), "- item".length);
+  const broken = `hello  \n\n${trailingFence("c1")}`;
+  assert.equal(endBeforeTrailingCommentFence(broken, 1), "hello".length);
+
+  const mounted = mountEditor();
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const placed = { node: null, offset: 0 };
+  const selection = {
+    rangeCount: 0,
+    anchorNode: null,
+    anchorOffset: 0,
+    focusNode: null,
+    focusOffset: 0,
+    setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset) {
+      selection.anchorNode = anchorNode;
+      selection.anchorOffset = anchorOffset;
+      selection.focusNode = focusNode;
+      selection.focusOffset = focusOffset;
+      selection.rangeCount = 1;
+      placed.node = focusNode;
+      placed.offset = focusOffset;
+    },
+    collapse(node, offset) {
+      selection.setBaseAndExtent(node, offset, node, offset);
+    },
+    removeAllRanges() {
+      selection.rangeCount = 0;
+    },
+    addRange() {},
+    getRangeAt() {
+      return {
+        startContainer: selection.anchorNode,
+        startOffset: selection.anchorOffset,
+        endContainer: selection.focusNode,
+        endOffset: selection.focusOffset,
+        collapsed: selection.anchorNode === selection.focusNode && selection.anchorOffset === selection.focusOffset,
+      };
+    },
+  };
+  globalThis.document.createTreeWalker = (start) => {
+    const nodes = [];
+    const walk = (node) => {
+      if (node.nodeType === 3) nodes.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(start);
+    let index = 0;
+    return { nextNode() { return index < nodes.length ? nodes[index++] : null; } };
+  };
+  globalThis.document.activeElement = mounted.root;
+  globalThis.window.getSelection = () => selection;
+  mounted.root.querySelectorAll = (selector) => {
+    const parts = String(selector).split(",").map((part) => part.trim());
+    const found = [];
+    const walk = (node) => {
+      if (node.nodeType === 1 && parts.some((part) => (
+        part.startsWith(".") ? node.classList.contains(part.slice(1)) : node.tagName === part.toUpperCase()
+      ))) found.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    for (const child of mounted.root.childNodes || []) walk(child);
+    return found;
+  };
+  const lineOf = (node) => {
+    let el = node && node.nodeType === 3 ? node.parentElement : node;
+    while (el) {
+      if (el.classList && el.classList.contains("md-line")) return el;
+      el = el.parentElement;
+    }
+    return null;
+  };
+  const pressEnd = (extra) => {
+    let prevented = false;
+    mounted.listeners.keydown({
+      key: "End",
+      shiftKey: false,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      preventDefault() { prevented = true; },
+      ...extra,
+    });
+    return prevented;
+  };
+  try {
+    const view = createEditor(mounted.root, doc, 1);
+    assert.equal(pressEnd({ ctrlKey: true }), true);
+    assert.equal(view.getState().cursor, itemEnd);
+    assert.equal(view.getState().anchor, itemEnd);
+    const caretLine = lineOf(placed.node);
+    assert.ok(caretLine, "Ctrl+End did not place a caret");
+    assert.equal(caretLine.classList.contains("md-paragraph-gap"), false);
+    assert.equal(caretLine.classList.contains("md-li"), true);
+    assert.equal(mapOffset(placed.node, placed.offset), itemEnd);
+    const gapLine = mounted.findAll((node) => node.classList && node.classList.contains("md-paragraph-gap") && Number(node.dataset.start) === gap)[0];
+    assert.ok(gapLine);
+    assert.notEqual(caretLine, gapLine);
+    view.destroy();
+
+    const shifted = createEditor(mounted.root, doc, 1);
+    assert.equal(pressEnd({ ctrlKey: true, shiftKey: true }), true);
+    assert.equal(shifted.getState().anchor, 1);
+    assert.equal(shifted.getState().cursor, itemEnd);
+    assert.equal(mapOffset(placed.node, placed.offset), itemEnd);
+    assert.equal(lineOf(placed.node).classList.contains("md-paragraph-gap"), false);
+    shifted.destroy();
+
+    const meta = createEditor(mounted.root, doc, 1);
+    assert.equal(pressEnd({ metaKey: true }), true);
+    assert.equal(meta.getState().cursor, itemEnd);
+    assert.equal(meta.getState().anchor, itemEnd);
+    meta.destroy();
+
+    const plain = createEditor(mounted.root, "Para one.\n\n- item\n", 1);
+    assert.equal(pressEnd({ ctrlKey: true }), false);
+    assert.equal(plain.getState().cursor, 1);
+    assert.equal(plain.getState().anchor, 1);
+    plain.destroy();
+
+    const tail = createEditor(mounted.root, "alpha\n\n", 1);
+    assert.equal(pressEnd({ ctrlKey: true }), false);
+    assert.equal(tail.getState().cursor, 1);
+    tail.destroy();
+
+    const alt = createEditor(mounted.root, doc, 1);
+    assert.equal(pressEnd({ ctrlKey: true, altKey: true }), false);
+    assert.equal(alt.getState().cursor, 1);
+    alt.destroy();
+
+    const raw = createEditor(mounted.root, doc, 1);
+    pressViewToggle(mounted.root);
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    assert.equal(pressEnd({ ctrlKey: true }), true);
+    assert.equal(raw.getState().cursor, doc.length);
+    assert.equal(raw.getState().anchor, doc.length);
+    raw.destroy();
+  } finally {
+    mounted.restore();
+  }
 });
