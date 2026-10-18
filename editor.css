@@ -1413,6 +1413,23 @@ a.md-link {
   margin: 0;
 }
 
+/* The caret's row is where the next letter is drawn. The trail would put that row a half line lower. */
+.md-line.md-run-end.md-block-list:not(.md-raw):has(+ .md-line.md-list-cont) {
+  padding-bottom: 0;
+}
+
+.md-line.md-block-fence:not(.md-raw):has(+ .md-line.md-caret-row) {
+  margin-bottom: 0;
+}
+
+/* The blank before a rule has no height of its own, so its hit box is the padding above the rule. The rule's border stays where the measure puts it. */
+.md-line.md-paragraph-gap:has(+ .md-line.md-hr) {
+  height: var(--p);
+  min-height: var(--p);
+  margin-top: calc(-1 * var(--p));
+  overflow: hidden;
+}
+
 .md-line.md-fence-collapsed,
 .md-fence-collapsed {
   height: 0;
