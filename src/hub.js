@@ -20,6 +20,7 @@ import {
   parseCommentNotes,
   parseUnifiedDiff,
   planDiff,
+  commentNoteDiffReason,
   removeCommentThread,
   replaceCommentBody,
   reviseCommentNote,
@@ -2510,6 +2511,9 @@ export async function createHub(stateDir, sourceRoot) {
       send(socket, { type: "file", path: file.rel, rev: file.rev, text: file.text });
       return;
     }
+    // The lock is taken just below. A rejected boundary must not hold the note.
+    const noteBoundary = commentNoteDiffReason(file.text, splices);
+    if (noteBoundary) return fail(socket, 409, { reason: noteBoundary });
     await ensureSubscribed(socket, file);
     const held = new Set();
     for (const splice of splices) {

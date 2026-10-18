@@ -12,7 +12,6 @@ import { start } from "../server.js";
 // changes only a note's text is accepted.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "cli.js");
-const TODO = "ticket hnbdeuu8: at 1578026 a diff that merges or splits comment notes is accepted";
 const THREAD = "```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nThis note is the start of the thread.\n:: 1\n@2026-10-05T16:05:00.000Z Bea\nA reply keeps its own author line.\n```\n";
 
 function cliEnv() {
@@ -66,11 +65,11 @@ async function refused(diff) {
   });
 }
 
-test("a diff that removes the line between two comment notes is 409 and writes nothing (ticket hnbdeuu8)", { todo: TODO }, async () => {
+test("a diff that removes the line between two comment notes is 409 and writes nothing (ticket hnbdeuu8)", async () => {
   await refused("@@ -4,2 +4,1 @@\n This note is the start of the thread.\n-:: 1\n");
 });
 
-test("a diff that adds a note line inside a comment thread is 409 and writes nothing (ticket hnbdeuu8)", { todo: TODO }, async () => {
+test("a diff that adds a note line inside a comment thread is 409 and writes nothing (ticket hnbdeuu8)", async () => {
   await refused("@@ -4,1 +4,2 @@\n This note is the start of the thread.\n+:: 2\n");
 });
 

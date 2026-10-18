@@ -4652,3 +4652,89 @@ export function planDiff(text, hunks, startOff, endOff) {
   if (spansOverlap(bytes)) return { error: "overlap" };
   return { splices };
 }
+
+function spliceText(splice) {
+  return typeof splice.inserted === "string" ? splice.inserted : "";
+}
+
+// The character at offset. Null when a splice deletes it. Splices are in the
+// original document and do not overlap.
+function mapChar(offset, splices) {
+  let shift = 0;
+  const ordered = splices.slice().sort((a, b) => a.from - b.from || a.to - b.to);
+  for (const splice of ordered) {
+    if (offset < splice.from) break;
+    if (offset < splice.to) return null;
+    shift += spliceText(splice).length - (splice.to - splice.from);
+  }
+  return offset + shift;
+}
+
+function applySplices(text, splices) {
+  let next = text;
+  const ordered = splices.slice().sort((a, b) => b.from - a.from || b.to - a.to);
+  for (const splice of ordered) {
+    next = next.slice(0, splice.from) + spliceText(splice) + next.slice(splice.to);
+  }
+  return next;
+}
+
+function commentFences(doc) {
+  return fenceContentRanges(doc).filter((fence) => fence.lang === "comment" && fence.commentId);
+}
+
+function noteBoundaryLines(doc, fence) {
+  const lines = [];
+  for (const line of bodyLinesOf(doc, fence)) {
+    const text = doc.slice(line.start, line.end);
+    if (separatorId(text) !== undefined) lines.push(text);
+  }
+  return lines;
+}
+
+function sameBoundaryLines(left, right) {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+// A new boundary line splits a note. Losing one merges the notes around it.
+function boundaryReason(before, after) {
+  if (after.length > before.length || after.some((line) => !before.includes(line))) return "splits a note";
+  return "merges a note";
+}
+
+// Reply writes a note boundary. A diff that adds, removes, or rewrites one
+// merges or splits the thread, so the caller refuses it before taking a lock.
+export function commentNoteDiffReason(doc, splices) {
+  const text = typeof doc === "string" ? doc : "";
+  if (!Array.isArray(splices) || splices.length === 0) return null;
+  const before = commentFences(text);
+  if (before.length === 0) return null;
+  const next = applySplices(text, splices);
+  const after = commentFences(next);
+  const used = new Set();
+  for (const fence of before) {
+    const oldLines = noteBoundaryLines(text, fence);
+    const at = mapChar(fence.start, splices);
+    let match = -1;
+    if (at != null) match = after.findIndex((item) => item.start === at);
+    if (match < 0) {
+      // The opener byte is gone. One thread of this id on each side is the
+      // same thread rewritten from its first character, not a deleted thread.
+      const sameBefore = before.filter((item) => item.commentId === fence.commentId).length;
+      const candidates = [];
+      for (let i = 0; i < after.length; i += 1) {
+        if (!used.has(i) && after[i].commentId === fence.commentId) candidates.push(i);
+      }
+      if (sameBefore === 1 && candidates.length === 1) match = candidates[0];
+    }
+    if (match < 0 || used.has(match)) continue;
+    used.add(match);
+    const newLines = noteBoundaryLines(next, after[match]);
+    if (!sameBoundaryLines(oldLines, newLines)) return boundaryReason(oldLines, newLines);
+  }
+  return null;
+}
