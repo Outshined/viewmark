@@ -2585,11 +2585,11 @@ function commandFromKey(key) {
     if (key.ctrl && (id === "e" || id === "o" || id === "q" || id === "k")) return { kind: "none" };
     return { kind: "none" };
   }
-  // Alt+Shift stays one character. Shift alone is the word motion.
+  // Alt+Shift stays one step. Shift is a word horizontally and a page vertically (R109).
   if (key.key === "ArrowLeft") return { kind: "motion", id: key.shift && !key.alt ? "b" : "h" };
   if (key.key === "ArrowRight") return { kind: "motion", id: key.shift && !key.alt ? "w" : "l" };
-  if (key.key === "ArrowUp") return { kind: "motion", id: "k" };
-  if (key.key === "ArrowDown") return { kind: "motion", id: "j" };
+  if (key.key === "ArrowUp") return { kind: "motion", id: key.shift && !key.alt ? "ctrl-b" : "k" };
+  if (key.key === "ArrowDown") return { kind: "motion", id: key.shift && !key.alt ? "ctrl-f" : "j" };
   if (key.key === "Home") return { kind: "motion", id: "0" };
   if (key.key === "End") return { kind: "motion", id: "$" };
   if (key.key === "PageUp") return { kind: "motion", id: "ctrl-b" };

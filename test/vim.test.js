@@ -563,6 +563,139 @@ test("vgf3mkb2", () => {
   }
 });
 
+// Shift+↓ and Shift+↑ are Ctrl-F and Ctrl-B. The caret stays collapsed and the text is unchanged.
+// With the flag off the key is not taken, so the editor can extend the selection.
+test("swhggkdt", () => {
+  let doc = "";
+  const starts = [];
+  for (let i = 0; i < 25; i += 1) {
+    if (i) doc += "\n\n";
+    starts.push(doc.length);
+    doc += `p${i}`;
+  }
+  doc += "\n";
+  const start = `${CARET}${doc}`;
+
+  const down = run(start, [{ key: "ArrowDown", shift: true }]);
+  const page = run(start, [{ key: "f", ctrl: true }]);
+  const one = run(start, ["j"]);
+  assert.equal(down.show, page.show);
+  assert.equal(down.cursor, starts[20]);
+  assert.equal(one.cursor, starts[1]);
+  assert.ok(down.cursor > one.cursor, `Shift+↓ landed at ${down.cursor}, one line at ${one.cursor}`);
+  assert.equal(down.anchor, down.cursor);
+  assert.equal(down.doc, doc);
+  assert.equal(down.vim.mode, "normal");
+  assert.equal(down.vim.column, page.vim.column);
+  assert.equal(last(down).match, "full");
+  assert.equal(last(down).consumed, true);
+  assert.equal(last(down).effect.type, "caret");
+  assert.equal(last(down).effect.anchor, last(down).effect.cursor);
+  assert.equal(down.steps.some((step) => step.effect && step.effect.type === "splice"), false);
+  assert.equal(run(start, ["ArrowDown"]).show, one.show);
+
+  const up = run(down.show, [{ key: "ArrowUp", shift: true }]);
+  const back = run(down.show, [{ key: "b", ctrl: true }]);
+  assert.equal(up.show, back.show);
+  assert.equal(up.cursor, starts[0]);
+  assert.equal(up.anchor, up.cursor);
+  assert.equal(up.doc, doc);
+  assert.equal(up.vim.mode, "normal");
+  assert.equal(up.vim.column, back.vim.column);
+  assert.equal(last(up).effect.type, "caret");
+  assert.equal(last(up).effect.anchor, last(up).effect.cursor);
+  assert.equal(up.steps.some((step) => step.effect && step.effect.type === "splice"), false);
+
+  const counted = run(start, ["2", { key: "ArrowDown", shift: true }]);
+  assert.equal(counted.show, run(start, ["2", { key: "f", ctrl: true }]).show);
+  assert.equal(counted.cursor, starts[24]);
+  assert.ok(counted.cursor > down.cursor);
+  assert.equal(counted.anchor, counted.cursor);
+  assert.equal(counted.doc, doc);
+  assert.equal(counted.vim.mode, "normal");
+  assert.equal(counted.vim.input.prefixRepeat, "");
+
+  const short = "alpha\n\nbeta\n";
+  const at = show(short, 2);
+  const shortDown = run(at, [{ key: "ArrowDown", shift: true }]);
+  assert.equal(shortDown.show, run(at, [{ key: "f", ctrl: true }]).show);
+  assert.equal(shortDown.anchor, shortDown.cursor);
+  assert.equal(shortDown.doc, short);
+  assert.equal(shortDown.steps.some((step) => step.effect && step.effect.type === "splice"), false);
+  const shortUp = run(shortDown.show, [{ key: "ArrowUp", shift: true }]);
+  assert.equal(shortUp.show, run(shortDown.show, [{ key: "b", ctrl: true }]).show);
+  assert.equal(shortUp.anchor, shortUp.cursor);
+  assert.equal(shortUp.doc, short);
+
+  const viewDown = run(start, [{ key: "ArrowDown", shift: true }], { layout: true });
+  const viewPage = run(start, [{ key: "f", ctrl: true }], { layout: true });
+  assertView(viewDown, "ctrl-f", 1);
+  assert.deepEqual(viewDown.steps[0].effect, viewPage.steps[0].effect);
+  assert.equal(viewDown.show, start);
+  assert.equal(viewDown.doc, doc);
+  assert.equal(viewDown.anchor, viewDown.cursor);
+  const viewUp = run(down.show, [{ key: "ArrowUp", shift: true }], { layout: true });
+  const viewBack = run(down.show, [{ key: "b", ctrl: true }], { layout: true });
+  assertView(viewUp, "ctrl-b", 1);
+  assert.deepEqual(viewUp.steps[0].effect, viewBack.steps[0].effect);
+  assert.equal(viewUp.show, down.show);
+  assert.equal(viewUp.doc, doc);
+  const viewCount = run(start, ["2", { key: "ArrowDown", shift: true }], { layout: true });
+  assertView(viewCount, "ctrl-f", 2);
+
+  const rawDoc = Array.from({ length: 30 }, (_, i) => `L${i}`).join("\n") + "\n";
+  const rawStart = `${CARET}${rawDoc}`;
+  const rawDown = run(rawStart, [{ key: "ArrowDown", shift: true }], { raw: true });
+  const rawPage = run(rawStart, [{ key: "f", ctrl: true }], { raw: true });
+  const rawOne = run(rawStart, ["j"], { raw: true });
+  assert.equal(rawDown.show, rawPage.show);
+  assert.equal(rawDown.doc.slice(rawDown.cursor, rawDown.cursor + 3), "L20");
+  assert.ok(rawDown.cursor > rawOne.cursor);
+  assert.equal(rawDown.anchor, rawDown.cursor);
+  assert.equal(rawDown.doc, rawDoc);
+  const rawUp = run(rawDown.show, [{ key: "ArrowUp", shift: true }], { raw: true });
+  assert.equal(rawUp.show, run(rawDown.show, [{ key: "b", ctrl: true }], { raw: true }).show);
+  assert.equal(rawUp.doc, rawDoc);
+  assert.equal(rawUp.anchor, rawUp.cursor);
+
+  const altDown = run(start, [{ key: "ArrowDown", shift: true, alt: true }]);
+  assert.equal(altDown.show, one.show);
+  assert.equal(altDown.doc, doc);
+  const altUp = run(down.show, [{ key: "ArrowUp", shift: true, alt: true }]);
+  assert.equal(altUp.show, run(down.show, ["k"]).show);
+  assert.equal(altUp.doc, doc);
+
+  for (const key of ["ArrowDown", "ArrowUp"]) {
+    const off = run(start, [{ key, shift: true }], { flag: false });
+    assert.equal(off.steps[0].match, "none");
+    assert.equal(off.steps[0].consumed, false);
+    assert.equal(off.steps[0].effect, null);
+    assert.equal(off.show, start);
+    assert.equal(off.doc, doc);
+    assert.equal(off.vim.mode, "normal");
+  }
+
+  const visual = run(start, [{ key: "ArrowDown", shift: true }], { mode: "visual" });
+  const visualPage = run(start, [{ key: "f", ctrl: true }], { mode: "visual" });
+  assert.equal(visual.show, visualPage.show);
+  assert.equal(visual.anchor, 0);
+  assert.equal(visual.cursor, page.cursor);
+  assert.notEqual(visual.anchor, visual.cursor);
+  assert.equal(visual.doc, doc);
+  assert.equal(visual.vim.mode, "visual");
+  assert.equal(visual.steps.some((step) => step.effect && step.effect.type === "splice"), false);
+  const visualUp = run(visual.show, [{ key: "ArrowUp", shift: true }], { mode: "visual", vim: visual.vim });
+  assert.equal(visualUp.show, run(visual.show, [{ key: "b", ctrl: true }], { mode: "visual", vim: visual.vim }).show);
+  assert.equal(visualUp.doc, doc);
+
+  const cut = run(start, ["d", { key: "ArrowDown", shift: true }]);
+  const cutPage = run(start, ["d", { key: "f", ctrl: true }]);
+  assert.equal(cut.show, cutPage.show);
+  assert.notEqual(cut.doc, doc);
+  assert.equal(cut.anchor, cut.cursor);
+  assert.equal(cut.vim.mode, "normal");
+});
+
 test("VN.11", () => {
   assert.equal(run("  al‸pha\n", ["0"]).show, "‸  alpha\n");
   assert.equal(run("  al‸pha\n", ["^"]).show, "  ‸alpha\n");
