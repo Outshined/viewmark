@@ -11977,6 +11977,109 @@ test("a create 409 does not restore the caret and a later 409 does", () => {
   }
 });
 
+function mountNewFilePage() {
+  const mounted = mountEditor();
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const sheet = document.createElement("div");
+  sheet.append(nav, mounted.root);
+  const previousHistory = globalThis.history;
+  const previousLocation = globalThis.location;
+  globalThis.history = { replaceState() {} };
+  globalThis.location = { origin: "https://viewmark.test", pathname: "/app", search: "", hash: "" };
+  return {
+    mounted,
+    nav,
+    sheet,
+    notice() {
+      return walkNodes(sheet, (node) => node.classList && node.classList.contains("md-notice"))[0];
+    },
+    pressNew(name) {
+      const button = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-file"))[0];
+      const field = walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name"))[0];
+      button.listeners.click({ preventDefault() {} });
+      field.value = name;
+      field.listeners.keydown({ key: "Enter", preventDefault() {} });
+      return field;
+    },
+    restore() {
+      if (previousHistory === undefined) delete globalThis.history;
+      else globalThis.history = previousHistory;
+      if (previousLocation === undefined) delete globalThis.location;
+      else globalThis.location = previousLocation;
+      mounted.restore();
+    },
+  };
+}
+
+test("f6bgnkwh: New file with no repo chosen shows that a repo has to be chosen first", () => {
+  const page = mountNewFilePage();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(page.mounted.root, "x", 0, transport);
+    transport.deliver({ type: "repos", repos: [{ name: "qa", description: "qa" }] });
+    const select = walkNodes(page.nav, (node) => node.classList && node.classList.contains("md-repo"))[0];
+    assert.equal(select.value, "");
+    const field = page.pressNew("Release notes");
+    assert.equal(field.hidden, true);
+    assert.equal(field.value, "");
+    assert.deepEqual(transport.sent.at(-1), { type: "create", path: "Release notes.md", username: "" });
+    assert.equal(page.notice(), undefined);
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(page.notice(), undefined);
+    assert.equal(view.getState().doc, "x");
+    assert.equal(globalThis.location.hash, "");
+    page.pressNew("Release notes");
+    transport.deliver({ type: "error", status: 400 });
+    const shown = page.notice();
+    assert.equal(shown.textContent, "a repo has to be chosen first");
+    assert.equal(shown.getAttribute("role"), "status");
+    assert.equal(view.getState().doc, "x");
+    assert.equal(globalThis.location.hash, "");
+    assert.equal(walkNodes(page.nav, (node) => node.dataset && node.dataset.path === "Release notes.md").length, 0);
+    view.destroy();
+  } finally {
+    page.restore();
+  }
+});
+
+test("f6bgnkwh: a created file still opens and does not show the repo notice", () => {
+  const page = mountNewFilePage();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(page.mounted.root, "x", 0, transport);
+    page.pressNew("Release notes");
+    transport.deliver({ type: "file", path: "Release notes.md", rev: 0, text: "opened\n", locks: [] });
+    assert.equal(view.getState().doc, "opened\n");
+    assert.equal(page.notice(), undefined);
+    assert.equal(globalThis.location.hash, "");
+    view.destroy();
+  } finally {
+    page.restore();
+  }
+});
+
+test("f6bgnkwh: a create refusal after a repo is chosen is not the repo notice", () => {
+  const page = mountNewFilePage();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(page.mounted.root, "x", 0, transport);
+    transport.deliver({ type: "repos", repos: [{ name: "qa", description: "qa" }] });
+    const select = walkNodes(page.nav, (node) => node.classList && node.classList.contains("md-repo"))[0];
+    select.value = "qa";
+    select.listeners.change();
+    page.pressNew("Release notes");
+    transport.deliver({ type: "error", status: 400 });
+    assert.equal(page.notice(), undefined);
+    page.pressNew("Release notes");
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(page.notice(), undefined);
+    view.destroy();
+  } finally {
+    page.restore();
+  }
+});
+
 test("a new file opens the stored path and a heading labels it", () => {
   const mounted = mountEditor();
   const nav = document.createElement("nav");

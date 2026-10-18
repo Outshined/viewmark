@@ -7268,6 +7268,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         const at = fileWaiters.indexOf("create");
         if (at >= 0) fileWaiters.splice(at, 1);
         if (isConflict(message)) expectNewComment = false;
+        // No repo is the one create refusal the page can name. A collision is another file, not a message.
+        if (message.status === 400 && !activeRepo) showNotice("a repo has to be chosen first");
         return;
       }
       if (isConflict(message)) {
