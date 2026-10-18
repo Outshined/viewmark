@@ -3712,6 +3712,9 @@ test("a reload hello keeps the newest socket for that token", async () => {
     const file = await third.next((msg) => msg.type === "file" && msg.path === "a.md");
     assert.equal(file.cursor, caret + inserted.length);
     assert.equal(file.anchor, caret + inserted.length);
+    const index = lockIndexAt(file.text, file.cursor);
+    assert.equal(file.locks.some((line) => line.index === index && line.username === "A"), false);
+    assert.equal(file.locks.find((line) => line.index === index).username, "B");
     third.send({
       type: "lock",
       username: "A",
@@ -3720,8 +3723,11 @@ test("a reload hello keeps the newest socket for that token", async () => {
       cursor: file.cursor,
       rev: file.rev,
     });
-    const locks = await third.next((msg) => msg.type === "locks" || msg.type === "error");
-    assert.equal(locks.type, "locks");
+    assert.deepEqual(await third.next((msg) => msg.type === "locks" || msg.type === "error"), {
+      type: "error",
+      status: 409,
+      heldBy: "B",
+    });
     agent.ws.close();
     third.ws.close();
   });
@@ -3774,6 +3780,66 @@ test("an insert by someone else while the socket is down shifts the caret the fi
     const locks = await again.next((msg) => msg.type === "locks" || msg.type === "error");
     assert.equal(locks.type, "locks");
     b.ws.close();
+    again.ws.close();
+  });
+});
+
+test("kmc2taym: a reconnect does not take a line another session holds", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "one\n\nab\n\ntwo\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const token = "page-token";
+    const caret = text.indexOf("ab") + 2;
+    const line = lockIndexAt(text, caret);
+    const page = await hello(port, "Ada", "docs", token);
+    const bea = await hello(port, "Bea", "docs", "bea-token");
+    const rev = (await openDoc(page, "Ada", "a.md")).rev;
+    await openDoc(bea, "Bea", "a.md");
+    await syncLock(page, [bea], "Ada", "a.md", caret, rev);
+    await waitClosed(page.ws);
+    const freed = await bea.next((msg) => msg.type === "locks" && msg.path === "a.md");
+    assert.equal(freed.lines.some((item) => item.username === "Ada"), false);
+    await syncLock(bea, [], "Bea", "a.md", caret, rev);
+    const again = await hello(port, "Ada", "docs", token);
+    again.send({ type: "open", username: "Ada", path: "a.md" });
+    const file = await again.next((msg) => msg.type === "file" && msg.path === "a.md");
+    assert.equal(file.cursor, caret);
+    assert.equal(file.anchor, caret);
+    assert.equal(file.locks.some((item) => item.index === line && item.username === "Ada"), false);
+    assert.deepEqual(
+      file.locks.find((item) => item.index === line),
+      { index: line, username: "Bea", token: "bea-token" },
+    );
+    again.send({ type: "lock", username: "Ada", path: "a.md", anchor: caret, cursor: caret, rev: file.rev });
+    assert.deepEqual(await again.next((msg) => msg.type === "locks" || msg.type === "error"), {
+      type: "error",
+      status: 409,
+      heldBy: "Bea",
+    });
+    again.send({
+      type: "edit",
+      username: "Ada",
+      path: "a.md",
+      rev: file.rev,
+      anchor: caret,
+      cursor: caret,
+      op: "insert",
+      text: "c",
+    });
+    assert.deepEqual(await again.next((msg) => msg.type === "doc" || msg.type === "error"), {
+      type: "error",
+      status: 409,
+      heldBy: "Bea",
+    });
+    assert.equal(await readDoc(dir, "a.md"), text);
+    bea.send({ type: "lock", username: "Bea", path: "a.md", anchor: caret, cursor: caret, rev: file.rev });
+    const still = await bea.next((msg) => msg.type === "locks" || msg.type === "error");
+    assert.equal(still.type, "locks");
+    assert.deepEqual(
+      still.lines.find((item) => item.index === line),
+      { index: line, username: "Bea", token: "bea-token" },
+    );
+    bea.ws.close();
     again.ws.close();
   });
 });

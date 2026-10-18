@@ -15998,6 +15998,54 @@ test("undo typed while the socket is down is sent after the file", () => {
   }
 });
 
+test("kmc2taym: a file that names the holder taken while down flashes that name and does not send the next key", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mounted = mountEditor();
+  const transport = socketGate();
+  transport.username = "me";
+  const doc = "one\n\nab\n\ntwo\n";
+  const caret = 7;
+  const locks = [{ index: 2, username: "bea", token: "bea-token" }];
+  const lockNamed = (name) => {
+    const marks = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-lock") && node.textContent === name);
+    assert.equal(marks.length, 1);
+    return marks[0];
+  };
+  try {
+    const view = createEditor(mounted.root, doc, caret, transport);
+    transport.deliver({ type: "file", path: "a.md", rev: 4, text: doc, cursor: caret, anchor: caret, locks: [] });
+    transport.sent.length = 0;
+    transport.setUp(false);
+    insertText(mounted, "c");
+    insertText(mounted, "d");
+    transport.deliver({ type: "reconnect" });
+    transport.setUp(true);
+    transport.deliver({ type: "file", path: "a.md", rev: 4, text: doc, cursor: caret, anchor: caret, locks });
+    assert.equal(lockNamed("bea").className, "md-lock");
+    assert.equal(lockNamed("bea").closest(".md-line, .md-atom").textContent.includes("ab"), true);
+    const edits = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(edits.length, 1);
+    assert.equal(edits[0].text, "c");
+    assert.equal(edits[0].cursor, caret);
+    assert.equal(edits[0].anchor, caret);
+    const lock = transport.sent.find((message) => message.type === "lock");
+    assert.equal(lock.cursor, caret);
+    assert.equal(lock.anchor, caret);
+    transport.deliver({ type: "error", status: 409, heldBy: "bea" });
+    transport.deliver({ type: "error", status: 409, heldBy: "bea" });
+    const flashed = lockNamed("bea");
+    assert.equal(flashed.classList.contains("md-flash"), true);
+    assert.notEqual(flashed.className, "md-lock");
+    assert.equal(transport.sent.filter((message) => message.type === "edit").some((message) => message.text === "d"), false);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, caret);
+    assert.equal(view.getState().anchor, caret);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("a refused replay after reconnect flashes the holder and drops the keys behind it", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const mounted = mountEditor();

@@ -2680,6 +2680,18 @@ export async function createHub(stateDir, sourceRoot) {
     if (file) {
       file.subscribers.delete(from);
       if (file.suspended) file.suspended.delete(from);
+      // syncLocks lets the last subscriber win a line. A block someone else
+      // took while this page was parked has to stay theirs.
+      const taken = new Set();
+      for (const sock of file.subscribers) {
+        if (!sock.session || sameSession(sock, from)) continue;
+        for (const index of sock.session.lines) taken.add(index);
+      }
+      if (taken.size > 0) {
+        const kept = new Set();
+        for (const index of next.lines) if (!taken.has(index)) kept.add(index);
+        next.lines = kept;
+      }
       file.subscribers.add(to);
       syncLocks(file);
     }
