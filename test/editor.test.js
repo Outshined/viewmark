@@ -20851,11 +20851,26 @@ test("vim dw undo restores a collapsed caret from before the command", () => {
 
 test("vim insert arrows stay in insert", () => {
   return withVimFlag(true, (mounted) => {
+    globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
     const status = () => {
       const found = byClass(mounted.root, "md-vim-status");
       return found.length === 0 ? "" : found[0].textContent;
     };
     const down = createEditor(mounted.root, "alpha\n\nbeta", 0);
+    const alpha = () => mounted.findAll((node) => node.nodeType === 3 && node.textContent === "alpha")[0];
+    assert.ok(alpha());
+    let lineOffset = 0;
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      collapse() {},
+      modify(_action, direction, granularity) {
+        if (granularity !== "line") return;
+        lineOffset = direction === "forward" || direction === "right" ? 7 : 0;
+      },
+      getRangeAt() {
+        return { startContainer: alpha(), startOffset: lineOffset, collapsed: true };
+      },
+    });
     vimType(mounted, "i");
     assert.equal(status(), "I");
     assert.equal(mounted.root.classList.contains("md-vim-block"), false);
@@ -20869,6 +20884,7 @@ test("vim insert arrows stay in insert", () => {
     assert.equal(down.getState().cursor, 0);
     assert.equal(down.getState().anchor, 0);
     down.destroy();
+    globalThis.window.getSelection = () => null;
 
     const left = createEditor(mounted.root, "alpha\n", 4);
     const text = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "alpha")[0];
@@ -20906,6 +20922,128 @@ test("vim insert arrows stay in insert", () => {
     assert.equal(left.getState().anchor, 2);
     left.destroy();
     globalThis.window.getSelection = () => null;
+  });
+});
+
+// The browser's line step is the drawn row. j steps the next block instead.
+test("vim insert up and down move one drawn row of a wrapped paragraph", () => {
+  return withVimFlag(true, (mounted) => {
+    const para = "a".repeat(90);
+    const doc = `${para}\n\nbeta\n`;
+    const row = 40;
+    const nextBlock = para.length + 2;
+    const status = () => {
+      const found = byClass(mounted.root, "md-vim-status");
+      return found.length === 0 ? "" : found[0].textContent;
+    };
+    globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+    const paragraph = () => mounted.findAll((node) => node.nodeType === 3 && node.textContent === para)[0];
+    let lineOffset = 10;
+    const installRows = () => {
+      lineOffset = 10;
+      globalThis.window.getSelection = () => ({
+        rangeCount: 1,
+        collapse() {},
+        setBaseAndExtent() {},
+        removeAllRanges() {},
+        addRange() {},
+        modify(_action, direction, granularity) {
+          if (granularity !== "line") return;
+          lineOffset = direction === "forward" || direction === "right" ? row : 10;
+        },
+        getRangeAt() {
+          return { startContainer: paragraph(), startOffset: lineOffset, endContainer: paragraph(), endOffset: lineOffset, collapsed: true };
+        },
+      });
+    };
+
+    const view = createEditor(mounted.root, doc, 10);
+    installRows();
+    assert.ok(paragraph());
+    vimType(mounted, "i");
+    assert.equal(status(), "I");
+    vimType(mounted, "ArrowDown");
+    assert.equal(status(), "I");
+    assert.equal(mounted.root.classList.contains("md-vim-block"), false);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, row);
+    assert.equal(view.getState().anchor, row);
+    assert.ok(view.getState().cursor < para.length);
+    vimType(mounted, "ArrowUp");
+    assert.equal(status(), "I");
+    assert.equal(view.getState().cursor, 10);
+    assert.equal(view.getState().anchor, 10);
+    mounted.listeners.keydown({
+      key: "ArrowDown",
+      shiftKey: true,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      preventDefault() {},
+    });
+    assert.equal(status(), "I");
+    assert.equal(view.getState().cursor, row);
+    assert.equal(view.getState().anchor, row);
+    view.destroy();
+    globalThis.window.getSelection = () => null;
+
+    const blocks = createEditor(mounted.root, doc, 10);
+    vimType(mounted, "j");
+    assert.equal(status(), "N");
+    assert.ok(blocks.getState().cursor >= nextBlock, `j landed at ${blocks.getState().cursor}`);
+    assert.equal(blocks.getState().doc, doc);
+    blocks.destroy();
+
+    globalThis.localStorage.removeItem("viewmark.vim");
+    const plain = createEditor(mounted.root, doc, 10);
+    installRows();
+    keyDown(mounted, "ArrowDown");
+    assert.equal(plain.getState().cursor, row);
+    assert.equal(plain.getState().anchor, row);
+    keyDown(mounted, "ArrowUp");
+    assert.equal(plain.getState().cursor, 10);
+    assert.equal(plain.getState().anchor, 10);
+    assert.equal(plain.getState().doc, doc);
+    plain.destroy();
+    globalThis.window.getSelection = () => null;
+  });
+});
+
+test("vim insert up and down in the raw view move one drawn row", () => {
+  return withVimFlag(true, (mounted) => {
+    const line = "a".repeat(40);
+    const doc = `${line}\nbeta\n`;
+    const status = () => {
+      const found = byClass(mounted.root, "md-vim-status");
+      return found.length === 0 ? "" : found[0].textContent;
+    };
+    const view = createEditor(mounted.root, doc, 0);
+    pressViewToggle(mounted.root);
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    vimType(mounted, "i");
+    assert.equal(status(), "I");
+    const text = mounted.findAll((node) => node.nodeType === 3 && node.textContent === line)[0];
+    assert.ok(text);
+    const tagged = taggedSpan(text);
+    assert.ok(tagged);
+    assert.equal(Number(tagged.dataset.start), 0);
+    assert.equal(text.length, Number(tagged.dataset.end) - Number(tagged.dataset.start));
+    installGlyphs([text], (_node, index) => glyphRect(index < 20 ? 10 : 40));
+    vimType(mounted, "ArrowDown");
+    assert.equal(status(), "I");
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, 20);
+    assert.equal(view.getState().anchor, 20);
+    vimType(mounted, "ArrowUp");
+    assert.equal(status(), "I");
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(view.getState().anchor, 0);
+    vimType(mounted, "Escape");
+    assert.equal(status(), "N");
+    vimType(mounted, "j");
+    assert.ok(view.getState().cursor > line.length, `j landed at ${view.getState().cursor}`);
+    assert.equal(view.getState().doc, doc);
+    view.destroy();
   });
 });
 

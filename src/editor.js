@@ -9135,15 +9135,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     dispatchVimKey(key);
   }
 
-  // Insert arrows are h, l, k, and j, and they stay in Insert.
-  // With the flag off, arrows keep the selection path below.
+  // j and k step a block. A wrapped paragraph's other rows are drawn lines,
+  // so Insert ↑ and ↓ take the same step as with vim keys off. ← and → are h
+  // and l. Each of them stays in Insert. With the flag off, arrows keep the
+  // selection path below.
   function vimInsertArrow(event) {
     if (!event || event.ctrlKey || event.metaKey || event.altKey) return false;
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      if (sourceMode) moveRawCaret(event.key, false, false);
+      else moveCaret(event.key === "ArrowDown" ? "forward" : "backward", "line", false);
+      return true;
+    }
     const command = event.key === "ArrowLeft" ? "h"
       : event.key === "ArrowRight" ? "l"
-        : event.key === "ArrowUp" ? "k"
-          : event.key === "ArrowDown" ? "j"
-            : "";
+        : "";
     if (!command) return false;
     const snap = vimSnapshot();
     snap.mode = "normal";
