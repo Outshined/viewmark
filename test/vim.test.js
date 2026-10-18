@@ -483,6 +483,86 @@ test("VN.10", () => {
   assert.equal(run("alpha be‸ta\n", [{ key: "Backspace", shift: true }]).show, "alpha ‸beta\n");
 });
 
+// Shift+arrow is w and b. The caret stays collapsed and the text is unchanged.
+// With the flag off the key is not taken, so the editor can extend the selection.
+test("vgf3mkb2", () => {
+  const sample = "alpha beta gamma\n\nsecond line here\n";
+  const right = run(show(sample, 0), [{ key: "ArrowRight", shift: true }]);
+  assert.equal(right.show, "alpha ‸beta gamma\n\nsecond line here\n");
+  assert.equal(right.show, run(show(sample, 0), ["w"]).show);
+  assert.equal(right.anchor, right.cursor);
+  assert.equal(right.doc, sample);
+  assert.equal(right.vim.mode, "normal");
+  assert.equal(last(right).match, "full");
+  assert.equal(last(right).consumed, true);
+  assert.equal(last(right).effect.type, "caret");
+  assert.equal(last(right).effect.anchor, last(right).effect.cursor);
+  assert.equal(right.steps.some((step) => step.effect && step.effect.type === "splice"), false);
+
+  const back = run(right.show, [{ key: "ArrowLeft", shift: true }]);
+  assert.equal(back.show, "‸alpha beta gamma\n\nsecond line here\n");
+  assert.equal(back.show, run(right.show, ["b"]).show);
+  assert.equal(back.anchor, back.cursor);
+  assert.equal(back.doc, sample);
+  assert.equal(back.vim.mode, "normal");
+  assert.equal(last(back).effect.type, "caret");
+  assert.equal(back.steps.some((step) => step.effect && step.effect.type === "splice"), false);
+
+  const counted = run(show(sample, 0), ["2", { key: "ArrowRight", shift: true }]);
+  assert.equal(counted.show, run(show(sample, 0), ["2", "w"]).show);
+  assert.equal(counted.show, "alpha beta ‸gamma\n\nsecond line here\n");
+  assert.equal(counted.anchor, counted.cursor);
+  assert.equal(counted.doc, sample);
+  assert.equal(counted.vim.mode, "normal");
+  assert.equal(counted.vim.input.prefixRepeat, "");
+  const fromHere = sample.indexOf("here");
+  const countedBack = run(show(sample, fromHere), ["2", { key: "ArrowLeft", shift: true }]);
+  assert.equal(countedBack.show, run(show(sample, fromHere), ["2", "b"]).show);
+  assert.equal(countedBack.anchor, countedBack.cursor);
+  assert.equal(countedBack.doc, sample);
+
+  for (const raw of [false, true]) {
+    for (let cursor = 0; cursor <= sample.length; cursor += 1) {
+      const start = show(sample, cursor);
+      const opts = { raw };
+      const forward = run(start, [{ key: "ArrowRight", shift: true }], opts);
+      const word = run(start, ["w"], opts);
+      assert.equal(forward.show, word.show, `right raw=${raw} at ${cursor}`);
+      assert.equal(forward.doc, sample, `right raw=${raw} at ${cursor}`);
+      assert.equal(forward.anchor, forward.cursor, `right raw=${raw} at ${cursor}`);
+      const backward = run(start, [{ key: "ArrowLeft", shift: true }], opts);
+      const prev = run(start, ["b"], opts);
+      assert.equal(backward.show, prev.show, `left raw=${raw} at ${cursor}`);
+      assert.equal(backward.doc, sample, `left raw=${raw} at ${cursor}`);
+      assert.equal(backward.anchor, backward.cursor, `left raw=${raw} at ${cursor}`);
+    }
+  }
+
+  const plainRight = run("‸alpha beta\n", ["ArrowRight"]);
+  assertView(plainRight, "l", 1);
+  assert.equal(plainRight.show, "‸alpha beta\n");
+  assert.equal(plainRight.doc, "alpha beta\n");
+  const plainLeft = run("a‸lpha beta\n", ["ArrowLeft"]);
+  assertView(plainLeft, "h", 1);
+  assert.equal(plainLeft.show, "a‸lpha beta\n");
+  const altRight = run("alp‸ha beta\n", [{ key: "ArrowRight", shift: true, alt: true }]);
+  assertView(altRight, "l", 1);
+  assert.equal(altRight.show, "alp‸ha beta\n");
+  const altLeft = run("alp‸ha beta\n", [{ key: "ArrowLeft", shift: true, alt: true }]);
+  assertView(altLeft, "h", 1);
+  assert.equal(altLeft.show, "alp‸ha beta\n");
+
+  for (const key of ["ArrowRight", "ArrowLeft"]) {
+    const off = run("‸alpha beta gamma\n", [{ key, shift: true }], { flag: false });
+    assert.equal(off.steps[0].match, "none");
+    assert.equal(off.steps[0].consumed, false);
+    assert.equal(off.steps[0].effect, null);
+    assert.equal(off.show, "‸alpha beta gamma\n");
+    assert.equal(off.doc, "alpha beta gamma\n");
+    assert.equal(off.vim.mode, "normal");
+  }
+});
+
 test("VN.11", () => {
   assert.equal(run("  al‸pha\n", ["0"]).show, "‸  alpha\n");
   assert.equal(run("  al‸pha\n", ["^"]).show, "  ‸alpha\n");

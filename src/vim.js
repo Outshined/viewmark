@@ -2566,8 +2566,9 @@ function commandFromKey(key) {
     if (key.ctrl && (id === "e" || id === "o" || id === "q" || id === "k")) return { kind: "none" };
     return { kind: "none" };
   }
-  if (key.key === "ArrowLeft") return { kind: "motion", id: "h" };
-  if (key.key === "ArrowRight") return { kind: "motion", id: "l" };
+  // Alt+Shift stays one character. Shift alone is the word motion.
+  if (key.key === "ArrowLeft") return { kind: "motion", id: key.shift && !key.alt ? "b" : "h" };
+  if (key.key === "ArrowRight") return { kind: "motion", id: key.shift && !key.alt ? "w" : "l" };
   if (key.key === "ArrowUp") return { kind: "motion", id: "k" };
   if (key.key === "ArrowDown") return { kind: "motion", id: "j" };
   if (key.key === "Home") return { kind: "motion", id: "0" };
