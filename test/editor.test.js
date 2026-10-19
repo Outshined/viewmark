@@ -2629,7 +2629,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
           sel.place(one, land === "end" ? one.length : 0);
         });
         press("ArrowUp");
-        assert.equal(modifyDuringKey, 0, `${item.name} ${land} modify`);
+        assert.equal(modifyDuringKey, 8, `${item.name} ${land} modify`);
         const stepped = globalThis.window.getSelection();
         assert.notEqual(stepped.focusNode, textNode("one"), `${item.name} ${land} node`);
         assert.equal(mapOffset(stepped.focusNode, stepped.focusOffset), item.stop, `${item.name} ${land} node`);
@@ -2674,7 +2674,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
       sel.place(br, 0);
     });
     press("ArrowUp");
-    assert.equal(modifyDuringKey, 0);
+    assert.equal(modifyDuringKey, 1);
     assert.equal(stayed.getState().cursor, 5);
     assert.equal(stayed.getState().anchor, 5);
     stayed.destroy();
@@ -2685,7 +2685,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
       sel.place(one, one.length);
     });
     press("ArrowUp");
-    assert.equal(modifyDuringKey, 0);
+    assert.equal(modifyDuringKey, 8);
     assert.equal(leave.getState().cursor, 5);
     press("ArrowUp");
     assert.equal(modifyDuringKey, 1);

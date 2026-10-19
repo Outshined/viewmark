@@ -998,9 +998,8 @@ function bareBreakNewline(doc, offset) {
   return lineCaret(doc, offset) === offset && offset < doc.length && lineCaret(doc, offset + 1) === offset;
 }
 
-// The nearest line above the caret that is not blank. Firefox's line step
-// skips a line of only spaces or a tab and then keeps that selection, so up
-// stops on the line's start and does not call modify. A blank is not a stop.
+// The nearest line above the caret that is not blank. A line of only spaces
+// or tabs is the up-stop. A blank is not a stop.
 function whitespaceLineAbove(doc, offset) {
   const text = typeof doc === "string" ? doc : "";
   if (!Number.isFinite(offset)) return null;
@@ -7640,8 +7639,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const caretPoint = pointFor(state.cursor);
     const forward = direction === "forward" || direction === "right";
-    // modify's selection is the one Firefox keeps. A backward line step onto a
-    // spaces or tab line never asks for it; the stop is that line's start.
+    // A line modify lands on the editor root and Firefox keeps that selection.
+    // Character steps reach the zero-width caret on the spaces or tab line.
+    // Replacing the line after that step puts the caret on the paragraph.
     const above = !extend && granularity === "line" && direction === "backward"
       ? whitespaceLineAbove(state.doc, beforeCursor)
       : null;
@@ -7649,10 +7649,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     placingCaret = true;
     let landed = null;
     let hangAffinity = false;
+    let stepped = false;
     try {
       try {
         if (above != null) {
-          landed = above;
+          if (caretPoint) sel.collapse(caretPoint.node, caretPoint.offset);
+          for (let hop = 0; hop < 8; hop += 1) {
+            sel.modify("move", "backward", "character");
+            const mapped = selectionFromDom(sel);
+            if (mapped && mapped.anchor === above && mapped.cursor === above) {
+              stepped = true;
+              break;
+            }
+          }
+          if (!stepped) landed = above;
         } else {
           if (caretPoint) sel.collapse(caretPoint.node, caretPoint.offset);
           sel.modify("move", direction, granularity);
@@ -7668,6 +7678,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         }
       } finally {
         placingCaret = false;
+      }
+      if (stepped) {
+        state = { ...state, cursor: above, anchor: above };
+        if (!claimLines(above, above)) return;
+        whitespaceCaret = { anchor: above, cursor: above };
+        return;
       }
       if (landed == null) return;
       let next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
