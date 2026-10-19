@@ -2517,9 +2517,10 @@ test("BG.ws.tab", () => {
 });
 
 // Firefox's line step from the paragraph under a spaces-only or tab-only line
-// reports the paragraph above. Replacing the line then fires selectionchange
-// while that landing is still the selection, which is offset 3, the end of
-// the paragraph above. The line is one caret, at its start.
+// reports the paragraph above. Replacing the line fires selectionchange while
+// that landing is still the selection, and Firefox fires it again after
+// moveCaret has cleared movingCaret. Both name that landing, offset 3 for the
+// end of the paragraph above. The line is one caret, at its start.
 test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
   const mounted = mountEditor();
   const textNode = (value) => mounted.findAll((node) => node.nodeType === 3 && node.textContent === value)[0];
@@ -2547,6 +2548,11 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
     } finally {
       arrow = false;
     }
+    // The step's nodes were replaced. Place that landing on the lines still
+    // drawn, then deliver the selectionchange. movingCaret is already false.
+    const sel = globalThis.window.getSelection();
+    if (sel && typeof sel.modify === "function") sel.modify();
+    for (const fn of mounted.documentListeners.get("selectionchange") || []) fn();
   };
   try {
     for (const item of cases) {

@@ -2698,7 +2698,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // An arrow decides the offset, then render replaces the lines. selectionchange
   // from that replace still names the browser landing. Up from the paragraph
   // under a line of spaces or a tab lands on the paragraph above; adopting that
-  // landing puts the caret back there.
+  // landing puts the caret back there. Firefox delivers that event after this
+  // flag is cleared, so that stop is retained too.
   let movingCaret = false;
   let strayRestores = 0;
   let goalX = null;
@@ -7603,10 +7604,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (landed == null) return;
       let next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
       // Up and down on a line drawn empty rest on its start.
+      let heldWhitespace = false;
       if (granularity === "line") {
         next = lineCaret(state.doc, next);
         const held = whitespaceLineStop(state.doc, beforeCursor, next);
-        if (held != null) next = held;
+        if (held != null) {
+          next = held;
+          heldWhitespace = true;
+        }
       }
       // Firefox's lineboundary stops on the br, which is the hidden tail.
       if (!sourceMode && granularity === "lineboundary" && forward) next = endBeforeTail(state.doc, next);
@@ -7679,6 +7684,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       // The selection is already on this stop, so the caret is not placed again.
       // Firefox's block is a separate mark and would stay where it was.
       else syncVimBlockMark();
+      // The line step's selectionchange arrives after movingCaret is cleared and
+      // still names the paragraph above. Keep the stop on the spaces or the tab.
+      if (heldWhitespace) retainCaret();
     } finally {
       movingCaret = false;
     }
