@@ -83,3 +83,21 @@ for (const [label, body] of [
     assert.ok(!drawn.text.includes("\\"), `a backslash is drawn: ${JSON.stringify(drawn.text)}, from ${JSON.stringify(text)}`);
   });
 }
+
+// Ticket acc28bfp. A backslash ends a block only while the caret is still on the empty line
+// Shift+Enter opened. Leaving that line drops it, so the stored file is as it was. A word after
+// the break keeps the backslash. The tests above check the drawing and skip a paragraph.
+for (const [label, body, at, kept] of [
+  ["a paragraph", "alpha\n\nend\n", 5, "alpha\\\nbeta\n\nend\n"],
+  ["an item", "- alpha\n\nend\n", 7, "- alpha\\\nbeta\n\nend\n"],
+  ["a quote", "> alpha\n\nend\n", 7, "> alpha\\\n> beta\n\nend\n"],
+]) {
+  test(`acc28bfp: Shift+Enter at the end of ${label}, then leaving the empty line, stores no block-ending backslash`, async (t) => {
+    const { text } = await breakAndLeave(t, body, at, "");
+    assert.equal(text, body);
+  });
+  test(`acc28bfp: Shift+Enter in ${label}, then a word, stores the backslash`, async (t) => {
+    const { text } = await breakAndLeave(t, body, at, "beta");
+    assert.equal(text, kept);
+  });
+}
