@@ -3701,6 +3701,32 @@ export function gapCaretStops(doc, cursor) {
   return stops;
 }
 
+function onEmptyLine(text, offset) {
+  if (!Number.isFinite(offset) || offset < 0 || offset > text.length) return false;
+  let start = Math.trunc(offset);
+  while (start > 0 && text[start - 1] !== "\n") start -= 1;
+  let end = start;
+  while (end < text.length && text[end] !== "\n") end += 1;
+  return start === end;
+}
+
+// A rendered diagram or image has no caret. A line step that lands on the empty
+// line past one stops on its near edge instead of that blank. A landing inside
+// still steps over. The gap directly under the block does not contain the atom.
+function lineClearedAtom(doc, cursor, landed, forward) {
+  const text = typeof doc === "string" ? doc : "";
+  if (!onEmptyLine(text, landed) || !Number.isFinite(cursor)) return null;
+  const lesser = Math.min(cursor, landed);
+  const greater = Math.max(cursor, landed);
+  let nearest = null;
+  for (const atom of plan(text, cursor).atoms) {
+    if (atom.type !== "diagram" && atom.type !== "image") continue;
+    if (atom.start < lesser || atom.end > greater) continue;
+    if (!nearest || (forward ? atom.start < nearest.start : atom.end > nearest.end)) nearest = atom;
+  }
+  return nearest;
+}
+
 // The blank has no height. A step that lands on it continues to the paragraph
 // on that side. A click, which has no direction, stays with the paragraph above.
 function paragraphGapLeave(doc, offset, direction) {
@@ -3727,10 +3753,18 @@ export function placeMove(doc, cursor, landed, direction, granularity) {
   const fence = skippedFence(doc, cursor, landed, forward);
   if (fence) next = forward ? fence.start : fence.end;
   const gap = paragraphGapLeave(doc, next, direction);
-  if (gap != null) return gap;
+  if (gap != null && granularity !== "line") return gap;
   if (granularity === "line") {
-    const stop = lineGapStop(doc, cursor, next, forward);
-    if (stop != null) return stop;
+    if (gap != null) next = gap;
+    else {
+      const stop = lineGapStop(doc, cursor, next, forward);
+      if (stop != null) next = stop;
+    }
+    const cleared = lineClearedAtom(doc, cursor, landed, forward);
+    if (cleared) {
+      const at = inwardOffset(cleared, forward);
+      if (forward ? at < next : at > next) next = at;
+    }
   }
   return next;
 }

@@ -812,6 +812,17 @@ test("6a2t6dy5 the blank under a fence, a table, a diagram, an image, or a rule 
     assert.equal(placeMove(trail, trailed[trailed.length - 2].end, tail.start, "forward", "line"), tail.start, name);
   }
 
+  // A diagram or an image has no caret, so the line step lands on the blank past it.
+  const leadDiagram = "Lead\n\n```mermaid\ngraph TD\nA-->B\n```\n\n";
+  assert.equal(placeMove(leadDiagram, 36, 5, "backward", "line"), 35);
+  assert.equal(placeMove(leadDiagram, 5, 36, "forward", "line"), 6);
+  assert.equal(placeMove(leadDiagram, 36, 5, "backward", "character"), 35);
+  const leadImage = "Lead\n\n![box](box.svg)\n\n";
+  assert.equal(placeMove(leadImage, 22, 5, "backward", "line"), 21);
+  assert.equal(placeMove(leadImage, 5, 22, "forward", "line"), 6);
+  assert.equal(placeMove(leadImage, 22, 5, "backward", "character"), 5);
+  assert.equal(placeMove("```mermaid\ngraph TD\nA-->B\n```\n\nafter\n", 31, 30, "backward", "line"), 29);
+
   const mounted = mountEditor();
   try {
     const doc = "```js\nlet x\n```\n\nafter\n---\n\n| a |\n| --- |\n| 1 |\n\n```mermaid\nA-->B\n```\n\n![x](y)\n\nnext\n";
