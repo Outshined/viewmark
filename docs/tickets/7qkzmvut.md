@@ -1,5 +1,5 @@
 title: Graphical artifacts when ticket drawer compacts
-state: pending review
+state: closed
 type: bug
 priority: low
 parent:

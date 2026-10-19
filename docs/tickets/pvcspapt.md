@@ -1,5 +1,5 @@
 title: Firefox: a click on the empty line at the end of the file lands after the final newline
-state: pending review
+state: closed
 type: bug
 priority: medium
 parent:

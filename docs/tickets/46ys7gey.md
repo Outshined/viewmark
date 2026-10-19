@@ -1,5 +1,5 @@
 title: Firefox: bullet list items are 2.5 px further apart than two lines of a paragraph
-state: pending review
+state: closed
 type: bug
 priority: low
 parent:
