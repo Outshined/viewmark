@@ -2662,6 +2662,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   let pointer = null;
   let didDrag = false;
+  // mouseup detail 1. A double-click's mouseup is not a drag release.
+  let plainDrag = false;
   // The selection under the press, kept so a drop can move it after the caret has moved.
   let dragRange = null;
   let dragSource = null;
@@ -9645,11 +9647,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     dragRange = null;
   });
 
-  // Firefox reports a drag's end short of the boundary a click at that point
+  // Firefox reports a drag's end short of the offset a click at that point
   // reports. The miss is the right half of a line's last glyph, and a
   // zero-height gap before the line can leave the selection on the block
-  // above. The release uses the click mapping. A range that already reaches
-  // that boundary stays, so a host that included the glyph is unchanged.
+  // above. The click maps the release. A range that already reaches it
+  // stays, so a host that included the glyph is unchanged.
   function dragRelease(mapped, event) {
     if (!mapped) return mapped;
     const detail = event && event.detail ? event.detail : 1;
@@ -9664,9 +9666,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return { anchor: mapped.anchor, cursor: release };
   }
 
-  // The release stayed on the focus line, so this mouseup does not render.
-  // The browser selection is still the short range, and the click after
-  // mouseup adopts whatever range is left there.
+  // Same-line release does not render, so the browser selection stays short
+  // until the caret is placed on the click's offset.
   function placeDragCaret() {
     const anchor = state.anchor;
     const cursor = state.cursor;
@@ -9674,6 +9675,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const to = pointFor(visibleSelectionOffset(state.doc, cursor, anchor));
     if (!from || !to) return;
     placeCaret();
+  }
+
+  // A line change has to render. selectionchange during that replace still
+  // names the old nodes. The short range can also come back after mouseup,
+  // and the retained caret puts the release back.
+  function commitDrag(chosen, previous) {
+    const extended = chosen.anchor !== previous.anchor || chosen.cursor !== previous.cursor;
+    const before = lineIndexAt(state.doc, state.cursor);
+    state = { ...state, anchor: chosen.anchor, cursor: chosen.cursor };
+    if (!claimLines(chosen.anchor, chosen.cursor)) return false;
+    if (state.anchor !== state.cursor) useVimSelection("visual");
+    const after = lineIndexAt(state.doc, state.cursor);
+    if (before !== after) {
+      gestureHold = true;
+      render();
+    } else if (extended) placeDragCaret();
+    else updateCommentButton();
+    if (extended) retainCaret();
+    return true;
   }
 
   listen("mouseup", (event) => {
@@ -9692,16 +9712,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (mapped) {
           didDrag = true;
           gestureArmed = false;
-          const chosen = dragRelease(mapped, event);
-          gestureOffset = null;
-          const before = lineIndexAt(state.doc, state.cursor);
-          state = { ...state, anchor: chosen.anchor, cursor: chosen.cursor };
-          if (!claimLines(chosen.anchor, chosen.cursor)) return;
-          if (state.anchor !== state.cursor) useVimSelection("visual");
-          const after = lineIndexAt(state.doc, state.cursor);
-          if (before !== after) render();
-          else if (chosen.anchor !== mapped.anchor || chosen.cursor !== mapped.cursor) placeDragCaret();
-          else updateCommentButton();
+          // The click reads gestureOffset. A selection whose anchor is not
+          // this press must not be lengthened.
+          plainDrag = !(event && event.detail >= 2);
+          commitDrag(dragRelease(mapped, event), mapped);
           return;
         }
       }
@@ -9801,6 +9815,22 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (link && root.contains(link)) event.preventDefault();
     if (didDrag) {
       didDrag = false;
+      const clickDetail = event && event.detail ? event.detail : 1;
+      // Firefox's mouseup does not yield the click offset, and the short DOM
+      // range can be back by the time this click runs. Map the release here.
+      if (plainDrag && clickDetail < 2) {
+        const previous = { anchor: state.anchor, cursor: state.cursor };
+        const chosen = dragRelease(previous, event);
+        if (chosen && (chosen.anchor !== previous.anchor || chosen.cursor !== previous.cursor)) {
+          if (!commitDrag(chosen, previous)) {
+            gestureOffset = null;
+            return;
+          }
+        } else if (!domSelectionMatches()) {
+          placeDragCaret();
+          retainCaret();
+        }
+      }
       gestureOffset = null;
       return;
     }

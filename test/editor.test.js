@@ -14966,10 +14966,13 @@ test("CB.5 TB.li.8 SX.4 a drag that ends on a line's last character includes tha
     });
     flush();
   };
-  // The drag's selectionchange has already stored the short focus. mouseup then
-  // maps the release the way a click would, and the click after it must keep
-  // that longer range in the DOM selection the harness reads.
-  const drag = (name, doc, cursor, anchor, firefox, release, detail = 1) => {
+  // Firefox's mouseup caretPositionFromPoint stays on the short drag focus.
+  // A click at the release maps to the farther offset. Firefox can also put
+  // the short DOM range back after mouseup has already lengthened the selection.
+  // focus: mouseup reports the short focus, and the click reports the release.
+  // putback: mouseup reports the release, then the short range is restored.
+  // release: mouseup reports the release and it is left in place.
+  const drag = (name, doc, cursor, anchor, firefox, release, detail = 1, mode = "focus") => {
     timers.length = 0;
     const view = createEditor(mounted.root, doc, cursor);
     try {
@@ -14985,13 +14988,29 @@ test("CB.5 TB.li.8 SX.4 a drag that ends on a line's last character includes tha
       fireDocument(mounted, "selectionchange");
       assert.equal(view.getState().anchor, anchor, `${name} stores the drag anchor`);
       assert.equal(view.getState().cursor, firefox, `${name} stores the drag focus`);
-      hit = { offsetNode: want.node, offset: want.offset };
+      const mouseupHit = mode === "focus" ? short : want;
+      hit = { offsetNode: mouseupHit.node, offset: mouseupHit.offset };
       mounted.listeners.mouseup({ clientX: 48, clientY: 28, detail, button: 0, target: want.node });
+      if (mode === "putback") {
+        const livePress = sourcePoint(anchor);
+        const liveShort = sourcePoint(firefox);
+        assert.ok(livePress && liveShort, `${name} short range after mouseup`);
+        show(livePress, liveShort);
+        fireDocument(mounted, "selectionchange");
+      }
+      hit = { offsetNode: want.node, offset: want.offset };
       finishClick(want.node);
       return view.getState();
     } finally {
       view.destroy();
     }
+  };
+  const expectRelease = (state, cell, label) => {
+    assert.equal(state.anchor, cell.anchor, label);
+    assert.equal(state.cursor, cell.release, label);
+    assert.equal(selectedSlice(state), cell.text, label);
+    assert.equal(mapOffset(sel.anchorNode, sel.anchorOffset), cell.anchor, `${label} DOM anchor`);
+    assert.equal(mapOffset(sel.focusNode, sel.focusOffset), cell.release, `${label} DOM focus`);
   };
   try {
     const cells = [
@@ -14999,20 +15018,18 @@ test("CB.5 TB.li.8 SX.4 a drag that ends on a line's last character includes tha
       { name: "TB.li.8", doc: "- a\n- b\n- c\n", cursor: 4, anchor: 4, firefox: 10, release: 11, text: "- b\n- c" },
       { name: "SX.4", doc: "one\n\ntwo\n", cursor: 0, anchor: 0, firefox: 3, release: 8, text: "one\n\ntwo" },
     ];
-    for (const cell of cells) {
-      const state = drag(cell.name, cell.doc, cell.cursor, cell.anchor, cell.firefox, cell.release);
-      assert.equal(state.anchor, cell.anchor, cell.name);
-      assert.equal(state.cursor, cell.release, cell.name);
-      assert.equal(selectedSlice(state), cell.text, cell.name);
-      assert.equal(mapOffset(sel.anchorNode, sel.anchorOffset), cell.anchor, `${cell.name} DOM anchor`);
-      assert.equal(mapOffset(sel.focusNode, sel.focusOffset), cell.release, `${cell.name} DOM focus`);
+    for (const mode of ["focus", "putback"]) {
+      for (const cell of cells) {
+        const state = drag(cell.name, cell.doc, cell.cursor, cell.anchor, cell.firefox, cell.release, 1, mode);
+        expectRelease(state, cell, `${cell.name} ${mode}`);
+      }
+      const backward = drag("backward", "one\n\ntwo\n", 0, 8, 1, 0, 1, mode);
+      assert.equal(backward.anchor, 8, mode);
+      assert.equal(backward.cursor, 0, mode);
+      assert.equal(selectedSlice(backward), "one\n\ntwo", mode);
+      assert.equal(mapOffset(sel.anchorNode, sel.anchorOffset), 8, mode);
+      assert.equal(mapOffset(sel.focusNode, sel.focusOffset), 0, mode);
     }
-    const backward = drag("backward", "one\n\ntwo\n", 0, 8, 1, 0);
-    assert.equal(backward.anchor, 8);
-    assert.equal(backward.cursor, 0);
-    assert.equal(selectedSlice(backward), "one\n\ntwo");
-    assert.equal(mapOffset(sel.anchorNode, sel.anchorOffset), 8);
-    assert.equal(mapOffset(sel.focusNode, sel.focusOffset), 0);
 
     for (const cell of cells) {
       const state = drag(`${cell.name} chromium`, cell.doc, cell.cursor, cell.anchor, cell.release, cell.release);
