@@ -1131,7 +1131,7 @@ a.md-link {
 
 /* The bullet font lengthens a disc item past one line box. */
 .md-line.md-li:not(.md-raw)::marker {
-  line-height: 1;
+  line-height: 0;
 }
 
 .md-line.md-ol {
