@@ -1,5 +1,5 @@
 title: Shift+Enter with nothing after the break leaves a backslash that other markdown viewers show
-state: pending review
+state: closed
 type: enhancement
 priority: low
 parent:
