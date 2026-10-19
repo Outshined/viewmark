@@ -1,5 +1,5 @@
 title: Ctrl-click on a link opens it in a new browser tab
-state: new
+state: closed
 type: enhancement
 priority: low
 parent:

@@ -439,6 +439,11 @@ export async function launchFirefox() {
       sessions.delete(id);
       await bidi.send("browsingContext.close", { context: id });
     },
+    // Top-level pages, so a test can see the tab a Ctrl-click opened.
+    async tabs() {
+      const tree = await bidi.send("browsingContext.getTree", { maxDepth: 0 });
+      return (tree.contexts || []).map((item) => ({ context: item.context, url: item.url || "" }));
+    },
     chrome,
     // A right-click at a point in a tab, then the context menu item with this id, as a person
     // chooses Copy Image.

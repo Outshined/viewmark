@@ -23840,3 +23840,162 @@ for (const vimOn of [false, true]) {
     }
   });
 }
+
+// Ticket d6a4htkt. A bare Ctrl-click opens the address. A click without Ctrl
+// still opens only a document, ticket, or comment hash, in this page.
+for (const vimOn of [false, true]) {
+  test(`d6a4htkt: Ctrl-click opens a rendered link in a new tab, vim keys ${vimOn ? "on" : "off"}`, () => {
+    const probe = "http://127.0.0.1/ctrl-click-probe";
+    const plain = "http://127.0.0.1/plain-address";
+    const docHash = "#viewmark/doc/other.md";
+    const ticketHash = "#viewmark/ticket/mp27ndxf";
+    const noteHash = "#viewmark/comment/notes.md/c1";
+    const doc = `Intro.\n\nSee [out](${probe}) [doc](${docHash}) [ticket](${ticketHash}) [note](${noteHash}) [plain](${plain}).\n`;
+    const mounted = mountTicketPage();
+    const restoreLocal = hideLocalStorage();
+    const previousHistory = globalThis.history;
+    const previousLocation = globalThis.location;
+    const previousFilter = globalThis.NodeFilter;
+    globalThis.NodeFilter = previousFilter || { SHOW_TEXT: 4 };
+    const opened = [];
+    globalThis.history = { replaceState() {} };
+    globalThis.location = { origin: "https://viewmark.test", pathname: "/app", search: "", hash: "#viewmark/doc/links.md" };
+    const transport = holdingTransport();
+    const opens = () => transport.sent.filter((message) => message.type === "open").map((message) => message.path);
+    const anchor = (href) => mounted.findAll((node) => node.tagName === "A" && node.href === href)[0];
+    const press = (type, target, extra = {}) => {
+      let prevented = false;
+      const event = {
+        target,
+        clientX: 4,
+        clientY: 4,
+        button: 0,
+        detail: 1,
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false,
+        metaKey: false,
+        ...extra,
+        preventDefault() { prevented = true; },
+      };
+      // A click is a press and a release. The tab is opened once for that press.
+      if (type === "click") mounted.listeners.mousedown({ ...event, preventDefault() {} });
+      mounted.listeners[type](event);
+      return prevented;
+    };
+    try {
+      const view = createEditor(mounted.root, "", 0, transport, retainStorage(vimOn));
+      globalThis.window.open = (url, name, features) => {
+        opened.push({ url, name, features });
+        return {};
+      };
+      transport.deliver({ type: "repos", repos: [{ name: "viewmark", description: "Viewmark" }] });
+      assert.deepEqual(opens(), ["links.md"]);
+      transport.deliver({ type: "file", rev: 1, text: doc, path: "links.md", cursor: 0, anchor: 0 });
+      assert.equal(view.getState().cursor, 0);
+      assert.equal(view.getState().anchor, 0);
+      if (vimOn) {
+        const status = mounted.findAll((node) => node.classList && node.classList.contains("md-vim-status"))[0];
+        assert.equal(status.textContent, "N");
+      }
+      const links = [probe, docHash, ticketHash, noteHash, plain];
+      for (const href of links) assert.ok(anchor(href), href);
+      const out = anchor(probe);
+      const outText = (out.childNodes || []).find((node) => node.nodeType === 3);
+      const outAt = Number(out.dataset.start);
+      assert.ok(outText);
+      assert.ok(outAt > 0);
+      mounted.setSelection({
+        rangeCount: 1,
+        anchorNode: outText,
+        anchorOffset: 1,
+        focusNode: outText,
+        focusOffset: 1,
+        isCollapsed: true,
+        getRangeAt() {
+          return {
+            startContainer: outText,
+            startOffset: 1,
+            endContainer: outText,
+            endOffset: 1,
+            collapsed: true,
+            commonAncestorContainer: outText,
+          };
+        },
+      });
+      mounted.listeners.mousedown({
+        target: out,
+        clientX: 4,
+        clientY: 4,
+        button: 0,
+        detail: 1,
+        ctrlKey: true,
+        shiftKey: false,
+        altKey: false,
+        metaKey: false,
+        preventDefault() {},
+      });
+      mounted.listeners.selectionchange();
+      assert.equal(view.getState().cursor, 0);
+      assert.equal(view.getState().anchor, 0);
+      assert.equal(press("click", out, { ctrlKey: true }), true);
+      mounted.listeners.selectionchange();
+      assert.equal(view.getState().cursor, 0);
+      assert.equal(view.getState().anchor, 0);
+      assert.equal(opened.length, 1);
+      assert.equal(opened[0].url, probe);
+      mounted.setSelection(null);
+      opened.length = 0;
+      for (const href of links) {
+        const before = opened.length;
+        assert.equal(press("click", anchor(href), { ctrlKey: true }), true);
+        assert.equal(opened.length, before + 1);
+        assert.equal(opened.at(-1).url, href);
+        assert.equal(opened.at(-1).name, "_blank");
+        assert.equal(opened.at(-1).features.includes("noopener"), true);
+      }
+      assert.equal(press("auxclick", anchor(probe), { ctrlKey: true }), true);
+      assert.equal(opened.length, links.length);
+      assert.equal(press("auxclick", anchor(probe), { button: 1 }), true);
+      assert.equal(opened.length, links.length);
+      for (const extra of [{ ctrlKey: true, shiftKey: true }, { ctrlKey: true, altKey: true }, { ctrlKey: true, metaKey: true }]) {
+        assert.equal(press("click", anchor(probe), extra), true);
+      }
+      assert.equal(opened.length, links.length);
+      assert.deepEqual(opens(), ["links.md"]);
+      assert.equal(globalThis.location.hash, "#viewmark/doc/links.md");
+      assert.equal(view.getState().cursor, 0);
+      assert.equal(view.getState().anchor, 0);
+      assert.equal(view.getState().doc, doc);
+
+      assert.equal(press("click", anchor(docHash)), true);
+      assert.equal(opens().at(-1), "other.md");
+      assert.equal(globalThis.location.hash, docHash);
+      assert.equal(press("click", anchor(ticketHash)), true);
+      assert.equal(opens().at(-1), "tickets/mp27ndxf.md");
+      assert.equal(globalThis.location.hash, ticketHash);
+      assert.equal(press("click", anchor(noteHash)), true);
+      assert.equal(opens().at(-1), "notes.md");
+      assert.equal(globalThis.location.hash, noteHash);
+      const sent = transport.sent.length;
+      const tabs = opened.length;
+      assert.equal(press("click", anchor(probe)), true);
+      assert.equal(press("click", anchor(plain)), true);
+      assert.equal(opened.length, tabs);
+      assert.equal(opens().at(-1), "notes.md");
+      assert.equal(globalThis.location.hash, noteHash);
+      assert.equal(view.getState().doc, doc);
+      assert.equal(transport.sent.length >= sent, true);
+      view.destroy();
+    } finally {
+      if (previousHistory === undefined) delete globalThis.history;
+      else globalThis.history = previousHistory;
+      if (previousLocation === undefined) delete globalThis.location;
+      else globalThis.location = previousLocation;
+      if (previousFilter === undefined) delete globalThis.NodeFilter;
+      else globalThis.NodeFilter = previousFilter;
+      restoreLocal();
+      mounted.restore();
+    }
+  });
+}
