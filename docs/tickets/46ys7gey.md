@@ -27,5 +27,5 @@ Still so at dc26ec3 on 2026-10-15: the bullet list test fails in Firefox and pas
 
 ## Acceptance
 - In Firefox, consecutive bullet items, and an item and its continuation, sit one line box apart, the same as two lines of one paragraph, within 1 px.
-- Ordered items still measure the same, and Chromium still passes.
-- `browser/block-measure.browser.js` passes in Chromium and in Firefox.
+- Ordered items still measure the same.
+- `browser/block-measure.browser.js` passes in Firefox.

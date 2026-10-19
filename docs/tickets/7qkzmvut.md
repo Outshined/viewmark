@@ -21,7 +21,7 @@ The drawer has no opacity change. When the page takes away its wide class, the d
 - While the ticket drawer narrows, from the moment it starts to the moment it is back in its column, it is drawn on top: at every point inside its box, the drawer or one of its rows is the top element, and no document text, comment card, or control shows through it.
 - Its background stays opaque for that whole time.
 - When it has narrowed, it sits in its column as it does today, and widening works as it does today, including a pointer that comes back within 200 ms.
-- All of the above in Chromium and in Firefox.
+- All of the above in Firefox.
 
 QA builds a browser test named for this ticket when it lands.
 

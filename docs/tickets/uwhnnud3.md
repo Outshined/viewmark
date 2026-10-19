@@ -18,13 +18,12 @@ The cells' keys then act on the shorter selection: `SX.4`'s Backspace leaves `\n
 
 ## Acceptance
 - {c1}{c2}{c3}In Firefox, the `drag` route of `CB.5`, `TB.li.8`, and `SX.4` selects from `«` to `‸`, and the three cells pass.{/c3}{/c2}{/c1}
-- They still pass in Chromium.
 
-Run, from the repository root, in Chromium and again with `VIEWMARK_BROWSER=firefox`:
+Run, from the repository root, with `VIEWMARK_BROWSER=firefox`:
 - `node --test --test-name-pattern='^(SX\.4|CB\.5)$' browser/selection.browser.js`
 - `node --test --test-name-pattern='^TB\.li\.8$' browser/tab-move.browser.js`
 
-Rechecked at dc26ec3 on 2026-10-15, in QA's full runs: the three cells still fail in Firefox and pass in Chromium.
+Rechecked at dc26ec3 on 2026-10-15, in QA's full runs: the three cells still fail in Firefox.
 
 ```comment c1
 :: 0

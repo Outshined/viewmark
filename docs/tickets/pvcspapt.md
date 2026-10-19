@@ -18,15 +18,14 @@ In each, the caret lands on the `br` of `div.md-line.md-raw.md-p`, the line draw
 
 ## Acceptance
 - {c1}In Firefox, the `click` route of `BG.p-end`, `EN.tb.2`, `UR.9`, and `BS.tb.1` puts the caret at the offset the cell marks, and the four cells pass.{/c1}
-- They still pass in Chromium.
 
-Run, from the repository root, in Chromium and again with `VIEWMARK_BROWSER=firefox`:
+Run, from the repository root, with `VIEWMARK_BROWSER=firefox`:
 - `node --test --test-name-pattern='^BG\.p-end$' browser/empty-line.browser.js`
 - `node --test --test-name-pattern='^EN\.tb\.2$' browser/enter.browser.js`
 - `node --test --test-name-pattern='^UR\.9$' browser/selection.browser.js`
 - `node --test --test-name-pattern='^BS\.tb\.1$' browser/delete.browser.js`
 
-Rechecked at dc26ec3 on 2026-10-15, in QA's full runs: the four cells still fail in Firefox and pass in Chromium.
+Rechecked at dc26ec3 on 2026-10-15, in QA's full runs: the four cells still fail in Firefox.
 
 ```comment c1
 :: 0

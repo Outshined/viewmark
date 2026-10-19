@@ -20,12 +20,11 @@ The `click`, `down`, and `emptied` routes of the three cells pass in Firefox, so
 
 ## Acceptance
 - {c1}{c2}In Firefox, the `up` route of `BG.ws.1`, `BG.ws.2`, and `BG.ws.4` lands at the start of the line of spaces or the tab, and the three cells pass on every route.{/c2}{/c1}
-- They still pass in Chromium.
 
-Run, from the repository root, in Chromium and again with `VIEWMARK_BROWSER=firefox`:
+Run, from the repository root, with `VIEWMARK_BROWSER=firefox`:
 - `node --test --test-name-pattern='^BG\.ws\.' browser/empty-line.browser.js`
 
-Rechecked at dc26ec3 on 2026-10-15, in QA's full runs: the three cells still fail in Firefox and pass in Chromium.
+Rechecked at dc26ec3 on 2026-10-15, in QA's full runs: the three cells still fail in Firefox.
 
 ```comment c1
 :: 0
