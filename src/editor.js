@@ -1580,7 +1580,7 @@ function showDiagramSvg(el, source, svg) {
   if (frame.parentElement !== el) el.replaceChildren(frame);
 }
 
-function renderDiagram(atom) {
+function renderDiagram(atom, onFitted) {
   const el = document.createElement("div");
   el.className = atomClassName(["md-atom", "md-diagram"], atom);
   el.contentEditable = "false";
@@ -1607,6 +1607,7 @@ function renderDiagram(atom) {
         return;
       }
       showDiagramSvg(el, source, svg);
+      if (el.isConnected === true && typeof onFitted === "function") onFitted();
     })
     .catch((err) => {
       showDiagramSource(el, source, err);
@@ -1742,9 +1743,9 @@ function takeRawMarker(el, marker) {
   return hang;
 }
 
-function renderBlock(block, repo, onSized) {
+function renderBlock(block, repo, onSized, onDiagramFitted) {
   if (block.type === "table") return renderTable(block);
-  if (block.type === "diagram") return renderDiagram(block);
+  if (block.type === "diagram") return renderDiagram(block, onDiagramFitted);
   if (block.collapsed) return renderCollapsed(block);
   const el = document.createElement("div");
   el.className = ["md-line", ...block.classes].join(" ");
@@ -2720,6 +2721,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // from before that repaint, so scrollIntoView cannot jump the window to the caret.
   let pinScrollHold = null;
   let cornerFrame = null;
+  // Client point of the last move, so a repaint can put the corner back without another move.
+  let pointerAt = null;
   // The first press of a multi-click. Later presses reuse it after a render
   // would have moved the text under the pointer.
   let gestureOffset = null;
@@ -4500,11 +4503,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function layoutAfterPicture() {
     if (closed) return;
     layoutComments();
+    restoreCornerPin();
     const view = typeof window !== "undefined" ? window : null;
     if (!view || typeof view.requestAnimationFrame !== "function" || pictureLayoutFrame) return;
     pictureLayoutFrame = view.requestAnimationFrame(() => {
       pictureLayoutFrame = 0;
-      if (!closed) layoutComments();
+      if (closed) return;
+      layoutComments();
+      restoreCornerPin();
     });
   }
 
@@ -5521,6 +5527,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function placeDraggedPin(pin, point) {
     if (!pin || !point) return;
+    // left and top percentages belong to the dragged marker, not the corner control.
+    if (hasClass(pin, "md-pin-corner")) return;
     if (pin.classList) pin.classList.add("md-comment-pin-dragging");
     setStyle(pin, "left", `${point.x * 100}%`);
     setStyle(pin, "top", `${point.y * 100}%`);
@@ -5577,6 +5585,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const move = pinMove;
     pinMove = null;
     if (!move) return;
+    rememberPointer(event);
     if (event && typeof event.preventDefault === "function") event.preventDefault();
     if (move.pin && move.pin.classList) move.pin.classList.remove("md-comment-pin-dragging");
     if (!pinDragMoved(move, event)) return;
@@ -5649,6 +5658,70 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
     frame.appendChild(button);
     cornerFrame = frame;
+    placeCornerOnPicture(frame);
+  }
+
+  function rememberPointer(event) {
+    if (!event || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
+    pointerAt = { x: event.clientX, y: event.clientY };
+  }
+
+  // Same box pictureFraction uses. Outside that box is not a hit: a fraction clamps, this does not.
+  function pointerOnDrawn(host, clientX, clientY) {
+    const picture = drawnPicture(host);
+    if (!picture || typeof picture.getBoundingClientRect !== "function") return false;
+    const rect = picture.getBoundingClientRect();
+    if (!rect || !(rect.width > 0) || !(rect.height > 0)) return false;
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+    return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  }
+
+  function hostForPointer(clientX, clientY) {
+    let found = null;
+    for (const host of [...elementsWithClass("md-image"), ...elementsWithClass("md-diagram")]) {
+      if (hasClass(host, "md-raw") || (typeof host.closest === "function" && host.closest(".md-raw"))) continue;
+      if (pointerOnDrawn(host, clientX, clientY)) found = host;
+    }
+    return found;
+  }
+
+  // The frame is the diagram block, or the source pre, when that is wider than the drawing.
+  // The corner sits on the drawn picture, not on the frame's right edge.
+  function placeCornerOnPicture(frame) {
+    const button = findClassChild(frame, "md-pin-corner");
+    const picture = drawnPicture(frame && frame.parentElement);
+    if (!button || !picture) return;
+    if (typeof picture.getBoundingClientRect !== "function" || typeof frame.getBoundingClientRect !== "function") return;
+    const pic = picture.getBoundingClientRect();
+    const box = frame.getBoundingClientRect();
+    if (!pic || !box || !(pic.width > 0) || !(pic.height > 0) || !(box.width > 0) || !(box.height > 0)) return;
+    setStyle(button, "top", `${pic.top - box.top}px`);
+    setStyle(button, "right", `${box.right - pic.right}px`);
+    setStyle(button, "left", "auto");
+  }
+
+  function restoreCornerPin() {
+    if (closed || pinDrag || pinMove || !pointerAt) return;
+    const host = hostForPointer(pointerAt.x, pointerAt.y);
+    const frame = host ? pictureFrame(host) : null;
+    if (!frame) {
+      removeCornerPin();
+      return;
+    }
+    if (frame === cornerFrame && findClassChild(frame, "md-pin-corner")) {
+      placeCornerOnPicture(frame);
+      return;
+    }
+    showCornerPin(frame);
+  }
+
+  function restoreCornerAfterDiagram() {
+    restoreCornerPin();
+    const view = typeof window !== "undefined" ? window : null;
+    if (!view || typeof view.requestAnimationFrame !== "function") return;
+    view.requestAnimationFrame(() => {
+      if (!closed) restoreCornerPin();
+    });
   }
 
   function syncCornerPin(event) {
@@ -5656,7 +5729,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const target = event && event.target;
     const node = target && target.nodeType === 1 ? target : target && target.parentElement;
     const frame = frameUnderPointer(node);
-    if (frame && frame === cornerFrame && findClassChild(frame, "md-pin-corner")) return;
+    if (frame && frame === cornerFrame && findClassChild(frame, "md-pin-corner")) {
+      placeCornerOnPicture(frame);
+      return;
+    }
     if (!frame) {
       removeCornerPin();
       return;
@@ -5665,6 +5741,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onRootMouseMove(event) {
+    rememberPointer(event);
     if (pinMove) {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       movePinDrag(event);
@@ -5697,6 +5774,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onDocumentMouseMove(event) {
+    rememberPointer(event);
     const node = event && event.target;
     const inside = node && root.contains(node);
     if (pinMove) {
@@ -6723,6 +6801,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (pictureObserver) pictureObserver.disconnect();
         renderSourceView(caretTop());
         mountViewToggle();
+        restoreCornerPin();
         return;
       }
       if (typedTail != null && typedTail !== state.cursor) typedTail = null;
@@ -6735,7 +6814,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       blocks = blocksForCaret(blocks);
       const flashBlock = refusal && !refusal.name ? tightestBlock(blocks, refusal.offset) : null;
       const nodes = blocks.map((block) => {
-        const el = renderBlock(block, activeRepo, layoutAfterPicture);
+        const el = renderBlock(block, activeRepo, layoutAfterPicture, restoreCornerAfterDiagram);
         adornImageLine(el, block, state.doc);
         hangRawMarker(el, rawListMarker(block), block && block.indent);
         appendLockMarks(el, block);
@@ -6766,6 +6845,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       mountViewToggle();
       if (hoverCommentId && !handleDrag) showCommentHandles(hoverCommentId);
+      restoreCornerPin();
     } finally {
       if (gestureHeld) gestureHold = false;
       syncVimMatchPaint();

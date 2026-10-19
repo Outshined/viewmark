@@ -632,3 +632,43 @@ test("4m94ewju: a pointer over a picture shows a draggable pin in its top right 
     assert.equal(await cornerPin(page, img), 0, `picture ${n + 1}'s pin stays after the pointer leaves`);
   }
 });
+
+test("after pressBalloon drags an existing image pin, a pointer over the picture shows the corner pin", async (t) => {
+  const { hub, page, file } = await setup(t, pinnedImage);
+  const img = await waitFor(() => pictureBox(page), "the picture drawn");
+  const pin = await waitFor(() => page.eval(box(".md-comment-pin")), "the balloon");
+  const to = { x: img.left + 0.4 * img.width, y: img.top + 0.45 * img.height };
+  assert.ok(to.x > img.left && to.x < img.right && to.y > img.top && to.y < img.bottom);
+  const release = await pressBalloon(page, balloonCenter(pin), to);
+  await release();
+  await page.until(async () => {
+    const stored = await pinFractions(hub, file);
+    return Math.abs(Number(stored.x) - 0.4) < 0.02 && Math.abs(Number(stored.y) - 0.45) < 0.02;
+  }, "the moved image pin");
+  const drawn = await waitFor(async () => {
+    const box = await pictureBox(page);
+    if (!box || to.x < box.left || to.x > box.right || to.y < box.top || to.y > box.bottom) return null;
+    return (await cornerPin(page, box)) === 1 ? box : null;
+  }, "the corner pin on the picture");
+  assert.equal(await cornerPin(page, drawn), 1);
+});
+
+test("after pressBalloon drags an existing diagram pin, the corner pin is on the svg once it is drawn", async (t) => {
+  const { hub, page, file } = await setup(t, pinnedDiagram);
+  const svg = await waitFor(() => diagramBox(page), "the diagram drawn", 10000);
+  const pin = await waitFor(() => page.eval(box(".md-comment-pin")), "the balloon");
+  const to = { x: svg.left + 0.55 * svg.width, y: svg.top + 0.33 * svg.height };
+  assert.ok(to.x > svg.left && to.x < svg.right && to.y > svg.top && to.y < svg.bottom);
+  const release = await pressBalloon(page, balloonCenter(pin), to);
+  await release();
+  await page.until(async () => {
+    const stored = await pinFractions(hub, file);
+    return Math.abs(Number(stored.x) - 0.55) < 0.02 && Math.abs(Number(stored.y) - 0.33) < 0.02;
+  }, "the moved diagram pin");
+  const drawn = await waitFor(async () => {
+    const box = await diagramBox(page);
+    if (!box || to.x < box.left || to.x > box.right || to.y < box.top || to.y > box.bottom) return null;
+    return (await cornerPin(page, box)) === 1 ? box : null;
+  }, "the corner pin on the diagram", 10000);
+  assert.equal(await cornerPin(page, drawn), 1);
+});

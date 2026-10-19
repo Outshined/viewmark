@@ -7412,6 +7412,65 @@ test("dragging an image pin stores the release and stops at the picture edge", (
   }
 });
 
+test("a pin move puts the corner on the picture when the frame is wider than the drawing", () => {
+  const mounted = mountSheet();
+  const picture = { left: 100, top: 50, right: 300, bottom: 150, width: 200, height: 100 };
+  const wide = { left: 0, top: 40, right: 800, bottom: 400, width: 800, height: 360 };
+  const note = "```comment c1 0.25,0.5\n:: 0\n@2026-10-16T15:00:00.000Z qa\nA pin.\n```\n";
+  const doc = `Intro.\n\n![box](box.svg)\n${note}End.\n`;
+  const orig = globalThis.document.createElement;
+  globalThis.document.createElement = (tag) => {
+    const el = orig(tag);
+    const base = el.getBoundingClientRect.bind(el);
+    el.getBoundingClientRect = () => {
+      const classes = String(el.className || "").split(/\s+/);
+      if (classes.includes("md-pin-frame")) return wide;
+      const name = String(el.tagName || "").toUpperCase();
+      if (name === "IMG" || name === "SVG") return picture;
+      return base();
+    };
+    return el;
+  };
+  const press = (target, x, y) => {
+    mounted.listeners.mousedown({ target, clientX: x, clientY: y, button: 0, preventDefault() {} });
+  };
+  const move = (target, x, y) => {
+    mounted.listeners.mousemove({ target, clientX: x, clientY: y, button: 0, preventDefault() {} });
+  };
+  const release = (target, x, y) => {
+    mounted.listeners.mouseup({ target, clientX: x, clientY: y, button: 0, preventDefault() {} });
+  };
+  try {
+    const view = createEditor(mounted.root, doc, doc.indexOf("End"));
+    const pin = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-pin"))[0];
+    assert.ok(pin);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-pin-corner")).length, 0);
+    press(pin, 104, 54);
+    move(pin, 200, 100);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-pin-corner")).length, 0);
+    release(pin, 200, 100);
+    assert.match(view.getState().doc, /```comment c1 0\.5,0\.5\n/);
+    const corner = mounted.findAll((node) => node.classList && node.classList.contains("md-pin-corner"))[0];
+    assert.ok(corner);
+    assert.equal(corner.getAttribute("aria-label"), "Comment pin");
+    assert.equal(corner.draggable, true);
+    assert.equal(corner.parentElement.classList.contains("md-pin-frame"), true);
+    assert.equal(corner.styleProps.top, "10px");
+    assert.equal(corner.styleProps.right, "500px");
+    assert.equal(corner.styleProps.left, "auto");
+    assert.equal(corner.styleProps.transform, undefined);
+    assert.equal(corner.classList.contains("md-comment-pin-dragging"), false);
+    const moved = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-pin"))[0];
+    assert.equal(moved.styleProps.left, "50%");
+    assert.equal(moved.styleProps.top, "50%");
+    assert.equal(moved.classList.contains("md-pin-corner"), false);
+    view.destroy();
+  } finally {
+    globalThis.document.createElement = orig;
+    mounted.restore();
+  }
+});
+
 test("an image address keeps a parenthesis inside it", () => {
   const line = "![NAME.png](Plan (draft)/NAME.png)";
   const doc = `${line}\n`;
@@ -7662,6 +7721,89 @@ test("mermaid render replaces source", async () => {
     assert.ok(failedBox.textContent.includes("bad diagram"));
     failed.destroy();
   } finally {
+    mounted.restore();
+    if (previousMermaid === undefined) delete globalThis.mermaid;
+    else globalThis.mermaid = previousMermaid;
+    if (previousParser === undefined) delete globalThis.DOMParser;
+    else globalThis.DOMParser = previousParser;
+  }
+});
+
+test("a diagram pin move puts the corner on the svg after the frame is fitted", async () => {
+  const mounted = mountSheet();
+  const picture = { left: 100, top: 50, right: 300, bottom: 150, width: 200, height: 100 };
+  const wide = { left: 0, top: 40, right: 800, bottom: 400, width: 800, height: 360 };
+  const fitted = { left: 80, top: 40, right: 320, bottom: 160, width: 240, height: 120 };
+  const note = "```comment c1 0.4,0.7\n:: 0\n@2026-10-16T15:00:00.000Z qa\nThis arrow.\n```\n";
+  const doc = `Intro.\n\n\`\`\`mermaid\nflowchart LR\n  A --> B\n\`\`\`\n${note}End.\n`;
+  const previousMermaid = globalThis.mermaid;
+  const previousParser = globalThis.DOMParser;
+  const orig = globalThis.document.createElement;
+  globalThis.document.createElement = (tag) => {
+    const el = orig(tag);
+    const base = el.getBoundingClientRect.bind(el);
+    el.getBoundingClientRect = () => {
+      const classes = String(el.className || "").split(/\s+/);
+      if (classes.includes("md-pin-frame")) return el.styleProps && el.styleProps.width === "240px" ? fitted : wide;
+      const name = String(el.tagName || "").toUpperCase();
+      if (name === "IMG" || name === "SVG") return picture;
+      return base();
+    };
+    return el;
+  };
+  globalThis.mermaid = {
+    initialize() {},
+    render() {
+      return Promise.resolve({ svg: "<svg></svg>" });
+    },
+  };
+  globalThis.DOMParser = class {
+    parseFromString() {
+      const svg = document.createElement("svg");
+      svg.setAttribute("style", "max-width: 240px");
+      return { documentElement: svg };
+    }
+  };
+  const press = (target, x, y) => {
+    mounted.listeners.mousedown({ target, clientX: x, clientY: y, button: 0, preventDefault() {} });
+  };
+  const move = (target, x, y) => {
+    mounted.listeners.mousemove({ target, clientX: x, clientY: y, button: 0, preventDefault() {} });
+  };
+  const release = (target, x, y) => {
+    mounted.listeners.mouseup({ target, clientX: x, clientY: y, button: 0, preventDefault() {} });
+  };
+  try {
+    const view = createEditor(mounted.root, doc, doc.indexOf("End"));
+    await new Promise((resolve) => setImmediate(resolve));
+    const pin = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-pin"))[0];
+    const host = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
+    const frame = host.childNodes.find((node) => node.classList && node.classList.contains("md-pin-frame"));
+    assert.ok(pin);
+    assert.equal(frame.styleProps.width, "240px");
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-pin-corner")).length, 0);
+    press(pin, 104, 54);
+    move(pin, 200, 100);
+    release(pin, 200, 100);
+    assert.match(view.getState().doc, /```comment c1 0\.5,0\.5\n/);
+    await new Promise((resolve) => setImmediate(resolve));
+    const corner = mounted.findAll((node) => node.classList && node.classList.contains("md-pin-corner"))[0];
+    assert.ok(corner);
+    assert.equal(corner.getAttribute("aria-label"), "Comment pin");
+    assert.equal(corner.parentElement.classList.contains("md-pin-frame"), true);
+    assert.equal(corner.parentElement.styleProps.width, "240px");
+    assert.equal(corner.styleProps.top, "10px");
+    assert.equal(corner.styleProps.right, "20px");
+    assert.equal(corner.styleProps.left, "auto");
+    assert.equal(corner.styleProps.transform, undefined);
+    const moved = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-pin"))[0];
+    assert.equal(moved.styleProps.left, "50%");
+    assert.equal(moved.styleProps.top, "50%");
+    const svg = corner.parentElement.childNodes.find((node) => String(node.tagName).toUpperCase() === "SVG" && node !== corner);
+    assert.ok(svg);
+    view.destroy();
+  } finally {
+    globalThis.document.createElement = orig;
     mounted.restore();
     if (previousMermaid === undefined) delete globalThis.mermaid;
     else globalThis.mermaid = previousMermaid;
