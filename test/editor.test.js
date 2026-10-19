@@ -2517,7 +2517,9 @@ test("BG.ws.tab", () => {
 });
 
 // Firefox's line step from the paragraph under a spaces-only or tab-only line
-// reports the paragraph above. The line is one caret, at its start.
+// reports the paragraph above. Replacing the line then fires selectionchange
+// while that landing is still the selection, which is offset 3, the end of
+// the paragraph above. The line is one caret, at its start.
 test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
   const mounted = mountEditor();
   const textNode = (value) => mounted.findAll((node) => node.nodeType === 3 && node.textContent === value)[0];
@@ -2528,6 +2530,24 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
     { name: "BG.ws.2", doc: "one\n\n\t\n\ntwo\n", at: 8, stop: 5 },
     { name: "BG.ws.4", doc: "one\n\n  \n\ntwo\n", at: 9, stop: 5 },
   ];
+  const replace = mounted.root.replaceChildren.bind(mounted.root);
+  // The echo is this arrow's replace. A later document's first paint still
+  // holds the previous selection, and adopting that would move its caret.
+  let arrow = false;
+  mounted.root.replaceChildren = (...nodes) => {
+    if (arrow) {
+      for (const fn of mounted.documentListeners.get("selectionchange") || []) fn();
+    }
+    return replace(...nodes);
+  };
+  const press = (key, extra) => {
+    arrow = true;
+    try {
+      keyDown(mounted, key, extra);
+    } finally {
+      arrow = false;
+    }
+  };
   try {
     for (const item of cases) {
       for (const land of ["end", "start", "gap"]) {
@@ -2543,7 +2563,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
           assert.ok(one, item.name);
           sel.place(one, land === "end" ? one.length : 0);
         });
-        keyDown(mounted, "ArrowUp");
+        press("ArrowUp");
         assert.equal(view.getState().doc, item.doc, item.name);
         assert.equal(view.getState().cursor, item.stop, `${item.name} ${land}`);
         assert.equal(view.getState().anchor, item.stop, `${item.name} ${land}`);
@@ -2557,7 +2577,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
       assert.ok(br);
       sel.place(br, 0);
     });
-    keyDown(mounted, "ArrowUp");
+    press("ArrowUp");
     assert.equal(stayed.getState().cursor, 5);
     assert.equal(stayed.getState().anchor, 5);
     stayed.destroy();
@@ -2567,9 +2587,9 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
       const one = textNode("one");
       sel.place(one, one.length);
     });
-    keyDown(mounted, "ArrowUp");
+    press("ArrowUp");
     assert.equal(leave.getState().cursor, 5);
-    keyDown(mounted, "ArrowUp");
+    press("ArrowUp");
     assert.equal(leave.getState().cursor, 3);
     assert.equal(leave.getState().anchor, 3);
     leave.destroy();
@@ -2579,7 +2599,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
       const one = textNode("one");
       sel.place(one, one.length);
     });
-    keyDown(mounted, "ArrowUp", { shiftKey: true });
+    press("ArrowUp", { shiftKey: true });
     assert.equal(extend.getState().anchor, cases[0].at);
     assert.equal(extend.getState().cursor, 5);
     extend.destroy();
@@ -2590,7 +2610,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
       assert.ok(two);
       sel.place(two, 0);
     });
-    keyDown(mounted, "ArrowDown");
+    press("ArrowDown");
     assert.equal(down.getState().cursor, 5);
     assert.equal(down.getState().anchor, 5);
     down.destroy();
@@ -2600,7 +2620,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
       const one = textNode("one");
       sel.place(one, one.length);
     });
-    keyDown(mounted, "ArrowUp");
+    press("ArrowUp");
     assert.equal(plain.getState().cursor, 3);
     assert.equal(plain.getState().anchor, 3);
     plain.destroy();

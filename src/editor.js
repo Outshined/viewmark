@@ -2695,6 +2695,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // placeCaret and moveCaret write the selection from state. The selectionchange
   // those writes fire must not copy that selection back over state.
   let placingCaret = false;
+  // An arrow decides the offset, then render replaces the lines. selectionchange
+  // from that replace still names the browser landing. Up from the paragraph
+  // under a line of spaces or a tab lands on the paragraph above; adopting that
+  // landing puts the caret back there.
+  let movingCaret = false;
   let strayRestores = 0;
   let goalX = null;
   // The column ArrowUp and ArrowDown keep after a shorter line clamps the caret.
@@ -3774,7 +3779,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onSelectionChange() {
-    if (closed || placingCaret || composing || gestureHold || handleDrag) return;
+    if (closed || placingCaret || movingCaret || composing || gestureHold || handleDrag) return;
     // Chrome reports the selectionchange from placeCaret after placingCaret is
     // already false. That echo still names state, so it must not drop the column.
     const keptX = goalX;
@@ -7567,103 +7572,108 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const caretPoint = pointFor(state.cursor);
     const forward = direction === "forward" || direction === "right";
+    movingCaret = true;
     placingCaret = true;
     let landed = null;
     let hangAffinity = false;
     try {
-      if (caretPoint) sel.collapse(caretPoint.node, caretPoint.offset);
-      sel.modify("move", direction, granularity);
-      if (sel.rangeCount !== 0) {
-        const range = sel.getRangeAt(0);
-        landed = mapOffset(range.startContainer, range.startOffset);
-        // A left press from the slack gap stays on the item offset. The glyph
-        // before that offset is the last marker character.
-        if (granularity === "character" && !forward && landed === beforeCursor && caretPoint && (crossedIntoRawMarker(caretPoint.node, range.startContainer) || inRawGap(caretPoint.node))) {
-          hangAffinity = true;
+      try {
+        if (caretPoint) sel.collapse(caretPoint.node, caretPoint.offset);
+        sel.modify("move", direction, granularity);
+        if (sel.rangeCount !== 0) {
+          const range = sel.getRangeAt(0);
+          landed = mapOffset(range.startContainer, range.startOffset);
+          // A left press from the slack gap stays on the item offset. The glyph
+          // before that offset is the last marker character.
+          if (granularity === "character" && !forward && landed === beforeCursor && caretPoint && (crossedIntoRawMarker(caretPoint.node, range.startContainer) || inRawGap(caretPoint.node))) {
+            hangAffinity = true;
+          }
+        }
+      } finally {
+        placingCaret = false;
+      }
+      if (landed == null) return;
+      let next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
+      // Up and down on a line drawn empty rest on its start.
+      if (granularity === "line") {
+        next = lineCaret(state.doc, next);
+        const held = whitespaceLineStop(state.doc, beforeCursor, next);
+        if (held != null) next = held;
+      }
+      // Firefox's lineboundary stops on the br, which is the hidden tail.
+      if (!sourceMode && granularity === "lineboundary" && forward) next = endBeforeTail(state.doc, next);
+      // Rendered markers have no glyphs, so one press crosses the whole marker.
+      // Source mode draws those bytes, and a caret inside one stays there.
+      if (!sourceMode) {
+        // The browser stops inside a drawn marker, and on the br of a hard break.
+        // A press that did not move still crosses a marker that has no text node
+        // of its own. The start of a spaces-only or tab-only line is where up and
+        // down stop, so that press does not cross it.
+        for (let hop = 0; hop < 4; hop += 1) {
+          if (granularity === "line" && bareBreakNewline(state.doc, next)) break;
+          const skipped = skipHidden(state.doc, next, forward ? "forward" : "backward");
+          if (skipped === next) break;
+          next = skipped;
+        }
+        if (granularity === "character") next = markerEdgeStop(state.doc, beforeCursor, next, forward);
+      }
+      if (next === beforeCursor) {
+        const neighbor = beforeCursor + (forward ? 1 : -1);
+        if (neighbor >= 0 && neighbor <= state.doc.length) {
+          if (granularity === "character" && !sourceMode) {
+            const skipped = skipHidden(state.doc, neighbor, forward ? "forward" : "backward");
+            if (skipped !== neighbor && skipped !== beforeCursor) next = skipped;
+          }
+          // A closed atom has no caret, so modify stays put. The neighbor is the entry.
+          if (next === beforeCursor) {
+            const atoms = plan(state.doc, beforeCursor).atoms;
+            const into = atoms.some((atom) => (forward
+              ? neighbor >= atom.start && neighbor < atom.end
+              : neighbor > atom.start && neighbor <= atom.end));
+            if (into) next = placeMove(state.doc, beforeCursor, neighbor, direction, granularity);
+          }
         }
       }
+      // The DOM step stayed on the marker's end, which is also the item's start.
+      // The caret belongs on the last marker glyph.
+      if (hangAffinity && next === beforeCursor && beforeCursor > 0) next = beforeCursor - 1;
+      // No line is drawn after the final newline until the caret is on it, so the
+      // browser cannot move there. The step is that offset. End stays on the line.
+      if (granularity !== "lineboundary" && forward && next === beforeCursor && state.doc.endsWith("\n")) {
+        const end = lineSpan(state.doc, beforeCursor)[1];
+        if (end === state.doc.length - 1) next = state.doc.length;
+      }
+      // Up on the first line and down on the last land on that line's edge.
+      // goalOffset would pull them back to the column they were already on.
+      const [lineStart, lineEnd] = lineSpan(state.doc, next);
+      const sameLine = lineStart === lineSpan(state.doc, beforeCursor)[0];
+      const lineEdge = sameLine && (forward ? next === lineEnd : next === lineStart);
+      if (granularity === "line" && typeof goalX === "number" && !bareBreakNewline(state.doc, next) && !lineEdge) {
+        next = goalOffset(state.doc, next, goalX);
+      }
+      // Firefox's character step from the line above a rule lands on the line
+      // after it. The rule has no glyphs, so the stop is the rule's start.
+      if (!sourceMode && granularity === "character" && forward) {
+        const rule = ruleLineStop(state.doc, beforeCursor);
+        if (rule != null) next = rule;
+      }
+      if (!sourceMode && granularity === "lineboundary" && forward) next = endBeforeTail(state.doc, next);
+      const anchor = extend ? beforeAnchor : next;
+      state = { ...state, cursor: next, anchor };
+      if (!claimLines(anchor, next)) return;
+      const after = lineIndexAt(state.doc, state.cursor);
+      const drawn = pointFor(next);
+      // modify stops on the marker edge, which is this same offset. The gap's end
+      // is where the next letter is drawn, so the caret has to be placed there.
+      // A zero-width marker's own stop has no box, so the caret is placed on the text.
+      if (before !== after) render();
+      else if (anchor !== next || next !== landed || inRawGap(drawn && drawn.node) || markerCaretUnboxed(state.doc, next)) placeCaret();
+      // The selection is already on this stop, so the caret is not placed again.
+      // Firefox's block is a separate mark and would stay where it was.
+      else syncVimBlockMark();
     } finally {
-      placingCaret = false;
+      movingCaret = false;
     }
-    if (landed == null) return;
-    let next = placeMove(state.doc, beforeCursor, landed, direction, granularity);
-    // Up and down on a line drawn empty rest on its start.
-    if (granularity === "line") {
-      next = lineCaret(state.doc, next);
-      const held = whitespaceLineStop(state.doc, beforeCursor, next);
-      if (held != null) next = held;
-    }
-    // Firefox's lineboundary stops on the br, which is the hidden tail.
-    if (!sourceMode && granularity === "lineboundary" && forward) next = endBeforeTail(state.doc, next);
-    // Rendered markers have no glyphs, so one press crosses the whole marker.
-    // Source mode draws those bytes, and a caret inside one stays there.
-    if (!sourceMode) {
-      // The browser stops inside a drawn marker, and on the br of a hard break.
-      // A press that did not move still crosses a marker that has no text node
-      // of its own. The start of a spaces-only or tab-only line is where up and
-      // down stop, so that press does not cross it.
-      for (let hop = 0; hop < 4; hop += 1) {
-        if (granularity === "line" && bareBreakNewline(state.doc, next)) break;
-        const skipped = skipHidden(state.doc, next, forward ? "forward" : "backward");
-        if (skipped === next) break;
-        next = skipped;
-      }
-      if (granularity === "character") next = markerEdgeStop(state.doc, beforeCursor, next, forward);
-    }
-    if (next === beforeCursor) {
-      const neighbor = beforeCursor + (forward ? 1 : -1);
-      if (neighbor >= 0 && neighbor <= state.doc.length) {
-        if (granularity === "character" && !sourceMode) {
-          const skipped = skipHidden(state.doc, neighbor, forward ? "forward" : "backward");
-          if (skipped !== neighbor && skipped !== beforeCursor) next = skipped;
-        }
-        // A closed atom has no caret, so modify stays put. The neighbor is the entry.
-        if (next === beforeCursor) {
-          const atoms = plan(state.doc, beforeCursor).atoms;
-          const into = atoms.some((atom) => (forward
-            ? neighbor >= atom.start && neighbor < atom.end
-            : neighbor > atom.start && neighbor <= atom.end));
-          if (into) next = placeMove(state.doc, beforeCursor, neighbor, direction, granularity);
-        }
-      }
-    }
-    // The DOM step stayed on the marker's end, which is also the item's start.
-    // The caret belongs on the last marker glyph.
-    if (hangAffinity && next === beforeCursor && beforeCursor > 0) next = beforeCursor - 1;
-    // No line is drawn after the final newline until the caret is on it, so the
-    // browser cannot move there. The step is that offset. End stays on the line.
-    if (granularity !== "lineboundary" && forward && next === beforeCursor && state.doc.endsWith("\n")) {
-      const end = lineSpan(state.doc, beforeCursor)[1];
-      if (end === state.doc.length - 1) next = state.doc.length;
-    }
-    // Up on the first line and down on the last land on that line's edge.
-    // goalOffset would pull them back to the column they were already on.
-    const [lineStart, lineEnd] = lineSpan(state.doc, next);
-    const sameLine = lineStart === lineSpan(state.doc, beforeCursor)[0];
-    const lineEdge = sameLine && (forward ? next === lineEnd : next === lineStart);
-    if (granularity === "line" && typeof goalX === "number" && !bareBreakNewline(state.doc, next) && !lineEdge) {
-      next = goalOffset(state.doc, next, goalX);
-    }
-    // Firefox's character step from the line above a rule lands on the line
-    // after it. The rule has no glyphs, so the stop is the rule's start.
-    if (!sourceMode && granularity === "character" && forward) {
-      const rule = ruleLineStop(state.doc, beforeCursor);
-      if (rule != null) next = rule;
-    }
-    if (!sourceMode && granularity === "lineboundary" && forward) next = endBeforeTail(state.doc, next);
-    const anchor = extend ? beforeAnchor : next;
-    state = { ...state, cursor: next, anchor };
-    if (!claimLines(anchor, next)) return;
-    const after = lineIndexAt(state.doc, state.cursor);
-    const drawn = pointFor(next);
-    // modify stops on the marker edge, which is this same offset. The gap's end
-    // is where the next letter is drawn, so the caret has to be placed there.
-    // A zero-width marker's own stop has no box, so the caret is placed on the text.
-    if (before !== after) render();
-    else if (anchor !== next || next !== landed || inRawGap(drawn && drawn.node) || markerCaretUnboxed(state.doc, next)) placeCaret();
-    // The selection is already on this stop, so the caret is not placed again.
-    // Firefox's block is a separate mark and would stay where it was.
-    else syncVimBlockMark();
   }
 
   // The newline of this line sits in a hidden hard-break tail.
