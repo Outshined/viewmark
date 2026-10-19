@@ -1,5 +1,5 @@
 title: Dragging a comment pin on an image moves it and stops at the edge
-state: in progress
+state: closed
 type: enhancement
 priority: low
 parent:
