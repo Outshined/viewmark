@@ -137,5 +137,4 @@ test("starter docs, project docs, and the README cover vim keys", async () => {
   assert.ok(agents.includes("`src/vim.js`"), "AGENTS.md does not name vim.js");
   assert.ok(agents.includes("`gc` comments the highlight."), "AGENTS.md does not cover gc");
   assert.ok(agents.includes("`gc` on an existing comment makes that thread current."), "AGENTS.md does not cover gc on a comment");
-  assert.ok(agents.includes("Visual `gc` inside a source fence writes the line-range form."), "AGENTS.md does not cover gc in a source fence");
 });

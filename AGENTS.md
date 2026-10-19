@@ -10,7 +10,7 @@ Pass `--user` and `--repo` on every document, comment, and ticket command. The u
 
 Read with `show`. The bytes are on stdout and `rev N` is on stderr.
 
-`edit PATH` reads a unified diff on stdin. `--start LINE:OFFSET --end LINE:OFFSET` limits the slice. Both ends or neither. Lines count from 1. Offset counts from 0 and may equal the line length. The end is exclusive. A reversed pair is ordered. No range means the whole document. Out of range is 400 and writes nothing. `@@` numbers do not place a hunk. A hunk's old lines are the ` ` and `-` texts. No old lines is rejected. No hunks leaves the file as it was and does not open a socket. Zero matches exits 409 and writes nothing. Several matches or an overlap exits 2 and writes nothing. A change outside the slice does not reject the diff. `--rev`, `--find`, and `--replace` are rejected. Each hunk is its own splice, so unchanged text between hunks stays put. Another socket's span is 409 and names that user, and a brace comment that overlaps a fence or a table or splits a comment is 409 and names that. A source fence's comments are the comment fences in the run immediately after it, and the token after the id is the body-line range. An image line or a mermaid fence takes a pin after the id. A range or pin that is not in that run, a pin outside 0 to 1, and a range outside the body lines are 400 and write nothing. A lock is a prose paragraph, a blank line, a heading, a list item, a fence, a table row, or a comment note. A quoted paragraph or item carries `>` on its first line only.
+`edit PATH` reads a unified diff on stdin. `--start LINE:OFFSET --end LINE:OFFSET` limits the slice. Both ends or neither. Lines count from 1. Offset counts from 0 and may equal the line length. The end is exclusive. A reversed pair is ordered. No range means the whole document. Out of range is 400 and writes nothing. `@@` numbers do not place a hunk. A hunk's old lines are the ` ` and `-` texts. No old lines is rejected. No hunks leaves the file as it was and does not open a socket. Zero matches exits 409 and writes nothing. Several matches or an overlap exits 2 and writes nothing. A change outside the slice does not reject the diff. `--rev`, `--find`, and `--replace` are rejected. Each hunk is its own splice, so unchanged text between hunks stays put. Another socket's span is 409 and names that user, and a brace comment that overlaps a fence or a table or splits a comment is 409 and names that. A lock is a prose paragraph, a blank line, a heading, a list item, a fence, a table row, or a comment note. A quoted paragraph or item carries `>` on its first line only.
 
 `create` reads the body from stdin when stdin is not a terminal. `--file PATH` reads that file instead. A path without a markdown suffix is stored with `.md` added. On create, the hub lowercases each segment and turns every other character into a dash, and the command prints that stored path. A directory already stored under another spelling of that segment is reused, and the stored path uses that directory's name. Two such directories is 409. A file name already stored, including a spelling that normalizes to it, is stored as the first free name: the plain stem, then `stem-2` through `stem-99`, before the suffix. Only that file name changes. A stem that already ends in a number is not stripped. The suffix stays, so a taken `notes.markdown` continues at `notes-2.markdown`. When every one of those names is taken, create is 409 and writes nothing. A segment that is empty after that is 400. Move does not normalize a name, and a document already stored keeps its path. A path under `tickets/` is rejected. Use the ticket commands for those files.
 
@@ -22,22 +22,7 @@ printf 'A correction.\n' | viewmark --user ada --repo notes comment reply welcom
 
 `comment reply` takes the thread id and reads the note from stdin. `comment edit` requires `--expect`, the note text after the poster line, addresses one note by id, and uses the same username as the stored author. A mismatched `--expect` exits 409 and writes nothing. Edit a note that already has an author line. `comment list` and `comment show` print what is stored. A note whose text contains a line that is `::` or `::` plus a number is rejected. `--rev` on `comment edit`, `comment add`, and `comment reply` is rejected.
 
-`comment resolve PATH ID` marks that thread resolved. `comment open PATH ID` clears it. `comment delete PATH ID` removes that thread's marks and its fence. The author is note 0's author, the `--user` of the command. Anyone else exits 403 and writes nothing. Already resolved or already open exits 0 and writes nothing. A missing path or thread exits 404. A span held by another socket exits 409 and names that user. `--rev` on those three is rejected. A reply on a ticket document stores the note, the author, and the time, in the same shape as a reply on any other document.
-
-A thread is stored like this:
-
-````
-```comment c1
-:: 0
-@2026-10-05T16:00:00.000Z Ada
-This note is the start of the thread.
-:: 1
-@2026-10-05T16:05:00.000Z Bea
-A reply keeps its own author line.
-```
-````
-
-Note 0 is the original. The next reply is one past the highest id. The prose marks the same id with `{c1}` and `{/c1}`. An id starts with a letter. A resolved thread opens with `comment c1 resolved`. `samples/welcome.md` is a complete example.
+`comment resolve PATH ID` marks that thread resolved. `comment open PATH ID` clears it. `comment delete PATH ID` removes that thread's marks and its fence. The author is note 0's author, the `--user` of the command. Anyone else exits 403 and writes nothing. Already resolved or already open exits 0 and writes nothing. A missing path or thread exits 404. A span held by another socket exits 409 and names that user. `--rev` on those three is rejected.
 
 The markdown is the dialect named in the README. A fence whose info string is exactly `mermaid` is drawn as a diagram. Any other info string is source. Highlighted fences are markup, css, clike, javascript, typescript, python, bash, json, yaml, go, rust, sql, and mermaid. The short names js, ts, py, sh, shell, yml, html, and xml map to those. HTML in the prose is stored as text.
 
@@ -51,11 +36,11 @@ Node is the toolchain. There are no packages. From the repository root, `node --
 
 The page builds the DOM with elements and text nodes. It prevents the browser's own input and applies the change to the string. A newline inserted on top of a newline is published after the following run of newlines. The lock for that edit covers every span the splice touches.
 
-Vim keys are a page mode, matched by `src/vim.js`. The page applies the effect and the hub still decides the edit. `gc` comments the highlight. `gc` on an existing comment makes that thread current. Visual `gc` inside a source fence writes the line-range form. The README and `editing.md` list the keys, including the parts that are not stock vim.
+Vim keys are a page mode, matched by `src/vim.js`. The page applies the effect and the hub still decides the edit. `gc` comments the highlight. `gc` on an existing comment makes that thread current. The README and `editing.md` list the keys, including the parts that are not stock vim.
 
 `index.html` on disk has no build meta. The server inserts `<meta name="viewmark-build">` when it serves the page. A later hello whose build differs from that meta reloads the page.
 
-This repository tracks the program. `docs/` and `state/` are gitignored. A docs directory is registered with the hub. Prism and Mermaid are the files in `vendor/`, loaded by the script tags in `index.html`.
+This repository tracks the program and `docs/`. `state/` is gitignored. A docs directory is registered with the hub. A commit that carries a ticket's work also carries that ticket's file, `docs/tickets/<id>.md`, including the state, body, and notes written for that work. Other documents stay out of that commit. Prism and Mermaid are the files in `vendor/`, loaded by the script tags in `index.html`.
 
 The main branch is `master`. The words for lists of permitted and excluded things are whitelist and blacklist.
 
