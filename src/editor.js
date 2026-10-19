@@ -877,6 +877,22 @@ function hashFromHref(href) {
   return href.slice(index);
 }
 
+// A bare Ctrl-click is a new tab. Shift, Alt, or Meta keeps the page's own click.
+function ctrlOpensTab(event) {
+  return !!event && event.ctrlKey === true && event.shiftKey !== true && event.altKey !== true && event.metaKey !== true;
+}
+
+// The editor cancels a click on an anchor, including inside the editable text,
+// so the browser does not open the address. Ctrl-click has to open it itself.
+function openLinkTab(link) {
+  const href = link && typeof link.href === "string" ? link.href : "";
+  if (!href) return false;
+  const view = typeof globalThis.window === "object" && globalThis.window ? globalThis.window : null;
+  if (!view || typeof view.open !== "function") return false;
+  view.open(href, "_blank", "noopener,noreferrer");
+  return true;
+}
+
 function readLocation() {
   if (typeof globalThis.location === "object" && globalThis.location) return globalThis.location;
   const win = typeof globalThis.window === "object" ? globalThis.window : null;
@@ -2686,6 +2702,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   let pointer = null;
   let didDrag = false;
+  // Set once the Ctrl-click has asked for its tab, so click and auxclick do not each open one.
+  let linkTabOpened = false;
+  // The press is a bare Ctrl-click on a link. selectionchange must not take the caret into that link.
+  let linkTabHold = false;
+  // The caret from before that click. The browser names the link again after the tab opens.
+  let linkTabCaret = null;
+  let linkTabRestores = 0;
   // mouseup detail 1. A double-click's mouseup is not a drag release.
   let plainDrag = false;
   // The selection under the press, kept so a drop can move it after the caret has moved.
@@ -3836,6 +3859,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!holder || !root.contains(holder)) return;
     const mapped = selectionFromDom(sel);
     if (!mapped) return;
+    // A Ctrl-click opens a tab and leaves the caret where it was. Firefox still
+    // reports the link after the caret is put back, which would make that paragraph source.
+    if (linkTabCaret && (mapped.anchor !== linkTabCaret.anchor || mapped.cursor !== linkTabCaret.cursor)) {
+      state = { ...state, anchor: linkTabCaret.anchor, cursor: linkTabCaret.cursor };
+      if (linkTabRestores < 4) {
+        linkTabRestores += 1;
+        placeCaret();
+      }
+      return;
+    }
     if (strayCaret(mapped)) {
       restoreStrayCaret();
       return;
@@ -5573,6 +5606,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const node = event && event.target;
     if (node && root.contains(node)) return;
     finishTextDrag(event, true);
+    scheduleLinkTabSettle();
   }
 
   function appendLockMarks(el, block) {
@@ -7161,6 +7195,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   // file and doc replace the mirror. The view does not paint a local edit.
   function applySnapshot(message) {
+    linkTabCaret = null;
     const previousDoc = state.doc;
     const previousLines = sentLines;
     const text = typeof message.text === "string" ? message.text : "";
@@ -9435,6 +9470,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     strayRestores = 0;
     settleRemoteCaret();
     retainedCaret = null;
+    linkTabCaret = null;
     whitespaceCaret = null;
     if (keyEndsRun(event)) endTypingRunLater();
     gestureHold = false;
@@ -9740,7 +9776,57 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return pressOffset(event);
   }
 
+  function anchorInEditor(event) {
+    const node = event && event.target;
+    const target = node && node.nodeType === 1 ? node : node && node.parentElement;
+    const link = target && typeof target.closest === "function" ? target.closest("a") : null;
+    if (!link || !root.contains(link)) return null;
+    return link;
+  }
+
+  // The editor cancels the click, so the browser's caret still lands on the link.
+  // Holding selectionchange keeps the paragraph rendered. The click puts the caret back.
+  function armLinkTabHold(event) {
+    linkTabHold = false;
+    if (!ctrlOpensTab(event) || !anchorInEditor(event)) return;
+    linkTabHold = true;
+    gestureHold = true;
+    linkTabRestores = 0;
+  }
+
+  function dropLinkTabHold() {
+    linkTabHold = false;
+    gestureHold = false;
+  }
+
+  function releaseLinkTabHold() {
+    if (!linkTabHold) return;
+    linkTabHold = false;
+    gestureHold = false;
+    linkTabCaret = { anchor: state.anchor, cursor: state.cursor };
+    linkTabRestores = 0;
+    placeCaret();
+  }
+
+  // mouseup runs before click. A press that never becomes a click still has to let go.
+  function scheduleLinkTabSettle() {
+    if (!linkTabHold) return;
+    const view = typeof window !== "undefined" ? window : null;
+    if (!view || typeof view.setTimeout !== "function") {
+      if (didDrag) dropLinkTabHold();
+      else releaseLinkTabHold();
+      return;
+    }
+    view.setTimeout(() => {
+      if (!linkTabHold) return;
+      if (didDrag) dropLinkTabHold();
+      else releaseLinkTabHold();
+    }, 0);
+  }
+
   listen("mousedown", (event) => {
+    linkTabOpened = false;
+    linkTabCaret = null;
     endTypingRunLater();
     // A new press is a new gesture. The previous click's retained caret would collapse it.
     remoteCaret = null;
@@ -9758,6 +9844,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       gestureArmed = true;
       return;
     }
+    armLinkTabHold(event);
     // skipHidden snaps a press inside a comment mark to the mark's edge. That
     // edge is the selection boundary when the selection covers the mark, so the
     // unsnapped offset is what says this press is a drag of the selection.
@@ -9901,6 +9988,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return;
     }
     finishTextDrag(event, false);
+    scheduleLinkTabSettle();
   });
 
   // The collapsed blank under the last block has no box, so a press on it lands
@@ -9986,14 +10074,23 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   });
 
+  function followLinkTab(event, link) {
+    if (!linkTabOpened) linkTabOpened = openLinkTab(link);
+    if (linkTabOpened && event && typeof event.preventDefault === "function") event.preventDefault();
+  }
+
   function onEditorClick(event) {
     const armed = gestureArmed;
     gestureArmed = false;
     const stored = armed ? gestureOffset : null;
     const target = event.target.nodeType === 1 ? event.target : event.target.parentElement;
-    const link = target?.closest?.("a");
-    if (link && root.contains(link)) event.preventDefault();
+    const link = anchorInEditor(event);
+    const inDoc = !!link;
+    const tabClick = inDoc && ctrlOpensTab(event);
+    // A drag is not a click on the address. Cancelling it keeps the tab from opening.
+    if (inDoc && (!tabClick || didDrag)) event.preventDefault();
     if (didDrag) {
+      dropLinkTabHold();
       didDrag = false;
       const clickDetail = event && event.detail ? event.detail : 1;
       // Firefox's mouseup does not yield the click offset, and the short DOM
@@ -10014,7 +10111,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       gestureOffset = null;
       return;
     }
-    if (link && root.contains(link)) {
+    if (tabClick) {
+      followLinkTab(event, link);
+      releaseLinkTabHold();
+      return;
+    }
+    dropLinkTabHold();
+    if (inDoc) {
       const parsed = parseHash(hashFromHref(link.href));
       if (parsed) {
         activateHash(parsed);
@@ -10179,8 +10282,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   listen("auxclick", (event) => {
-    const target = event.target.nodeType === 1 ? event.target : event.target.parentElement;
-    if (target?.closest?.("a")) event.preventDefault();
+    const link = anchorInEditor(event);
+    if (!link) return;
+    // Firefox may report Ctrl-click here as well as on click. One of the two opens the tab.
+    if (ctrlOpensTab(event)) {
+      followLinkTab(event, link);
+      releaseLinkTabHold();
+      return;
+    }
+    dropLinkTabHold();
+    event.preventDefault();
   });
 
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
