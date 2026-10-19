@@ -998,6 +998,24 @@ function bareBreakNewline(doc, offset) {
   return lineCaret(doc, offset) === offset && offset < doc.length && lineCaret(doc, offset + 1) === offset;
 }
 
+// The nearest line above the caret that is not blank. Firefox's line step
+// skips a line of only spaces or a tab and then keeps that selection, so up
+// stops on the line's start and does not call modify. A blank is not a stop.
+function whitespaceLineAbove(doc, offset) {
+  const text = typeof doc === "string" ? doc : "";
+  if (!Number.isFinite(offset)) return null;
+  const [start] = lineSpan(text, Math.min(Math.max(offset, 0), text.length));
+  let at = start - 1;
+  while (at >= 0) {
+    const [lineStart, lineEnd] = lineSpan(text, at);
+    const body = text.slice(lineStart, lineEnd);
+    if (body.length > 0) return /^[ \t]+$/.test(body) ? lineStart : null;
+    if (lineStart <= 0) break;
+    at = lineStart - 1;
+  }
+  return null;
+}
+
 // Firefox's line step skips a line of only spaces or a tab and reports the
 // paragraph above it. That line is drawn empty, so the step stops on its start.
 function whitespaceLineStop(doc, from, to) {
@@ -7622,21 +7640,30 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const caretPoint = pointFor(state.cursor);
     const forward = direction === "forward" || direction === "right";
+    // modify's selection is the one Firefox keeps. A backward line step onto a
+    // spaces or tab line never asks for it; the stop is that line's start.
+    const above = !extend && granularity === "line" && direction === "backward"
+      ? whitespaceLineAbove(state.doc, beforeCursor)
+      : null;
     movingCaret = true;
     placingCaret = true;
     let landed = null;
     let hangAffinity = false;
     try {
       try {
-        if (caretPoint) sel.collapse(caretPoint.node, caretPoint.offset);
-        sel.modify("move", direction, granularity);
-        if (sel.rangeCount !== 0) {
-          const range = sel.getRangeAt(0);
-          landed = mapOffset(range.startContainer, range.startOffset);
-          // A left press from the slack gap stays on the item offset. The glyph
-          // before that offset is the last marker character.
-          if (granularity === "character" && !forward && landed === beforeCursor && caretPoint && (crossedIntoRawMarker(caretPoint.node, range.startContainer) || inRawGap(caretPoint.node))) {
-            hangAffinity = true;
+        if (above != null) {
+          landed = above;
+        } else {
+          if (caretPoint) sel.collapse(caretPoint.node, caretPoint.offset);
+          sel.modify("move", direction, granularity);
+          if (sel.rangeCount !== 0) {
+            const range = sel.getRangeAt(0);
+            landed = mapOffset(range.startContainer, range.startOffset);
+            // A left press from the slack gap stays on the item offset. The glyph
+            // before that offset is the last marker character.
+            if (granularity === "character" && !forward && landed === beforeCursor && caretPoint && (crossedIntoRawMarker(caretPoint.node, range.startContainer) || inRawGap(caretPoint.node))) {
+              hangAffinity = true;
+            }
           }
         }
       } finally {
@@ -7648,10 +7675,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       let heldWhitespace = false;
       if (granularity === "line") {
         next = lineCaret(state.doc, next);
-        const held = whitespaceLineStop(state.doc, beforeCursor, next);
-        if (held != null) {
-          next = held;
+        if (above != null) {
+          next = above;
           heldWhitespace = true;
+        } else {
+          const held = whitespaceLineStop(state.doc, beforeCursor, next);
+          if (held != null) {
+            next = held;
+            heldWhitespace = true;
+          }
         }
       }
       // Firefox's lineboundary stops on the br, which is the hidden tail.

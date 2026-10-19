@@ -2567,12 +2567,17 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
     }
     return replace(...nodes);
   };
+  let duringKey = false;
+  let modifyDuringKey = 0;
   const press = (key, extra) => {
     arrow = true;
+    duringKey = true;
+    modifyDuringKey = 0;
     try {
       keyDown(mounted, key, extra);
     } finally {
       arrow = false;
+      duringKey = false;
     }
     // The step's nodes were replaced. Place that landing on the lines still
     // drawn, then deliver the selectionchange. movingCaret is already false.
@@ -2601,6 +2606,11 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
       if (range && (brTarget(range.startContainer) || brTarget(range.endContainer))) return;
       addRange(range);
     };
+    const modify = sel.modify;
+    sel.modify = (...args) => {
+      if (duringKey) modifyDuringKey += 1;
+      return modify.apply(sel, args);
+    };
     return sel;
   };
   try {
@@ -2619,6 +2629,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
           sel.place(one, land === "end" ? one.length : 0);
         });
         press("ArrowUp");
+        assert.equal(modifyDuringKey, 0, `${item.name} ${land} modify`);
         const stepped = globalThis.window.getSelection();
         assert.notEqual(stepped.focusNode, textNode("one"), `${item.name} ${land} node`);
         assert.equal(mapOffset(stepped.focusNode, stepped.focusOffset), item.stop, `${item.name} ${land} node`);
@@ -2663,6 +2674,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
       sel.place(br, 0);
     });
     press("ArrowUp");
+    assert.equal(modifyDuringKey, 0);
     assert.equal(stayed.getState().cursor, 5);
     assert.equal(stayed.getState().anchor, 5);
     stayed.destroy();
@@ -2673,8 +2685,10 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
       sel.place(one, one.length);
     });
     press("ArrowUp");
+    assert.equal(modifyDuringKey, 0);
     assert.equal(leave.getState().cursor, 5);
     press("ArrowUp");
+    assert.equal(modifyDuringKey, 1);
     assert.equal(leave.getState().cursor, 3);
     assert.equal(leave.getState().anchor, 3);
     leave.destroy();
@@ -2685,6 +2699,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
       sel.place(one, one.length);
     });
     press("ArrowUp", { shiftKey: true });
+    assert.equal(modifyDuringKey, 1);
     assert.equal(extend.getState().anchor, cases[0].at);
     assert.equal(extend.getState().cursor, 5);
     extend.destroy();
@@ -2696,6 +2711,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
       sel.place(two, 0);
     });
     press("ArrowDown");
+    assert.equal(modifyDuringKey, 1);
     assert.equal(down.getState().cursor, 5);
     assert.equal(down.getState().anchor, 5);
     down.destroy();
@@ -2706,6 +2722,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
       sel.place(one, one.length);
     });
     press("ArrowUp");
+    assert.equal(modifyDuringKey, 1);
     assert.equal(plain.getState().cursor, 3);
     assert.equal(plain.getState().anchor, 3);
     plain.destroy();
