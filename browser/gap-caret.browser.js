@@ -156,6 +156,7 @@ test("6a2t6dy5 the caret skips the blank under a fence, a table, a diagram, an i
     "| 1 | 2 |",
     "",
     "```mermaid",
+    "graph TD",
     "A-->B",
     "```",
     "",
