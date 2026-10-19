@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { vimKey, vimMatchStarts, vimSubmit, VIM_SEARCH_LIMIT } from "../src/vim.js";
-import { backspace, codeSpanAt, createState, deleteForward, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
+import { backspace, codeSpanAt, commentStorageReason, createState, deleteForward, insert, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
 
 const CARET = "‸";
 
@@ -3412,6 +3412,47 @@ test("dd past the last comment fence deletes nothing and leaves the caret", () =
   assert.equal(cut.doc.includes("After"), false);
   assert.equal(cut.doc.includes("```comment c1 resolved"), true);
   assert.notEqual(cut.cursor, 0);
+});
+
+// The hub stores insert(), which also drops an empty brace. dd of the paragraph
+// that holds the marks is not that drop: the fences and the blank between them stay.
+test("8r57d6f2 dd deletes the paragraph and leaves both comment fences", () => {
+  const thread = (id, text) => `\`\`\`comment ${id} resolved\n:: 0\n@2026-10-16T12:00:00.000Z qa\n${text}\n\`\`\`\n`;
+  const fences = `${thread("c1", "First thread.")}\n${thread("c2", "Second thread.")}`;
+  const text = `Para {c1}one{/c1}.\n\nSecond {c2}paragraph{/c2}.\n\n${fences}`;
+  let doc = text;
+  let cursor = text.indexOf("Second") + 2;
+  for (let n = 0; n < 4; n += 1) {
+    const out = run(`${doc.slice(0, cursor)}‸${doc.slice(cursor)}`, ["d", "d"]);
+    const step = out.steps.find((item) => item.effect && item.effect.type === "splice");
+    let stored = doc;
+    if (step) {
+      const effect = step.effect;
+      const next = insert(createState(doc, effect.to, effect.from), effect.text, false, false, true);
+      const changes = next && Array.isArray(next.changes) ? next.changes : [];
+      const refused = !next || next.refused || commentStorageReason(doc, changes);
+      if (!refused && next.doc !== doc) {
+        stored = next.doc;
+        cursor = changes.length === 1 && Number.isInteger(effect.caret)
+          ? Math.max(0, Math.min(stored.length, effect.caret))
+          : next.cursor;
+      } else {
+        cursor = out.cursor;
+      }
+    } else {
+      cursor = out.cursor;
+    }
+    const tail = stored.slice(stored.indexOf("```comment"));
+    assert.equal(tail.startsWith(fences), true, `dd number ${n + 1}: ${JSON.stringify(tail)}`);
+    if (n === 0) {
+      const prose = stored.slice(0, stored.indexOf("```comment"));
+      assert.equal(prose.includes("Second"), false);
+      assert.equal(prose.includes("paragraph"), false);
+      assert.equal(prose.includes("Para {c1}one{/c1}."), true);
+      assert.equal(tail, fences);
+    }
+    doc = stored;
+  }
 });
 
 test("ctrl-o none clears once", () => {

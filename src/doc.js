@@ -1077,8 +1077,9 @@ function cleanupComments(doc, cursor) {
       dropped.add(span.id);
     }
   }
-  // Both marks gone means the span was removed whole, so the thread goes with
-  // it. A mark that is still in the prose is half a comment, and that edit is refused.
+  // An empty interior drops the thread. Marks removed with the surrounding
+  // prose are not an empty interior, so that fence stays. A mark still in the
+  // prose is half a comment, and that edit is refused.
   let broken = false;
   const tokens = commentTokens(doc);
   for (const fence of fences) {
@@ -1089,8 +1090,11 @@ function cleanupComments(doc, cursor) {
       if (!empty.has(fence.id) && tokens.some((token) => token.id === fence.id)) broken = true;
       continue;
     }
-    dropped.add(fence.id);
-    if (!empty.has(fence.id) && tokens.some((token) => token.id === fence.id)) broken = true;
+    if (empty.has(fence.id)) {
+      dropped.add(fence.id);
+      continue;
+    }
+    if (tokens.some((token) => token.id === fence.id)) broken = true;
   }
   if (dropped.size > 0) {
     const hidden = hiddenFenceRanges(doc);
@@ -1103,8 +1107,8 @@ function cleanupComments(doc, cursor) {
     }
   }
   const merged = mergeRanges(ranges);
-  if (merged.length === 0) return { doc, cursor, changes: [], broken: false };
   if (broken) return { doc, cursor, changes: [], broken: true };
+  if (merged.length === 0) return { doc, cursor, changes: [], broken: false };
   let next = doc;
   let nextCursor = cursor;
   const changes = [];
@@ -4770,13 +4774,18 @@ function lineAnchorFits(thread) {
   return start >= 1 && end >= start && end <= thread.bodyCount;
 }
 
-// Brace cleanup and a line range that no longer fits delete the fence in one
-// piece. A pin, or a fence deleted around text that is still there, is not that.
+// A line range that no longer fits deletes that fence. A brace fence goes only
+// with an empty interior. A pin does not, and neither does a fence whose text
+// is still marked. Deleting the marked prose is not an empty interior.
 function fenceRemovalAllowed(before, thread, from, to, inserted, originallyMarked) {
   if (inserted !== "" || from !== thread.start || to !== thread.end) return false;
   if (thread.pin) return false;
   if (thread.lines) return !lineAnchorFits(thread);
-  return originallyMarked.has(thread.id);
+  if (!originallyMarked.has(thread.id)) return false;
+  for (const span of findSpans(before)) {
+    if (span.id === thread.id && span.interiorStart === span.interiorEnd) return true;
+  }
+  return false;
 }
 
 function blankBetween(doc, left, right) {
