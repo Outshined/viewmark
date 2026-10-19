@@ -1,4 +1,6 @@
 # Images
+![349skj48.png](samples/images/349skj48.png)
+
 A picture stays out of the document string. The document holds an image line. The bytes live in a directory named for that document. The hub writes both. The page and a script read the bytes back from this same hub.
 
 The image line is markdown, and the page draws it:
