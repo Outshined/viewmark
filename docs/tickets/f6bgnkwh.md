@@ -1,5 +1,5 @@
 title: With no repo chosen, New file takes a name and creates nothing, with no message
-state: pending review
+state: closed
 type: bug
 priority: low
 parent:
