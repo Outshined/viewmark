@@ -97,10 +97,12 @@ async function settle(page, doc) {
   await page.quiet();
 }
 
+// The caret starts at offset 0. A mermaid fence stays source until the caret
+// leaves it, so place first or the svg never appears.
 async function openAt(page, file, doc, offset) {
   await page.open(file);
-  await settle(page, doc);
   await place(page, doc, offset);
+  await settle(page, doc);
 }
 
 function clickOf(doc, needle) {
