@@ -3499,6 +3499,17 @@ test("BG.p-end", () => {
     assert.equal(onEdge.getState().anchor, blank);
     onEdge.destroy();
 
+    // Outside the 2px edge, still short of the padding click. That press is the
+    // blank, not the offset after the final newline.
+    const pastEdge = pressBlank(mounted, doc, 0, 56, () => null, edge);
+    assert.equal(pastEdge.getState().cursor, blank);
+    assert.equal(pastEdge.getState().anchor, blank);
+    assert.equal(editorLines(mounted).some((node) => node.classList.contains("md-caret-row")), false);
+    mounted.listeners.beforeinput({ inputType: "deleteContentBackward", preventDefault() {} });
+    assert.equal(pastEdge.getState().doc, "one\n");
+    assert.equal(pastEdge.getState().cursor, 3);
+    pastEdge.destroy();
+
     const below = pressBlank(mounted, doc, 0, 80, () => null, edge);
     assert.equal(below.getState().cursor, doc.length);
     assert.equal(below.getState().anchor, doc.length);
@@ -3512,6 +3523,10 @@ test("BG.p-end", () => {
     assert.equal(under.getState().cursor, paragraph.length);
     assert.equal(under.getState().anchor, paragraph.length);
     under.destroy();
+    const underLine = pressBlank(mounted, paragraph, 0, 56, () => null, () => ({ top: 8, bottom: 40 }));
+    assert.equal(underLine.getState().cursor, paragraph.length);
+    assert.equal(underLine.getState().anchor, paragraph.length);
+    underLine.destroy();
 
     const split = "one\n\ntwo\n";
     const two = () => mounted.findAll((node) => node.nodeType === 3 && node.textContent === "two")[0];
@@ -3550,6 +3565,14 @@ test("EN.tb.2 UR.9", () => {
     mounted.listeners.beforeinput({ inputType: "insertText", data: "|", preventDefault() {} });
     assert.equal(gap.getState().doc, "| a |\n| --- |\n| 1 |\n|\n");
     gap.destroy();
+
+    const pastEdge = pressBlank(mounted, doc, 0, 56, () => null, edge);
+    assert.equal(pastEdge.getState().cursor, blank);
+    assert.equal(pastEdge.getState().anchor, blank);
+    assert.equal(editorLines(mounted).some((node) => node.dataset && node.dataset.start === String(doc.length)), false);
+    mounted.listeners.beforeinput({ inputType: "insertText", data: "|", preventDefault() {} });
+    assert.equal(pastEdge.getState().doc, "| a |\n| --- |\n| 1 |\n|\n");
+    pastEdge.destroy();
 
     const atEnd = pressBlank(mounted, doc, doc.length, 42, () => {
       const row = editorLines(mounted).find((node) => node.classList.contains("md-caret-row"));
@@ -3597,6 +3620,12 @@ test("BS.tb.1 click", () => {
     assert.equal(gap.getState().anchor, blank);
     assert.equal(editorLines(mounted).some((node) => node.classList.contains("md-caret-row")), false);
     gap.destroy();
+
+    const pastEdge = pressBlank(mounted, doc, 0, 56, () => null, edge);
+    assert.equal(pastEdge.getState().cursor, blank);
+    assert.equal(pastEdge.getState().anchor, blank);
+    assert.equal(editorLines(mounted).some((node) => node.classList.contains("md-caret-row")), false);
+    pastEdge.destroy();
 
     const below = pressBlank(mounted, doc, 0, 80, () => null, edge);
     assert.equal(below.getState().cursor, doc.length);
