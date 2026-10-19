@@ -1524,6 +1524,11 @@ a.md-link {
   z-index: 2;
 }
 
+.md-comment-pin.md-comment-pin-dragging {
+  pointer-events: none;
+  cursor: grabbing;
+}
+
 .md-comment.md-comment-pin {
   background: transparent;
   color: #e7e2d8;

@@ -1130,6 +1130,57 @@ test("T-comment", async () => {
   });
 });
 
+test("moving an image pin stores the fractions and keeps the notes", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const text = "![box](box.svg)\n```comment c1 0.25,0.5\n:: 0\n@2026-10-16T15:00:00.000Z qa\nA pin.\n:: 1\n@2026-10-16T15:01:00.000Z qa\nStill here.\n```\nEnd.\n";
+    await fs.writeFile(path.join(dir, "a.md"), text);
+    const a = await hello(port, "A");
+    let rev = (await openDoc(a, "A", "a.md")).rev;
+    const end = text.indexOf("End");
+    await syncLock(a, [], "A", "a.md", end, rev, end);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev,
+      op: "comment.pin.move",
+      id: "c1",
+      x: 0.62,
+      y: 0.18,
+      anchor: end,
+      cursor: end,
+    });
+    let doc = await takeDoc(a);
+    rev = doc.rev;
+    assert.match(doc.text, /```comment c1 0\.62,0\.18\n/);
+    assert.match(doc.text, /A pin\.\n/);
+    assert.match(doc.text, /Still here\.\n/);
+    assert.equal(doc.text[doc.cursor], "E");
+    assert.equal(await readDoc(dir, "a.md"), doc.text);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "a.md",
+      rev,
+      op: "comment.pin.move",
+      id: "c1",
+      x: 1.2,
+      y: 0.2,
+      anchor: doc.cursor,
+      cursor: doc.cursor,
+    });
+    const err = await a.next((msg) => msg.type === "error" || msg.type === "doc" || msg.type === "noop");
+    assert.equal(err.status, 400);
+    assert.equal(err.reason, "pin is out of range");
+    assert.equal(await readDoc(dir, "a.md"), doc.text);
+    a.send({ type: "undo", username: "A", path: "a.md", rev });
+    const back = await takeDoc(a);
+    assert.match(back.text, /```comment c1 0\.25,0\.5\n/);
+    assert.match(back.text, /Still here\.\n/);
+    a.ws.close();
+  });
+});
+
 test("comment.reply and comment.edit keep a caret that is not at the top", async () => {
   await withDocs(async ({ port, dir }) => {
     const rel = "long.md";

@@ -7338,6 +7338,80 @@ test("a pointer over a picture shows that picture's pin, and a drop uses the pic
   }
 });
 
+test("dragging an image pin stores the release and stops at the picture edge", () => {
+  const mounted = mountSheet();
+  const note = "```comment c1 0.25,0.5\n:: 0\n@2026-10-16T15:00:00.000Z qa\nA pin.\n:: 1\n@2026-10-16T15:01:00.000Z qa\nStill here.\n```\n";
+  const other = "```comment c2 0.8,0.2\n:: 0\n@2026-10-16T15:02:00.000Z qa\nOther.\n```\n";
+  const doc = `Intro.\n\n![box](box.svg)\n${note}${other}End.\n`;
+  const pins = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-pin"));
+  const pinById = (id) => pins().find((node) => node.dataset && node.dataset.comment === id);
+  const press = (target, x, y) => {
+    mounted.listeners.mousedown({ target, clientX: x, clientY: y, button: 0, preventDefault() {} });
+  };
+  const move = (target, x, y) => {
+    mounted.listeners.mousemove({ target, clientX: x, clientY: y, button: 0, preventDefault() {} });
+  };
+  const release = (target, x, y) => {
+    mounted.listeners.mouseup({ target, clientX: x, clientY: y, button: 0, preventDefault() {} });
+  };
+  try {
+    const view = createEditor(mounted.root, doc, doc.indexOf("End"));
+    const img = mounted.findAll((node) => node.tagName === "IMG")[0];
+    img.getBoundingClientRect = () => ({ left: 0, top: 0, right: 20, bottom: 10, width: 20, height: 10 });
+    const pin = pinById("c1");
+    assert.equal(pin.styleProps.left, "25%");
+    assert.equal(pin.styleProps.top, "50%");
+    press(pin, 2, 2);
+    move(pin, 3, 3);
+    release(pin, 3, 3);
+    mounted.listeners.click({ target: pin, clientX: 3, clientY: 3, detail: 1, button: 0, preventDefault() {} });
+    assert.equal(view.getState().doc, doc);
+    const card = mounted.aside.childNodes.find((node) => node.classList && node.classList.contains("md-comment-current"));
+    assert.equal(card && card.dataset.comment, "c1");
+    assert.equal(card.textContent.includes("A pin."), true);
+
+    press(pinById("c1"), 0, 0);
+    move(img, 10, 4);
+    assert.equal(pinById("c1").classList.contains("md-comment-pin-dragging"), true);
+    assert.equal(pinById("c1").styleProps.left, "50%");
+    assert.equal(pinById("c1").styleProps.top, "40%");
+    assert.equal(view.getState().doc, doc);
+    release(img, 10, 4);
+    mounted.listeners.click({ target: img, clientX: 10, clientY: 4, detail: 1, button: 0, preventDefault() {} });
+    const placed = view.getState();
+    assert.match(placed.doc, /```comment c1 0\.5,0\.4\n/);
+    assert.equal(placed.doc.includes("A pin.\n"), true);
+    assert.equal(placed.doc.includes("Still here.\n"), true);
+    assert.equal(placed.doc.includes("```comment c2 0.8,0.2\n"), true);
+    assert.equal(placed.doc.includes("Other.\n"), true);
+    assert.equal(placed.doc.includes("![box](box.svg)\n"), true);
+    assert.equal(placed.doc[placed.cursor], "E");
+    assert.equal(mounted.findAll((node) => node.tagName === "IMG").length, 1);
+    assert.equal(pinById("c1").styleProps.left, "50%");
+    assert.equal(pinById("c1").styleProps.top, "40%");
+    assert.equal(pinById("c2").styleProps.left, "80%");
+    assert.equal(pinById("c2").styleProps.top, "20%");
+
+    const held = pinById("c1");
+    press(held, 10, 4);
+    move(img, 50, -4);
+    assert.equal(held.styleProps.left, "100%");
+    assert.equal(held.styleProps.top, "0%");
+    release(img, 50, -4);
+    const edged = view.getState();
+    assert.match(edged.doc, /```comment c1 1,0\n/);
+    assert.equal(edged.doc.includes("Still here.\n"), true);
+    assert.equal(edged.doc.includes("```comment c2 0.8,0.2\n"), true);
+    assert.equal(edged.doc[edged.cursor], "E");
+    assert.equal(mounted.findAll((node) => node.tagName === "IMG").length, 1);
+    assert.equal(pinById("c1").styleProps.left, "100%");
+    assert.equal(pinById("c1").styleProps.top, "0%");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("an image address keeps a parenthesis inside it", () => {
   const line = "![NAME.png](Plan (draft)/NAME.png)";
   const doc = `${line}\n`;

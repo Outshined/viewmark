@@ -1372,6 +1372,32 @@ export function addPinComment(doc, offset, x, y) {
   };
 }
 
+// The opener's coordinates change. The id, the notes, and resolved stay.
+export function movePinComment(state, id, x, y) {
+  const text = state && typeof state.doc === "string" ? state.doc : "";
+  const px = typeof x === "number" ? x : NaN;
+  const py = typeof y === "number" ? y : NaN;
+  if (!(px >= 0 && px <= 1 && py >= 0 && py <= 1)) return { refused: 400, reason: "pin is out of range" };
+  if (typeof id !== "string" || id === "") return { refused: 400, reason: "not in the run" };
+  const fence = fenceContentRanges(text).find((item) => item.lang === "comment" && item.commentId === id);
+  if (!fence || !fence.anchor || fence.anchor.kind !== "pin") return { refused: 400, reason: "not in the run" };
+  const host = hostAt(text, fence.start, id);
+  if (!host || (host.kind !== "image" && host.kind !== "diagram")) return { refused: 400, reason: "not in the run" };
+  const open = lineSpans(text)[fence.openIndex];
+  if (!open) return { refused: 400, reason: "not in the run" };
+  const nextHead = commentHead(id, { kind: "pin", x: px, y: py }, fence.resolved === true);
+  if (open.text === nextHead) return state;
+  const doc = text.slice(0, open.start) + nextHead + text.slice(open.end);
+  return {
+    doc,
+    cursor: shiftReplace(state.cursor, open.start, open.end, nextHead.length),
+    anchor: shiftReplace(state.anchor, open.start, open.end, nextHead.length),
+    undo: state.undo.concat([{ doc: state.doc, cursor: state.cursor, anchor: state.anchor }]),
+    redo: [],
+    changes: [{ from: open.start, to: open.end, inserted: nextHead, removed: open.text }],
+  };
+}
+
 // A recognized range or pin that does not follow its block, a pin outside 0 to 1,
 // or a range outside the body lines. Prose fences are not a fault.
 export function commentAnchorReason(doc) {

@@ -2715,6 +2715,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let dragRange = null;
   let dragSource = null;
   let pinDrag = false;
+  let pinMove = null;
   let cornerFrame = null;
   // The first press of a multi-click. Later presses reuse it after a render
   // would have moved the text under the pointer.
@@ -2897,6 +2898,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
   }
 
+  // The fence follows the picture, which may sit above the caret. The lock
+  // starts at the earlier of the two and still runs through the end.
+  function lockMovedPin(id) {
+    const thread = commentThreads(state.doc).find((item) => item && item.id === id && item.pin);
+    const from = thread
+      ? Math.min(state.anchor, state.cursor, thread.start)
+      : Math.min(state.anchor, state.cursor);
+    emit({ type: "lock", anchor: from, cursor: state.doc.length });
+  }
+
   function editHeld() {
     return resumeAfterFile || conflictWaiters.includes("edit");
   }
@@ -3050,7 +3061,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function editRecordsUndo(body) {
     const op = body && body.op;
     return op === "insert" || op === "backspace" || op === "delete" || op === "move"
-      || op === "comment.add" || op === "comment.pin" || op === "comment.save" || op === "comment.delete" || op === "comment.resolve";
+      || op === "comment.add" || op === "comment.pin" || op === "comment.pin.move" || op === "comment.save" || op === "comment.delete" || op === "comment.resolve";
   }
 
   function queuePartial(partial, splicePrior, holdForFile) {
@@ -3114,8 +3125,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         vimGroupCont = false;
       }
     }
-    if (body.op === "comment.add" || body.op === "comment.pin" || body.op === "comment.delete" || body.op === "comment.resolve") {
-      lockThroughEnd();
+    if (body.op === "comment.add" || body.op === "comment.pin" || body.op === "comment.pin.move" || body.op === "comment.delete" || body.op === "comment.resolve") {
+      if (body.op === "comment.pin.move") lockMovedPin(body.id);
+      else lockThroughEnd();
     }
     const message = {
       type: "edit",
@@ -5478,6 +5490,92 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return true;
   }
 
+  // The tip is this fraction of the picture. Past the picture, the tip stays on the edge.
+  function pictureFraction(host, clientX, clientY) {
+    const picture = drawnPicture(host);
+    if (!picture || typeof picture.getBoundingClientRect !== "function") return null;
+    const rect = picture.getBoundingClientRect();
+    if (!rect || !(rect.width > 0) || !(rect.height > 0)) return null;
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+    const x = (clientX - rect.left) / rect.width;
+    const y = (clientY - rect.top) / rect.height;
+    return {
+      x: Math.min(1, Math.max(0, x)),
+      y: Math.min(1, Math.max(0, y)),
+    };
+  }
+
+  function pinDragMoved(move, event) {
+    if (!move || !event || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return false;
+    if (!Number.isFinite(move.x) || !Number.isFinite(move.y)) return true;
+    return Math.abs(event.clientX - move.x) > 3 || Math.abs(event.clientY - move.y) > 3;
+  }
+
+  function placeDraggedPin(pin, point) {
+    if (!pin || !point) return;
+    if (pin.classList) pin.classList.add("md-comment-pin-dragging");
+    setStyle(pin, "left", `${point.x * 100}%`);
+    setStyle(pin, "top", `${point.y * 100}%`);
+  }
+
+  function movePinDrag(event) {
+    if (!pinMove || !pinDragMoved(pinMove, event)) return;
+    const point = pictureFraction(pinMove.host, event.clientX, event.clientY);
+    if (!point) return;
+    placeDraggedPin(pinMove.pin, point);
+    pinMove.point = point;
+  }
+
+  function beginPinDrag(event) {
+    if (!event || (typeof event.button === "number" && event.button !== 0)) return false;
+    const node = event.target;
+    const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    if (!el || typeof el.closest !== "function") return false;
+    const pin = el.closest(".md-comment-pin");
+    if (!pin || !root.contains(pin)) return false;
+    const host = typeof pin.closest === "function" ? pin.closest(".md-image") : null;
+    if (!host || hasClass(host, "md-raw") || (typeof host.closest === "function" && host.closest(".md-raw"))) return false;
+    if (!pictureFraction(host, event.clientX, event.clientY)) return false;
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    commentFocus = null;
+    goalX = null;
+    pointer = null;
+    didDrag = false;
+    plainDrag = false;
+    dragRange = null;
+    dragSource = null;
+    cancelGestureRender();
+    gestureArmed = false;
+    gestureOffset = null;
+    pinMove = {
+      id: pin.dataset && pin.dataset.comment,
+      pin,
+      host,
+      x: event.clientX,
+      y: event.clientY,
+    };
+    return true;
+  }
+
+  function finishPinDrag(event) {
+    const move = pinMove;
+    pinMove = null;
+    if (!move) return;
+    if (event && typeof event.preventDefault === "function") event.preventDefault();
+    if (move.pin && move.pin.classList) move.pin.classList.remove("md-comment-pin-dragging");
+    if (!pinDragMoved(move, event)) return;
+    const node = event && event.target;
+    if (node && root.contains(node)) {
+      didDrag = true;
+      plainDrag = false;
+      gestureArmed = false;
+      gestureOffset = null;
+    }
+    const point = pictureFraction(move.host, event.clientX, event.clientY) || move.point;
+    if (!point || !move.id) return;
+    emitEdit({ op: "comment.pin.move", id: move.id, x: point.x, y: point.y });
+  }
+
   function removeCornerPin() {
     if (cornerFrame) {
       const pin = findClassChild(cornerFrame, "md-pin-corner");
@@ -5550,6 +5648,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onRootMouseMove(event) {
+    if (pinMove) {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      movePinDrag(event);
+      return;
+    }
     if (!pinDrag) syncCornerPin(event);
     if (handleDrag) {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
@@ -5579,6 +5682,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function onDocumentMouseMove(event) {
     const node = event && event.target;
     const inside = node && root.contains(node);
+    if (pinMove) {
+      if (inside) return;
+      movePinDrag(event);
+      return;
+    }
     if (!inside && !pinDrag) removeCornerPin();
     if (handleDrag) {
       if (inside) return;
@@ -5594,6 +5702,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onDocumentMouseUp(event) {
+    if (pinMove) {
+      const node = event && event.target;
+      if (node && root.contains(node)) return;
+      finishPinDrag(event);
+      return;
+    }
     if (handleDrag) {
       const node = event && event.target;
       if (node && root.contains(node)) return;
@@ -9833,6 +9947,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     retainedCaret = null;
     whitespaceCaret = null;
     if (beginHandleDrag(event)) return;
+    if (beginPinDrag(event)) return;
     didDrag = false;
     goalX = null;
     commentFocus = null;
@@ -9983,6 +10098,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   listen("mouseup", (event) => {
+    if (pinMove) {
+      finishPinDrag(event);
+      return;
+    }
     if (handleDrag) {
       finishHandleDrag(event);
       return;

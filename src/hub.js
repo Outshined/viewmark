@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   addComment,
   addPinComment,
+  movePinComment,
   appendCommentReply,
   commentRangeReason,
   backspace,
@@ -725,6 +726,12 @@ function runOp(text, cursor, anchor, msg) {
       return result && result.refused === 400 ? result : { refused: 400, reason: "not in the run" };
     }
     return { doc: result.doc, cursor: result.cursor, anchor: result.anchor, changes: result.changes };
+  }
+  if (msg.op === "comment.pin.move") {
+    const state = createState(text, cursor, anchor);
+    const next = movePinComment(state, msg.id, msg.x, msg.y);
+    if (next && next.refused === 400) return next;
+    return producedFrom(next, state);
   }
   const state = createState(text, cursor, anchor);
   let next = state;
@@ -2599,7 +2606,7 @@ export async function createHub(stateDir, sourceRoot) {
     // comment.save, resolve, and delete rewrite the fence after the caret
     // hold has shrunk. edit claims every free span the change list touches.
     const commentOp = msg.op === "comment.save" || msg.op === "comment.resolve" || msg.op === "comment.delete"
-      || msg.op === "comment.add" || msg.op === "comment.pin";
+      || msg.op === "comment.add" || msg.op === "comment.pin" || msg.op === "comment.pin.move";
     if (!commentOp) {
       const stored = commentStorageReason(file.text, changes);
       if (stored) {

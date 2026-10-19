@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   addComment,
   addPinComment,
+  movePinComment,
+  undo,
   commentRangeReason,
   plan,
   appendCommentReply,
@@ -628,6 +630,54 @@ test("a pin is the following fence on an image or a diagram", () => {
   assert.equal(again.id, "c2");
   assert.equal(again.doc.startsWith(pin.doc), true);
   assert.equal(again.doc, `${pin.doc}\`\`\`comment c2 0.25,0.5\n\n\`\`\`\n`);
+});
+
+test("moving a pin rewrites its fractions and keeps the thread", () => {
+  const image = "![alt](sample.svg)\n";
+  const note = "```comment c1 0.25,0.5\n:: 0\n@2026-10-16T15:00:00.000Z qa\nA pin.\n:: 1\n@2026-10-16T15:01:00.000Z qa\nStill here.\n```\n";
+  const other = "```comment c2 0.8,0.2\n:: 0\n@2026-10-16T15:02:00.000Z qa\nOther.\n```\n";
+  const doc = `${image}${note}${other}End.\n`;
+  const end = doc.indexOf("End");
+  const state = createState(doc, end, end);
+  const moved = movePinComment(state, "c1", 0.3, 0.7);
+  assert.equal(moved.refused, undefined);
+  assert.equal(moved.doc.includes("```comment c1 0.3,0.7\n"), true);
+  assert.equal(moved.doc.includes("A pin.\n"), true);
+  assert.equal(moved.doc.includes("Still here.\n"), true);
+  assert.equal(moved.doc.includes("```comment c2 0.8,0.2\n"), true);
+  assert.equal(moved.doc.includes("Other.\n"), true);
+  assert.equal(moved.doc[moved.cursor], "E");
+  assert.equal(moved.anchor, moved.cursor);
+  assert.equal(moved.changes.length, 1);
+  assert.equal(moved.changes[0].removed.includes("0.25,0.5"), true);
+  assert.equal(moved.changes[0].inserted.includes("0.3,0.7"), true);
+  const back = undo(moved);
+  assert.equal(back.doc, doc);
+  assert.equal(back.cursor, end);
+
+  const resolved = setCommentResolved(createState(`${image}\`\`\`comment c1 0.25,0.5\n\n\`\`\`\n`, 0), "c1", true);
+  const still = movePinComment(resolved, "c1", 1, 0);
+  assert.equal(still.doc.includes("```comment c1 1,0 resolved\n"), true);
+  const edges = movePinComment(state, "c1", 0, 1);
+  assert.equal(edges.doc.includes("```comment c1 0,1\n"), true);
+  const rounded = movePinComment(state, "c1", 0.123456, 0.2);
+  assert.equal(rounded.doc.includes("```comment c1 0.1235,0.2\n"), true);
+  const same = movePinComment(moved, "c1", 0.3, 0.7);
+  assert.equal(same, moved);
+
+  assert.deepEqual(movePinComment(state, "c1", 1.01, 0.2), { refused: 400, reason: "pin is out of range" });
+  assert.deepEqual(movePinComment(state, "c1", -0.01, 0.2), { refused: 400, reason: "pin is out of range" });
+  assert.deepEqual(movePinComment(state, "c1", Number.NaN, 0.2), { refused: 400, reason: "pin is out of range" });
+  assert.deepEqual(movePinComment(state, "c9", 0.2, 0.2), { refused: 400, reason: "not in the run" });
+  const prose = "hello {c3}fox{/c3}\n\n```comment c3\n\n```\n";
+  assert.deepEqual(movePinComment(createState(prose, 0), "c3", 0.2, 0.2), { refused: 400, reason: "not in the run" });
+  const ranged = "```js\none\n```\n```comment c1 1\n\n```\n";
+  assert.deepEqual(movePinComment(createState(ranged, 0), "c1", 0.2, 0.2), { refused: 400, reason: "not in the run" });
+
+  const diagram = "```mermaid\nA-->B\n```\n```comment c1 0.4,0.7\n\n```\n";
+  const diagramMoved = movePinComment(createState(diagram, 0), "c1", 0.2, 0.3);
+  assert.equal(diagramMoved.doc.includes("```comment c1 0.2,0.3\n"), true);
+  assert.equal(diagramMoved.doc.startsWith("```mermaid\nA-->B\n```\n"), true);
 });
 
 test("a pin leaves the caret off the image line so the picture stays drawn", () => {

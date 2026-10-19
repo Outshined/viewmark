@@ -5,6 +5,7 @@ import {
   createState,
   addComment,
   addPinComment,
+  movePinComment,
   insert,
   insertLiteral,
   moveText,
@@ -154,6 +155,10 @@ export function createMemoryTransport(doc, cursor = 0) {
         next = replaceDocument(base, added.doc, added.cursor);
         if (Number.isInteger(added.anchor)) next = { ...next, anchor: added.anchor };
         inserted = next.doc;
+      } else if (message.op === "comment.pin.move") {
+        next = movePinComment(base, message.id, message.x, message.y);
+        if (next && next.refused) return;
+        inserted = next === base ? "" : next.doc;
       } else if (message.op === "comment.save") {
         next = replaceCommentBody(base, message.id, typeof message.body === "string" ? message.body : "");
         inserted = next === base ? "" : next.doc;

@@ -240,6 +240,141 @@ test("4m94ewju: dropping the comment pin on a picture writes a pin at the drop p
   assert.ok(after.startsWith("Intro.\n\n![box](box.svg)\n```comment"), JSON.stringify(after));
 });
 
+const pinnedImage = [
+  "Intro.",
+  "",
+  "![box](box.svg)",
+  "```comment c1 0.25,0.5",
+  ":: 0",
+  "@2026-10-16T15:00:00.000Z qa",
+  "A pin.",
+  ":: 1",
+  "@2026-10-16T15:01:00.000Z qa",
+  "Still here.",
+  "```",
+  "End.",
+  "",
+].join("\n");
+
+const balloonCenter = (pin) => ({ x: pin.left + pin.width / 2, y: pin.top + pin.height / 2 });
+
+// Press the balloon and move to the release point. The caller releases, so a
+// check can read the balloon while the pointer is still down.
+async function pressBalloon(page, from, to) {
+  const send = async (type, x, y, extra = {}) => {
+    await page.session.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1, ...extra });
+    await page.eval("1");
+    await sleep(40);
+  };
+  await send("mouseMoved", from.x, from.y);
+  await send("mousePressed", from.x, from.y, { buttons: 1 });
+  for (let i = 1; i <= 8; i += 1) {
+    await send("mouseMoved", from.x + ((to.x - from.x) * i) / 8, from.y + ((to.y - from.y) * i) / 8, { buttons: 1 });
+  }
+  return async () => {
+    await send("mouseReleased", to.x, to.y, { buttons: 0 });
+  };
+}
+
+async function pinFractions(hub, file) {
+  const text = (await hub.show(file)).text;
+  const match = /```comment c1 ([0-9.]+),([0-9.]+)\n/.exec(text);
+  assert.ok(match, JSON.stringify(text));
+  return { text, x: match[1], y: match[2] };
+}
+
+test("g8w3qgk9: dragging an image pin stores the release as fractions of the picture and keeps the notes", async (t) => {
+  const { hub, page, file } = await setup(t, pinnedImage);
+  const img = await waitFor(() => pictureBox(page), "the picture drawn");
+  const pin = await waitFor(() => page.eval(box(".md-comment-pin")), "the balloon");
+  const to = { x: img.left + 0.62 * img.width, y: img.top + 0.28 * img.height };
+  const release = await pressBalloon(page, balloonCenter(pin), to);
+  await release();
+  let stored = null;
+  await page.until(async () => {
+    stored = await pinFractions(hub, file);
+    return Math.abs(Number(stored.x) - 0.62) < 0.02 && Math.abs(Number(stored.y) - 0.28) < 0.02;
+  }, "the pin fractions");
+  assert.equal(stored.text.includes("A pin.\n"), true);
+  assert.equal(stored.text.includes("Still here.\n"), true);
+  assert.equal(stored.text.includes("```comment c1 "), true);
+  assert.equal((stored.text.match(/```comment /g) || []).length, 1);
+  assert.equal(stored.text.includes("![box](box.svg)\n"), true);
+  const drawn = await waitFor(() => pictureBox(page), "the picture still drawn");
+  const moved = await waitFor(() => page.eval(box(".md-comment-pin")), "the moved balloon");
+  const at = tip(moved);
+  const want = { x: drawn.left + Number(stored.x) * drawn.width, y: drawn.top + Number(stored.y) * drawn.height };
+  assert.ok(Math.abs(at.x - want.x) < 2 && Math.abs(at.y - want.y) < 2, `the tip is at ${JSON.stringify(at)}, the stored point is ${JSON.stringify(want)}`);
+});
+
+test("g8w3qgk9: a drag past one edge stores 0 or 1 on that axis and the pin stays on the picture", async (t) => {
+  const { hub, page, file } = await setup(t, pinnedImage);
+  const img = await waitFor(() => pictureBox(page), "the picture drawn");
+  const pin = await waitFor(() => page.eval(box(".md-comment-pin")), "the balloon");
+  const to = { x: img.right + 24, y: img.top + 0.6 * img.height };
+  assert.ok(to.x > img.right && to.y > img.top && to.y < img.bottom);
+  const release = await pressBalloon(page, balloonCenter(pin), to);
+  const held = await page.eval(box(".md-comment-pin"));
+  const heldTip = tip(held);
+  assert.ok(Math.abs(heldTip.x - img.right) < 2, `while held, the tip x ${heldTip.x} left the right edge ${img.right}`);
+  assert.ok(heldTip.y >= img.top - 2 && heldTip.y <= img.bottom + 2, `while held, the tip y ${heldTip.y} left the picture`);
+  await release();
+  let stored = null;
+  await page.until(async () => {
+    stored = await pinFractions(hub, file);
+    return stored.x === "1";
+  }, "the pin on the right edge");
+  assert.ok(Math.abs(Number(stored.y) - 0.6) < 0.02, `the interior axis is ${stored.y}, not the release`);
+  assert.notEqual(stored.y, "0");
+  assert.notEqual(stored.y, "1");
+  assert.equal(stored.text.includes("A pin.\n"), true);
+  assert.equal(stored.text.includes("Still here.\n"), true);
+  const drawn = await waitFor(() => pictureBox(page), "the picture still drawn");
+  const moved = await page.eval(box(".md-comment-pin"));
+  const at = tip(moved);
+  assert.ok(Math.abs(at.x - drawn.right) < 2, `the tip x ${at.x} is off the right edge ${drawn.right}`);
+  assert.ok(at.y >= drawn.top - 2 && at.y <= drawn.bottom + 2, `the tip y ${at.y} left the picture ${drawn.top}-${drawn.bottom}`);
+});
+
+test("g8w3qgk9: a release inside the picture stores that point, and a release past the top stores 0", async (t) => {
+  const { hub, page, file } = await setup(t, pinnedImage);
+  const img = await waitFor(() => pictureBox(page), "the picture drawn");
+  const pin = await waitFor(() => page.eval(box(".md-comment-pin")), "the balloon");
+  const inside = { x: img.left + 0.4 * img.width, y: img.top + 0.7 * img.height };
+  assert.ok(inside.x > img.left && inside.x < img.right && inside.y > img.top && inside.y < img.bottom);
+  let release = await pressBalloon(page, balloonCenter(pin), inside);
+  await release();
+  let stored = null;
+  await page.until(async () => {
+    stored = await pinFractions(hub, file);
+    return Math.abs(Number(stored.x) - 0.4) < 0.02 && Math.abs(Number(stored.y) - 0.7) < 0.02;
+  }, "the interior pin");
+  assert.notEqual(stored.x, "0");
+  assert.notEqual(stored.x, "1");
+  assert.notEqual(stored.y, "0");
+  assert.notEqual(stored.y, "1");
+  const above = { x: img.left + 0.4 * img.width, y: img.top - 16 };
+  assert.ok(above.y < img.top && above.x > img.left && above.x < img.right);
+  const again = await waitFor(() => page.eval(box(".md-comment-pin")), "the balloon after the interior release");
+  release = await pressBalloon(page, balloonCenter(again), above);
+  const held = await page.eval(box(".md-comment-pin"));
+  const heldTip = tip(held);
+  assert.ok(Math.abs(heldTip.y - img.top) < 2, `while held, the tip y ${heldTip.y} left the top edge ${img.top}`);
+  assert.ok(heldTip.x >= img.left - 2 && heldTip.x <= img.right + 2, `while held, the tip x ${heldTip.x} left the picture`);
+  await release();
+  await page.until(async () => {
+    stored = await pinFractions(hub, file);
+    return stored.y === "0";
+  }, "the pin on the top edge");
+  assert.ok(Math.abs(Number(stored.x) - 0.4) < 0.02, `the interior axis is ${stored.x}`);
+  assert.equal(stored.text.includes("Still here.\n"), true);
+  const drawn = await waitFor(() => pictureBox(page), "the picture still drawn");
+  const moved = await page.eval(box(".md-comment-pin"));
+  const at = tip(moved);
+  assert.ok(Math.abs(at.y - drawn.top) < 2, `the tip y ${at.y} is off the top edge ${drawn.top}`);
+  assert.ok(at.x >= drawn.left - 2 && at.x <= drawn.right + 2, `the tip x ${at.x} left the picture`);
+});
+
 // ---- A line edit keeps the range on the lines it marks -------------------------------------------
 
 async function editInFence(t, keys, place) {
