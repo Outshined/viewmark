@@ -817,6 +817,9 @@ test("6a2t6dy5 the blank under a fence, a table, a diagram, an image, or a rule 
   assert.equal(placeMove(leadDiagram, 36, 5, "backward", "line"), 35);
   assert.equal(placeMove(leadDiagram, 5, 36, "forward", "line"), 6);
   assert.equal(placeMove(leadDiagram, 36, 5, "backward", "character"), 35);
+  const leadRule = "Lead\n\n---\n\n";
+  assert.equal(placeMove(leadRule, 10, 5, "backward", "line"), 9);
+  assert.equal(placeMove(leadRule, 5, 10, "forward", "line"), 6);
   const leadImage = "Lead\n\n![box](box.svg)\n\n";
   assert.equal(placeMove(leadImage, 22, 5, "backward", "line"), 21);
   assert.equal(placeMove(leadImage, 5, 22, "forward", "line"), 6);

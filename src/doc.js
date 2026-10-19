@@ -3727,6 +3727,23 @@ function lineClearedAtom(doc, cursor, landed, forward) {
   return nearest;
 }
 
+// A rendered rule has no glyphs, so a line step that crosses one stops on the
+// near edge. The gap under the rule is outside it. A rule the caret stands on
+// is source and is not a cleared line.
+function lineClearedRule(doc, cursor, landed, forward) {
+  const text = typeof doc === "string" ? doc : "";
+  if (!Number.isFinite(cursor) || !Number.isFinite(landed)) return null;
+  const lesser = Math.min(cursor, landed);
+  const greater = Math.max(cursor, landed);
+  let nearest = null;
+  for (const block of plan(text, cursor).blocks) {
+    if (block.type !== "line" || block.raw || !classHas(block, "md-hr")) continue;
+    if (block.start < lesser || block.end > greater) continue;
+    if (!nearest || (forward ? block.start < nearest.start : block.end > nearest.end)) nearest = block;
+  }
+  return nearest;
+}
+
 // The blank has no height. A step that lands on it continues to the paragraph
 // on that side. A click, which has no direction, stays with the paragraph above.
 function paragraphGapLeave(doc, offset, direction) {
@@ -3763,6 +3780,11 @@ export function placeMove(doc, cursor, landed, direction, granularity) {
     const cleared = lineClearedAtom(doc, cursor, landed, forward);
     if (cleared) {
       const at = inwardOffset(cleared, forward);
+      if (forward ? at < next : at > next) next = at;
+    }
+    const rule = lineClearedRule(doc, cursor, landed, forward);
+    if (rule) {
+      const at = forward ? rule.start : rule.end;
       if (forward ? at < next : at > next) next = at;
     }
   }
