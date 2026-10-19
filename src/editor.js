@@ -5509,10 +5509,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onDocumentMouseUp(event) {
-    if (!handleDrag) return;
+    if (handleDrag) {
+      const node = event && event.target;
+      if (node && root.contains(node)) return;
+      finishHandleDrag(event);
+      return;
+    }
+    // The add-comment button sits on the text under the selection. A release
+    // there is not an editor event, and the click is not one either.
+    if (!pointer) return;
     const node = event && event.target;
     if (node && root.contains(node)) return;
-    finishHandleDrag(event);
+    finishTextDrag(event, true);
   }
 
   function appendLockMarks(el, block) {
@@ -9663,11 +9671,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     dragRange = null;
   });
 
-  // Firefox's caretPositionFromPoint stays on the drag focus, and a drag
-  // across elements does not dispatch a click. The miss is the right half of
-  // a line's last glyph, and a zero-height gap can leave the selection on the
-  // block above while the pointer is on a later glyph. The glyph is the offset
-  // a click there maps. A range that already reaches it stays.
+  // Firefox's caretPositionFromPoint stays on the drag focus, or lands off the
+  // glyph when the release hits the add-comment button. A drag across elements
+  // does not dispatch a click. The miss is the right half of a line's last
+  // glyph, and a zero-height gap can leave the selection on the block above
+  // while the pointer is on a later glyph. The glyph is the offset a click
+  // there maps.
   function glyphPointerOffset(event) {
     if (!event || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return null;
     const x = event.clientX;
@@ -9689,6 +9698,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return placedOffset(event, offset);
   }
 
+  // The farther of the caret hit and the glyph under the pointer, in the
+  // drag's direction. A nearer caret hit must not hide the glyph. A range
+  // that already reaches it stays.
   function dragRelease(mapped, event) {
     if (!mapped) return mapped;
     const detail = event && event.detail ? event.detail : 1;
@@ -9696,15 +9708,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (gestureOffset != null && gestureOffset !== mapped.anchor) return mapped;
     const span = mapped.cursor - mapped.anchor;
     if (span === 0) return mapped;
-    let release = pressOffset(event);
-    if (release == null || release === mapped.cursor) {
-      const glyph = glyphPointerOffset(event);
-      if (glyph != null) release = glyph;
-    }
-    if (release == null || release === mapped.cursor) return mapped;
-    const next = release - mapped.anchor;
-    if (next === 0 || Math.sign(next) !== Math.sign(span)) return mapped;
-    if (Math.abs(next) <= Math.abs(span)) return mapped;
+    const farther = (candidate, current) => {
+      if (candidate == null) return current;
+      const next = candidate - mapped.anchor;
+      if (next === 0 || Math.sign(next) !== Math.sign(span)) return current;
+      if (Math.abs(next) <= Math.abs(current - mapped.anchor)) return current;
+      return candidate;
+    };
+    let release = farther(pressOffset(event), mapped.cursor);
+    release = farther(glyphPointerOffset(event), release);
+    if (release === mapped.cursor) return mapped;
     return { anchor: mapped.anchor, cursor: release };
   }
 
@@ -9738,11 +9751,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return true;
   }
 
-  listen("mouseup", (event) => {
-    if (handleDrag) {
-      finishHandleDrag(event);
-      return;
-    }
+  // outside: the release target is not the editor, so the click will not be
+  // either. didDrag would treat the next editor click as this drag.
+  function finishTextDrag(event, outside) {
     if (!pointer) return;
     const moved = Math.abs(event.clientX - pointer.x) > 3 || Math.abs(event.clientY - pointer.y) > 3;
     pointer = null;
@@ -9758,11 +9769,23 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           // this press must not be lengthened.
           plainDrag = !(event && event.detail >= 2);
           commitDrag(dragRelease(mapped, event), mapped);
+          if (outside) {
+            didDrag = false;
+            gestureOffset = null;
+          }
           return;
         }
       }
     }
     if (!composing) claimLines(state.anchor, state.cursor);
+  }
+
+  listen("mouseup", (event) => {
+    if (handleDrag) {
+      finishHandleDrag(event);
+      return;
+    }
+    finishTextDrag(event, false);
   });
 
   // The collapsed blank under the last block has no box, so a press on it lands

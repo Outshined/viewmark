@@ -14931,10 +14931,27 @@ test("CB.5 TB.li.8 SX.4 a drag that ends on a line's last character includes tha
     },
   };
   let hit = null;
+  const windowListeners = [];
   globalThis.window.getSelection = () => sel;
+  globalThis.window.addEventListener = (type, fn, options) => {
+    const entry = { type, fn };
+    windowListeners.push(entry);
+    const signal = options && options.signal;
+    if (signal && typeof signal.addEventListener === "function") {
+      signal.addEventListener("abort", () => {
+        const index = windowListeners.indexOf(entry);
+        if (index >= 0) windowListeners.splice(index, 1);
+      });
+    }
+  };
   globalThis.window.setTimeout = (fn) => {
     timers.push(fn);
     return timers.length;
+  };
+  const fireWindow = (type, event) => {
+    for (const entry of [...windowListeners]) {
+      if (entry.type === type) entry.fn(event);
+    }
   };
   globalThis.document.caretPositionFromPoint = () => hit;
   globalThis.document.createTreeWalker = (rootNode) => {
@@ -15087,7 +15104,10 @@ test("CB.5 TB.li.8 SX.4 a drag that ends on a line's last character includes tha
   // Firefox keeps caretPositionFromPoint on the short drag focus, at mouseup
   // and at click, and a drag across lines does not dispatch click. The pointer
   // is on the glyph a click maps to the release.
-  const glyphDrag = (cell, { click = false, putback = false, detail = 1 } = {}) => {
+  // outside: the add-comment button sits on the text under the selection, so
+  // the release is not an editor event. caretPositionFromPoint is not the
+  // drag focus and not the glyph. The editor's mouseup and click do not run.
+  const glyphDrag = (cell, { click = false, putback = false, detail = 1, outside = false } = {}) => {
     glyphDoc = cell.doc;
     timers.length = 0;
     const view = createEditor(mounted.root, cell.doc, cell.cursor);
@@ -15106,8 +15126,18 @@ test("CB.5 TB.li.8 SX.4 a drag that ends on a line's last character includes tha
       mounted.listeners.mousedown({ ...atPress, detail: 1, button: 0, target: press.node });
       show(press, short);
       fireDocument(mounted, "selectionchange");
-      hit = { offsetNode: short.node, offset: short.offset };
-      mounted.listeners.mouseup({ ...atRelease, detail, button: 0, target: short.node });
+      if (outside) {
+        const decoyAt = cell.firefox === 1 ? cell.anchor : 1;
+        const decoy = sourcePoint(decoyAt);
+        assert.ok(decoy, `${cell.name} decoy`);
+        assert.notEqual(decoyAt, cell.firefox, `${cell.name} decoy is not the drag focus`);
+        assert.notEqual(decoyAt, cell.release, `${cell.name} decoy is not the release`);
+        hit = { offsetNode: decoy.node, offset: decoy.offset };
+        fireWindow("mouseup", { ...atRelease, detail, button: 0, target: { nodeType: 1, parentElement: null } });
+      } else {
+        hit = { offsetNode: short.node, offset: short.offset };
+        mounted.listeners.mouseup({ ...atRelease, detail, button: 0, target: short.node });
+      }
       if (putback) {
         const livePress = sourcePoint(cell.anchor);
         const liveShort = sourcePoint(cell.firefox);
@@ -15188,6 +15218,18 @@ test("CB.5 TB.li.8 SX.4 a drag that ends on a line's last character includes tha
       assert.equal(keptGlyph.anchor, 0);
       assert.equal(keptGlyph.cursor, 8);
       assert.equal(mapOffset(sel.focusNode, sel.focusOffset), 8);
+      for (const how of [
+        { outside: true, putback: false },
+        { outside: true, putback: true },
+      ]) {
+        const label = `button${how.putback ? " putback" : ""}`;
+        for (const cell of cells) {
+          const state = glyphDrag(cell, how);
+          expectRelease(state, cell, `${cell.name} glyph ${label}`);
+        }
+        const back = glyphDrag(backward, how);
+        expectRelease(back, backward, `backward glyph ${label}`);
+      }
       const wordGlyph = glyphDrag({ name: "detail 2", doc: "- a\n- b\n\n", cursor: 0, anchor: 0, firefox: 6, release: 7, text: "- a\n- " }, { detail: 2 });
       assert.equal(wordGlyph.anchor, 0);
       assert.equal(wordGlyph.cursor, 6);
