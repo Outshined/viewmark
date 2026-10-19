@@ -1,5 +1,5 @@
 title: Ctrl+End before a comment's fence at the end of a document puts a 0 px caret on the blank line
-state: pending review
+state: closed
 type: bug
 priority: medium
 parent:
