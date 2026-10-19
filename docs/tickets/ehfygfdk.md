@@ -1,5 +1,5 @@
 title: With vim keys on, undo in Insert follows Obsidian's vim mode
-state: pending review
+state: closed
 type: enhancement
 priority: medium
 parent:
