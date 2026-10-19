@@ -1594,13 +1594,17 @@ function renderCollapsed(block) {
   return line;
 }
 
-// A br, not a text node: an empty text node does not survive in the editing host.
-// Up and down stop on this line start. The break after it is pulled onto this
-// line; in flow its br would be the next one.
+// The br keeps the line box. An empty text node does not survive here, and
+// Firefox keeps the selection where modify left it when the target is a br,
+// so one zero-width character in front of the br is the caret. The span covers
+// that character: index 0 is this offset, and the following break still owns
+// the newline. Up and down stop on this line start. The break after it is
+// pulled onto this line; in flow its br would be the next one.
 function renderCaretSlot(offset) {
   const el = document.createElement("span");
   el.dataset.start = String(offset);
-  el.dataset.end = String(offset);
+  el.dataset.end = String(offset + 1);
+  el.appendChild(document.createTextNode("\u200b"));
   el.appendChild(document.createElement("br"));
   return el;
 }

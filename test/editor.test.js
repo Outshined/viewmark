@@ -2480,7 +2480,7 @@ test("BG.ws.3", () => {
   const mounted = mountEditor();
   try {
     const view = createEditor(mounted.root, doc, 6);
-    const slotBr = mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.dataset.start === "4" && node.parentElement.dataset.end === "4")[0];
+    const slotBr = mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.dataset.start === "4" && node.parentElement.dataset.end === "5")[0];
     const breakBr = mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.classList && node.parentElement.classList.contains("md-break") && node.parentElement.dataset.start === "6")[0];
     assert.ok(slotBr);
     assert.ok(breakBr);
@@ -2539,7 +2539,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
   globalThis.window.setTimeout = (fn, delay) => setTimeout(fn, delay);
   const textNode = (value) => mounted.findAll((node) => node.nodeType === 3 && node.textContent === value)[0];
   const gapBr = () => mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.classList && node.parentElement.classList.contains("md-paragraph-gap") && node.parentElement.dataset.start === "4")[0];
-  const slotBr = (start) => mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.dataset && node.parentElement.dataset.start === String(start) && node.parentElement.dataset.end === String(start))[0];
+  const slotBr = (start) => mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.dataset && node.parentElement.dataset.start === String(start) && node.parentElement.dataset.end === String(Number(start) + 1))[0];
   const cases = [
     { name: "BG.ws.1", doc: "one\n\n \n\ntwo\n", at: 8, stop: 5 },
     { name: "BG.ws.2", doc: "one\n\n\t\n\ntwo\n", at: 8, stop: 5 },
@@ -2580,11 +2580,34 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
     if (sel && typeof sel.modify === "function") sel.modify();
     for (const fn of mounted.documentListeners.get("selectionchange") || []) fn();
   };
+  // Firefox keeps modify()'s selection when setBaseAndExtent, collapse, or
+  // addRange is aimed at a br. The stop has to be a text node or the caret
+  // stays on the paragraph above.
+  const brTarget = (node) => !!node && String(node.nodeName || node.tagName || "").toUpperCase() === "BR";
+  const firefoxBrSelection = (land) => {
+    const sel = firefoxSelection(mounted, land);
+    const collapse = sel.collapse;
+    const setBaseAndExtent = sel.setBaseAndExtent;
+    const addRange = sel.addRange;
+    sel.collapse = (node, offset) => {
+      if (brTarget(node)) return;
+      collapse(node, offset);
+    };
+    sel.setBaseAndExtent = (node, offset, focusNode, focusOffset) => {
+      if (brTarget(node) || brTarget(focusNode)) return;
+      setBaseAndExtent(node, offset, focusNode, focusOffset);
+    };
+    sel.addRange = (range) => {
+      if (range && (brTarget(range.startContainer) || brTarget(range.endContainer))) return;
+      addRange(range);
+    };
+    return sel;
+  };
   try {
     for (const item of cases) {
       for (const land of ["end", "start", "gap"]) {
         const view = createEditor(mounted.root, item.doc, item.at);
-        firefoxSelection(mounted, (sel) => {
+        firefoxBrSelection((sel) => {
           if (land === "gap") {
             const br = gapBr();
             assert.ok(br, item.name);
@@ -2596,6 +2619,9 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
           sel.place(one, land === "end" ? one.length : 0);
         });
         press("ArrowUp");
+        const stepped = globalThis.window.getSelection();
+        assert.notEqual(stepped.focusNode, textNode("one"), `${item.name} ${land} node`);
+        assert.equal(mapOffset(stepped.focusNode, stepped.focusOffset), item.stop, `${item.name} ${land} node`);
         assert.equal(view.getState().doc, item.doc, item.name);
         assert.equal(view.getState().cursor, item.stop, `${item.name} ${land}`);
         assert.equal(view.getState().anchor, item.stop, `${item.name} ${land}`);
@@ -2631,7 +2657,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
     }
 
     const stayed = createEditor(mounted.root, cases[0].doc, cases[0].at);
-    firefoxSelection(mounted, (sel) => {
+    firefoxBrSelection((sel) => {
       const br = slotBr(5);
       assert.ok(br);
       sel.place(br, 0);
@@ -2642,7 +2668,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
     stayed.destroy();
 
     const leave = createEditor(mounted.root, cases[0].doc, cases[0].at);
-    firefoxSelection(mounted, (sel) => {
+    firefoxBrSelection((sel) => {
       const one = textNode("one");
       sel.place(one, one.length);
     });
@@ -2654,7 +2680,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
     leave.destroy();
 
     const extend = createEditor(mounted.root, cases[0].doc, cases[0].at);
-    firefoxSelection(mounted, (sel) => {
+    firefoxBrSelection((sel) => {
       const one = textNode("one");
       sel.place(one, one.length);
     });
@@ -2664,7 +2690,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
     extend.destroy();
 
     const down = createEditor(mounted.root, cases[0].doc, 0);
-    firefoxSelection(mounted, (sel) => {
+    firefoxBrSelection((sel) => {
       const two = textNode("two");
       assert.ok(two);
       sel.place(two, 0);
@@ -2675,7 +2701,7 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
     down.destroy();
 
     const plain = createEditor(mounted.root, "one\n\ntwo\n", 5);
-    firefoxSelection(mounted, (sel) => {
+    firefoxBrSelection((sel) => {
       const one = textNode("one");
       sel.place(one, one.length);
     });
@@ -2705,7 +2731,7 @@ test("a tab on a blank line shares that line with its break", () => {
     };
     const brs = mounted.findAll((node) => node.tagName === "BR" && onLine(node));
     assert.equal(brs.length, 2);
-    const slotBr = brs.find((node) => node.parentElement.dataset.start === "5" && node.parentElement.dataset.end === "5");
+    const slotBr = brs.find((node) => node.parentElement.dataset.start === "5" && node.parentElement.dataset.end === "6");
     const breakBr = brs.find((node) => node.parentElement.classList && node.parentElement.classList.contains("md-break"));
     assert.ok(slotBr);
     assert.ok(breakBr);
