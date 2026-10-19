@@ -375,6 +375,142 @@ test("g8w3qgk9: a release inside the picture stores that point, and a release pa
   assert.ok(at.x >= drawn.left - 2 && at.x <= drawn.right + 2, `the tip x ${at.x} left the picture`);
 });
 
+const pinnedDiagram = [
+  "Intro.",
+  "",
+  "```mermaid",
+  "flowchart LR",
+  "  A --> B",
+  "```",
+  "```comment c1 0.4,0.7",
+  ":: 0",
+  "@2026-10-16T15:00:00.000Z qa",
+  "This arrow.",
+  ":: 1",
+  "@2026-10-16T15:01:00.000Z qa",
+  "Still here.",
+  "```",
+  "End.",
+  "",
+].join("\n");
+
+const diagramBox = (page) => page.eval(`(() => {
+  const el = document.querySelector(".md-diagram svg");
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  if (!(r.width > 0) || !(r.height > 0)) return null;
+  return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+})()`);
+
+test("dragging a diagram pin stores the release as fractions of the diagram and keeps the svg and the notes", async (t) => {
+  const { hub, page, file } = await setup(t, pinnedDiagram);
+  const svg = await waitFor(() => diagramBox(page), "the diagram drawn", 10000);
+  const pin = await waitFor(() => page.eval(box(".md-comment-pin")), "the balloon");
+  const to = { x: svg.left + 0.55 * svg.width, y: svg.top + 0.33 * svg.height };
+  assert.ok(to.x > svg.left && to.x < svg.right && to.y > svg.top && to.y < svg.bottom);
+  const release = await pressBalloon(page, balloonCenter(pin), to);
+  await release();
+  let stored = null;
+  await page.until(async () => {
+    stored = await pinFractions(hub, file);
+    return Math.abs(Number(stored.x) - 0.55) < 0.02 && Math.abs(Number(stored.y) - 0.33) < 0.02;
+  }, "the diagram pin fractions");
+  assert.equal(stored.text.includes("This arrow.\n"), true);
+  assert.equal(stored.text.includes("Still here.\n"), true);
+  assert.equal(stored.text.includes("```comment c1 "), true);
+  assert.equal((stored.text.match(/```comment /g) || []).length, 1);
+  assert.equal(stored.text.includes("```mermaid\nflowchart LR\n  A --> B\n```\n"), true);
+  const drawn = await waitFor(() => diagramBox(page), "the diagram still drawn", 10000);
+  const moved = await waitFor(() => page.eval(box(".md-comment-pin")), "the moved balloon");
+  const at = tip(moved);
+  const want = { x: drawn.left + Number(stored.x) * drawn.width, y: drawn.top + Number(stored.y) * drawn.height };
+  assert.ok(Math.abs(at.x - want.x) < 2 && Math.abs(at.y - want.y) < 2, `the tip is at ${JSON.stringify(at)}, the stored point is ${JSON.stringify(want)}`);
+});
+
+test("a diagram drag past one edge stores 0 or 1 on that axis and the svg stays", async (t) => {
+  const { hub, page, file } = await setup(t, pinnedDiagram);
+  const svg = await waitFor(() => diagramBox(page), "the diagram drawn", 10000);
+  const pin = await waitFor(() => page.eval(box(".md-comment-pin")), "the balloon");
+  const to = { x: svg.right + 24, y: svg.top + 0.6 * svg.height };
+  assert.ok(to.x > svg.right && to.y > svg.top && to.y < svg.bottom);
+  const release = await pressBalloon(page, balloonCenter(pin), to);
+  const held = await page.eval(box(".md-comment-pin"));
+  const heldTip = tip(held);
+  assert.ok(Math.abs(heldTip.x - svg.right) < 2, `while held, the tip x ${heldTip.x} left the right edge ${svg.right}`);
+  assert.ok(heldTip.y >= svg.top - 2 && heldTip.y <= svg.bottom + 2, `while held, the tip y ${heldTip.y} left the diagram`);
+  await release();
+  let stored = null;
+  await page.until(async () => {
+    stored = await pinFractions(hub, file);
+    return stored.x === "1";
+  }, "the pin on the right edge");
+  assert.ok(Math.abs(Number(stored.y) - 0.6) < 0.02, `the interior axis is ${stored.y}, not the release`);
+  assert.notEqual(stored.y, "0");
+  assert.notEqual(stored.y, "1");
+  assert.equal(stored.text.includes("This arrow.\n"), true);
+  assert.equal(stored.text.includes("Still here.\n"), true);
+  const drawn = await waitFor(() => diagramBox(page), "the diagram still drawn", 10000);
+  const moved = await page.eval(box(".md-comment-pin"));
+  const at = tip(moved);
+  assert.ok(Math.abs(at.x - drawn.right) < 2, `the tip x ${at.x} is off the right edge ${drawn.right}`);
+  assert.ok(at.y >= drawn.top - 2 && at.y <= drawn.bottom + 2, `the tip y ${at.y} left the diagram ${drawn.top}-${drawn.bottom}`);
+});
+
+test("a press on a diagram pin that moves 3 pixels or less opens that thread and leaves the diagram drawn", async (t) => {
+  const { hub, page, file } = await setup(t, pinnedDiagram);
+  await waitFor(() => diagramBox(page), "the diagram drawn", 10000);
+  const pin = await waitFor(() => page.eval(box(".md-comment-pin")), "the balloon");
+  const from = balloonCenter(pin);
+  const release = await pressBalloon(page, from, { x: from.x + 3, y: from.y });
+  await release();
+  await page.quiet();
+  const current = await waitFor(() => currentThread(page), "a current thread");
+  assert.ok(current.includes("This arrow."), current);
+  const stored = await pinFractions(hub, file);
+  assert.equal(stored.x, "0.4");
+  assert.equal(stored.y, "0.7");
+  assert.equal(stored.text.includes("Still here.\n"), true);
+  const drawn = await waitFor(() => diagramBox(page), "the diagram still drawn", 10000);
+  assert.ok(drawn.width > 0 && drawn.height > 0);
+});
+
+test("dragging an image pin with the window scrolled down leaves scrollY within 2 pixels", async (t) => {
+  const above = [];
+  const below = [];
+  for (let i = 0; i < 40; i += 1) {
+    above.push(`Filler line ${i + 1} sits above the picture.`, "");
+    below.push(`Filler line ${i + 1} sits below the picture.`, "");
+  }
+  const text = `${above.join("\n")}\n${pinnedImage}\n${below.join("\n")}`;
+  const { hub, page, file } = await setup(t, text);
+  await waitFor(() => pictureBox(page), "the picture drawn");
+  const before = await page.eval(`(() => {
+    const img = document.querySelector(".md-image img");
+    const top = img.getBoundingClientRect().top + window.scrollY;
+    const y = Math.max(0, top - 200);
+    window.scrollTo(0, y);
+    return window.scrollY;
+  })()`);
+  assert.ok(before > 400, `the window did not scroll down, scrollY is ${before}`);
+  const img = await waitFor(() => pictureBox(page), "the picture in view");
+  const pin = await waitFor(() => page.eval(box(".md-comment-pin")), "the balloon");
+  const to = { x: img.left + 0.62 * img.width, y: img.top + 0.28 * img.height };
+  const release = await pressBalloon(page, balloonCenter(pin), to);
+  await release();
+  let stored = null;
+  await page.until(async () => {
+    stored = await pinFractions(hub, file);
+    return Math.abs(Number(stored.x) - 0.62) < 0.02 && Math.abs(Number(stored.y) - 0.28) < 0.02;
+  }, "the pin fractions");
+  await page.frame();
+  await sleep(50);
+  const after = await page.eval("window.scrollY");
+  assert.ok(Math.abs(after - before) <= 2, `scrollY moved from ${before} to ${after}`);
+  assert.equal(stored.text.includes("A pin.\n"), true);
+  assert.equal(stored.text.includes("Still here.\n"), true);
+  assert.ok(await pictureBox(page), "the picture is not drawn after the drag");
+});
+
 // ---- A line edit keeps the range on the lines it marks -------------------------------------------
 
 async function editInFence(t, keys, place) {

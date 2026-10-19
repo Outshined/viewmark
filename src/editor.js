@@ -2716,6 +2716,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let dragSource = null;
   let pinDrag = false;
   let pinMove = null;
+  // A pin move repaints while the caret is still up the page. This is the scroll
+  // from before that repaint, so scrollIntoView cannot jump the window to the caret.
+  let pinScrollHold = null;
   let cornerFrame = null;
   // The first press of a multi-click. Later presses reuse it after a render
   // would have moved the text under the pointer.
@@ -3176,7 +3179,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     goalX = null;
     rawColumn = null;
     const away = offline();
-    if (!live && !away) return;
+    if (!live && !away) {
+      pinScrollHold = null;
+      return;
+    }
     // Stamp group before the queue. Escape can leave Insert while a splice is still waiting.
     const vimSplice = partial.op === "insert" || partial.op === "backspace" || partial.op === "delete";
     if (vimOn && vimMode === "insert" && vimSplice) {
@@ -3515,7 +3521,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     let node = null;
     try {
       node = placeCaretFromState();
-      if (!node || vimKeepScroll) return;
+      // The range can scroll the caret into view before scrollCaret runs.
+      if (pinScrollHold) restoreScroll(pinScrollHold);
+      if (!node || vimKeepScroll || pinScrollHold) return;
       // An in-view rect can be the caret Firefox refused to move. Scrolling that
       // is not a reason to keep it.
       if (priorTop !== undefined && domSelectionMatches()) {
@@ -3859,7 +3867,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function onSelectionChange() {
-    if (closed || placingCaret || movingCaret || composing || gestureHold || handleDrag) return;
+    if (closed || placingCaret || movingCaret || composing || gestureHold || handleDrag || pinMove || pinScrollHold) return;
     // Chrome reports the selectionchange from placeCaret after placingCaret is
     // already false. That echo still names state, so it must not drop the column.
     const keptX = goalX;
@@ -5526,6 +5534,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     pinMove.point = point;
   }
 
+  // One host for a picture and a diagram. The fraction is of the drawn box.
+  function pinPictureHost(pin) {
+    if (!pin || typeof pin.closest !== "function") return null;
+    const image = pin.closest(".md-image");
+    if (image) return image;
+    return pin.closest(".md-diagram");
+  }
+
   function beginPinDrag(event) {
     if (!event || (typeof event.button === "number" && event.button !== 0)) return false;
     const node = event.target;
@@ -5533,7 +5549,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!el || typeof el.closest !== "function") return false;
     const pin = el.closest(".md-comment-pin");
     if (!pin || !root.contains(pin)) return false;
-    const host = typeof pin.closest === "function" ? pin.closest(".md-image") : null;
+    const host = pinPictureHost(pin);
     if (!host || hasClass(host, "md-raw") || (typeof host.closest === "function" && host.closest(".md-raw"))) return false;
     if (!pictureFraction(host, event.clientX, event.clientY)) return false;
     if (typeof event.preventDefault === "function") event.preventDefault();
@@ -5573,6 +5589,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const point = pictureFraction(move.host, event.clientX, event.clientY) || move.point;
     if (!point || !move.id) return;
+    pinScrollHold = captureScroll();
     emitEdit({ op: "comment.pin.move", id: move.id, x: point.x, y: point.y });
   }
 
@@ -7343,9 +7360,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     sentLines = bodyCaretReleased ? [] : lines;
     noteFreshComment(previousDoc, message);
     if (message.type === "file") focusHashedComment(message.path, text);
-    if (message.type === "doc" && !ownActor(message)) holdRemoteCaret();
+    const ownDoc = message.type === "doc" && ownActor(message);
+    if (message.type === "doc" && !ownDoc) holdRemoteCaret();
     else remoteCaret = null;
+    const pinScroll = ownDoc ? pinScrollHold : null;
+    if (message.type === "file") pinScrollHold = null;
     render();
+    if (pinScroll) releasePinScroll(pinScroll);
     if (message.type === "file") publishHash();
     const claim = vimForceClaim;
     vimForceClaim = false;
@@ -7561,6 +7582,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         conflictWaiters.splice(index, 1);
         vimEditRegister = null;
         inflightEdit = null;
+        pinScrollHold = null;
         // The bytes stayed, so the leave did not land.
         droppedBreakDoc = null;
       }
@@ -7612,6 +7634,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (isConflict(message)) {
         const waiter = conflictWaiters.shift();
         if (waiter === "edit") {
+          pinScrollHold = null;
           const prior = vimEditRegister || pendingSplicePrior();
           dropPendingEdits();
           if (prior) vimRegister = { text: prior.text, linewise: prior.linewise === true };
@@ -8944,6 +8967,42 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const view = shot.view;
     if (view && shot.x != null && shot.y != null && typeof view.scrollTo === "function") view.scrollTo(shot.x, shot.y);
+  }
+
+  // The repaint's caret is still up the page. Put the release scroll back, including
+  // the correction the browser applies on the frames after the range is placed.
+  function releasePinScroll(shot) {
+    if (!shot || pinScrollHold !== shot) return;
+    restoreScroll(shot);
+    const view = shot.view;
+    const owned = () => !closed && pinScrollHold === shot;
+    const restore = () => {
+      if (!owned()) return;
+      restoreScroll(shot);
+    };
+    const clear = () => {
+      if (pinScrollHold === shot) pinScrollHold = null;
+    };
+    if (!view || typeof view.requestAnimationFrame !== "function") {
+      clear();
+      return;
+    }
+    view.requestAnimationFrame(() => {
+      restore();
+      if (!owned()) return;
+      view.requestAnimationFrame(() => {
+        restore();
+        if (!owned()) return;
+        if (typeof view.setTimeout !== "function") {
+          clear();
+          return;
+        }
+        view.setTimeout(() => {
+          restore();
+          clear();
+        }, 0);
+      });
+    });
   }
 
   // The selection paints the caret and the host scrolls it into view. The page
