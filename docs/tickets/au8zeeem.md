@@ -1,5 +1,5 @@
 title: Firefox: up arrow skips a line that holds only spaces or a tab
-state: triaged
+state: pending review
 type: bug
 priority: medium
 parent:
