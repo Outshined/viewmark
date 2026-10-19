@@ -28,6 +28,12 @@ The markdown is the dialect named in the README. A fence whose info string is ex
 
 A ticket is `tickets/<id>.md`. `ticket create` reads the body from stdin. `ticket show` writes the body to stdout and the fields to stderr. The state is new, triaged, in progress, blocked, pending review, or closed. Close one with `ticket set ID --state closed`. A field write uses the current body. Later field writes win. `--rev` is rejected. `ticket list` hides closed tickets until `--closed`.
 
+## Ticket lifecycle
+
+`ticket show ID` prints the state on stderr. Read that line, then change the state in a later command. `ticket set ID --state STATE` takes one of the states above as one argument.
+
+A filed ticket is `new`. Work that is ready, and work that review sends back, is `triaged`. An agent that is implementing a ticket sets `in progress` when the work starts. Work that cannot proceed is `blocked`, and the body says what it is waiting on. Finished implementation is `pending review`. Review checks the acceptance. The ticket is `closed` when the acceptance is met. A ticket that names a browser test is closed only after that test passes in Firefox. A closed ticket stays closed. A fault found later is a new ticket.
+
 ## Changing this source
 
 Node is the toolchain. There are no packages. From the repository root, `node --test` runs the unit tests in `test/` and `node cli.js serve` starts the hub. The browser tests are separate, below.
