@@ -85,15 +85,15 @@ function hits(caret, offset) {
   return caret.focus === offset || caret.anchor === offset;
 }
 
-// The diagram swaps its source for a picture after the file is drawn.
+// The diagram swaps its source for a picture after the file is drawn. Mermaid
+// inserts nodes before that picture, so a diagram without an svg has not drawn.
 async function settle(page, doc) {
   if (!doc.includes("```mermaid")) return;
-  await page.until(() => page.eval(`(() => {
-    const el = document.querySelector("#editor .md-diagram");
-    if (!el) return false;
-    if (el.querySelector("svg")) return true;
-    return el.childNodes.length > 1;
-  })()`), "the diagram to settle");
+  await page.until(
+    () => page.eval(`!!document.querySelector("#editor .md-diagram svg")`),
+    "the diagram to settle",
+    15000,
+  );
   await page.quiet();
 }
 
