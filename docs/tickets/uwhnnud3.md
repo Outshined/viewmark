@@ -1,5 +1,5 @@
 title: Firefox: a drag that ends on a line's last character leaves that character out
-state: triaged
+state: pending review
 type: bug
 priority: medium
 parent:
