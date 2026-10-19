@@ -1995,7 +1995,7 @@ function matchLinkOrImage(text, index, image) {
   };
 }
 
-function parseMarks(text, base, plainClass, holes) {
+function parseMarks(text, base, plainClass, holes, strike) {
   const root = { delim: null, marks: [], runs: [], openAt: 0 };
   const stack = [root];
   let index = 0;
@@ -2043,13 +2043,23 @@ function parseMarks(text, base, plainClass, holes) {
       continue;
     }
     let opener = null;
-    if (text.startsWith("**", index) || text.startsWith("__", index)) opener = text.slice(index, index + 2);
-    else if (text[index] === "*" || text[index] === "_") opener = text[index];
+    let kind = null;
+    // Closed ~~ is a strike in a heading only. Anywhere else the tildes stay drawn.
+    if (strike && text.startsWith("~~", index)) {
+      opener = "~~";
+      kind = "md-strike";
+    } else if (text.startsWith("**", index) || text.startsWith("__", index)) {
+      opener = text.slice(index, index + 2);
+      kind = "md-strong";
+    } else if (text[index] === "*" || text[index] === "_") {
+      opener = text[index];
+      kind = "md-em";
+    }
     if (opener) {
       flush(index);
-      const kind = opener.length === 2 ? "md-strong" : "md-em";
       stack.push({
         delim: opener,
+        kind,
         marks: stack[stack.length - 1].marks.concat(kind),
         runs: [],
         openAt: index,
@@ -2064,7 +2074,7 @@ function parseMarks(text, base, plainClass, holes) {
   while (stack.length > 1) {
     const frame = stack.pop();
     const parent = stack[stack.length - 1];
-    const kind = frame.delim.length === 2 ? "md-strong" : "md-em";
+    const kind = frame.kind;
     const parentClasses = parent.marks.length > 0 ? parent.marks.slice() : [plainClass];
     parent.runs.push({
       type: "run",
@@ -2083,7 +2093,7 @@ function parseMarks(text, base, plainClass, holes) {
   return root.runs.filter((run) => run.text.length > 0);
 }
 
-function parseInlines(text, base, plainClass) {
+function parseInlines(text, base, plainClass, strike) {
   const parts = [];
   let index = 0;
   let textStart = 0;
@@ -2091,7 +2101,7 @@ function parseInlines(text, base, plainClass) {
 
   function flushText(upto) {
     if (upto <= textStart) return;
-    const runs = parseMarks(text.slice(textStart, upto), base + textStart, plainClass, holes);
+    const runs = parseMarks(text.slice(textStart, upto), base + textStart, plainClass, holes, strike);
     for (const run of runs) parts.push(run);
     textStart = upto;
     holes = [];
@@ -2118,7 +2128,7 @@ function parseInlines(text, base, plainClass) {
       const link = matchLinkOrImage(text, index, false);
       if (link) {
         flushText(index);
-        const labelRuns = parseMarks(link.alt, base + link.labelStart, "md-link");
+        const labelRuns = parseMarks(link.alt, base + link.labelStart, "md-link", undefined, strike);
         for (const run of labelRuns) {
           if (!run.classes.includes("md-link")) run.classes = run.classes.concat("md-link");
           run.href = link.url;
@@ -2160,7 +2170,7 @@ function parseSlot(line, mode) {
     return { runs: [run], parts: [run], images: [] };
   }
   if (mode.kind === "hr" || line.start === line.end) return { runs: [], parts: [], images: [] };
-  return parseInlines(line.text.slice(mode.marker), line.start + mode.marker, mode.plain);
+  return parseInlines(line.text.slice(mode.marker), line.start + mode.marker, mode.plain, mode.kind === "h");
 }
 
 function lineBlank(text) {
@@ -2494,7 +2504,7 @@ function innerMarks(classes) {
   const marks = [];
   for (let i = classes.length - 1; i >= 0; i -= 1) {
     const name = classes[i];
-    if (name === "md-strong" || name === "md-em" || name === "md-code") marks.push(name);
+    if (name === "md-strong" || name === "md-em" || name === "md-code" || name === "md-strike") marks.push(name);
   }
   return marks;
 }
@@ -2509,6 +2519,7 @@ function prefixSize(text, index, mark) {
     const two = text.slice(index, index + 2);
     return two === "**" || two === "__" ? 2 : 0;
   }
+  if (mark === "md-strike") return text.slice(index, index + 2) === "~~" ? 2 : 0;
   return 0;
 }
 
@@ -2523,6 +2534,7 @@ function suffixSize(text, end, mark) {
     const two = text.slice(end - 2, end);
     return two === "**" || two === "__" ? 2 : 0;
   }
+  if (mark === "md-strike") return text.slice(end - 2, end) === "~~" ? 2 : 0;
   return 0;
 }
 
@@ -2530,6 +2542,7 @@ function attracts(classes) {
   return classes.includes("md-strong")
     || classes.includes("md-em")
     || classes.includes("md-code")
+    || classes.includes("md-strike")
     || classes.includes("md-link");
 }
 

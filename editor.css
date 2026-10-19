@@ -1057,6 +1057,10 @@ button.md-ticket-filter-all:hover,
   font-style: italic;
 }
 
+.md-strike {
+  text-decoration: line-through;
+}
+
 .md-code,
 .md-codeblock,
 .md-diagram {
