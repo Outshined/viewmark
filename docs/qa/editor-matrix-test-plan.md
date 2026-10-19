@@ -839,10 +839,10 @@ Line above varies; the line below is `two`.
 ```text
 - `BG.h-p` `# Title\n‸\ntwo\n` Backspace → `# Title‸\ntwo\n` · raw heading, drawn after `Title`; `two` stays a paragraph
 - `BG.h6-p` `###### Title\n‸\ntwo\n` Backspace → `###### Title‸\ntwo\n`
-- `BG.hr-p` `---\n‸\ntwo\n` Backspace → `---‸\ntwo\n` · raw `---`, drawn after the third dash
-- `BG.fc-p` "```js\nlet x\n```\n‸\ntwo\n" Backspace → "```js\nlet x\n```‸\ntwo\n" · the fence is drawn as source, the caret after its closing backticks
-- `BG.mm-p` "```mermaid\nA-->B\n```\n‸\ntwo\n" Backspace → "```mermaid\nA-->B\n```‸\ntwo\n" · the diagram is drawn as source [D14]
-- `BG.im-p` `![box](box.svg)\n‸\ntwo\n` Backspace → `![box](box.svg)‸\ntwo\n` · the image line is raw, drawn after `)`; `two` is its own block [D21]
+- `BG.hr-p` `---\n\n‸two\n` ↑ → `---‸\n\ntwo\n` · ↑ skips the blank under the rule and lands at the end of that line · route `click`
+- `BG.fc-p` "```js\nlet x\n```\n\n‸two\n" ↑ → "```js\nlet x\n```‸\n\ntwo\n" · ↑ skips the blank under the fence and lands at the end of its closing line · route `click`
+- `BG.mm-p` "```mermaid\nA-->B\n```\n\n‸two\n" ↑ → "```mermaid\nA-->B\n```‸\n\ntwo\n" · ↑ skips the blank under the diagram and lands at the end of its closing line · route `click` [D14]
+- `BG.im-p` `![box](box.svg)\n\n‸two\n` ↑ → `![box](box.svg)‸\n\ntwo\n` · ↑ skips the blank under the image and lands at the end of the image line · route `click` [D21]
 - `BG.bl-p` `one\n\n‸\ntwo\n` Backspace → `one‸\n\ntwo\n` · the second blank line goes, and the caret goes past the gap to the end of `one` (R7, R30); that a second blank line in a row is an empty line the caret can stop on is QA's proposal, not approved
 - `BG.bof-p` `‸\ntwo\n` Backspace → same
 ```
@@ -875,8 +875,8 @@ Same construct above and below.
 - `BG.nl-nl` `- a\n  - b\n‸\n  - c\n` Backspace → `- a\n  - b‸\n  - c\n`
 - `BG.q-q` `> a\n‸\n> b\n` Backspace → `> a‸\n> b\n` · two quote lines under one bar
 - `BG.h-h` `# A\n‸\n# B\n` Backspace → `# A‸\n# B\n`
-- `BG.fc-fc` "```\na\n```\n‸\n```\nb\n```\n" Backspace → "```\na\n```‸\n```\nb\n```\n" · still two code blocks
-- `BG.tb-tb` `| a |\n| --- |\n| 1 |\n‸\n| b |\n| --- |\n| 2 |\n` Backspace → `| a |\n| --- |\n| 1 |‸\n| b |\n| --- |\n| 2 |\n` · one table, open as source, whose body rows are `1`, `b`, `---`, and `2`
+- `BG.fc-fc` "```\na\n```\n\n‸```\nb\n```\n" ↑ → "```\na\n```‸\n\n```\nb\n```\n" · ↑ skips the blank between the fences and lands at the end of the first fence's closing line · route `click`
+- `BG.tb-tb` `| a |\n| --- |\n| 1 |\n\n‸| b |\n| --- |\n| 2 |\n` ↑ → `| a |\n| --- |\n| 1 |‸\n\n| b |\n| --- |\n| 2 |\n` · ↑ skips the blank between the tables and lands at the end of `| 1 |` · route `click`
 - `BG.fb-fb` "```\na\n‸\nb\n```\n" Backspace → "```\na‸\nb\n```\n" · an empty line inside a fence body
 ```
 
