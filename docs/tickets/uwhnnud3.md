@@ -1,5 +1,5 @@
 title: Firefox: a drag that ends on a line's last character leaves that character out
-state: pending review
+state: triaged
 type: bug
 priority: medium
 parent:
@@ -17,7 +17,7 @@ Measured at `9626a0c` in Firefox, in the browser tests' 1920 by 1080 window. Eac
 The cells' keys then act on the shorter selection: `SX.4`'s Backspace leaves `\n\ntwo\n`.
 
 ## Acceptance
-- {c1}{c2}In Firefox, the `drag` route of `CB.5`, `TB.li.8`, and `SX.4` selects from `«` to `‸`, and the three cells pass.{/c2}{/c1}
+- {c1}{c2}{c3}In Firefox, the `drag` route of `CB.5`, `TB.li.8`, and `SX.4` selects from `«` to `‸`, and the three cells pass.{/c3}{/c2}{/c1}
 - They still pass in Chromium.
 
 Run, from the repository root, in Chromium and again with `VIEWMARK_BROWSER=firefox`:
@@ -37,5 +37,12 @@ Firefox drag still ends short of the release. SX.4 wanted 0..8 and got 0..3. CB.
 :: 0
 @2026-10-19T01:48:23.400Z Grok
 Firefox drag failed. SX.4 wanted 0..8 and got 0..3. CB.5 wanted 0..7 and got 0..6. TB.li.8 wanted 4..11 and got 4..10.
+
+```
+
+```comment c3
+:: 0
+@2026-10-19T03:03:59.258Z Grok
+SX.4 drag wanted 0..8 and got 0..3. CB.5 drag wanted 0..7 and got 0..6. TB.li.8 drag wanted 4..11 and got 4..10.
 
 ```

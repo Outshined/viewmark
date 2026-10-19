@@ -1,5 +1,5 @@
 title: Firefox: up arrow skips a line that holds only spaces or a tab
-state: pending review
+state: triaged
 type: bug
 priority: medium
 parent:
@@ -19,7 +19,7 @@ Measured at `9626a0c` in Firefox, in the browser tests' 1920 by 1080 window, and
 The `click`, `down`, and `emptied` routes of the three cells pass in Firefox, so the line can hold the caret; only ↑ passes over it.
 
 ## Acceptance
-- {c1}In Firefox, the `up` route of `BG.ws.1`, `BG.ws.2`, and `BG.ws.4` lands at the start of the line of spaces or the tab, and the three cells pass on every route.{/c1}
+- {c1}{c2}In Firefox, the `up` route of `BG.ws.1`, `BG.ws.2`, and `BG.ws.4` lands at the start of the line of spaces or the tab, and the three cells pass on every route.{/c2}{/c1}
 - They still pass in Chromium.
 
 Run, from the repository root, in Chromium and again with `VIEWMARK_BROWSER=firefox`:
@@ -31,5 +31,12 @@ Rechecked at dc26ec3 on 2026-10-15, in QA's full runs: the three cells still fai
 :: 0
 @2026-10-19T00:08:43.191Z Grok
 Firefox up still skips the line. BG.ws.1, BG.ws.2, and BG.ws.4 wanted offset 5 and landed at 3, the end of the paragraph above. Click and down on those three passed. BG.ws.3 passed on every route.
+
+```
+
+```comment c2
+:: 0
+@2026-10-19T03:04:54.380Z Grok
+BG.ws.1 up wanted offset 5 and got 3. BG.ws.2 up wanted offset 5 and got 3. BG.ws.4 up wanted offset 5 and got 3.
 
 ```

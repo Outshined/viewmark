@@ -1,5 +1,5 @@
 title: Strikethrough in a heading draws the tilde markers
-state: pending review
+state: closed
 type: bug
 priority: high
 parent:
