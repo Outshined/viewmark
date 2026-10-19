@@ -2519,10 +2519,13 @@ test("BG.ws.tab", () => {
 // Firefox's line step from the paragraph under a spaces-only or tab-only line
 // reports the paragraph above. Replacing the line fires selectionchange while
 // that landing is still the selection, and Firefox fires it again after
-// moveCaret has cleared movingCaret. Both name that landing, offset 3 for the
-// end of the paragraph above. The line is one caret, at its start.
-test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
+// moveCaret has cleared movingCaret. It restores that landing twice, on the
+// next two turns. Both name that landing, offset 3 for the end of the
+// paragraph above. The line is one caret, at its start, and the selection
+// stays on that caret.
+test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () => {
   const mounted = mountEditor();
+  globalThis.window.setTimeout = (fn, delay) => setTimeout(fn, delay);
   const textNode = (value) => mounted.findAll((node) => node.nodeType === 3 && node.textContent === value)[0];
   const gapBr = () => mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.classList && node.parentElement.classList.contains("md-paragraph-gap") && node.parentElement.dataset.start === "4")[0];
   const slotBr = (start) => mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.dataset && node.parentElement.dataset.start === String(start) && node.parentElement.dataset.end === String(start))[0];
@@ -2532,6 +2535,18 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
     { name: "BG.ws.4", doc: "one\n\n  \n\ntwo\n", at: 9, stop: 5 },
   ];
   const replace = mounted.root.replaceChildren.bind(mounted.root);
+  mounted.root.querySelectorAll = (selector) => {
+    const parts = String(selector).split(",").map((part) => part.trim());
+    const found = [];
+    const walk = (node) => {
+      if (node.nodeType === 1 && parts.some((part) => (
+        part.startsWith(".") ? node.classList && node.classList.contains(part.slice(1)) : node.tagName === part.toUpperCase()
+      ))) found.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    for (const child of mounted.root.childNodes || []) walk(child);
+    return found;
+  };
   // The echo is this arrow's replace. A later document's first paint still
   // holds the previous selection, and adopting that would move its caret.
   let arrow = false;
@@ -2573,6 +2588,25 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", () => {
         assert.equal(view.getState().doc, item.doc, item.name);
         assert.equal(view.getState().cursor, item.stop, `${item.name} ${land}`);
         assert.equal(view.getState().anchor, item.stop, `${item.name} ${land}`);
+        // Two turns each put the selection back on the paragraph. The stop's
+        // caret is still the selection after both.
+        const restoreParagraph = () => {
+          const sel = globalThis.window.getSelection();
+          const one = textNode("one");
+          assert.ok(one, item.name);
+          sel.place(one, one.length);
+          for (const fn of mounted.documentListeners.get("selectionchange") || []) fn();
+        };
+        const turn = () => new Promise((resolve) => setTimeout(resolve, 0));
+        restoreParagraph();
+        await turn();
+        restoreParagraph();
+        await turn();
+        assert.equal(view.getState().cursor, item.stop, `${item.name} ${land} held`);
+        assert.equal(view.getState().anchor, item.stop, `${item.name} ${land} held`);
+        const sel = globalThis.window.getSelection();
+        assert.notEqual(sel.focusNode, textNode("one"), `${item.name} ${land} node`);
+        assert.equal(mapOffset(sel.focusNode, sel.focusOffset), item.stop, `${item.name} ${land} node`);
         view.destroy();
       }
     }
