@@ -2686,6 +2686,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // The lock uses the shifted offset. This keeps the drawn caret on that offset
   // until the browser's restore has been replaced.
   let remoteCaret = null;
+  // ArrowUp onto a line of spaces or a tab. Firefox puts the selection back on
+  // the paragraph above after the turn. The hold stays until the selection is
+  // that line, including when the restore arrives after this turn.
+  let whitespaceCaret = null;
   let pasteSeen = false;
   let pendingAttach = false;
   let noticeTimer = null;
@@ -2698,8 +2702,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // An arrow decides the offset, then render replaces the lines. selectionchange
   // from that replace still names the browser landing. Up from the paragraph
   // under a line of spaces or a tab lands on the paragraph above; adopting that
-  // landing puts the caret back there. Firefox delivers that event after this
-  // flag is cleared, so that stop is retained too.
+  // landing puts the caret back there. Firefox also restores that landing after
+  // this flag is cleared. whitespaceCaret keeps the stop until the selection matches.
   let movingCaret = false;
   let strayRestores = 0;
   let goalX = null;
@@ -3760,6 +3764,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       placeCaret();
       return true;
     }
+    if (whitespaceCaret && (next.anchor !== whitespaceCaret.anchor || next.cursor !== whitespaceCaret.cursor)) {
+      state = { ...state, anchor: whitespaceCaret.anchor, cursor: whitespaceCaret.cursor };
+      placeCaret();
+      return true;
+    }
     state = { ...state, anchor: next.anchor, cursor: next.cursor };
     return claimLines(next.anchor, next.cursor);
   }
@@ -3801,6 +3810,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (sourceMode || (next.anchor === state.anchor && next.cursor === state.cursor)) goalX = keptX;
     if (remoteCaret && (next.anchor !== remoteCaret.anchor || next.cursor !== remoteCaret.cursor)) {
       state = { ...state, anchor: remoteCaret.anchor, cursor: remoteCaret.cursor };
+      placeCaret();
+      return;
+    }
+    // The line step's restore still names the paragraph above. The stop stays.
+    if (whitespaceCaret && (next.anchor !== whitespaceCaret.anchor || next.cursor !== whitespaceCaret.cursor)) {
+      goalX = keptX;
+      state = { ...state, anchor: whitespaceCaret.anchor, cursor: whitespaceCaret.cursor };
       placeCaret();
       return;
     }
@@ -7176,6 +7192,30 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }, 0);
   }
 
+  // Same restore as a remote caret: Firefox puts the pre-render selection back
+  // after this turn. Correct on the two timers it uses. A timer must not drop
+  // the hold while that selection is still the paragraph above the stop.
+  function holdWhitespaceCaret() {
+    const held = { anchor: state.anchor, cursor: state.cursor };
+    whitespaceCaret = held;
+    const view = typeof window !== "undefined" ? window : null;
+    if (!view || typeof view.setTimeout !== "function") return;
+    const correct = () => {
+      if (closed || whitespaceCaret !== held) return;
+      if (state.anchor !== held.anchor || state.cursor !== held.cursor) {
+        state = { ...state, anchor: held.anchor, cursor: held.cursor };
+      }
+      if (!domSelectionMatches()) placeCaret();
+    };
+    view.setTimeout(() => {
+      correct();
+      view.setTimeout(() => {
+        correct();
+        if (whitespaceCaret === held && domSelectionMatches()) whitespaceCaret = null;
+      }, 0);
+    }, 0);
+  }
+
   // The history reply carries the splice range. Place the caret saved with that entry.
   function stageVimHistory(message) {
     if (vimHistoryPending) {
@@ -7684,9 +7724,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       // The selection is already on this stop, so the caret is not placed again.
       // Firefox's block is a separate mark and would stay where it was.
       else syncVimBlockMark();
-      // The line step's selectionchange arrives after movingCaret is cleared and
-      // still names the paragraph above. Keep the stop on the spaces or the tab.
-      if (heldWhitespace) retainCaret();
+      if (heldWhitespace) holdWhitespaceCaret();
     } finally {
       movingCaret = false;
     }
@@ -9330,6 +9368,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     strayRestores = 0;
     settleRemoteCaret();
     retainedCaret = null;
+    whitespaceCaret = null;
     if (keyEndsRun(event)) endTypingRunLater();
     gestureHold = false;
     commentFocus = null;
@@ -9639,6 +9678,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     // A new press is a new gesture. The previous click's retained caret would collapse it.
     remoteCaret = null;
     retainedCaret = null;
+    whitespaceCaret = null;
     if (beginHandleDrag(event)) return;
     didDrag = false;
     goalX = null;
