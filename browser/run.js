@@ -359,7 +359,7 @@ async function place(page, cell, route, interval, context, target) {
     await clickAt(page, bytes, lineStart(bytes, focus) - 1);
     await page.quiet();
     await page.key("↓");
-  } else if (route === "up" || route === "left") {
+  } else if (route === "left") {
     const below = lineEnd(bytes, focus) + 1;
     if (PHANTOM(bytes, below)) await page.clickBelow();
     else {
@@ -367,7 +367,31 @@ async function place(page, cell, route, interval, context, target) {
       await clickAt(page, bytes, start == null ? below : start);
     }
     await page.quiet();
-    await page.key(route === "up" ? "↑" : "←");
+    await page.key("←");
+  } else if (route === "up") {
+    // A paragraph gap is a zero-height line. Firefox hit-tests that edge as the line above,
+    // so ↑ never starts on the paragraph under a spaces or tab line.
+    const below = lineEnd(bytes, focus) + 1;
+    let at = below;
+    let placed = false;
+    while (at < bytes.length) {
+      const end = lineEnd(bytes, at);
+      const start = await firstDrawn(page, at, end);
+      const empty = start == null ? null : await page.eval(`window.__qaEmptyLine(${start})`);
+      if (start == null || (empty && empty.bottom <= empty.top)) {
+        at = end + 1;
+        continue;
+      }
+      await clickAt(page, bytes, start);
+      placed = true;
+      break;
+    }
+    if (!placed) {
+      if (PHANTOM(bytes, at)) await page.clickBelow();
+      else await clickAt(page, bytes, below);
+    }
+    await page.quiet();
+    await page.key("↑");
   } else if (route === "right") {
     await clickAt(page, bytes, lineStart(bytes, focus) - 1);
     await page.quiet();
