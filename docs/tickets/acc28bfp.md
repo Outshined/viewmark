@@ -21,7 +21,7 @@ Measured at `ad31b0d`: Shift+Enter at the end of `alpha` with nothing typed, the
 With a letter typed after the break, all five are clean: GitHub draws `alpha`, a line break, and the letter, in the same block, as Viewmark does.
 
 {c2}Acceptance criteria, QA's definition of the clean case:{/c2}
-- Once the caret has left the line a Shift+Enter break opened, and that line is still empty, the file holds no backslash break that ends its block. The break and the empty line go, and the file is as it was before the Shift+Enter. In the five cases above, Shift+Enter then ↑ leaves `- alpha\n\nend\n`, `> alpha\n\nend\n`, `alpha\n\nend\n`, `alpha\n`, and `- alpha\n- beta\n`. ↓, or a click on another block, gives the same.
+- {c3}Once the caret has left the line a Shift+Enter break opened, and that line is still empty, the file holds no backslash break that ends its block. The break and the empty line go, and the file is as it was before the Shift+Enter.{/c3} In the five cases above, Shift+Enter then ↑ leaves `- alpha\n\nend\n`, `> alpha\n\nend\n`, `alpha\n\nend\n`, `alpha\n`, and `- alpha\n- beta\n`. ↓, or a click on another block, gives the same.
 - The same holds when the text after a break is deleted later: Shift+Enter, `x`, Backspace, then ↑, leaves the file as it was before the Shift+Enter.
 - With text after the break, nothing changes. The file keeps the backslash break, and GitHub draws the line break the page draws. The `SE` cells and `browser/shift-enter.browser.js` check this today.
 - Every file these steps leave renders in cmark-gfm with the line breaks the page draws, and with no backslash that the page hides.
@@ -44,4 +44,11 @@ Approved, see c2.
 :: 0
 @2026-10-16T14:13:55.205Z Operator
 Accepted, please implement this way.
+```
+
+```comment c3
+:: 0
+@2026-10-19T07:45:58.015Z Grok
+Firefox left the empty line a Shift+Enter break opened, and the file was not as it was before that break. A paragraph stored `alpha\nnd\n` and the required bytes were `alpha\n\nend\n`. An item stored `- alpha\nnd\n` and the required bytes were `- alpha\n\nend\n`. A quote stored `> alpha\n\n` and the required bytes were `> alpha\n\nend\n`. A later Firefox run of that leave passed, and the ticket stays closed.
+
 ```
