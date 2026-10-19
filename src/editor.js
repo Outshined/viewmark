@@ -2490,6 +2490,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let granted = { anchor: state.anchor, cursor: state.cursor };
   // claimLines re-enters while the empty-break splice is still in send.
   let droppingBreak = false;
+  // The text that splice was cut from. mouseup and click both leave before a
+  // socket applies it, and the second cut still has the pre-drop offsets.
+  let droppedBreakDoc = null;
   // A Shift+Enter that wrote only a backslash left the next line where it was.
   // A CRLF blank is that line. Removing it would join the blocks.
   let bareBreakAt = null;
@@ -2896,6 +2899,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     reconnecting = false;
     reopening = false;
     inflightEdit = null;
+    // The splice will not be stored. The same text can send the leave again.
+    droppedBreakDoc = null;
     clearEditTimer();
     typingRun = null;
     vimInsertOpen = false;
@@ -3291,6 +3296,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // end the block, so another viewer draws it. The line and the slash go.
   function dropEmptyBreak(anchor, cursor) {
     if (droppingBreak || anchor !== cursor || granted.anchor !== granted.cursor) return false;
+    if (droppedBreakDoc === state.doc) return false;
     const origin = granted.cursor;
     if (!Number.isFinite(origin) || sameSourceLine(state.doc, origin, cursor)) return false;
     let cut = emptyBreakCut(state.doc, origin);
@@ -3303,13 +3309,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const caret = Math.max(0, Math.min(expect.length, mapBreakCaret(cursor, cut)));
     const token = { text: expect, anchor: caret, cursor: caret };
     const before = state.doc;
+    const queued = pendingEdits.length;
+    const heldEdit = conflictWaiters.includes("edit");
     keptCaret = token;
     droppingBreak = true;
+    droppedBreakDoc = before;
     try {
       emitEdit({ op: "insert", text: cut.inserted, anchor: cut.from, cursor: cut.to, caret });
     } finally {
       droppingBreak = false;
     }
+    const sentOrQueued = state.doc !== before
+      || pendingEdits.length > queued
+      || (!heldEdit && conflictWaiters.includes("edit"));
+    // The memory transport has already replaced this text. A missed send must not stick.
+    if (!sentOrQueued || state.doc !== before) droppedBreakDoc = null;
     if (keptCaret === token) keptCaret = null;
     if (state.doc !== before && slashOnly) bareBreakAt = null;
     return state.doc !== before;
@@ -7158,6 +7172,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       undo: Array.isArray(message.undo) ? message.undo : [],
       redo: Array.isArray(message.redo) ? message.redo : [],
     };
+    // A different document is not the text that leave was cut from.
+    if (droppedBreakDoc != null && text !== droppedBreakDoc) droppedBreakDoc = null;
     if (message.type === "file") {
       bodyCaretReleased = false;
       releaseRaw(message.path);
@@ -7396,6 +7412,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         conflictWaiters.splice(index, 1);
         vimEditRegister = null;
         inflightEdit = null;
+        // The bytes stayed, so the leave did not land.
+        droppedBreakDoc = null;
       }
       flushPendingEdit();
       return;

@@ -6548,6 +6548,149 @@ test("acc28bfp leaving an empty Shift+Enter line drops the block-ending backslas
   }
 });
 
+// A socket does not apply the drop inside send. mouseup and the click both
+// leave before that reply, so the second cut would still use these offsets.
+function openSocketBreak(mounted) {
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const sent = [];
+  let deliver = null;
+  const transport = {
+    memory: false,
+    send(message) { sent.push(message); },
+    subscribe(fn) {
+      deliver = fn;
+      return () => {};
+    },
+  };
+  const view = createEditor(mounted.root, "alpha\n\nend\n", 5, transport);
+  deliver({ type: "file", path: "a.md", rev: 0, text: "alpha\n\nend\n", cursor: 5, anchor: 5 });
+  mounted.listeners.beforeinput({ inputType: "insertLineBreak", preventDefault() {} });
+  deliver({ type: "doc", rev: 1, text: "alpha\\\n\n\nend\n", cursor: 7, anchor: 7, actor: "" });
+  const drops = () => sent.filter((message) => message.type === "edit" && message.op === "insert" && message.text === "\n");
+  const leave = () => {
+    const node = textNode(mounted.root, "end");
+    assert.ok(node, "end text");
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: node, offset: 0 });
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      isCollapsed: true,
+      anchorNode: node,
+      anchorOffset: 0,
+      focusNode: node,
+      focusOffset: 0,
+      removeAllRanges() {},
+      addRange() {},
+      collapse() {},
+      setBaseAndExtent() {},
+      getRangeAt() {
+        return {
+          startContainer: node,
+          startOffset: 0,
+          endContainer: node,
+          endOffset: 0,
+          collapsed: true,
+          commonAncestorContainer: node,
+        };
+      },
+    });
+    const event = {
+      target: node,
+      clientX: 8,
+      clientY: 8,
+      detail: 1,
+      button: 0,
+      shiftKey: false,
+      preventDefault() {},
+    };
+    mounted.listeners.mousedown(event);
+    fireDocument(mounted, "selectionchange");
+    mounted.listeners.mouseup(event);
+    mounted.listeners.click(event);
+  };
+  return { view, deliver, drops, leave };
+}
+
+function assertBreakDrop(message) {
+  assert.equal(message.anchor, 5);
+  assert.equal(message.cursor, 8);
+}
+
+test("acc28bfp a socket leave of an empty Shift+Enter line sends the drop once", () => {
+  const mounted = mountEditor();
+  const session = openSocketBreak(mounted);
+  try {
+    assert.equal(session.view.getState().doc, "alpha\\\n\n\nend\n");
+    assert.equal(session.view.getState().cursor, 7);
+    session.leave();
+    // The reply is what used to flush the second splice, still cut from the pre-drop offsets.
+    session.deliver({ type: "doc", rev: 2, text: "alpha\n\nend\n", cursor: 7, anchor: 7, actor: "" });
+    const drops = session.drops();
+    assert.equal(drops.length, 1);
+    assertBreakDrop(drops[0]);
+  } finally {
+    session.view.destroy();
+    mounted.restore();
+  }
+});
+
+test("acc28bfp a refused empty-break splice lets the leave send again", () => {
+  const mounted = mountEditor();
+  const session = openSocketBreak(mounted);
+  try {
+    session.leave();
+    assert.equal(session.drops().length, 1);
+    session.deliver({ type: "error", status: 409 });
+    assert.equal(session.drops().length, 1);
+    session.leave();
+    const drops = session.drops();
+    assert.equal(drops.length, 2);
+    assertBreakDrop(drops[0]);
+    assertBreakDrop(drops[1]);
+  } finally {
+    session.view.destroy();
+    mounted.restore();
+  }
+});
+
+test("acc28bfp a noop on the empty-break splice lets the leave send again", () => {
+  const mounted = mountEditor();
+  const session = openSocketBreak(mounted);
+  try {
+    session.leave();
+    assert.equal(session.drops().length, 1);
+    session.deliver({ type: "noop", path: "a.md", rev: 1 });
+    assert.equal(session.drops().length, 1);
+    session.leave();
+    const drops = session.drops();
+    assert.equal(drops.length, 2);
+    assertBreakDrop(drops[0]);
+    assertBreakDrop(drops[1]);
+  } finally {
+    session.view.destroy();
+    mounted.restore();
+  }
+});
+
+test("acc28bfp a changed document is not the empty-break splice", () => {
+  const mounted = mountEditor();
+  const session = openSocketBreak(mounted);
+  try {
+    session.leave();
+    assert.equal(session.drops().length, 1);
+    session.deliver({ type: "doc", rev: 2, text: "alpha\n\nend\n", cursor: 7, anchor: 7, actor: "" });
+    assert.equal(session.drops().length, 1);
+    session.deliver({ type: "doc", rev: 3, text: "alpha\\\n\n\nend\n", cursor: 7, anchor: 7, actor: "" });
+    session.leave();
+    const drops = session.drops();
+    assert.equal(drops.length, 2);
+    assertBreakDrop(drops[0]);
+    assertBreakDrop(drops[1]);
+  } finally {
+    session.view.destroy();
+    mounted.restore();
+  }
+});
+
 test("enter writes a blank line where the caret line would join", () => {
   const apply = (doc, cursor) => {
     const brk = enterBreak(doc, cursor, cursor);
