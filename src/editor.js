@@ -7906,6 +7906,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           offset: start + i,
           left: rect.left,
           right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
           mid: (rect.top + rect.bottom) / 2,
           bare: false,
         });
@@ -9596,6 +9598,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return offset;
   }
 
+  function placedOffset(event, offset) {
+    const placed = tabHalf(event, offset);
+    if (sourceMode) return placed;
+    return trailingBlankPress(event, blankLinePress(event, skipHidden(state.doc, placed, "nearer")));
+  }
+
   function pressOffset(event) {
     const rule = rulePress(event);
     if (rule != null) return rule;
@@ -9603,9 +9611,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (gap != null) return gap;
     const mapped = pointMapped(event);
     if (mapped == null) return null;
-    const placed = tabHalf(event, mapped);
-    if (sourceMode) return placed;
-    return trailingBlankPress(event, blankLinePress(event, skipHidden(state.doc, placed, "nearer")));
+    return placedOffset(event, mapped);
   }
 
   function pointOffset(event) {
@@ -9657,21 +9663,47 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     dragRange = null;
   });
 
-  // Firefox reports a drag's end short of the offset a click at that point
-  // reports. The miss is the right half of a line's last glyph, and a
-  // zero-height gap before the line can leave the selection on the block
-  // above. The click maps the release. A range that already reaches it
-  // stays, so a host that included the glyph is unchanged.
+  // Firefox's caretPositionFromPoint stays on the drag focus, and a drag
+  // across elements does not dispatch a click. The miss is the right half of
+  // a line's last glyph, and a zero-height gap can leave the selection on the
+  // block above while the pointer is on a later glyph. The glyph is the offset
+  // a click there maps. A range that already reaches it stays.
+  function glyphPointerOffset(event) {
+    if (!event || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return null;
+    const x = event.clientX;
+    const y = event.clientY;
+    let best = null;
+    let bestDy = Infinity;
+    for (const slot of rawLayoutSlots()) {
+      if (!slot || slot.bare) continue;
+      if (!(slot.right > slot.left) || !(slot.bottom > slot.top)) continue;
+      if (x < slot.left || x >= slot.right || y < slot.top || y >= slot.bottom) continue;
+      const dy = Math.abs(y - (slot.top + slot.bottom) / 2);
+      if (dy >= bestDy) continue;
+      best = slot;
+      bestDy = dy;
+    }
+    if (!best) return null;
+    const mid = (best.left + best.right) / 2;
+    const offset = x < mid ? best.offset : best.offset + 1;
+    return placedOffset(event, offset);
+  }
+
   function dragRelease(mapped, event) {
     if (!mapped) return mapped;
     const detail = event && event.detail ? event.detail : 1;
     if (detail >= 2) return mapped;
-    const release = pressOffset(event);
-    if (release == null || release === mapped.cursor) return mapped;
     if (gestureOffset != null && gestureOffset !== mapped.anchor) return mapped;
     const span = mapped.cursor - mapped.anchor;
+    if (span === 0) return mapped;
+    let release = pressOffset(event);
+    if (release == null || release === mapped.cursor) {
+      const glyph = glyphPointerOffset(event);
+      if (glyph != null) release = glyph;
+    }
+    if (release == null || release === mapped.cursor) return mapped;
     const next = release - mapped.anchor;
-    if (span === 0 || next === 0 || Math.sign(next) !== Math.sign(span)) return mapped;
+    if (next === 0 || Math.sign(next) !== Math.sign(span)) return mapped;
     if (Math.abs(next) <= Math.abs(span)) return mapped;
     return { anchor: mapped.anchor, cursor: release };
   }

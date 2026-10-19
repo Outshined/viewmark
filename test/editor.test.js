@@ -14986,6 +14986,65 @@ test("CB.5 TB.li.8 SX.4 a drag that ends on a line's last character includes tha
     });
     flush();
   };
+  // Glyph boxes are the click map. The right half is the offset after the glyph.
+  const boxFor = (doc, source) => {
+    let line = 0;
+    let col = 0;
+    const at = Math.max(0, Math.min(source, doc.length));
+    for (let i = 0; i < at; i += 1) {
+      if (doc[i] === "\n") {
+        line += 1;
+        col = 0;
+      } else col += 1;
+    }
+    const left = 40 + col * 16;
+    const top = 80 + line * 48;
+    return { left, right: left + 16, top, bottom: top + 20, width: 16, height: 20 };
+  };
+  let glyphDoc = "";
+  const savedRange = globalThis.document.createRange;
+  const installGlyphRanges = () => {
+    globalThis.document.createRange = () => {
+      const range = {
+        startContainer: null,
+        startOffset: 0,
+        endContainer: null,
+        endOffset: 0,
+        setStart(node, offset) {
+          this.startContainer = node;
+          this.startOffset = offset;
+        },
+        setEnd(node, offset) {
+          this.endContainer = node;
+          this.endOffset = offset;
+        },
+        collapse() {},
+        selectNode() {},
+        setStartAfter() {},
+        setStartBefore() {},
+        getBoundingClientRect() {
+          const list = this.getClientRects();
+          return list[0] || null;
+        },
+        getClientRects() {
+          const node = this.startContainer;
+          if (!node || node.nodeType !== 3 || !glyphDoc) return [];
+          const parent = node.parentElement;
+          const origin = parent && parent.dataset ? Number(parent.dataset.start) : NaN;
+          if (!Number.isFinite(origin)) return [];
+          return [boxFor(glyphDoc, origin + this.startOffset)];
+        },
+      };
+      return range;
+    };
+  };
+  const pointerAt = (doc, offset, side) => {
+    const box = boxFor(doc, offset);
+    return {
+      clientX: side === "right" ? box.right - 4 : box.left + 2,
+      clientY: (box.top + box.bottom) / 2,
+    };
+  };
   // Firefox's mouseup caretPositionFromPoint stays on the short drag focus.
   // A click at the release maps to the farther offset. Firefox can also put
   // the short DOM range back after mouseup has already lengthened the selection.
@@ -15025,6 +15084,52 @@ test("CB.5 TB.li.8 SX.4 a drag that ends on a line's last character includes tha
       view.destroy();
     }
   };
+  // Firefox keeps caretPositionFromPoint on the short drag focus, at mouseup
+  // and at click, and a drag across lines does not dispatch click. The pointer
+  // is on the glyph a click maps to the release.
+  const glyphDrag = (cell, { click = false, putback = false, detail = 1 } = {}) => {
+    glyphDoc = cell.doc;
+    timers.length = 0;
+    const view = createEditor(mounted.root, cell.doc, cell.cursor);
+    try {
+      const press = sourcePoint(cell.anchor);
+      const short = sourcePoint(cell.firefox);
+      assert.ok(press, `${cell.name} press`);
+      assert.ok(short, `${cell.name} focus`);
+      const atRelease = cell.release > cell.anchor
+        ? pointerAt(cell.doc, cell.release - 1, "right")
+        : pointerAt(cell.doc, cell.release, "left");
+      const atPress = cell.anchor > 0 && cell.doc[cell.anchor - 1] !== "\n"
+        ? pointerAt(cell.doc, cell.anchor - 1, "right")
+        : pointerAt(cell.doc, cell.anchor, "left");
+      hit = { offsetNode: press.node, offset: press.offset };
+      mounted.listeners.mousedown({ ...atPress, detail: 1, button: 0, target: press.node });
+      show(press, short);
+      fireDocument(mounted, "selectionchange");
+      hit = { offsetNode: short.node, offset: short.offset };
+      mounted.listeners.mouseup({ ...atRelease, detail, button: 0, target: short.node });
+      if (putback) {
+        const livePress = sourcePoint(cell.anchor);
+        const liveShort = sourcePoint(cell.firefox);
+        assert.ok(livePress && liveShort, `${cell.name} short range after mouseup`);
+        show(livePress, liveShort);
+        fireDocument(mounted, "selectionchange");
+      }
+      if (click) {
+        mounted.listeners.click({
+          target: short.node,
+          ...atRelease,
+          detail: 1,
+          button: 0,
+          preventDefault() {},
+        });
+        flush();
+      }
+      return view.getState();
+    } finally {
+      view.destroy();
+    }
+  };
   const expectRelease = (state, cell, label) => {
     assert.equal(state.anchor, cell.anchor, label);
     assert.equal(state.cursor, cell.release, label);
@@ -15057,6 +15162,38 @@ test("CB.5 TB.li.8 SX.4 a drag that ends on a line's last character includes tha
       assert.equal(state.cursor, cell.release, cell.name);
       assert.equal(mapOffset(sel.anchorNode, sel.anchorOffset), cell.anchor, `${cell.name} chromium DOM anchor`);
       assert.equal(mapOffset(sel.focusNode, sel.focusOffset), cell.release, `${cell.name} chromium DOM focus`);
+    }
+
+    installGlyphRanges();
+    try {
+      const backward = { name: "backward", doc: "one\n\ntwo\n", cursor: 0, anchor: 8, firefox: 1, release: 0, text: "one\n\ntwo" };
+      for (const how of [
+        { click: false, putback: false },
+        { click: true, putback: false },
+        { click: false, putback: true },
+      ]) {
+        const label = `${how.click ? "click" : "mouseup"}${how.putback ? " putback" : ""}`;
+        for (const cell of cells) {
+          const state = glyphDrag(cell, how);
+          expectRelease(state, cell, `${cell.name} glyph ${label}`);
+        }
+        const back = glyphDrag(backward, how);
+        expectRelease(back, backward, `backward glyph ${label}`);
+      }
+      for (const cell of cells) {
+        const state = glyphDrag({ ...cell, firefox: cell.release }, { click: false });
+        expectRelease(state, cell, `${cell.name} glyph already at the release`);
+      }
+      const keptGlyph = glyphDrag({ name: "longer", doc: "- a\n- b\n\n", cursor: 0, anchor: 0, firefox: 8, release: 7, text: "- a\n- b\n" });
+      assert.equal(keptGlyph.anchor, 0);
+      assert.equal(keptGlyph.cursor, 8);
+      assert.equal(mapOffset(sel.focusNode, sel.focusOffset), 8);
+      const wordGlyph = glyphDrag({ name: "detail 2", doc: "- a\n- b\n\n", cursor: 0, anchor: 0, firefox: 6, release: 7, text: "- a\n- " }, { detail: 2 });
+      assert.equal(wordGlyph.anchor, 0);
+      assert.equal(wordGlyph.cursor, 6);
+      assert.equal(mapOffset(sel.focusNode, sel.focusOffset), 6);
+    } finally {
+      globalThis.document.createRange = savedRange;
     }
 
     const kept = drag("longer than the release", "- a\n- b\n\n", 0, 0, 8, 7);
