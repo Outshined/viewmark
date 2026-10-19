@@ -2607,6 +2607,14 @@ test("BG.ws.1 BG.ws.2 BG.ws.4 up stops on a line of spaces or a tab", async () =
         const sel = globalThis.window.getSelection();
         assert.notEqual(sel.focusNode, textNode("one"), `${item.name} ${land} node`);
         assert.equal(mapOffset(sel.focusNode, sel.focusOffset), item.stop, `${item.name} ${land} node`);
+        // Both timers have run. Firefox then puts the paragraph back. The hold
+        // is still set, so the selection returns to the stop.
+        restoreParagraph();
+        assert.equal(view.getState().cursor, item.stop, `${item.name} ${land} after`);
+        assert.equal(view.getState().anchor, item.stop, `${item.name} ${land} after`);
+        const after = globalThis.window.getSelection();
+        assert.notEqual(after.focusNode, textNode("one"), `${item.name} ${land} after node`);
+        assert.equal(mapOffset(after.focusNode, after.focusOffset), item.stop, `${item.name} ${land} after node`);
         view.destroy();
       }
     }

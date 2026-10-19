@@ -2687,8 +2687,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // until the browser's restore has been replaced.
   let remoteCaret = null;
   // ArrowUp onto a line of spaces or a tab. Firefox puts the selection back on
-  // the paragraph above after the turn. The hold stays until the selection is
-  // that line, including when the restore arrives after this turn.
+  // the paragraph above after the turn, and again after a timer has corrected
+  // it. The next key or pointer clears the hold. A timer must not.
   let whitespaceCaret = null;
   let pasteSeen = false;
   let pendingAttach = false;
@@ -2703,7 +2703,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // from that replace still names the browser landing. Up from the paragraph
   // under a line of spaces or a tab lands on the paragraph above; adopting that
   // landing puts the caret back there. Firefox also restores that landing after
-  // this flag is cleared. whitespaceCaret keeps the stop until the selection matches.
+  // this flag is cleared. whitespaceCaret keeps the stop until the next key or pointer.
   let movingCaret = false;
   let strayRestores = 0;
   let goalX = null;
@@ -7192,9 +7192,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }, 0);
   }
 
-  // Same restore as a remote caret: Firefox puts the pre-render selection back
-  // after this turn. Correct on the two timers it uses. A timer must not drop
-  // the hold while that selection is still the paragraph above the stop.
+  // Firefox puts the pre-render selection back after this turn, and again after
+  // the correction. Place the stop on both timers. The hold stays until the
+  // next key or pointer; dropping it here lets that later restore win.
   function holdWhitespaceCaret() {
     const held = { anchor: state.anchor, cursor: state.cursor };
     whitespaceCaret = held;
@@ -7209,10 +7209,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     };
     view.setTimeout(() => {
       correct();
-      view.setTimeout(() => {
-        correct();
-        if (whitespaceCaret === held && domSelectionMatches()) whitespaceCaret = null;
-      }, 0);
+      view.setTimeout(correct, 0);
     }, 0);
   }
 
