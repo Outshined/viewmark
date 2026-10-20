@@ -18,6 +18,7 @@ import {
   lockSpans,
   readDestination,
   offsetAt,
+  findSpans,
   parseCommentNotes,
   parseUnifiedDiff,
   planDiff,
@@ -828,13 +829,37 @@ async function firstFreeCreateRel(repo, stored) {
   return null;
 }
 
+// The files box shows the heading words. A comment marker on that line is not a word.
 function headingTitle(text) {
   if (typeof text !== "string") return "";
   const raw = text.split("\n", 1)[0];
   const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
   const match = /^#\s+(\S.*)$/.exec(line);
   if (!match) return "";
-  return match[1].trim();
+  const title = match[1];
+  if (!title.includes("{")) return title.trim();
+  const contentStart = line.length - title.length;
+  const cuts = [];
+  for (const span of findSpans(text)) {
+    if (span.openEnd > contentStart && span.openStart < line.length) {
+      cuts.push([Math.max(span.openStart, contentStart), Math.min(span.openEnd, line.length)]);
+    }
+    if (span.closeEnd > contentStart && span.closeStart < line.length) {
+      cuts.push([Math.max(span.closeStart, contentStart), Math.min(span.closeEnd, line.length)]);
+    }
+  }
+  if (cuts.length === 0) return title.trim();
+  cuts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let out = "";
+  let at = contentStart;
+  for (const [from, to] of cuts) {
+    if (to <= at) continue;
+    const start = Math.max(from, at);
+    out += line.slice(at, start);
+    at = to;
+  }
+  out += line.slice(at);
+  return out.trim();
 }
 
 async function titlesFor(repo, listed) {

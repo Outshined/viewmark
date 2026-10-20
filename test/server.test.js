@@ -3733,6 +3733,87 @@ test("T-heading-title", async () => {
   });
 });
 
+test("a heading title omits comment markers", async () => {
+  await withDocs(async ({ port, dir }) => {
+    await fs.writeFile(path.join(dir, "marked.md"), "# {c1}Welcome{/c1}\n\nbody\n\n```comment c1\nnote\n```\n");
+    await fs.writeFile(path.join(dir, "part.md"), "# Hello {c1}world{/c1}\n");
+    await fs.writeFile(path.join(dir, "two.md"), "# {c1}A{/c1} and {note_2}B{/note_2}\n");
+    await fs.writeFile(path.join(dir, "nested.md"), "# {c1}A {c2}B{/c2} C{/c1}\n");
+    await fs.writeFile(path.join(dir, "split.md"), "# {c2}Hello\n\nthere{/c2}\n");
+    await fs.writeFile(path.join(dir, "bare.md"), "# Use {c9} raw\n");
+    await fs.writeFile(path.join(dir, "closer.md"), "# Hello {/c1}\n");
+    await fs.writeFile(path.join(dir, "empty.md"), "# {c1}{/c1}\n");
+    await fs.writeFile(path.join(dir, "crlf.md"), "# {c1}Welcome{/c1}\r\nbody\n");
+    await fs.writeFile(path.join(dir, "page.md"), "# Page\n");
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    a.send({ type: "list", username: "A" });
+    const listed = await a.next((msg) => msg.type === "docs");
+    assert.equal(listed.titles["marked.md"], "Welcome");
+    assert.equal(listed.titles["part.md"], "Hello world");
+    assert.equal(listed.titles["two.md"], "A and B");
+    assert.equal(listed.titles["nested.md"], "A B C");
+    assert.equal(listed.titles["split.md"], "Hello");
+    assert.equal(listed.titles["bare.md"], "Use {c9} raw");
+    assert.equal(listed.titles["closer.md"], "Hello {/c1}");
+    assert.equal(Object.hasOwn(listed.titles, "empty.md"), false);
+    assert.equal(listed.titles["crlf.md"], "Welcome");
+    assert.equal(listed.titles["page.md"], "Page");
+    assert.equal(listed.titles["welcome.md"], "Welcome");
+
+    const opened = await openDoc(a, "A", "page.md");
+    await openDoc(b, "B", "page.md");
+    let rev = opened.rev;
+    await syncLock(a, [b], "A", "page.md", 2, rev, 6);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "page.md",
+      rev,
+      anchor: 2,
+      cursor: 6,
+      op: "comment.add",
+    });
+    const wrapped = await takeDoc(a);
+    await takeDoc(b);
+    assert.equal(wrapped.text.startsWith("# {c1}Page{/c1}\n"), true);
+    await delay(200);
+    assert.equal(a.all.some((msg) => msg.type === "docs"), false);
+    assert.equal(b.all.some((msg) => msg.type === "docs"), false);
+    a.send({ type: "list", username: "A" });
+    const same = await a.next((msg) => msg.type === "docs");
+    assert.equal(same.titles["page.md"], "Page");
+    assert.equal(same.titles["page.md"].includes("{"), false);
+
+    rev = wrapped.rev;
+    const openAt = wrapped.text.indexOf("{c1}");
+    const closeAt = wrapped.text.indexOf("{/c1}");
+    const word = openAt + "{c1}".length;
+    assert.equal(wrapped.text.slice(word, closeAt), "Page");
+    await syncLock(a, [b], "A", "page.md", word, rev, closeAt);
+    a.send({
+      type: "edit",
+      username: "A",
+      path: "page.md",
+      rev,
+      anchor: word,
+      cursor: closeAt,
+      op: "insert",
+      text: "Title",
+    });
+    const renamed = await takeDoc(a);
+    await takeDoc(b);
+    assert.equal(renamed.text.startsWith("# {c1}Title{/c1}\n"), true);
+    const docsA = await a.next((msg) => msg.type === "docs");
+    const docsB = await b.next((msg) => msg.type === "docs");
+    assert.equal(docsA.titles["page.md"], "Title");
+    assert.equal(docsB.titles["page.md"], "Title");
+    assert.equal(await readDoc(dir, "page.md"), renamed.text);
+    a.ws.close();
+    b.ws.close();
+  });
+});
+
 test("a closed holder reconnects with its token and the file message carries its caret and the lock succeeds", async () => {
   await withDocs(async ({ port, dir }) => {
     const text = "alpha\nbeta\n";
