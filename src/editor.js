@@ -10107,12 +10107,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (sourceMode) moveRawCaret(forward ? "ArrowRight" : "ArrowLeft", extend, false);
         else {
           // Leaving the block puts the next letter on the line under it.
+          // A step that started before the content and is still in that lock has not left.
           const before = state.cursor;
           moveCaret(forward ? "forward" : "backward", "character", extend);
           const [start, end] = blockSpan(state.doc, before);
           if (state.cursor < start || state.cursor > end) {
-            const at = forward ? end : start;
-            moveVimCaret(extend ? state.anchor : at, at);
+            let held = false;
+            if (before < start) {
+              const lock = lockSpans(state.doc).find((span) => before >= span.start && before <= span.end);
+              held = Boolean(lock && state.cursor >= lock.start && state.cursor <= lock.end);
+            }
+            if (!held) {
+              const at = forward ? end : start;
+              moveVimCaret(extend ? state.anchor : at, at);
+            }
           }
         }
       }
