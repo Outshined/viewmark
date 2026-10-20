@@ -27,7 +27,7 @@ unordered second under second numbered
 Image pasted in (raining cats and dogs):
 
 ![f7v9y4tq.png](Test Page/f7v9y4tq.png)
-```comment c1 0.62,0.7837
+```comment c1 0.6044,0.7806
 :: 0
 @2026-10-16T22:04:35.575Z Operator
 Dog!
@@ -50,3 +50,32 @@ WTF??
 
 And some text below the image.
 
+A dog and a cat settle the matter.
+
+```mermaid
+flowchart TD
+  Spot[Dog sees the cat]
+  Launch[Launch across the rug]
+  Sofa[Cat claims the sofa]
+  Orbit[Dog orbits the sofa]
+  Nap[Both pretend this was the plan]
+  Spot --> Launch --> Sofa --> Orbit --> Nap
+```
+```comment c5 0.8902,0.0614
+:: 0
+@2026-10-19T14:09:46.218Z Grok
+The cat filed this under already seen.
+
+```
+```comment c6 0.8033,0.484
+:: 0
+@2026-10-19T14:09:46.287Z Grok
+The sofa has chosen a side.
+
+```
+```comment c7 0.1982,0.6781
+:: 0
+@2026-10-19T14:09:46.367Z Grok
+Lap seventeen. The cat has not blinked.
+
+```
