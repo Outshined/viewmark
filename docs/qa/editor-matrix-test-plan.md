@@ -402,7 +402,6 @@ Out of scope: these are not cells below.
 - the drawn diagram itself, and Prism's colors;
 - a Ctrl+B bold command, which is not a feature yet;
 - checkboxes drawn for task items, which the page does not draw;
-- strikethrough rendering, which the dialect does not have;
 - an item with several paragraphs, and front matter, which the dialect does not have;
 - right-to-left text beyond the one smoke cell `MV.rtl.1`;
 - emoji, combining accents, and other characters longer than one code unit.

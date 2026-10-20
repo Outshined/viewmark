@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { launchBrowser, Page, startHub } from "./harness.js";
 
-// Ticket 3wvczcz4. The plan test never paints. The line under the caret is raw,
-// so the caret rests on the last line while the headings are read.
+// The plan test never paints. The line under the caret is raw, so the caret
+// rests on the last line while the struck lines are read.
 
 const TEXT = [
   "# ~~retired~~",
@@ -16,6 +16,9 @@ const TEXT = [
   "# `~~retired~~`",
   "",
   "~~gone~~",
+  "- ~~**G8. Landing.** see `master` now.~~",
+  "1. ~~one~~",
+  "> ~~one~~",
   "",
   "tail",
 ].join("\n") + "\n";
@@ -44,7 +47,7 @@ function struck(decoration) {
   return /line-through/.test(decoration || "");
 }
 
-test("3wvczcz4: a rendered heading strikes a closed ~~ pair, and the raw view and the hub keep the tildes", async (t) => {
+test("3wvczcz4: a rendered line strikes a closed ~~ pair, and the raw view and the hub keep the tildes", async (t) => {
   const hub = await startHub();
   let browser;
   t.after(async () => {
@@ -94,11 +97,37 @@ test("3wvczcz4: a rendered heading strikes a closed ~~ pair, and the raw view an
   assert.equal(struck(code[0].code.decoration), false, `code text-decoration ${code[0].code.decoration}`);
   assert.equal(code[0].decorations.some(struck), false, `code line text-decoration ${code[0].decorations.join(" | ")}`);
 
-  const paragraph = lines.filter((item) => item.text === "~~gone~~");
+  const paragraph = lines.filter((item) => has(item.className, "md-p") && item.text === "gone");
   assert.equal(paragraph.length, 1, `paragraph: ${JSON.stringify(lines.map((item) => item.text))}`);
-  assert.equal(has(paragraph[0].className, "md-p"), true);
-  assert.equal(paragraph[0].strike, null, "a paragraph ~~ pair is struck");
-  assert.equal(paragraph[0].decorations.some(struck), false, `paragraph text-decoration ${paragraph[0].decorations.join(" | ")}`);
+  assert.equal(has(paragraph[0].className, "md-raw"), false);
+  assert.equal(paragraph[0].strike.text, "gone");
+  assert.match(paragraph[0].strike.decoration, /line-through/, `paragraph text-decoration ${paragraph[0].strike.decoration}`);
+
+  const bullet = lines.filter((item) => has(item.className, "md-li") && item.text.includes("G8. Landing."));
+  assert.equal(bullet.length, 1, `bullet: ${JSON.stringify(lines.map((item) => item.text))}`);
+  assert.equal(has(bullet[0].className, "md-raw"), false);
+  assert.equal(bullet[0].text, "G8. Landing. see master now.");
+  assert.equal(bullet[0].text.includes("~~"), false);
+  assert.equal(bullet[0].strike.text, "G8. Landing.");
+  assert.match(bullet[0].strike.decoration, /line-through/, `bullet text-decoration ${bullet[0].strike.decoration}`);
+  assert.equal(bullet[0].code.text, "master");
+  assert.equal(has(bullet[0].code.className, "md-code"), true);
+  assert.equal(has(bullet[0].code.className, "md-strike"), true);
+  assert.equal(struck(bullet[0].code.decoration), true, `code text-decoration ${bullet[0].code.decoration}`);
+
+  const ordered = lines.filter((item) => has(item.className, "md-ol"));
+  assert.equal(ordered.length, 1, `ordered: ${JSON.stringify(lines.map((item) => item.text))}`);
+  assert.equal(has(ordered[0].className, "md-raw"), false);
+  assert.equal(ordered[0].text, "one");
+  assert.equal(ordered[0].strike.text, "one");
+  assert.match(ordered[0].strike.decoration, /line-through/, `ordered text-decoration ${ordered[0].strike.decoration}`);
+
+  const quote = lines.filter((item) => has(item.className, "md-quote"));
+  assert.equal(quote.length, 1, `quote: ${JSON.stringify(lines.map((item) => item.text))}`);
+  assert.equal(has(quote[0].className, "md-raw"), false);
+  assert.equal(quote[0].text, "one");
+  assert.equal(quote[0].strike.text, "one");
+  assert.match(quote[0].strike.decoration, /line-through/, `quote text-decoration ${quote[0].strike.decoration}`);
 
   const stored = await hub.show(file);
   assert.equal(stored.text, TEXT, "the hub dropped the tildes");

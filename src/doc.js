@@ -2189,12 +2189,15 @@ function parseMarks(text, base, plainClass, holes, strike) {
       const hole = holes[holeAt];
       holeAt += 1;
       flush(index);
+      // The span is copied whole, so a strike opened around it would miss the text.
+      const classes = ["md-code"];
+      if (stack[stack.length - 1].marks.includes("md-strike")) classes.unshift("md-strike");
       stack[stack.length - 1].runs.push({
         type: "run",
         text: text.slice(hole.open + 1, hole.close),
         start: base + hole.open + 1,
         end: base + hole.close,
-        classes: ["md-code"],
+        classes,
       });
       index = hole.close + 1;
       buf = index;
@@ -2212,7 +2215,7 @@ function parseMarks(text, base, plainClass, holes, strike) {
     }
     let opener = null;
     let kind = null;
-    // Closed ~~ is a strike in a heading only. Anywhere else the tildes stay drawn.
+    // Headings, items, quotes, paragraphs, and table cells all pass the flag.
     if (strike && text.startsWith("~~", index)) {
       opener = "~~";
       kind = "md-strike";
@@ -2338,7 +2341,7 @@ function parseSlot(line, mode) {
     return { runs: [run], parts: [run], images: [] };
   }
   if (mode.kind === "hr" || line.start === line.end) return { runs: [], parts: [], images: [] };
-  return parseInlines(line.text.slice(mode.marker), line.start + mode.marker, mode.plain, mode.kind === "h");
+  return parseInlines(line.text.slice(mode.marker), line.start + mode.marker, mode.plain, true);
 }
 
 function lineBlank(text) {
@@ -2534,7 +2537,7 @@ function hidePipeEscape(part) {
 }
 
 function paintCell(cell, doc) {
-  const parsed = parseInlines(cell.text, cell.start, "md-p");
+  const parsed = parseInlines(cell.text, cell.start, "md-p", true);
   return { ...cell, parts: paintParts(parsed.parts, findSpans(doc)).map(hidePipeEscape) };
 }
 
@@ -2948,11 +2951,30 @@ function orderedMarker(line, mode) {
   return text.replace(/^[ \t]+/, "");
 }
 
+// The cursor line draws the source. A strike class would line through the tildes.
+function dropStrike(runs, plain) {
+  let changed = false;
+  const out = [];
+  for (const run of runs) {
+    if (!run || run.type !== "run" || !run.classes || !run.classes.includes("md-strike")) {
+      out.push(run);
+      continue;
+    }
+    changed = true;
+    const classes = run.classes.filter((name) => name !== "md-strike");
+    const copy = cloneRun(run);
+    copy.classes = classes.length > 0 ? classes : [plain];
+    out.push(copy);
+  }
+  return changed ? out : runs;
+}
+
 function rawBlock(line, mode, parsed, spans) {
   const empty = line.text === "";
   let runs = empty ? [] : paintRuns(fillGaps(line, mode, parsed), spans, true);
   // The quote mark is the bar. A one-line quoted item still does not show ">".
   if (!empty && mode.quoted && mode.quote) runs = dropPrefix(runs, line.start + mode.quote);
+  if (!empty) runs = dropStrike(runs, mode.plain);
   return {
     type: "line",
     raw: true,
@@ -3172,7 +3194,8 @@ function linePieces(slot, spans, raw) {
   const source = raw
     ? paintRuns(fillGaps(line, mode, parsed), spans, true)
     : paintParts(parsed.parts, spans);
-  return source.map(clonePart);
+  const parts = source.map(clonePart);
+  return raw ? dropStrike(parts, mode.plain) : parts;
 }
 
 function hardenBreak(block, line, doc, hideCount, cursor, revealTail) {
