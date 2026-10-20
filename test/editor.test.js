@@ -24302,3 +24302,179 @@ test("a selection across an image keeps the atom marked", () => {
     mounted.restore();
   }
 });
+
+// V anchors on the heading marker. After j that line is rendered, so the marker
+// has no text node. The visual line still covers the heading and the blank.
+test("visual line on a heading stays across the blank under it", () => {
+  const mounted = mountEditor();
+  const doc = "# Heading\n\nNext line is here.\n";
+  const selection = {
+    rangeCount: 0,
+    anchorNode: null,
+    anchorOffset: 0,
+    focusNode: null,
+    focusOffset: 0,
+    added: null,
+    setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset) {
+      selection.added = null;
+      selection.anchorNode = anchorNode;
+      selection.anchorOffset = anchorOffset;
+      selection.focusNode = focusNode;
+      selection.focusOffset = focusOffset;
+      selection.rangeCount = 1;
+    },
+    collapse(node, offset) {
+      selection.setBaseAndExtent(node, offset, node, offset);
+    },
+    removeAllRanges() {
+      selection.rangeCount = 0;
+      selection.anchorNode = null;
+      selection.focusNode = null;
+      selection.added = null;
+    },
+    addRange(range) {
+      selection.added = range;
+      selection.rangeCount = 1;
+      selection.anchorNode = range.startContainer;
+      selection.anchorOffset = range.startOffset;
+      selection.focusNode = range.endContainer;
+      selection.focusOffset = range.endOffset;
+    },
+    getRangeAt() {
+      const range = selection.added || {
+        startContainer: selection.anchorNode,
+        startOffset: selection.anchorOffset,
+        endContainer: selection.focusNode,
+        endOffset: selection.focusOffset,
+      };
+      const collapsed = range.startContainer === range.endContainer && range.startOffset === range.endOffset;
+      return { ...range, collapsed };
+    },
+  };
+  const childIndex = (node) => {
+    const parent = node && node.parentElement;
+    const kids = parent && parent.childNodes;
+    if (!kids || typeof kids.indexOf !== "function") return 0;
+    const index = kids.indexOf(node);
+    return index < 0 ? 0 : index;
+  };
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  globalThis.document.createTreeWalker = (start) => {
+    const nodes = [];
+    const walk = (node) => {
+      if (node.nodeType === 3) nodes.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(start);
+    let index = 0;
+    return { nextNode() { return index < nodes.length ? nodes[index++] : null; } };
+  };
+  globalThis.document.createRange = () => {
+    const range = {
+      startContainer: null,
+      startOffset: 0,
+      endContainer: null,
+      endOffset: 0,
+      setStart(node, offset) {
+        range.startContainer = node;
+        range.startOffset = offset;
+      },
+      setEnd(node, offset) {
+        range.endContainer = node;
+        range.endOffset = offset;
+      },
+      setStartBefore(node) {
+        range.startContainer = node.parentElement;
+        range.startOffset = childIndex(node);
+      },
+      setEndBefore(node) {
+        range.endContainer = node.parentElement;
+        range.endOffset = childIndex(node);
+      },
+      setStartAfter() {},
+      collapse(toStart) {
+        if (toStart) {
+          range.endContainer = range.startContainer;
+          range.endOffset = range.startOffset;
+        } else {
+          range.startContainer = range.endContainer;
+          range.startOffset = range.endOffset;
+        }
+      },
+      selectNode() {},
+    };
+    return range;
+  };
+  globalThis.document.activeElement = mounted.root;
+  globalThis.window.getSelection = () => selection;
+  mounted.root.querySelectorAll = (selector) => {
+    const parts = String(selector).split(",").map((part) => part.trim());
+    const found = [];
+    const walk = (node) => {
+      if (node.nodeType === 1 && parts.some((part) => (
+        part.startsWith(".") ? node.classList.contains(part.slice(1)) : node.tagName === part.toUpperCase()
+      ))) found.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    for (const child of mounted.root.childNodes || []) walk(child);
+    return found;
+  };
+  const previousLocal = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    writable: true,
+    value: {
+      getItem(key) { return key === "viewmark.vim" ? "1" : null; },
+      setItem() {},
+      removeItem() {},
+    },
+  });
+  const press = (key) => {
+    mounted.listeners.keydown({
+      key,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault() {},
+    });
+  };
+  const covers = () => {
+    const state = view.getState();
+    assert.equal(Math.min(state.anchor, state.cursor), 0);
+    assert.equal(Math.max(state.anchor, state.cursor), doc.indexOf("\n\n") + 1);
+  };
+  let view = null;
+  try {
+    view = createEditor(mounted.root, doc, doc.indexOf("Heading"));
+    press("V");
+    press("j");
+    covers();
+    const heading = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "Heading")[0];
+    const blank = mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.classList.contains("md-raw"))[0];
+    assert.ok(heading);
+    assert.ok(blank);
+    const range = selection.getRangeAt(0);
+    assert.equal(range.collapsed, false);
+    assert.equal(range.startContainer, heading);
+    assert.equal(range.startOffset, 0);
+    assert.equal(range.endContainer, blank.parentElement);
+    assert.equal(range.endOffset, childIndex(blank));
+    assert.notEqual(range.startContainer, blank);
+    assert.notEqual(range.endContainer, blank);
+    selection.setBaseAndExtent(heading, 0, heading, 0);
+    fireDocument(mounted, "selectionchange");
+    covers();
+    const restored = selection.getRangeAt(0);
+    assert.equal(restored.collapsed, false);
+    press("d");
+    assert.equal(view.getState().doc, "Next line is here.\n");
+    view.destroy();
+    view = null;
+  } finally {
+    if (view) view.destroy();
+    if (previousLocal) Object.defineProperty(globalThis, "localStorage", previousLocal);
+    else delete globalThis.localStorage;
+    mounted.restore();
+  }
+});

@@ -3672,6 +3672,96 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return true;
   }
 
+  // A rendered heading's marker is not a text node. The line's first or last
+  // drawn glyph is that endpoint, so the visual line is not dropped.
+  function drawnLinePoint(offset) {
+    const [lineStart, lineEnd] = lineSpan(state.doc, offset);
+    const marks = [];
+    let walker = null;
+    try {
+      const show = typeof NodeFilter === "undefined" ? 4 : NodeFilter.SHOW_TEXT;
+      walker = document.createTreeWalker(root, show);
+    } catch {
+      walker = null;
+    }
+    if (walker) {
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const parent = node.parentElement;
+        if (parent && typeof parent.closest === "function" && (parent.closest(".md-atom") || parent.closest(".md-lock"))) continue;
+        const tagged = nearestTagged(node);
+        if (!tagged) continue;
+        const start = Number(tagged.dataset.start);
+        const end = Number(tagged.dataset.end);
+        const len = typeof node.length === "number" ? node.length : 0;
+        if (!Number.isFinite(start) || !Number.isFinite(end) || len !== end - start) continue;
+        if (end <= lineStart || start >= lineEnd) continue;
+        const sourceStart = Math.max(start, lineStart);
+        const sourceEnd = Math.min(end, lineEnd);
+        if (sourceEnd <= sourceStart) continue;
+        marks.push({
+          node,
+          sourceStart,
+          sourceEnd,
+          atStart: sourceStart - start,
+          atEnd: sourceEnd - start,
+        });
+      }
+    }
+    const breaks = typeof root.querySelectorAll === "function" ? root.querySelectorAll("br") : [];
+    for (const br of breaks) {
+      const tagged = nearestTagged(br);
+      if (!tagged) continue;
+      const start = Number(tagged.dataset.start);
+      const end = Number(tagged.dataset.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      const empty = start === end && start >= lineStart && start <= lineEnd;
+      const hard = end === start + 1 && start >= lineStart && start < lineEnd;
+      if (!empty && !hard) continue;
+      marks.push({ node: br, sourceStart: start, sourceEnd: start, atStart: 0, atEnd: 0 });
+    }
+    if (marks.length === 0) return null;
+    marks.sort((a, b) => a.sourceStart - b.sourceStart || a.sourceEnd - b.sourceEnd);
+    const first = marks[0];
+    const last = marks[marks.length - 1];
+    // The hidden marker is before the title, so that endpoint is the first glyph.
+    const useFirst = offset <= first.sourceStart
+      || (offset < last.sourceEnd && offset - first.sourceStart <= last.sourceEnd - offset);
+    const mark = useFirst ? first : last;
+    return { node: mark.node, offset: useFirst ? mark.atStart : mark.atEnd };
+  }
+
+  // A range sitting on a br is a 0×0 box at the origin, and Firefox scrolls to it.
+  // The boundary before the br is the same source offset.
+  function placeOpenEnd(range, which, point) {
+    if (!range || !point || !point.node) return false;
+    if (isBreak(point.node)) {
+      const name = which === "start" ? "setStartBefore" : "setEndBefore";
+      if (typeof range[name] !== "function") return false;
+      range[name](point.node);
+      return true;
+    }
+    const name = which === "start" ? "setStart" : "setEnd";
+    if (typeof range[name] !== "function") return false;
+    range[name](point.node, point.offset || 0);
+    return true;
+  }
+
+  function placeOpenEnds(sel, anchorOff, caretOff, anchorPoint, caretPoint) {
+    if (typeof document.createRange !== "function") return false;
+    const range = document.createRange();
+    const forward = anchorOff <= caretOff;
+    try {
+      if (!placeOpenEnd(range, "start", forward ? anchorPoint : caretPoint)) return false;
+      if (!placeOpenEnd(range, "end", forward ? caretPoint : anchorPoint)) return false;
+    } catch {
+      return false;
+    }
+    if (typeof sel.removeAllRanges === "function") sel.removeAllRanges();
+    if (typeof sel.addRange !== "function") return false;
+    sel.addRange(range);
+    return true;
+  }
+
   function placeCaretFromState() {
     const sel = window.getSelection();
     if (!sel) return;
@@ -3744,6 +3834,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         return (to && to.node) || (from && from.node) || missed.el;
       }
       if (missed) return null;
+      if (!from || !to) {
+        const anchorPoint = from || drawnLinePoint(anchorOff);
+        const caretPoint = to || drawnLinePoint(caretOff);
+        // The source range stays. A collapsed caret here would replace the visual line.
+        if (anchorPoint && caretPoint) {
+          placeOpenEnds(sel, anchorOff, caretOff, anchorPoint, caretPoint);
+          return caretPoint.node || anchorPoint.node;
+        }
+      }
     }
     const point = pointFor(caret);
     if (point) return selectCollapsed(sel, point);
@@ -3935,6 +4034,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return { anchor: textAt, cursor: textAt };
   }
 
+  function selectionCollapsed(sel) {
+    if (!sel) return false;
+    if (sel.isCollapsed === true) return true;
+    if (sel.rangeCount > 0 && typeof sel.getRangeAt === "function") {
+      try {
+        const range = sel.getRangeAt(0);
+        if (range && range.collapsed === true) return true;
+      } catch {
+        // A selection with no range is not a collapsed caret.
+      }
+    }
+    return sel.anchorNode != null && sel.anchorNode === sel.focusNode && sel.anchorOffset === sel.focusOffset;
+  }
+
   function onSelectionChange() {
     if (closed || placingCaret || movingCaret || composing || gestureHold || handleDrag || pinMove || pinScrollHold) return;
     // Chrome reports the selectionchange from placeCaret after placingCaret is
@@ -3985,6 +4098,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (retainedCaret && (next.cursor !== retainedCaret.cursor || next.anchor !== retainedCaret.anchor)) {
       state = { ...state, anchor: retainedCaret.anchor, cursor: retainedCaret.cursor };
+      placeCaret();
+      return;
+    }
+    // The marker has no caret box, so the browser reports a collapsed caret.
+    // That caret is not the visual line.
+    if (vimOn && vimMode === "visual-line" && state.anchor !== state.cursor && selectionCollapsed(sel)) {
+      goalX = keptX;
       placeCaret();
       return;
     }
