@@ -1,5 +1,5 @@
 title: Remove comment tags from page titles in the file box
-state: pending review
+state: closed
 type: bug
 priority: low
 parent:
