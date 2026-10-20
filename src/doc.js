@@ -2536,9 +2536,148 @@ function hidePipeEscape(part) {
   return copy;
 }
 
+// A cell is one source line. These three are breaks inside it. Any other tag
+// stays text, and a document line does not split on them.
+function cellBreakLength(text, index) {
+  if (text.startsWith("<br>", index)) return 4;
+  if (text.startsWith("<br/>", index)) return 5;
+  if (text.startsWith("<br />", index)) return 6;
+  return 0;
+}
+
+function cellHasBreak(text) {
+  for (let i = 0; i < text.length; i += 1) {
+    if (cellBreakLength(text, i) > 0) return true;
+  }
+  return false;
+}
+
+// One empty piece at each end is the break itself. Further empties are blanks
+// between breaks, including the one <br><br> leaves when both ends are empty.
+function cellLines(cell) {
+  const text = cell.text;
+  if (!cellHasBreak(text)) return [{ text, start: cell.start, end: cell.end }];
+  const pieces = [];
+  let at = 0;
+  let index = 0;
+  while (index < text.length) {
+    const size = cellBreakLength(text, index);
+    if (size === 0) {
+      index += 1;
+      continue;
+    }
+    pieces.push({ text: text.slice(at, index), start: cell.start + at, end: cell.start + index });
+    index += size;
+    at = index;
+  }
+  pieces.push({ text: text.slice(at), start: cell.start + at, end: cell.start + text.length });
+  if (pieces.length > 0 && pieces[0].text === "") pieces.shift();
+  if (pieces.length > 0 && pieces[pieces.length - 1].text === "") pieces.pop();
+  return pieces;
+}
+
+// Document quotes are "> " only. A cell peels each ">" so ">>" and "> >" nest,
+// and ">quoted" is still one quote.
+function peelCellQuotes(text) {
+  let rest = text;
+  let consumed = 0;
+  let depth = 0;
+  while (rest.startsWith(">")) {
+    const size = rest[1] === " " ? 2 : 1;
+    rest = rest.slice(size);
+    consumed += size;
+    depth += 1;
+  }
+  return { rest, consumed, depth };
+}
+
+function cellIsPlainParagraph(text) {
+  if (fenceOpen(text)) return false;
+  if (peelCellQuotes(text).depth > 0) return false;
+  return classify(text).kind === "p";
+}
+
+function concealCellParts(block) {
+  if (!block || !block.parts) return block;
+  const parts = block.parts.map(hidePipeEscape);
+  if (parts.every((part, index) => part === block.parts[index])) return block;
+  block.parts = parts;
+  block.runs = parts.filter((part) => part.type === "run");
+  block.text = block.runs.map((run) => run.text).join("");
+  return block;
+}
+
+function cellQuoteWrap(node, depth) {
+  let wrapped = node;
+  for (let i = 0; i < depth; i += 1) wrapped = { type: "quote", child: wrapped };
+  return wrapped;
+}
+
+function cellClassified(line, spans) {
+  const peeled = peelCellQuotes(line.text);
+  const inner = {
+    text: peeled.rest,
+    start: line.start + peeled.consumed,
+    end: line.end,
+  };
+  const mode = classify(peeled.rest);
+  const block = concealCellParts(renderedBlock(inner, mode, parseSlot(inner, mode), spans));
+  return cellQuoteWrap(block, peeled.depth);
+}
+
+// The caret that shows the table is outside it, so a fence here stays rendered.
+function cellBlocks(lines, spans) {
+  const blocks = [];
+  let index = 0;
+  while (index < lines.length) {
+    const opened = fenceOpen(lines[index].text);
+    if (opened) {
+      let end = index + 1;
+      while (end < lines.length && !isFenceClose(lines[end].text)) end += 1;
+      const closed = end < lines.length;
+      const last = closed ? end : lines.length - 1;
+      if (opened.diagram) {
+        const bodyLines = lines.slice(index + 1, closed ? last : last + 1);
+        blocks.push({
+          type: "diagram",
+          start: lines[index].start,
+          end: lines[last].end,
+          info: opened.lang,
+          body: bodyLines.map((line) => line.text).join("\n"),
+          bodyStart: bodyLines.length > 0 ? bodyLines[0].start : lines[index].end,
+        });
+      } else {
+        blocks.push(concealCellParts(fenceBlock({
+          lang: opened.lang,
+          closed,
+          lines: lines.slice(index, last + 1),
+          eof: false,
+        }, -1, spans)));
+      }
+      index = last + 1;
+      continue;
+    }
+    blocks.push(cellClassified(lines[index], spans));
+    index += 1;
+  }
+  return blocks;
+}
+
+function paintInline(line, doc) {
+  const parsed = parseInlines(line.text, line.start, "md-p", true);
+  return paintParts(parsed.parts, findSpans(doc)).map(hidePipeEscape);
+}
+
 function paintCell(cell, doc) {
-  const parsed = parseInlines(cell.text, cell.start, "md-p", true);
-  return { ...cell, parts: paintParts(parsed.parts, findSpans(doc)).map(hidePipeEscape) };
+  const lines = cellLines(cell);
+  const broke = cellHasBreak(cell.text);
+  const only = lines.length === 1 ? lines[0] : null;
+  // One paragraph of inlines stays on the run path. A blank kept from <br><br>
+  // is not that paragraph.
+  if (only && cellIsPlainParagraph(only.text) && (only.text !== "" || !broke)) {
+    return { ...cell, parts: paintInline(only, doc) };
+  }
+  return { ...cell, blocks: cellBlocks(lines, findSpans(doc)) };
 }
 
 function structures(doc) {

@@ -4172,10 +4172,219 @@ test("a rendered table cell draws text around an image", () => {
     assert.equal(pieces[1].tagName, "IMG");
     assert.equal(pieces[1].alt, "alt");
     assert.equal(pieces[2], "here");
+    assert.equal(innerStarts(cell).length, 0);
     view.destroy();
   } finally {
     mounted.restore();
   }
+});
+
+function nodesIn(root, pred) {
+  const found = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (pred(node)) found.push(node);
+    for (const child of node.childNodes || []) walk(child);
+  };
+  walk(root);
+  return found;
+}
+
+function innerStarts(cell) {
+  return nodesIn(cell, (node) => node !== cell && node.dataset && node.dataset.start != null && node.dataset.start !== "");
+}
+
+function inside(outer, inner) {
+  let node = inner;
+  while (node) {
+    if (node === outer) return true;
+    node = node.parentElement;
+  }
+  return false;
+}
+
+function drawCell(mounted, source) {
+  const doc = `# Title\n\n| h |\n| --- |\n| ${source} |\n`;
+  const caret = doc.indexOf("Title");
+  const view = createEditor(mounted.root, doc, caret);
+  assert.equal(view.getState().cursor, caret);
+  const table = mounted.findAll((node) => node.classList && node.classList.contains("md-table"))[0];
+  assert.ok(table);
+  const cell = mounted.findAll((node) => node.tagName === "TD")[0];
+  assert.ok(cell);
+  return { view, cell };
+}
+
+test("a rendered table cell draws block constructs", () => {
+  const mounted = mountEditor();
+  const click = (target) => mounted.listeners.click({ target, clientX: 0, clientY: 0, preventDefault() {} });
+  try {
+    const quoted = drawCell(mounted, "> quoted");
+    const one = nodesIn(quoted.cell, (node) => node.classList && node.classList.contains("md-quote"));
+    assert.equal(one.length, 1);
+    assert.ok(one[0].classList.contains("md-line"));
+    assert.equal(one[0].textContent, "quoted");
+    assert.equal(one[0].textContent.includes(">"), false);
+    assert.equal(innerStarts(quoted.cell).length, 0);
+    const quoteStart = quoted.cell.dataset.start;
+    click(one[0]);
+    assert.equal(quoted.view.getState().cursor, Number(quoteStart));
+    quoted.view.destroy();
+
+    const tight = drawCell(mounted, ">quoted");
+    const tightQuote = nodesIn(tight.cell, (node) => node.classList && node.classList.contains("md-quote"));
+    assert.equal(tightQuote.length, 1);
+    assert.equal(tightQuote[0].textContent, "quoted");
+    assert.equal(tightQuote[0].textContent.includes(">"), false);
+    tight.view.destroy();
+
+    for (const source of [">> inner", "> > inner"]) {
+      const nested = drawCell(mounted, source);
+      const quotes = nodesIn(nested.cell, (node) => node.classList && node.classList.contains("md-quote"));
+      assert.equal(quotes.length, 2, source);
+      assert.ok(quotes.every((node) => node.classList.contains("md-line")), source);
+      assert.ok(inside(quotes[0], quotes[1]), source);
+      assert.equal(quotes[1].textContent, "inner", source);
+      assert.equal(nested.cell.textContent.includes(">"), false, source);
+      assert.equal(innerStarts(nested.cell).length, 0, source);
+      nested.view.destroy();
+    }
+
+    const headed = drawCell(mounted, "> # Title");
+    const headQuote = nodesIn(headed.cell, (node) => node.classList && node.classList.contains("md-quote"));
+    const head = nodesIn(headed.cell, (node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-h1"));
+    assert.equal(headQuote.length, 1);
+    assert.equal(head.length, 1);
+    assert.ok(inside(headQuote[0], head[0]));
+    assert.equal(head[0].textContent, "Title");
+    assert.equal(headed.cell.textContent.includes(">"), false);
+    assert.equal(headed.cell.textContent.includes("#"), false);
+    headed.view.destroy();
+
+    const item = drawCell(mounted, "> - item");
+    const itemQuote = nodesIn(item.cell, (node) => node.classList && node.classList.contains("md-quote"));
+    const li = nodesIn(item.cell, (node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-li"));
+    assert.equal(itemQuote.length, 1);
+    assert.equal(li.length, 1);
+    assert.ok(inside(itemQuote[0], li[0]));
+    assert.equal(li[0].textContent, "item");
+    assert.equal(item.cell.textContent.includes(">"), false);
+    item.view.destroy();
+
+    const rule = drawCell(mounted, "---");
+    const hr = nodesIn(rule.cell, (node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-hr"));
+    assert.equal(hr.length, 1);
+    assert.ok(hr[0].classList.contains("md-line"));
+    assert.equal(hr[0].textContent, "");
+    assert.equal(rule.cell.textContent.includes("-"), false);
+    rule.view.destroy();
+
+    const task = drawCell(mounted, "- [x] done");
+    const taskItem = nodesIn(task.cell, (node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-li"));
+    assert.equal(taskItem.length, 1);
+    assert.equal(taskItem[0].textContent, "[x] done");
+    assert.equal(task.cell.textContent.includes("-"), false);
+    task.view.destroy();
+
+    const title = drawCell(mounted, "# Title");
+    const h1 = nodesIn(title.cell, (node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-h1"));
+    assert.equal(h1.length, 1);
+    assert.ok(h1[0].classList.contains("md-line"));
+    assert.equal(h1[0].textContent, "Title");
+    assert.equal(title.cell.textContent.includes("#"), false);
+    title.view.destroy();
+
+    const fence = drawCell(mounted, "```<br>let x<br>```");
+    const code = nodesIn(fence.cell, (node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-codeblock"));
+    assert.equal(code.length, 1);
+    assert.equal(code[0].textContent, "let x");
+    assert.equal(fence.cell.textContent.includes("`"), false);
+    assert.equal(innerStarts(fence.cell).length, 0);
+    fence.view.destroy();
+
+    const kept = drawCell(mounted, "<br> # Title");
+    assert.equal(kept.cell.textContent, " # Title");
+    assert.equal(nodesIn(kept.cell, (node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-h1")).length, 0);
+    assert.equal(kept.cell.textContent.includes("<br>"), false);
+    kept.view.destroy();
+
+    const pieces = drawCell(mounted, "--- <br>----<br> ---");
+    const pieceLines = (pieces.cell.childNodes || []).filter((node) => node.classList && node.classList.contains("md-line"));
+    assert.deepEqual(pieceLines.map((node) => node.textContent), ["--- ", "----", " ---"]);
+    pieces.view.destroy();
+
+    const blank = drawCell(mounted, "a<br><br>b");
+    const blankLines = (blank.cell.childNodes || []).filter((node) => node.classList && node.classList.contains("md-line"));
+    assert.equal(blankLines.length, 3);
+    assert.equal(blankLines[0].textContent, "a");
+    assert.equal(blankLines[1].textContent, "");
+    assert.ok((blankLines[1].childNodes || []).some((node) => node.tagName === "BR"));
+    assert.equal(blankLines[2].textContent, "b");
+    blank.view.destroy();
+
+    const onlyBlank = drawCell(mounted, "<br><br>");
+    const onlyLines = (onlyBlank.cell.childNodes || []).filter((node) => node.classList && node.classList.contains("md-line"));
+    assert.equal(onlyLines.length, 1);
+    assert.equal(onlyLines[0].textContent, "");
+    assert.ok((onlyLines[0].childNodes || []).some((node) => node.tagName === "BR"));
+    assert.equal(onlyBlank.cell.textContent.includes("<"), false);
+    onlyBlank.view.destroy();
+
+    const endBreak = drawCell(mounted, "<br>");
+    const endLines = (endBreak.cell.childNodes || []).filter((node) => node.classList && node.classList.contains("md-line"));
+    assert.equal(endLines.length, 0);
+    assert.equal(endBreak.cell.textContent, "");
+    endBreak.view.destroy();
+
+    for (const source of ["a<br/>b", "a<br />b"]) {
+      const split = drawCell(mounted, source);
+      const lines = (split.cell.childNodes || []).filter((node) => node.classList && node.classList.contains("md-line"));
+      assert.deepEqual(lines.map((node) => node.textContent), ["a", "b"], source);
+      assert.equal(split.cell.textContent.includes("<"), false, source);
+      split.view.destroy();
+    }
+
+    const other = drawCell(mounted, "<BR>");
+    assert.equal(other.cell.textContent, "<BR>");
+    other.view.destroy();
+
+    const strike = drawCell(mounted, "~~gone~~");
+    const struck = nodesIn(strike.cell, (node) => node.classList && node.classList.contains("md-strike"));
+    assert.equal(struck.length, 1);
+    assert.equal(struck[0].textContent, "gone");
+    assert.equal(strike.cell.textContent.includes("~"), false);
+    strike.view.destroy();
+
+    const imageDoc = "# Title\n\n| pic |\n| --- |\n| ![alt](pic.png) |\n";
+    const imageCaret = imageDoc.indexOf("Title");
+    const imageView = createEditor(mounted.root, imageDoc, imageCaret);
+    const imageCell = mounted.findAll((node) => node.tagName === "TD")[0];
+    const img = nodesIn(imageCell, (node) => node.tagName === "IMG")[0];
+    assert.equal(img.alt, "alt");
+    assert.equal(innerStarts(imageCell).length, 0);
+    const imageStart = imageCell.dataset.start;
+    click(img);
+    assert.equal(imageView.getState().cursor, Number(imageStart));
+    imageView.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a document line does not peel cell quotes or split on br", () => {
+  const nested = ">> inner\n";
+  const line = plan(nested, nested.length).lines[0];
+  assert.equal(line.classes.includes("md-quote"), false);
+  assert.ok(line.runs.map((run) => run.text).join("").includes(">>"));
+  const tight = ">quoted\n";
+  const tightLine = plan(tight, tight.length).lines[0];
+  assert.equal(tightLine.classes.includes("md-quote"), false);
+  assert.ok(tightLine.runs.map((run) => run.text).join("").includes(">quoted"));
+  const broken = "a<br>b\n";
+  const brokenLine = plan(broken, broken.length).lines[0];
+  assert.equal(brokenLine.classes.includes("md-p"), true);
+  assert.ok(brokenLine.runs.map((run) => run.text).join("").includes("<br>"));
+  assert.equal(plan(broken, broken.length).lines.filter((block) => block.text === "a" || block.text === "b").length, 0);
 });
 
 test("T-image-atom", () => {

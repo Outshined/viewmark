@@ -1543,9 +1543,60 @@ function placeImageSelection(range, image) {
   return true;
 }
 
+// nearestTagged walks dataset.start. A run inside a cell is not a document
+// offset; the click uses the td.
+function clearInnerStarts(el) {
+  const walk = (node) => {
+    for (const child of childArray(node)) {
+      if (!child || child.nodeType !== 1) continue;
+      if (child.dataset) {
+        delete child.dataset.start;
+        delete child.dataset.end;
+      }
+      walk(child);
+    }
+  };
+  walk(el);
+}
+
+function renderCellLine(block, repo, onSized) {
+  const el = document.createElement("div");
+  el.className = ["md-line", ...(block.classes || [])].join(" ");
+  if (typeof block.indent === "number") el.style.setProperty("--indent", String(block.indent));
+  if (block.marker) el.dataset.marker = block.marker;
+  if (block.hr) return el;
+  const parts = block.parts || [];
+  if (parts.length === 0) {
+    el.appendChild(document.createElement("br"));
+    return el;
+  }
+  for (const part of parts) {
+    if (part.type === "image") {
+      el.appendChild(renderImage(part, repo, onSized));
+      continue;
+    }
+    const code = part.classes && part.classes.includes("md-code");
+    el.appendChild(renderRun(part, code ? "code" : undefined));
+  }
+  return el;
+}
+
+function renderCellNode(node, repo, onSized) {
+  if (node && node.type === "quote") {
+    const el = document.createElement("div");
+    el.className = "md-line md-quote";
+    el.appendChild(renderCellNode(node.child, repo, onSized));
+    return el;
+  }
+  if (node && node.type === "diagram") return renderDiagram(node, null);
+  return renderCellLine(node, repo, onSized);
+}
+
 function renderCell(tag, cell, repo, onSized) {
   const el = document.createElement(tag);
-  if (cell.parts) {
+  if (cell.blocks) {
+    for (const node of cell.blocks) el.appendChild(renderCellNode(node, repo, onSized));
+  } else if (cell.parts) {
     for (const part of cell.parts) {
       // An image part has no classes, so it cannot go through renderRun.
       if (part.type === "image") {
@@ -1560,6 +1611,7 @@ function renderCell(tag, cell, repo, onSized) {
   }
   el.dataset.start = String(cell.start);
   el.dataset.end = String(cell.end);
+  clearInnerStarts(el);
   return el;
 }
 
@@ -11493,7 +11545,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       render();
       return;
     }
-    const atom = target?.closest?.(".md-atom");
+    const hit = target?.closest?.(".md-atom");
+    // An image drawn in a cell is an atom. Its offset is not the cell.
+    const table = hit && hit.parentElement && typeof hit.parentElement.closest === "function"
+      ? hit.parentElement.closest(".md-table")
+      : null;
+    const atom = table || hit;
     if (atom && root.contains(atom)) {
       event.preventDefault();
       if (!keepCurrent) currentCommentId = null;
