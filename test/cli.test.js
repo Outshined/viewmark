@@ -64,6 +64,8 @@ const HELP_NEEDLES = [
   "ticket purge",
   "delete <path>",
   "move <path> [--dir DIR]",
+  "viewmark [--port PORT] [--user NAME] [--json] --repo NAME rename <path> <name>",
+  "rename <path> <name> keeps the parent and changes the last segment.",
   "viewmark [--port PORT] [--user NAME] [--json] --repo NAME rev <path>",
   "comment list <path>",
   "comment show <path> <thread>",
@@ -75,7 +77,7 @@ const HELP_NEEDLES = [
   "comment delete <path> <thread>",
   "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin.",
   "Lines count from 1. Offset counts from 0. The end offset is exclusive.",
-  "--repo is required on list, show, create, edit, attach, delete, move, rev, comment, ticket, and directory.",
+  "--repo is required on list, show, create, edit, attach, delete, move, rename, rev, comment, ticket, and directory.",
   "viewmark [--port PORT] [--user NAME] [--json] --repo NAME directory create <path>",
   "viewmark [--port PORT] [--user NAME] [--json] --repo NAME directory delete <path>",
   "directory create <path> prints the stored path.",
@@ -3232,7 +3234,7 @@ test("T-comment-usage", async () => {
   ]) {
     assert.ok(help.stdout.includes(line), line);
   }
-  assert.match(help.stdout, /--repo is required on list, show, create, edit, attach, delete, move, rev, comment, ticket, and directory\./);
+  assert.match(help.stdout, /--repo is required on list, show, create, edit, attach, delete, move, rename, rev, comment, ticket, and directory\./);
 
   const gate = await trap();
   try {
@@ -4858,5 +4860,147 @@ test("directory create prints the stored path and directory delete removes an em
     assert.equal(clash.stderr, "error 409\n");
     await assert.rejects(() => fs.lstat(path.join(dir, "Draft Box", ".viewmark-dir")));
     await assert.rejects(() => fs.lstat(path.join(dir, "draft_box", ".viewmark-dir")));
+  });
+});
+
+test("eftpk82u: rename a document or a directory", async () => {
+  const gate = await trap();
+  try {
+    const noRepo = await run(["--port", String(gate.port), "--user", "user", "rename", "hello.md", "hello-there.md"]);
+    assert.equal(noRepo.code, 2);
+    assert.equal(noRepo.stdout, "");
+    assert.equal(noRepo.stderr, "viewmark: --repo is required\n");
+    const missingPath = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "rename"]);
+    assert.equal(missingPath.code, 2);
+    assert.equal(missingPath.stdout, "");
+    assert.equal(missingPath.stderr, "viewmark: path required\n");
+    const missingName = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "rename", "hello.md"]);
+    assert.equal(missingName.code, 2);
+    assert.equal(missingName.stdout, "");
+    assert.equal(missingName.stderr, "viewmark: name required\n");
+    const extra = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "rename", "hello.md", "a.md", "b.md"]);
+    assert.equal(extra.code, 2);
+    assert.equal(extra.stdout, "");
+    assert.equal(extra.stderr, "viewmark: unexpected argument\n");
+    for (const args of [
+      ["rename", "hello.md", "a.md", "--dir", "notes"],
+      ["rename", "hello.md", "a.md", "--file", "x"],
+    ]) {
+      const flagged = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", ...args]);
+      assert.equal(flagged.code, 2, args.join(" "));
+      assert.equal(flagged.stdout, "");
+      assert.equal(flagged.stderr, "viewmark: unexpected flag\n");
+    }
+    assert.equal(gate.hits.length, 0);
+  } finally {
+    await gate.close();
+  }
+
+  await withDocs(async ({ dir, port }) => {
+    const args = (...more) => ["--port", String(port), "--user", "user", "--repo", "docs", ...more];
+    const titled = "# Title\n\nprose\n";
+    await fs.writeFile(path.join(dir, "hello.md"), titled);
+    await fs.writeFile(path.join(dir, "notes", "hello.md"), "taken\n");
+    const clash = await run(args("rename", "notes/draft.md", "Hello.md"));
+    assert.equal(clash.code, shellStatus(409));
+    assert.equal(clash.stdout, "");
+    assert.equal(clash.stderr, "error 409\nThat name is already used.\n");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), DRAFT);
+    assert.equal(await fs.readFile(path.join(dir, "notes", "hello.md"), "utf8"), "taken\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes", "hello-2.md")));
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes", "draft-2.md")));
+
+    await fs.mkdir(path.join(dir, "notes", "draft"));
+    await fs.writeFile(path.join(dir, "notes", "draft", "a.png"), "png");
+    await fs.mkdir(path.join(dir, "notes", "parked"));
+    const blocked = await run(args("rename", "notes/draft.md", "parked.md"));
+    assert.equal(blocked.code, shellStatus(409));
+    assert.equal(blocked.stdout, "");
+    assert.equal(blocked.stderr, "error 409\nA picture directory is in the way.\n");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), DRAFT);
+    assert.equal(await fs.readFile(path.join(dir, "notes", "draft", "a.png"), "utf8"), "png");
+    await fs.rm(path.join(dir, "notes", "parked"), { recursive: true });
+
+    const slash = await run(args("rename", "notes/draft.md", "a/b.md"));
+    assert.equal(slash.code, shellStatus(400));
+    assert.equal(slash.stdout, "");
+    assert.equal(slash.stderr, "error 400\nThat name is not allowed.\n");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), DRAFT);
+
+    const ticketPath = await run(args("rename", "tickets/aaaaaaaa.md", "other.md"));
+    assert.equal(ticketPath.code, shellStatus(400));
+    assert.equal(ticketPath.stdout, "");
+    assert.equal(ticketPath.stderr, "error 400\nThat name is not allowed.\n");
+
+    const missing = await run(args("rename", "missing.md", "other.md"));
+    assert.equal(missing.code, shellStatus(404));
+    assert.equal(missing.stdout, "");
+    assert.equal(missing.stderr, "error 404\n");
+
+    const renamed = await run(args("rename", "hello.md", "Hello There.md"));
+    assert.equal(renamed.code, 0);
+    assert.equal(renamed.stdout, "hello-there.md\n");
+    assert.equal(renamed.stderr, "");
+    assert.equal(await fs.readFile(path.join(dir, "hello-there.md"), "utf8"), titled);
+    await assert.rejects(() => fs.lstat(path.join(dir, "hello.md")));
+    await assert.rejects(() => fs.lstat(path.join(dir, "hello-2.md")));
+
+    const parent = await run(args("rename", "notes/draft.md", "Side Note"));
+    assert.equal(parent.code, 0);
+    assert.equal(parent.stdout, "notes/side-note.md\n");
+    assert.equal(parent.stderr, "");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "side-note.md"), "utf8"), DRAFT);
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes", "draft.md")));
+
+    await fs.writeFile(path.join(dir, "notes", "draft.md"), DRAFT);
+    const json = await run(["--json", ...args("rename", "notes/draft.md", "Again.md")]);
+    assert.equal(json.code, 0);
+    assert.equal(json.stderr, "");
+    assert.equal(json.stdout, `${JSON.stringify({ path: "notes/draft.md", dest: "notes/again.md" })}\n`);
+    assert.equal(await fs.readFile(path.join(dir, "notes", "again.md"), "utf8"), DRAFT);
+
+    await fs.mkdir(path.join(dir, "archive"));
+    await fs.writeFile(path.join(dir, "archive", "keep.md"), "keep\n");
+    const dirClash = await run(args("rename", "notes", "archive"));
+    assert.equal(dirClash.code, shellStatus(409));
+    assert.equal(dirClash.stdout, "");
+    assert.equal(dirClash.stderr, "error 409\nThat name is already used.\n");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "again.md"), "utf8"), DRAFT);
+
+    const dirRename = await run(args("rename", "notes", "My Notes"));
+    assert.equal(dirRename.code, 0);
+    assert.equal(dirRename.stderr, "");
+    assert.equal(dirRename.stdout, "my-notes/again.md\nmy-notes/hello.md\nmy-notes/side-note.md\n");
+    assert.equal(await fs.readFile(path.join(dir, "my-notes", "side-note.md"), "utf8"), DRAFT);
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes", "side-note.md")));
+
+    await fs.writeFile(path.join(dir, "my-notes", "side-note.md"), DRAFT);
+    const dirBack = await run(args("rename", "my-notes", "notes"));
+    assert.equal(dirBack.code, 0);
+    assert.equal(dirBack.stdout, "notes/again.md\nnotes/hello.md\nnotes/side-note.md\n");
+
+    const dirJson = await run(["--json", ...args("rename", "notes", "My Notes")]);
+    assert.equal(dirJson.code, 0);
+    assert.equal(dirJson.stderr, "");
+    assert.equal(dirJson.stdout, `${JSON.stringify({
+      moves: [
+        { path: "notes/again.md", dest: "my-notes/again.md" },
+        { path: "notes/hello.md", dest: "my-notes/hello.md" },
+        { path: "notes/side-note.md", dest: "my-notes/side-note.md" },
+      ],
+    })}\n`);
+
+    const made = await run(args("directory", "create", "inbox"));
+    assert.equal(made.code, 0);
+    assert.equal(made.stdout, "inbox\n");
+    const emptyJson = await run(["--json", ...args("rename", "inbox", "In Box")]);
+    assert.equal(emptyJson.code, 0);
+    assert.equal(emptyJson.stderr, "");
+    assert.equal(emptyJson.stdout, `${JSON.stringify({ path: "inbox", dest: "in-box" })}\n`);
+    assert.equal(await fs.readFile(path.join(dir, "in-box", ".viewmark-dir"), "utf8"), "");
+    const dashed = await run(args("rename", "in-box", "drafts.md"));
+    assert.equal(dashed.code, 0);
+    assert.equal(dashed.stdout, "drafts-md\n");
+    assert.equal(await fs.readFile(path.join(dir, "drafts-md", ".viewmark-dir"), "utf8"), "");
   });
 });

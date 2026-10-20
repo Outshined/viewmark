@@ -353,6 +353,110 @@ function normalizeDirRel(rel) {
   return stored;
 }
 
+function parentDir(rel) {
+  const slash = rel.lastIndexOf("/");
+  return slash === -1 ? "" : rel.slice(0, slash);
+}
+
+// One segment. A markdown suffix stays; a name without one gains .md.
+function normalizeRenameDocSegment(name, parent) {
+  if (typeof name !== "string") return null;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed.length > 1024) return null;
+  if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("\0")) return null;
+  let suffix = ".md";
+  let stem = trimmed;
+  if (trimmed.endsWith(".markdown")) {
+    suffix = ".markdown";
+    stem = trimmed.slice(0, -".markdown".length);
+  } else if (trimmed.endsWith(".md")) {
+    stem = trimmed.slice(0, -3);
+  }
+  if (stem === "." || stem === ".." || stem === ".git") return null;
+  const next = normalizeSegment(stem);
+  if (!next) return null;
+  const stemPath = parent ? `${parent}/${next}` : next;
+  if (stemPath === "tickets" || stemPath.startsWith("tickets/")) return null;
+  const stored = `${next}${suffix}`;
+  if (stored.length > 1024) return null;
+  return stored;
+}
+
+function normalizeRenameDirSegment(name) {
+  if (typeof name !== "string") return null;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed.length > 1024) return null;
+  if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("\0")) return null;
+  if (trimmed === "." || trimmed === ".." || trimmed === ".git") return null;
+  const next = normalizeSegment(trimmed);
+  if (!next || next.length > 1024) return null;
+  return next;
+}
+
+function knownDirs(listed, marked) {
+  const dirs = new Set(marked);
+  for (const item of listed) {
+    const parts = item.split("/");
+    parts.pop();
+    let acc = "";
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : part;
+      dirs.add(acc);
+    }
+  }
+  return dirs;
+}
+
+function coversPath(dir, rel) {
+  return rel === dir || rel.startsWith(`${dir}/`);
+}
+
+// The source is not a clash with the name it is being given.
+function renameTaken(listed, marked, rel, destRel, fileMove) {
+  if (fileMove) {
+    const want = normalizeDocRel(destRel);
+    for (const item of listed) {
+      if (item === rel) continue;
+      if (want && normalizeDocRel(item) === want) return true;
+    }
+    for (const dir of knownDirs(listed, marked)) {
+      if (dir === destRel) return true;
+      const left = normalizeDirRel(dir);
+      const right = normalizeDirRel(destRel);
+      if (left && right && left === right) return true;
+    }
+    return false;
+  }
+  const want = normalizeDirRel(destRel);
+  for (const dir of knownDirs(listed, marked)) {
+    if (coversPath(rel, dir)) continue;
+    if (dir === destRel) return true;
+    const left = normalizeDirRel(dir);
+    if (want && left === want) return true;
+  }
+  for (const item of listed) {
+    if (coversPath(rel, item)) continue;
+    if (item === destRel) return true;
+  }
+  return false;
+}
+
+async function renamePictureBlocked(docsDir, listed, rel, destRel, fileMove) {
+  if (!fileMove) return pictureOwner(listed, destRel) != null;
+  const srcDir = assetDirOf(rel);
+  const destDir = assetDirOf(destRel);
+  if (!srcDir || !destDir || srcDir === destDir) return false;
+  let info;
+  try {
+    info = await fs.lstat(path.join(docsDir, srcDir));
+  } catch (err) {
+    if (err && err.code === "ENOENT") return false;
+    throw err;
+  }
+  if (info.isSymbolicLink() || !info.isDirectory()) return false;
+  return existsPath(path.join(docsDir, destDir));
+}
+
 // A quiet picture directory holds a document's images and no markdown.
 // Creating or listing that path, or a directory inside it, would show the pictures as a folder.
 function pictureOwner(listed, rel) {
@@ -2123,43 +2227,27 @@ export async function createHub(stateDir, sourceRoot) {
     send(socket, { type: "rev", path: rel, sha256: createHash("sha256").update(bytes).digest("hex") });
   }
 
-  async function onMove(socket, msg) {
-    const repo = socket.session.repo;
-    if (!repo) return fail(socket, 400);
+  async function relocateStored(socket, repo, rel, dir, destBase, replyType, fileMove, nested, bare, listed, reasons) {
     const files = repo.files;
     const docsDir = repo.path;
-    const rel = safeRel(msg.path);
-    if (!rel) return fail(socket, 404);
-    if (!Object.prototype.hasOwnProperty.call(msg, "dir") || typeof msg.dir !== "string") return fail(socket, 404);
-    let dir = "";
-    if (msg.dir !== "") {
-      dir = safeRel(msg.dir);
-      if (!dir) return fail(socket, 404);
-    }
-    if (isTicketTree(rel) || (dir !== "" && isTicketTree(dir))) return fail(socket, 400);
-
-    const listed = await listMarkdown(docsDir, "");
-    const marked = await listMarkedDirs(docsDir, listed);
-    const fileMove = listed.includes(rel);
-    const nested = listed.filter((item) => item.startsWith(`${rel}/`));
-    const bare = !fileMove && nested.length === 0 && markedHolds(marked, rel);
-    if (!fileMove && nested.length === 0 && !bare) return fail(socket, 404);
-    const destKnown = dir === "" || listed.some((item) => item.startsWith(`${dir}/`)) || markedHolds(marked, dir);
-    if (!destKnown) return fail(socket, 404);
-    if (!fileMove && (dir === rel || (dir !== "" && dir.startsWith(`${rel}/`)))) return fail(socket, 400);
+    const extra = (kind) => {
+      if (!reasons) return undefined;
+      const reason = kind === "picture" ? reasons.picture : reasons.taken;
+      return reason ? { reason } : undefined;
+    };
     if (bare) {
-      const destRoot = dir ? `${dir}/${baseName(rel)}` : baseName(rel);
-      const reply = { type: "moved", path: rel, moves: [{ path: rel, dest: destRoot }] };
+      const destRoot = dir ? `${dir}/${destBase}` : destBase;
+      const reply = { type: replyType, path: rel, moves: [{ path: rel, dest: destRoot }] };
       if (destRoot === rel) {
         send(socket, reply);
         return;
       }
-      if (pictureOwner(listed, destRoot)) return fail(socket, 409);
+      if (pictureOwner(listed, destRoot)) return fail(socket, 409, extra("picture"));
       const srcReal = await resolveInside(docsDir, rel);
       if (!srcReal) return fail(socket, 404);
-      const destFull = await placedFull(docsDir, dir, baseName(rel));
+      const destFull = await placedFull(docsDir, dir, destBase);
       if (!destFull) return fail(socket, 404);
-      if (await existsPath(destFull)) return fail(socket, 409);
+      if (await existsPath(destFull)) return fail(socket, 409, extra("taken"));
       await fs.rename(srcReal, destFull);
       broadcastDocs(repo, await docsPayload(repo));
       send(socket, reply);
@@ -2168,15 +2256,15 @@ export async function createHub(stateDir, sourceRoot) {
 
     const pairs = [];
     if (fileMove) {
-      const dest = dir ? `${dir}/${baseName(rel)}` : baseName(rel);
+      const dest = dir ? `${dir}/${destBase}` : destBase;
       pairs.push({ src: rel, dest });
     } else {
-      const destRoot = dir ? `${dir}/${baseName(rel)}` : baseName(rel);
+      const destRoot = dir ? `${dir}/${destBase}` : destBase;
       for (const item of nested) pairs.push({ src: item, dest: destRoot + item.slice(rel.length) });
     }
     // Leaving every path where it is does not notify the listeners.
     const replyMoved = () => {
-      send(socket, { type: "moved", path: rel, moves: pairs.map((pair) => ({ path: pair.src, dest: pair.dest })) });
+      send(socket, { type: replyType, path: rel, moves: pairs.map((pair) => ({ path: pair.src, dest: pair.dest })) });
     };
     if (pairs.every((pair) => pair.src === pair.dest)) {
       replyMoved();
@@ -2185,17 +2273,17 @@ export async function createHub(stateDir, sourceRoot) {
 
     const destCount = new Map();
     for (const pair of pairs) destCount.set(pair.dest, (destCount.get(pair.dest) || 0) + 1);
-    if ([...destCount.values()].some((count) => count > 1)) return fail(socket, 409);
+    if ([...destCount.values()].some((count) => count > 1)) return fail(socket, 409, extra("taken"));
     const sources = new Set(pairs.map((pair) => pair.src));
     for (const pair of pairs) {
       if (pair.src === pair.dest) continue;
-      if (sources.has(pair.dest) || files.has(pair.dest)) return fail(socket, 409);
-      if (await existsPath(path.join(docsDir, pair.dest))) return fail(socket, 409);
+      if (sources.has(pair.dest) || files.has(pair.dest)) return fail(socket, 409, extra("taken"));
+      if (await existsPath(path.join(docsDir, pair.dest))) return fail(socket, 409, extra("taken"));
     }
     if (!fileMove) {
-      const destRoot = dir ? `${dir}/${baseName(rel)}` : baseName(rel);
+      const destRoot = dir ? `${dir}/${destBase}` : destBase;
       if (destRoot !== rel && (files.has(destRoot) || (await existsPath(path.join(docsDir, destRoot))))) {
-        return fail(socket, 409);
+        return fail(socket, 409, extra("taken"));
       }
     }
 
@@ -2214,7 +2302,7 @@ export async function createHub(stateDir, sourceRoot) {
         else throw err;
       }
       // The destination directory already belongs to another document. Leave both.
-      if (fileMove && (await existsPath(destAsset))) return fail(socket, 409);
+      if (fileMove && (await existsPath(destAsset))) return fail(socket, 409, extra("picture"));
       if (!info || info.isSymbolicLink() || !info.isDirectory()) continue;
       const names = await listAssetNames(docsDir, srcDir);
       assetPlans.push({ srcDir, destDir, srcFull, destAsset, names });
@@ -2222,9 +2310,9 @@ export async function createHub(stateDir, sourceRoot) {
 
     const srcReal = await resolveInside(docsDir, rel);
     if (!srcReal) return fail(socket, 404);
-    const destFull = await placedFull(docsDir, dir, baseName(rel));
+    const destFull = await placedFull(docsDir, dir, destBase);
     if (!destFull) return fail(socket, 404);
-    if (await existsPath(destFull)) return fail(socket, 409);
+    if (await existsPath(destFull)) return fail(socket, 409, extra("taken"));
     await fs.rename(srcReal, destFull);
     // A directory rename already carried the nested asset directories.
     if (fileMove) {
@@ -2267,6 +2355,62 @@ export async function createHub(stateDir, sourceRoot) {
     for (const item of opened) retargetOpen(item.src, item.file);
     broadcastDocs(repo, await docsPayload(repo));
     replyMoved();
+  }
+
+  async function onMove(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const docsDir = repo.path;
+    const rel = safeRel(msg.path);
+    if (!rel) return fail(socket, 404);
+    if (!Object.prototype.hasOwnProperty.call(msg, "dir") || typeof msg.dir !== "string") return fail(socket, 404);
+    let dir = "";
+    if (msg.dir !== "") {
+      dir = safeRel(msg.dir);
+      if (!dir) return fail(socket, 404);
+    }
+    if (isTicketTree(rel) || (dir !== "" && isTicketTree(dir))) return fail(socket, 400);
+
+    const listed = await listMarkdown(docsDir, "");
+    const marked = await listMarkedDirs(docsDir, listed);
+    const fileMove = listed.includes(rel);
+    const nested = listed.filter((item) => item.startsWith(`${rel}/`));
+    const bare = !fileMove && nested.length === 0 && markedHolds(marked, rel);
+    if (!fileMove && nested.length === 0 && !bare) return fail(socket, 404);
+    const destKnown = dir === "" || listed.some((item) => item.startsWith(`${dir}/`)) || markedHolds(marked, dir);
+    if (!destKnown) return fail(socket, 404);
+    if (!fileMove && (dir === rel || (dir !== "" && dir.startsWith(`${rel}/`)))) return fail(socket, 400);
+    await relocateStored(socket, repo, rel, dir, baseName(rel), "moved", fileMove, nested, bare, listed, null);
+  }
+
+  async function onRename(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const rel = safeRel(msg.path);
+    if (!rel) return fail(socket, 404);
+    if (isTicketTree(rel)) return fail(socket, 400, { reason: "That name is not allowed." });
+    if (typeof msg.name !== "string") return fail(socket, 400, { reason: "That name is not allowed." });
+    const docsDir = repo.path;
+    const listed = await listMarkdown(docsDir, "");
+    const marked = await listMarkedDirs(docsDir, listed);
+    const fileMove = listed.includes(rel);
+    const nested = listed.filter((item) => item.startsWith(`${rel}/`));
+    const bare = !fileMove && nested.length === 0 && markedHolds(marked, rel);
+    if (!fileMove && nested.length === 0 && !bare) return fail(socket, 404);
+    const parent = parentDir(rel);
+    const segment = fileMove ? normalizeRenameDocSegment(msg.name, parent) : normalizeRenameDirSegment(msg.name);
+    if (!segment) return fail(socket, 400, { reason: "That name is not allowed." });
+    const destRel = parent ? `${parent}/${segment}` : segment;
+    if (destRel.length > 1024 || isTicketTree(destRel)) return fail(socket, 400, { reason: "That name is not allowed." });
+    const reasons = {
+      taken: "That name is already used.",
+      picture: "A picture directory is in the way.",
+    };
+    if (destRel !== rel) {
+      if (renameTaken(listed, marked, rel, destRel, fileMove)) return fail(socket, 409, { reason: reasons.taken });
+      if (await renamePictureBlocked(docsDir, listed, rel, destRel, fileMove)) return fail(socket, 409, { reason: reasons.picture });
+    }
+    await relocateStored(socket, repo, rel, parent, segment, "renamed", fileMove, nested, bare, listed, reasons);
   }
 
   async function onOpen(socket, msg) {
@@ -3539,6 +3683,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "comment.add") return onCommentAdd(socket, msg);
     if (msg.type === "list") return onList(socket);
     if (msg.type === "move") return onMove(socket, msg);
+    if (msg.type === "rename") return onRename(socket, msg);
     if (msg.type === "rev") return onRev(socket, msg);
     if (msg.type === "open") return onOpen(socket, msg);
     if (msg.type === "create") return onCreate(socket, msg);

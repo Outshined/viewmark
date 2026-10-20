@@ -111,6 +111,53 @@ function normalizeDirRel(rel) {
   return stored;
 }
 
+// Same spelling as document create. A missing markdown suffix gains .md.
+function normalizeRenameDocSegment(name) {
+  if (typeof name !== "string") return null;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed.length > 1024) return null;
+  if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("\0")) return null;
+  let suffix = ".md";
+  let stem = trimmed;
+  if (trimmed.endsWith(".markdown")) {
+    suffix = ".markdown";
+    stem = trimmed.slice(0, -".markdown".length);
+  } else if (trimmed.endsWith(".md")) {
+    stem = trimmed.slice(0, -3);
+  }
+  if (stem === "." || stem === ".." || stem === ".git") return null;
+  const next = normalizeSegment(stem);
+  if (!next) return null;
+  const stored = `${next}${suffix}`;
+  if (stored.length > 1024) return null;
+  return stored;
+}
+
+function normalizeRenameDirSegment(name) {
+  if (typeof name !== "string") return null;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed.length > 1024) return null;
+  if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("\0")) return null;
+  if (trimmed === "." || trimmed === ".." || trimmed === ".git") return null;
+  const next = normalizeSegment(trimmed);
+  if (!next || next.length > 1024) return null;
+  return next;
+}
+
+function normalizeDocRel(rel) {
+  if (typeof rel !== "string" || !(rel.endsWith(".md") || rel.endsWith(".markdown"))) return null;
+  const suffix = rel.endsWith(".markdown") ? ".markdown" : ".md";
+  const stem = rel.slice(0, -suffix.length);
+  if (!stem) return null;
+  const slugged = [];
+  for (const part of stem.split("/")) {
+    const next = normalizeSegment(part);
+    if (!next) return null;
+    slugged.push(next);
+  }
+  return `${slugged.join("/")}${suffix}`;
+}
+
 function assetDirOfPath(rel) {
   if (typeof rel !== "string") return null;
   let dir = null;
@@ -2611,6 +2658,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let docMenuButton = null;
   let docMenuPanel = null;
   let docMenuDelete = null;
+  let docMenuRename = null;
   let docMenuVim = null;
   let docLinkButton = null;
   let docAttachInput = null;
@@ -2646,8 +2694,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let nameDialogWhere = null;
   let nameDialogField = null;
   let nameDialogError = null;
+  let nameDialogSubmit = null;
   let nameDialogMode = "";
   let nameDialogParent = "";
+  let nameDialogTarget = "";
   let vimStatus = null;
   let vimLine = null;
   let vimPrompt = null;
@@ -2924,6 +2974,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (type === "directory.create") conflictWaiters.push("directory");
     if (type === "directory.delete") conflictWaiters.push("directory-delete");
+    if (type === "rename") conflictWaiters.push("rename");
     // A snapshot restates a caret it already stored. Waiting on that lock
     // would stand in front of a later ticket.set and turn its 409 into a caret restore.
     if (type === "lock" && track) conflictWaiters.push("lock");
@@ -6839,7 +6890,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         panel.addEventListener("pointerdown", stopViewEvent, { signal: ac.signal });
       }
       const attach = plainButton("md-doc-menu-item", "Attach image");
+      const rename = plainButton("md-doc-menu-item", "Rename");
       const remove = plainButton("md-doc-menu-item", "Delete file");
+      docMenuRename = rename;
       docMenuDelete = remove;
       // A host with no listeners still has to build the items. The click is the only binding.
       const onItem = (button, run) => {
@@ -6852,6 +6905,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       };
       onItem(attach, () => {
         if (docAttachInput && typeof docAttachInput.click === "function") docAttachInput.click();
+      });
+      onItem(rename, () => {
+        if (!openPath || openPath.startsWith("tickets/")) return;
+        openRenameDialog(openPath, false);
       });
       onItem(remove, () => {
         if (!openPath || openPath.startsWith("tickets/")) return;
@@ -6873,6 +6930,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       });
       if (typeof panel.appendChild === "function") {
         panel.appendChild(attach);
+        panel.appendChild(rename);
         panel.appendChild(remove);
         panel.appendChild(vimItem);
       }
@@ -6886,9 +6944,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   // The item is built once. The next open follows the file that is open now.
   function syncDocMenuDelete() {
-    if (!docMenuDelete) return;
-    if (openPath && !openPath.startsWith("tickets/")) showElement(docMenuDelete);
-    else hideElement(docMenuDelete);
+    const shown = !!(openPath && !openPath.startsWith("tickets/"));
+    if (docMenuDelete) {
+      if (shown) showElement(docMenuDelete);
+      else hideElement(docMenuDelete);
+    }
+    if (docMenuRename) {
+      if (shown) showElement(docMenuRename);
+      else hideElement(docMenuRename);
+    }
   }
 
   function syncVimItem() {
@@ -7574,6 +7638,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function closeNameDialog() {
     nameDialogMode = "";
     nameDialogParent = "";
+    nameDialogTarget = "";
     if (nameDialogField) nameDialogField.value = "";
     if (nameDialogError) {
       nameDialogError.textContent = "";
@@ -7644,6 +7709,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     yes.type = "button";
     yes.textContent = "Create";
     if (typeof yes.setAttribute === "function") yes.setAttribute("type", "button");
+    nameDialogSubmit = yes;
     const actions = document.createElement("div");
     actions.className = "md-confirm-actions";
     actions.append(cancel, yes);
@@ -7662,11 +7728,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       try {
         if (event.key === "Escape") {
           if (typeof event.preventDefault === "function") event.preventDefault();
+          if (typeof event.stopPropagation === "function") event.stopPropagation();
           closeNameDialog();
           return;
         }
         if (event.key !== "Enter") return;
         if (typeof event.preventDefault === "function") event.preventDefault();
+        if (typeof event.stopPropagation === "function") event.stopPropagation();
         submitNameDialog();
       } finally {
         nameKey = false;
@@ -7740,11 +7808,96 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return parts.every((part) => normalizeSegment(part) !== "");
   }
 
+  function renameErrorText(message) {
+    const reason = message && typeof message.reason === "string" ? message.reason : "";
+    if (reason === "That name is already used." || reason === "A picture directory is in the way.") return reason;
+    if (message && message.status === 409) return "That name is already used.";
+    return "That name is not allowed.";
+  }
+
+  function listedDirs() {
+    const dirs = new Set(dirList.filter((dir) => typeof dir === "string"));
+    for (const item of fileList) {
+      if (typeof item !== "string") continue;
+      const parts = item.split("/");
+      parts.pop();
+      let acc = "";
+      for (const part of parts) {
+        acc = acc ? `${acc}/${part}` : part;
+        dirs.add(acc);
+      }
+    }
+    return dirs;
+  }
+
+  function coversPath(dir, rel) {
+    return rel === dir || rel.startsWith(`${dir}/`);
+  }
+
+  function renameNameTaken(dest, self, file) {
+    if (file) {
+      const want = normalizeDocRel(dest);
+      for (const item of fileList) {
+        if (item === self) continue;
+        if (want && normalizeDocRel(item) === want) return true;
+      }
+      for (const dir of listedDirs()) {
+        if (dir === dest) return true;
+        const left = normalizeDirRel(dir);
+        const right = normalizeDirRel(dest);
+        if (left && right && left === right) return true;
+      }
+      return false;
+    }
+    const want = normalizeDirRel(dest);
+    for (const dir of listedDirs()) {
+      if (coversPath(self, dir)) continue;
+      if (dir === dest) return true;
+      const left = normalizeDirRel(dir);
+      if (want && left === want) return true;
+    }
+    for (const item of fileList) {
+      if (coversPath(self, item)) continue;
+      if (item === dest) return true;
+    }
+    return false;
+  }
+
   function submitNameDialog() {
     if (!nameDialog || nameDialogMode === "") return;
     const mode = nameDialogMode;
     const parent = nameDialogParent;
     const raw = nameDialogField ? nameDialogField.value : "";
+    if (mode === "rename-file" || mode === "rename-dir") {
+      if (conflictWaiters.includes("rename")) return;
+      const target = nameDialogTarget;
+      const segment = mode === "rename-dir" ? normalizeRenameDirSegment(raw) : normalizeRenameDocSegment(raw);
+      const dest = segment ? (parent ? `${parent}/${segment}` : segment) : "";
+      let stemBlocked = false;
+      if (mode === "rename-file" && segment) {
+        const stem = segment.endsWith(".markdown") ? segment.slice(0, -".markdown".length) : segment.slice(0, -3);
+        const stemPath = parent ? `${parent}/${stem}` : stem;
+        stemBlocked = stemPath === "tickets" || stemPath.startsWith("tickets/");
+      }
+      if (!target || !segment || !dest || dest.length > 1024 || dest === "tickets" || dest.startsWith("tickets/") || stemBlocked) {
+        showNameError("That name is not allowed.");
+        return;
+      }
+      if (dest === target) {
+        closeNameDialog();
+        return;
+      }
+      if (mode === "rename-dir" && pictureConflict(dest)) {
+        showNameError("A picture directory is in the way.");
+        return;
+      }
+      if (renameNameTaken(dest, target, mode === "rename-file")) {
+        showNameError("That name is already used.");
+        return;
+      }
+      emit({ type: "rename", path: target, name: raw });
+      return;
+    }
     if (mode === "directory") {
       const full = joinedName(parent, raw);
       const stored = normalizeDirRel(full);
@@ -7774,14 +7927,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     emit({ type: "create", path: docPath });
   }
 
-  function openNameDialog(mode, parent) {
+  function openRenameDialog(target, directory) {
+    if (typeof target !== "string" || target === "" || target === "tickets" || target.startsWith("tickets/")) return;
+    const slash = target.lastIndexOf("/");
+    const parent = slash < 0 ? "" : target.slice(0, slash);
+    const base = slash < 0 ? target : target.slice(slash + 1);
+    openNameDialog(directory ? "rename-dir" : "rename-file", parent, base, target);
+  }
+
+  function openNameDialog(mode, parent, current, target) {
     const dialog = ensureNameDialog();
     if (!dialog || !nameDialogTitle || !nameDialogWhere || !nameDialogField) return;
+    const renaming = mode === "rename-file" || mode === "rename-dir";
     nameDialogMode = mode;
     nameDialogParent = typeof parent === "string" ? parent : "";
-    nameDialogTitle.textContent = mode === "directory" ? "New directory" : "New document";
+    nameDialogTarget = renaming && typeof target === "string" ? target : "";
+    nameDialogTitle.textContent = renaming ? "Rename" : (mode === "directory" ? "New directory" : "New document");
     nameDialogWhere.textContent = nameDialogParent ? `In ${nameDialogParent}/` : "In the file root";
-    nameDialogField.value = "";
+    nameDialogField.value = renaming ? String(current ?? "") : "";
+    if (nameDialogSubmit) nameDialogSubmit.textContent = renaming ? "Rename" : "Create";
     if (nameDialogError) {
       nameDialogError.textContent = "";
       hideElement(nameDialogError);
@@ -7919,12 +8083,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     };
     if (kind === "file") {
       add("Open", "", () => openListed(path));
+      add("Rename", "", () => openRenameDialog(path, false));
       add("Delete", "md-menu-delete", () => showConfirm(pathBase(path), () => emit({ type: "delete", path })));
       return;
     }
     if (kind === "dir") {
       add("New document", "", () => openNameDialog("document", path));
       add("New directory", "", () => openNameDialog("directory", path));
+      add("Rename", "", () => openRenameDialog(path, true));
       add("Delete", "md-menu-delete", () => confirmDeleteDir(path));
       return;
     }
@@ -8398,6 +8564,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (at >= 0) conflictWaiters.splice(at, 1);
       return;
     }
+    if (message.type === "renamed") {
+      const at = conflictWaiters.indexOf("rename");
+      if (at >= 0) conflictWaiters.splice(at, 1);
+      if (nameDialogMode === "rename-file" || nameDialogMode === "rename-dir") closeNameDialog();
+      return;
+    }
     if (message.type === "tickets") {
       applyTicketList(message);
       return;
@@ -8496,6 +8668,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         const held = typeof message.heldBy === "string" ? message.heldBy : "";
         if (held) showNotice(`held by ${held}`);
         else if (typeof message.reason === "string" && message.reason) showNotice(message.reason);
+        return;
+      }
+      if (conflictWaiters[0] === "rename") {
+        conflictWaiters.shift();
+        if (nameDialogMode === "rename-file" || nameDialogMode === "rename-dir") showNameError(renameErrorText(message));
         return;
       }
       if (conflictWaiters[0] === "ticket") {
@@ -13857,8 +14034,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       nameDialogWhere = null;
       nameDialogField = null;
       nameDialogError = null;
+      nameDialogSubmit = null;
       nameDialogMode = "";
       nameDialogParent = "";
+      nameDialogTarget = "";
       if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
         document.removeEventListener("selectionchange", onSelectionChange);
       }

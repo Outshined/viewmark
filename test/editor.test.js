@@ -12582,9 +12582,13 @@ test("document menu offers Attach image and Delete file", () => {
     assert.deepEqual(iconPaths(button), ["M4 6h16M4 12h16M4 18h16"]);
     assert.equal(panel.getAttribute("role"), "menu");
     assert.equal(panel.hidden, true);
-    assert.deepEqual(panel.childNodes.map((node) => node.textContent), ["Attach image", "Delete file", "Vim keys"]);
-    assert.equal(panel.childNodes[1].hidden, true);
-    assert.equal(panel.childNodes[1].hasAttribute("hidden"), true);
+    assert.deepEqual(panel.childNodes.map((node) => node.textContent), ["Attach image", "Rename", "Delete file", "Vim keys"]);
+    const deleteItem = () => panel.childNodes.find((node) => node.textContent === "Delete file");
+    const renameItem = () => panel.childNodes.find((node) => node.textContent === "Rename");
+    assert.equal(renameItem().hidden, true);
+    assert.equal(renameItem().hasAttribute("hidden"), true);
+    assert.equal(deleteItem().hidden, true);
+    assert.equal(deleteItem().hasAttribute("hidden"), true);
     assert.equal(mounted.root.childNodes.at(-1), toggle);
     assert.ok(mounted.root.childNodes.indexOf(button) < mounted.root.childNodes.indexOf(toggle));
     assert.equal(mounted.root.childNodes.indexOf(panel), mounted.root.childNodes.indexOf(button) + 1);
@@ -12592,7 +12596,8 @@ test("document menu offers Attach image and Delete file", () => {
 
     click(button);
     assert.equal(panel.hidden, false);
-    assert.equal(panel.childNodes[1].hidden, true);
+    assert.equal(deleteItem().hidden, true);
+    assert.equal(renameItem().hidden, true);
     assert.equal(button.getAttribute("aria-expanded"), "true");
     pointer(button);
     pointer(panel.childNodes[0]);
@@ -12613,16 +12618,18 @@ test("document menu offers Attach image and Delete file", () => {
     assert.equal(clicks, 1);
     assert.equal(panel.hidden, true);
     click(button);
-    click(panel.childNodes[1]);
+    click(deleteItem());
     assert.equal(panel.hidden, true);
     assert.equal(confirm(), undefined);
     assert.equal(transport.sent.some((message) => message.type === "delete"), false);
 
     transport.deliver({ type: "file", rev: 1, text: "ab\n\ncd\n", path: "notes/a.md", cursor: 0, anchor: 0, locks: [] });
     click(button);
-    assert.equal(panel.childNodes[1].hidden, false);
-    assert.equal(panel.childNodes[1].hasAttribute("hidden"), false);
-    click(panel.childNodes[1]);
+    assert.equal(renameItem().hidden, false);
+    assert.equal(renameItem().hasAttribute("hidden"), false);
+    assert.equal(deleteItem().hidden, false);
+    assert.equal(deleteItem().hasAttribute("hidden"), false);
+    click(deleteItem());
     const dialog = confirm();
     assert.equal(panel.hidden, true);
     assert.equal(dialog.open, true);
@@ -12635,9 +12642,11 @@ test("document menu offers Attach image and Delete file", () => {
     transport.deliver({ type: "file", rev: 1, text: "ticket\n", path: "tickets/aaaaaaaa.md", cursor: 0, anchor: 0, locks: [] });
     const quiet = transport.sent.length;
     click(button);
-    assert.equal(panel.childNodes[1].hidden, true);
-    assert.equal(panel.childNodes[1].hasAttribute("hidden"), true);
-    click(panel.childNodes[1]);
+    assert.equal(renameItem().hidden, true);
+    assert.equal(renameItem().hasAttribute("hidden"), true);
+    assert.equal(deleteItem().hidden, true);
+    assert.equal(deleteItem().hasAttribute("hidden"), true);
+    click(deleteItem());
     assert.equal(panel.hidden, true);
     assert.equal(confirm().open, false);
     assert.equal(transport.sent.length, quiet);
@@ -16710,7 +16719,7 @@ test("T-deep-link", () => {
     assert.equal(docMenu[0].getAttribute("aria-label"), "Menu");
     assert.equal(docPanel.length, 1);
     assert.equal(docPanel[0].getAttribute("role"), "menu");
-    assert.deepEqual(docPanel[0].childNodes.map((node) => node.textContent), ["Attach image", "Delete file", "Vim keys"]);
+    assert.deepEqual(docPanel[0].childNodes.map((node) => node.textContent), ["Attach image", "Rename", "Delete file", "Vim keys"]);
     fireHash();
     assert.equal(opens().length, 1);
     const commentDoc = "See {c1}fox{/c1}.\n\n```comment c1 resolved\nhi\n```\n";
@@ -21254,8 +21263,9 @@ test("vim keys checkbox, status, and caret", () => {
     assert.equal(ticketKept.label, ticketOn.label);
     assert.equal(ticketKept.slot, ticketOn.slot);
     const ticketPanel = byClass(mounted.root, "md-doc-menu-panel")[0];
-    assert.equal(ticketPanel.childNodes[1].hidden, true);
-    assert.equal(ticketPanel.childNodes.map((node) => node.textContent)[2], "Vim keys");
+    assert.equal(ticketPanel.childNodes.find((node) => node.textContent === "Rename").hidden, true);
+    assert.equal(ticketPanel.childNodes.find((node) => node.textContent === "Delete file").hidden, true);
+    assert.equal(ticketPanel.childNodes.find((node) => node.textContent === "Vim keys").textContent, "Vim keys");
     click(vimButton());
     assert.equal(vimMark(vimButton()).label, ticketOn.label);
     assertVimMark(vimButton(), false);
@@ -24913,7 +24923,7 @@ test("gjadk8ay: the file pane creates a directory and removes one", () => {
     assert.equal(byClass(menu(), "md-file-menu-path")[0].textContent, "notes");
     assert.equal(byClass(menu(), "md-path-copy")[0].hidden, false);
     assert.equal(byClass(menu(), "md-path-copy")[0].childNodes[0].getAttribute("viewBox"), "0 0 24 24");
-    assert.deepEqual(menuItems().map((node) => node.textContent), ["New document", "New directory", "Delete"]);
+    assert.deepEqual(menuItems().map((node) => node.textContent), ["New document", "New directory", "Rename", "Delete"]);
     assert.equal(menuItems().find((node) => node.textContent === "Delete").classList.contains("md-menu-delete"), true);
     assert.equal(menuItems().every((node) => node.getAttribute("role") === "menuitem"), true);
     choose("New directory");
@@ -25055,7 +25065,7 @@ test("gjadk8ay: the file pane creates a directory and removes one", () => {
     assert.equal(byClass(menu(), "md-path-copy")[0].getAttribute("aria-label"), "Copy path");
     assert.equal(byClass(menu(), "md-path-copy")[0].childNodes[0].localName, "svg");
     assert.equal(byClass(menu(), "md-path-copy")[0].childNodes[0].getAttribute("viewBox"), "0 0 24 24");
-    assert.deepEqual(menuItems().map((node) => node.textContent), ["Open", "Delete"]);
+    assert.deepEqual(menuItems().map((node) => node.textContent), ["Open", "Rename", "Delete"]);
     assert.equal(menuItems().find((node) => node.textContent === "Delete").classList.contains("md-menu-delete"), true);
     choose("Open");
     assert.equal(menu().hidden, true);
@@ -25148,6 +25158,245 @@ test("gjadk8ay: the file pane creates a directory and removes one", () => {
     assert.equal(nameDialog().open, true);
     assert.equal(nameError().textContent, "That name is not allowed.");
     assert.equal(notice().textContent, "directory is not empty");
+    assert.equal(filesHead().childNodes.length, 3);
+    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
+  } finally {
+    if (view) view.destroy();
+    mounted.restore();
+  }
+});
+
+test("eftpk82u: rename a document or a directory", () => {
+  const mounted = mountEditor();
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const sheet = document.createElement("div");
+  sheet.append(nav, mounted.root);
+  const transport = holdingTransport();
+  const click = (node) => {
+    assert.ok(node);
+    node.listeners.click({ preventDefault() {}, stopPropagation() {} });
+  };
+  const context = (node, target = node) => {
+    node.listeners.contextmenu({
+      target,
+      clientX: 12,
+      clientY: 24,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+  };
+  const filesHead = () => walkNodes(nav, (node) => node.classList && node.classList.contains("md-pane-head") && node.childNodes[0] && node.childNodes[0].textContent === "Files")[0];
+  const tree = () => walkNodes(nav, (node) => node.classList && node.classList.contains("file-tree"))[0];
+  const dirButton = (path) => walkNodes(nav, (node) => node.classList && node.classList.contains("md-dir-toggle") && node.dataset && node.dataset.dir === path)[0];
+  const fileButton = (path) => walkNodes(nav, (node) => node.classList && node.classList.contains("md-file") && node.dataset && node.dataset.path === path)[0];
+  const menu = () => walkNodes(sheet, (node) => node.classList && node.classList.contains("md-file-menu"))[0];
+  const menuItems = () => walkNodes(menu(), (node) => node.classList && node.classList.contains("md-file-menu-item"));
+  const nameDialog = () => walkNodes(sheet, (node) => node.tagName === "DIALOG" && node.classList && node.classList.contains("md-name"))[0];
+  const nameError = () => byClass(nameDialog(), "md-name-error")[0];
+  const nameField = () => byClass(nameDialog(), "md-name-field")[0];
+  const buttonNamed = (root, text) => walkNodes(root, (node) => node.tagName === "BUTTON" && node.textContent === text)[0];
+  const pathLine = () => walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-path-line"))[0];
+  const docButton = () => walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-doc-menu"))[0];
+  const docPanel = () => walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-doc-menu-panel"))[0];
+  const renameItem = () => docPanel().childNodes.find((node) => node.textContent === "Rename");
+  const choose = (label) => {
+    const item = menuItems().find((node) => node.textContent === label);
+    assert.ok(item, label);
+    click(item);
+  };
+  const showDir = (path) => {
+    const button = dirButton(path);
+    assert.ok(button, path);
+    if (button.parentElement.classList.contains("md-dir-collapsed")) click(button);
+    return dirButton(path);
+  };
+  const text = "# Welcome\n\nprose\n";
+  let view;
+  try {
+    view = createEditor(mounted.root, "", 0, transport);
+    transport.deliver({
+      type: "docs",
+      files: ["archive/keep.md", "notes/a.md", "notes/welcome.md", "welcome.md"],
+      titles: { "notes/welcome.md": "Welcome", "welcome.md": "Welcome" },
+    });
+    assert.equal(filesHead().childNodes.length, 3);
+    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
+    assert.equal(renameItem().hidden, true);
+
+    context(tree(), tree());
+    assert.deepEqual(menuItems().map((node) => node.textContent), ["New document", "New directory"]);
+    context(fileButton("welcome.md").parentElement);
+    assert.deepEqual(menuItems().map((node) => node.textContent), ["Open", "Rename", "Delete"]);
+    assert.equal(menuItems().find((node) => node.textContent === "Rename").classList.contains("md-menu-delete"), false);
+    assert.equal(menuItems().find((node) => node.textContent === "Delete").classList.contains("md-menu-delete"), true);
+    const quiet = transport.sent.length;
+    choose("Rename");
+    assert.equal(menu().hidden, true);
+    assert.equal(transport.sent.length, quiet);
+    const dialog = nameDialog();
+    assert.equal(dialog.parentElement, sheet);
+    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-name")).length, 0);
+    assert.equal(dialog.open, true);
+    assert.equal(byClass(dialog, "md-name-title")[0].textContent, "Rename");
+    assert.equal(byClass(dialog, "md-name-where")[0].textContent, "In the file root");
+    assert.equal(byClass(dialog, "md-name-label")[0].childNodes[0].textContent, "Name");
+    assert.equal(nameField().value, "welcome.md");
+    assert.equal(nameError().hidden, true);
+    assert.deepEqual(byClass(dialog, "md-confirm-actions")[0].childNodes.map((node) => node.textContent), ["Cancel", "Rename"]);
+    assert.equal(filesHead().childNodes.length, 3);
+    assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
+    click(buttonNamed(dialog, "Cancel"));
+    assert.equal(dialog.open, false);
+    assert.equal(transport.sent.length, quiet);
+
+    context(fileButton("welcome.md").parentElement);
+    choose("Rename");
+    dialog.listeners.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(dialog.open, false);
+    assert.equal(transport.sent.length, quiet);
+
+    context(fileButton("welcome.md").parentElement);
+    choose("Rename");
+    for (const bad of ["a/b.md", "", "   ", ".", "..", ".git", "---", "tickets.md", "tickets"]) {
+      nameField().value = bad;
+      click(buttonNamed(dialog, "Rename"));
+      assert.equal(transport.sent.length, quiet, JSON.stringify(bad));
+      assert.equal(dialog.open, true, JSON.stringify(bad));
+      assert.equal(nameError().hidden, false, JSON.stringify(bad));
+      assert.equal(nameError().textContent, "That name is not allowed.", JSON.stringify(bad));
+    }
+    nameField().value = "  welcome.md  ";
+    click(buttonNamed(dialog, "Rename"));
+    assert.equal(dialog.open, false);
+    assert.equal(transport.sent.length, quiet);
+
+    showDir("notes");
+    context(fileButton("notes/welcome.md").parentElement);
+    assert.deepEqual(menuItems().map((node) => node.textContent), ["Open", "Rename", "Delete"]);
+    choose("Rename");
+    assert.equal(byClass(dialog, "md-name-where")[0].textContent, "In notes/");
+    assert.equal(nameField().value, "welcome.md");
+    assert.equal(nameError().hidden, true);
+    nameField().value = "A.md";
+    click(buttonNamed(dialog, "Rename"));
+    assert.equal(transport.sent.length, quiet);
+    assert.equal(dialog.open, true);
+    assert.equal(nameError().textContent, "That name is already used.");
+    nameField().value = "Welcome.md";
+    dialog.listeners.keydown({ key: "Enter", preventDefault() {} });
+    assert.equal(dialog.open, false);
+    assert.equal(transport.sent.length, quiet);
+
+    context(dirButton("notes"));
+    assert.deepEqual(menuItems().map((node) => node.textContent), ["New document", "New directory", "Rename", "Delete"]);
+    choose("Rename");
+    assert.equal(byClass(dialog, "md-name-title")[0].textContent, "Rename");
+    assert.equal(byClass(dialog, "md-name-where")[0].textContent, "In the file root");
+    assert.equal(nameField().value, "notes");
+    assert.deepEqual(byClass(dialog, "md-confirm-actions")[0].childNodes.map((node) => node.textContent), ["Cancel", "Rename"]);
+    nameField().value = "archive";
+    click(buttonNamed(dialog, "Rename"));
+    assert.equal(transport.sent.length, quiet);
+    assert.equal(dialog.open, true);
+    assert.equal(nameError().textContent, "That name is already used.");
+    nameField().value = "welcome";
+    click(buttonNamed(dialog, "Rename"));
+    assert.equal(transport.sent.length, quiet);
+    assert.equal(nameError().textContent, "A picture directory is in the way.");
+    nameField().value = "a/b";
+    click(buttonNamed(dialog, "Rename"));
+    assert.equal(transport.sent.length, quiet);
+    assert.equal(nameError().textContent, "That name is not allowed.");
+    nameField().value = "Notes";
+    click(buttonNamed(dialog, "Rename"));
+    assert.equal(dialog.open, false);
+    assert.equal(transport.sent.length, quiet);
+
+    context(tree(), tree());
+    choose("New directory");
+    assert.equal(byClass(nameDialog(), "md-name-title")[0].textContent, "New directory");
+    assert.equal(buttonNamed(nameDialog(), "Create").textContent, "Create");
+    click(buttonNamed(nameDialog(), "Cancel"));
+
+    transport.deliver({ type: "file", rev: 0, text, path: "notes/welcome.md", locks: [] });
+    assert.equal(view.getState().doc, text);
+    assert.equal(pathLine().textContent, "notes / welcome.md");
+    click(docButton());
+    assert.equal(renameItem().hidden, false);
+    click(renameItem());
+    assert.equal(byClass(nameDialog(), "md-name-title")[0].textContent, "Rename");
+    assert.equal(byClass(nameDialog(), "md-name-where")[0].textContent, "In notes/");
+    assert.equal(nameField().value, "welcome.md");
+    assert.equal(filesHead().childNodes.length, 3);
+    nameField().value = "Hello There.md";
+    const sentAt = transport.sent.length;
+    click(buttonNamed(nameDialog(), "Rename"));
+    assert.deepEqual(transport.sent.at(-1), { type: "rename", path: "notes/welcome.md", name: "Hello There.md", username: "" });
+    assert.equal(nameDialog().open, true);
+    click(buttonNamed(nameDialog(), "Rename"));
+    assert.equal(transport.sent.length, sentAt + 1);
+    transport.deliver({ type: "file", rev: 0, text, path: "notes/hello-there.md", locks: [] });
+    assert.equal(nameDialog().open, true);
+    assert.equal(view.getState().doc, text);
+    assert.equal(pathLine().textContent, "notes / hello-there.md");
+    transport.deliver({
+      type: "docs",
+      files: ["archive/keep.md", "notes/a.md", "notes/hello-there.md", "welcome.md"],
+      titles: { "notes/hello-there.md": "Welcome", "welcome.md": "Welcome" },
+    });
+    assert.equal(nameDialog().open, true);
+    showDir("notes");
+    assert.equal(fileButton("notes/hello-there.md").classList.contains("md-file-current"), true);
+    assert.equal(fileButton("notes/welcome.md"), undefined);
+    assert.equal(pathLine().textContent, "notes / hello-there.md");
+    transport.deliver({
+      type: "renamed",
+      path: "notes/welcome.md",
+      moves: [{ path: "notes/welcome.md", dest: "notes/hello-there.md" }],
+    });
+    assert.equal(nameDialog().open, false);
+    assert.equal(view.getState().doc, text);
+
+    showDir("notes");
+    context(fileButton("notes/hello-there.md").parentElement);
+    choose("Rename");
+    nameField().value = "Taken.md";
+    click(buttonNamed(nameDialog(), "Rename"));
+    assert.deepEqual(transport.sent.at(-1), { type: "rename", path: "notes/hello-there.md", name: "Taken.md", username: "" });
+    transport.deliver({ type: "error", status: 409, reason: "That name is already used." });
+    assert.equal(nameDialog().open, true);
+    assert.equal(nameError().textContent, "That name is already used.");
+    nameField().value = "Taken.md";
+    click(buttonNamed(nameDialog(), "Rename"));
+    transport.deliver({ type: "error", status: 409, reason: "A picture directory is in the way." });
+    assert.equal(nameDialog().open, true);
+    assert.equal(nameError().textContent, "A picture directory is in the way.");
+    nameField().value = "Taken.md";
+    click(buttonNamed(nameDialog(), "Rename"));
+    transport.deliver({ type: "error", status: 400, reason: "name" });
+    assert.equal(nameDialog().open, true);
+    assert.equal(nameError().textContent, "That name is not allowed.");
+    nameField().value = "Taken.md";
+    click(buttonNamed(nameDialog(), "Rename"));
+    transport.deliver({ type: "error", status: 409 });
+    assert.equal(nameDialog().open, true);
+    assert.equal(nameError().textContent, "That name is already used.");
+    click(buttonNamed(nameDialog(), "Cancel"));
+
+    context(dirButton("notes"));
+    choose("New directory");
+    assert.equal(buttonNamed(nameDialog(), "Create").textContent, "Create");
+    assert.equal(byClass(nameDialog(), "md-name-title")[0].textContent, "New directory");
+    click(buttonNamed(nameDialog(), "Cancel"));
+
+    transport.deliver({ type: "file", rev: 1, text: "body\n", path: "tickets/abcd1234.md", cursor: 0, anchor: 0, locks: [] });
+    click(docButton());
+    assert.equal(renameItem().hidden, true);
+    const ticketAt = transport.sent.length;
+    click(renameItem());
+    assert.equal(transport.sent.length, ticketAt);
+    assert.equal(nameDialog().open, false);
     assert.equal(filesHead().childNodes.length, 3);
     assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
   } finally {
