@@ -64,6 +64,12 @@ body {
   color: #e7e2d8;
 }
 
+/* The line box is the highlight. A character range stops at the glyphs. */
+.md-line-selected {
+  background: #3d5a80;
+  color: #e7e2d8;
+}
+
 .sheet {
   display: grid;
   grid-template-columns: 16rem minmax(0, 1fr) 20rem;

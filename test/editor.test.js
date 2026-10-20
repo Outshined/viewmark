@@ -24478,3 +24478,87 @@ test("visual line on a heading stays across the blank under it", () => {
     mounted.restore();
   }
 });
+
+test("visual line paints each source line and skips a paragraph gap", () => {
+  return withVimFlag(true, (mounted) => {
+    const status = () => {
+      const found = byClass(mounted.root, "md-vim-status");
+      return found.length === 0 ? "" : found[0].textContent;
+    };
+    const selected = (node) => !!(node && node.classList && node.classList.contains("md-line-selected"));
+    const lines = () => mounted.findAll((node) => node.classList && node.classList.contains("md-line"));
+    const gaps = () => lines().filter((node) => node.classList.contains("md-paragraph-gap"));
+    const doc = "# Heading\n\nNext line is here.\n";
+    const caret = doc.indexOf("Heading") + 3;
+    const heading = () => lines().find((node) => (node.textContent || "").includes("Heading"));
+    const blank = () => lines().find((node) => !node.classList.contains("md-paragraph-gap") && (node.textContent || "") === "");
+    const paragraph = () => lines().find((node) => (node.textContent || "").includes("Next line"));
+
+    const character = createEditor(mounted.root, doc, caret);
+    vimType(mounted, "v");
+    assert.equal(status(), "V");
+    assert.equal(lines().some(selected), false);
+    character.destroy();
+
+    const view = createEditor(mounted.root, doc, caret);
+    vimType(mounted, "V");
+    assert.equal(status(), "VL");
+    assert.equal(Math.min(view.getState().anchor, view.getState().cursor), 0);
+    assert.equal(Math.max(view.getState().anchor, view.getState().cursor), doc.indexOf("\n"));
+    assert.ok(heading());
+    assert.ok(blank());
+    assert.equal(selected(heading()), true);
+    assert.equal(selected(blank()), false);
+    assert.equal(selected(paragraph()), false);
+    vimType(mounted, "j");
+    assert.equal(status(), "VL");
+    assert.equal(Math.min(view.getState().anchor, view.getState().cursor), 0);
+    assert.equal(Math.max(view.getState().anchor, view.getState().cursor), doc.indexOf("\n\n") + 1);
+    assert.equal(selected(heading()), true);
+    assert.equal(selected(blank()), true);
+    assert.equal(selected(paragraph()), false);
+    assert.equal(gaps().some(selected), false);
+    view.destroy();
+
+    const pair = "one\n\ntwo\n";
+    const paired = createEditor(mounted.root, pair, 1);
+    vimType(mounted, "V");
+    vimType(mounted, "j");
+    const one = lines().find((node) => node.textContent === "one");
+    const two = lines().find((node) => node.textContent === "two");
+    assert.equal(selected(one), true);
+    assert.equal(selected(two), true);
+    assert.ok(gaps().length > 0);
+    assert.equal(gaps().some(selected), false);
+    paired.destroy();
+
+    const table = "| a | b |\n| --- | --- |\n| 1 | 2 |\n\nnext\n";
+    const tableView = createEditor(mounted.root, table, 0);
+    vimType(mounted, "V");
+    vimType(mounted, "j");
+    vimType(mounted, "j");
+    vimType(mounted, "j");
+    const atom = mounted.findAll((node) => node.classList && node.classList.contains("md-table"))[0];
+    assert.ok(atom);
+    assert.equal(selected(atom), true);
+    const next = lines().find((node) => (node.textContent || "").includes("next"));
+    assert.equal(selected(next), true);
+    assert.ok(gaps().length > 0);
+    assert.equal(gaps().some(selected), false);
+    tableView.destroy();
+
+    const diagram = "```mermaid\nA-->B\n```\n\nnext\n";
+    const diagramView = createEditor(mounted.root, diagram, diagram.indexOf("A"));
+    vimType(mounted, "V");
+    vimType(mounted, "j");
+    vimType(mounted, "j");
+    const drawn = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
+    assert.ok(drawn);
+    assert.equal(selected(drawn), true);
+    const after = lines().find((node) => (node.textContent || "").includes("next"));
+    assert.equal(selected(after), true);
+    assert.ok(gaps().length > 0);
+    assert.equal(gaps().some(selected), false);
+    diagramView.destroy();
+  });
+});

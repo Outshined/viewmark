@@ -3517,6 +3517,68 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return !!mapped && mapped.anchor === state.anchor && mapped.cursor === state.cursor;
   }
 
+  function visualLineHost(el) {
+    return hasClass(el, "md-line") || hasClass(el, "md-table") || hasClass(el, "md-diagram");
+  }
+
+  function firstTaggedDescendant(el) {
+    for (const child of childArray(el)) {
+      if (!child || child.nodeType !== 1) continue;
+      if (child.dataset && child.dataset.start != null && child.dataset.start !== "") return child;
+      const nested = firstTaggedDescendant(child);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  // A rendered heading has no offsets of its own. The title's line is the source line.
+  function visualSourceLine(el) {
+    const data = el && el.dataset;
+    if (data && data.start != null && data.start !== "" && data.end != null && data.end !== "") {
+      const start = Number(data.start);
+      const end = Number(data.end);
+      if (Number.isFinite(start) && Number.isFinite(end)) return [start, end];
+    }
+    const tagged = firstTaggedDescendant(el);
+    if (!tagged) return null;
+    const at = Number(tagged.dataset.start);
+    if (!Number.isFinite(at)) return null;
+    return lineSpan(state.doc, at);
+  }
+
+  // end is the newline, so a span that stops there still meets the line. An empty
+  // line is that one offset, included when it lies on the inclusive ends.
+  function sourceLineSelected(start, end, lo, hi) {
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    if (start === end) return start >= lo && start <= hi;
+    if (end < start) return false;
+    return start <= hi && end >= lo;
+  }
+
+  // The caret range stops on the glyphs. Visual line paints the line box.
+  function markVisualLines() {
+    const hosts = [];
+    const walk = (node) => {
+      if (!node || node.nodeType !== 1) return;
+      if (visualLineHost(node)) hosts.push(node);
+      for (const child of childArray(node)) walk(child);
+    };
+    for (const child of childArray(root)) walk(child);
+    const on = vimOn && vimMode === "visual-line";
+    const lo = on ? Math.min(state.anchor, state.cursor) : 0;
+    const hi = on ? Math.max(state.anchor, state.cursor) : 0;
+    for (const el of hosts) {
+      if (!el.classList) continue;
+      let selected = false;
+      if (on && !hasClass(el, "md-paragraph-gap")) {
+        const span = visualSourceLine(el);
+        selected = !!span && sourceLineSelected(span[0], span[1], lo, hi);
+      }
+      if (selected) el.classList.add("md-line-selected");
+      else el.classList.remove("md-line-selected");
+    }
+  }
+
   // priorTop is the caret before this render replaced the line. A rebuild that
   // keeps the same visual line, or a caret already in view, stays put.
   function placeCaret(priorTop) {
@@ -3546,6 +3608,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       // selection still has to move the button under the highlight it just drew.
       updateCommentButton();
       syncVimBlockMark();
+      markVisualLines();
     }
   }
 
