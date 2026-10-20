@@ -1,5 +1,5 @@
 title: when all text in a comment block and comment markers are removed, delete the comment thread
-state: pending review
+state: closed
 type: task
 priority: medium
 parent:
