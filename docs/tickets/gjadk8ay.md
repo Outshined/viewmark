@@ -1,5 +1,5 @@
 title: Create and remove a directory from the file pane
-state: pending review
+state: closed
 type: enhancement
 priority: high
 parent: 6py4vbnd
