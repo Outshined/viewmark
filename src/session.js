@@ -19,6 +19,7 @@ import {
   replaceDocument,
   commentThreads,
   commentStorageReason,
+  caretAfterEdit,
   appendCommentReply,
   reviseCommentNote,
 } from "./doc.js";
@@ -131,10 +132,10 @@ export function createMemoryTransport(doc, cursor = 0) {
         if (next && next.refused) return;
         if (next == null && message.raw === true) next = insertLiteral(base, inserted);
         if (next && next.refused) return;
-        if (next && next !== base && Array.isArray(next.changes) && next.changes.length === 1
+        if (next && next !== base && Array.isArray(next.changes) && next.changes.length >= 1
           && typeof message.caret === "number" && Number.isFinite(message.caret)) {
-          const caret = Math.max(0, Math.min(next.doc.length, Math.trunc(message.caret)));
-          next = { ...next, cursor: caret, anchor: caret };
+          const caret = caretAfterEdit(base.doc.length, next.changes, message.caret, next.doc.length);
+          if (caret != null) next = { ...next, cursor: caret, anchor: caret };
         }
       } else if (message.op === "backspace") {
         next = backspace(base);

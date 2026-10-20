@@ -12,6 +12,7 @@ import {
   commentAnchorReason,
   commentNotes,
   commentThreads,
+  caretAfterEdit,
   createState,
   deleteForward,
   insert,
@@ -879,4 +880,100 @@ test("a page edit does not change a comment fence or the blank between fences", 
   const opener = doc.indexOf("```comment c7");
   const broken = editBytes(doc, opener, opener, "x");
   assert.equal(commentStorageReason(doc, broken.changes), "changes a comment fence");
+});
+
+function roundTrip(before, after) {
+  assert.equal(after.refused, undefined);
+  assert.equal(replayChanges(before, after.changes), after.doc);
+  assert.equal(undoChanges(after.doc, after.changes), before);
+}
+
+// Ticket jhd65qg4. The marked text and both markers are gone, so the thread
+// goes the way comment delete does, including the blank line in front of the
+// fence. Lifting only the markers leaves the words, and that thread stays.
+test("jhd65qg4 removing a comment's text and markers deletes the thread", () => {
+  const fence = "\n\n```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nNote.\n```\n";
+  const doc = `See {c1}this{/c1} now.${fence}`;
+  const open = doc.indexOf("{c1}");
+  const close = doc.indexOf("{/c1}") + "{/c1}".length;
+  const gone = insert(createState(doc, close, open), "");
+  assert.equal(gone.doc, "See  now.\n");
+  assert.equal(gone.doc.includes("```comment"), false);
+  assert.equal(commentThreads(gone.doc).length, 0);
+  assert.equal(commentStorageReason(doc, gone.changes), null);
+  roundTrip(doc, gone);
+  assert.equal(undo(gone).doc, doc);
+  assert.equal(undo(gone).doc.includes("```comment c1"), true);
+
+  const unwrapped = insert(createState(doc, close, open), "this");
+  assert.equal(unwrapped.doc, `See this now.${fence}`);
+  assert.equal(commentThreads(unwrapped.doc).length, 1);
+  assert.equal(commentStorageReason(doc, unwrapped.changes), null);
+
+  const word = insert(createState(doc, doc.indexOf("this"), doc.indexOf("this") + "this".length), "THAT");
+  assert.equal(word.doc.includes("{c1}THAT{/c1}"), true);
+  assert.equal(word.doc.includes("```comment c1"), true);
+
+  const selected = backspace(createState(doc, close, open));
+  assert.equal(selected.doc, `See {c1}{/c1} now.${fence}`);
+  assert.equal(commentThreads(selected.doc).length, 1);
+
+  const later = `See {c1}this{/c1} now.\nSee this too.${fence}`;
+  const line = later.indexOf("\n") + 1;
+  const cut = insert(createState(later, line, 0), "");
+  assert.equal(cut.doc.includes("See this too."), true);
+  assert.equal(cut.doc.includes("```comment"), false);
+  assert.equal(commentStorageReason(later, cut.changes), null);
+  roundTrip(later, cut);
+
+  const c1 = "```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nOne.\n```\n";
+  const c2 = "```comment c2\n:: 0\n@2026-10-05T16:00:00.000Z Ada\nTwo.\n```\n";
+  const both = `A {c1}one{/c1} B {c2}two{/c2} C.\n\n${c1}\n${c2}`;
+  const two = both.indexOf("{c2}");
+  const twoEnd = both.indexOf("{/c2}") + "{/c2}".length;
+  const dropped = insert(createState(both, twoEnd, two), "");
+  assert.equal(dropped.doc, `A {c1}one{/c1} B  C.\n\n${c1}`);
+  assert.deepEqual(commentThreads(dropped.doc).map((thread) => thread.id), ["c1"]);
+  assert.equal(commentStorageReason(both, dropped.changes), null);
+  roundTrip(both, dropped);
+  assert.equal(settleSplice(both, two, twoEnd, "").doc, dropped.doc);
+
+  const pair = "{c1}alpha{/c1} and {c1}beta{/c1}\n\n```comment c1\n:: 0\nNote.\n```\n";
+  const alphaEnd = pair.indexOf("{/c1}") + "{/c1}".length;
+  const oneSpan = insert(createState(pair, alphaEnd, 0), "");
+  assert.equal(oneSpan.doc.includes("{c1}beta{/c1}"), true);
+  assert.equal(oneSpan.doc.includes("```comment c1"), true);
+  const bothEnds = pair.lastIndexOf("{/c1}") + "{/c1}".length;
+  const neither = insert(createState(pair, bothEnds, 0), "");
+  assert.equal(neither.doc.includes("{c1}"), false);
+  assert.equal(neither.doc.includes("```comment"), false);
+  assert.equal(commentStorageReason(pair, neither.changes), null);
+
+  const pinned = "para\n![a](b.png)\n```comment c1 0.5,0.25\n:: 0\nAda\nPin.\n```\n";
+  const prose = insert(createState(pinned, "para\n".length, 0), "");
+  assert.equal(prose.doc, pinned.slice("para\n".length));
+  assert.equal(prose.doc.includes("```comment c1 0.5,0.25"), true);
+
+  // The page's caret is an offset after the prose splice. The fence deletion
+  // is a later change, and the caret moves with it.
+  const tailDoc = `See {c1}this{/c1} now.${fence}Tail.\n`;
+  const tailOpen = tailDoc.indexOf("{c1}");
+  const tailClose = tailDoc.indexOf("{/c1}") + "{/c1}".length;
+  const tailed = insert(createState(tailDoc, tailClose, tailOpen), "");
+  assert.ok(tailed.changes.length >= 2);
+  const first = tailed.changes[0];
+  const mid = tailDoc.slice(0, first.from) + first.inserted + tailDoc.slice(first.to);
+  const atTail = mid.indexOf("Tail");
+  assert.equal(caretAfterEdit(tailDoc.length, tailed.changes, atTail, tailed.doc.length), tailed.doc.indexOf("Tail"));
+  const atNow = mid.indexOf("now");
+  assert.equal(caretAfterEdit(tailDoc.length, tailed.changes, atNow, tailed.doc.length), tailed.doc.indexOf("now"));
+  const fenceChange = tailed.changes[tailed.changes.length - 1];
+  assert.equal(fenceChange.inserted, "");
+  assert.ok(fenceChange.removed.includes("```comment c1"));
+  const inside = fenceChange.from + 1;
+  assert.ok(inside < fenceChange.to);
+  assert.equal(caretAfterEdit(tailDoc.length, tailed.changes, inside, tailed.doc.length), fenceChange.from);
+  assert.equal(caretAfterEdit(4, [{ from: 0, to: 1, inserted: "" }], 99, 3), 3);
+  assert.equal(caretAfterEdit(4, [], 1, 4), null);
+  assert.equal(caretAfterEdit(4, [{ from: 0, to: 0, inserted: "a" }], Number.NaN, 5), null);
 });

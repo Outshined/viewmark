@@ -29,6 +29,7 @@ import {
   reviseCommentNote,
   setCommentResolved,
   settleSplice,
+  caretAfterEdit,
   splitCommentNote,
 } from "./doc.js";
 import {
@@ -843,10 +844,10 @@ function runOp(text, cursor, anchor, msg) {
       if (next && next.refused === 400) return next;
       if (next === null && msg.raw === true && msg.exact !== true) next = insertLiteral(state, typed);
       if (next && next.refused === 400) return next;
-      if (next && next !== state && Array.isArray(next.changes) && next.changes.length === 1
+      if (next && next !== state && Array.isArray(next.changes) && next.changes.length >= 1
         && typeof msg.caret === "number" && Number.isFinite(msg.caret)) {
-        const caret = Math.max(0, Math.min(next.doc.length, Math.trunc(msg.caret)));
-        next = { ...next, cursor: caret, anchor: caret };
+        const caret = caretAfterEdit(text.length, next.changes, msg.caret, next.doc.length);
+        if (caret != null) next = { ...next, cursor: caret, anchor: caret };
       }
     }
     else if (msg.op === "backspace") next = backspace(state);

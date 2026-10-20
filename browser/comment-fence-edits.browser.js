@@ -4,10 +4,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { launchBrowser, Page, startHub } from "./harness.js";
 
 // Ticket 8r57d6f2. No page edit, typed or by a vim operator, with vim keys on or off, changes the
-// bytes of a comment fence or the blank line between two fences. Only the comment commands and
-// the cards change them. dd past the last fence deletes the caret's line or nothing, and never
-// moves the caret to 0. Typing at the end of a document that ends in fences writes a new
-// paragraph after them, and the threads stay as they were.
+// bytes of a comment fence or the blank line between two fences that both stay. Only the comment
+// commands and the cards change those. Ticket jhd65qg4: dd that removes a comment's text and its
+// markers deletes that thread, the way its author would, and leaves the other thread. dd past
+// the last fence deletes the caret's line or nothing, and never moves the caret to 0. Typing at
+// the end of a document that ends in fences writes a new paragraph after them, and the threads
+// stay as they were.
 
 const fence = (id, who, text) => `\`\`\`comment ${id} resolved\n:: 0\n@2026-10-16T12:00:00.000Z ${who}\n${text}\n\`\`\`\n`;
 const FENCES = `${fence("c1", "qa", "First thread.")}\n${fence("c2", "qa", "Second thread.")}`;
@@ -67,16 +69,30 @@ for (const vim of [true, false]) {
   });
 }
 
-test("8r57d6f2: with vim keys on, dd from the last paragraph, again and again, never changes the stored threads", async (t) => {
+test("jhd65qg4: with vim keys on, dd of a commented paragraph deletes that thread and leaves the other", async (t) => {
   const { hub, page, file } = await setup(t, true);
   assert.ok(await page.clickOffset(TEXT.indexOf("Second") + 2));
   await page.quiet();
   await page.key("Escape");
-  for (let n = 0; n < 4; n += 1) {
+  await page.key("d");
+  await page.key("d");
+  await page.quiet();
+  await sleep(300);
+  const first = (await hub.show(file)).text;
+  assert.equal(first.includes("Second"), false, `the paragraph stayed: ${JSON.stringify(first)}`);
+  assert.equal(first.includes("paragraph"), false);
+  assert.equal(first.includes("```comment c2"), false);
+  assert.equal(first.includes("Second thread."), false);
+  assert.equal(first.includes("Para {c1}one{/c1}."), true);
+  assert.ok(first.includes(fence("c1", "qa", "First thread.")), `c1 changed: ${JSON.stringify(first)}`);
+  for (let n = 0; n < 3; n += 1) {
     await page.key("d");
     await page.key("d");
     await page.quiet();
-    await intact(hub, file, `dd number ${n + 1}`);
+    await sleep(300);
+    const later = (await hub.show(file)).text;
+    assert.ok(later.includes(fence("c1", "qa", "First thread.")), `dd ${n + 2} changed c1: ${JSON.stringify(later)}`);
+    assert.equal(later.includes("```comment c2"), false);
   }
 });
 

@@ -1077,9 +1077,9 @@ function cleanupComments(doc, cursor) {
       dropped.add(span.id);
     }
   }
-  // An empty interior drops the thread. Marks removed with the surrounding
-  // prose are not an empty interior, so that fence stays. A mark still in the
-  // prose is half a comment, and that edit is refused.
+  // An empty interior drops the thread. A mark still in the prose is half a
+  // comment, and that edit is refused. Markers removed with their text are not
+  // an empty interior; settleChanges drops that fence the way delete does.
   let broken = false;
   const tokens = commentTokens(doc);
   for (const fence of fences) {
@@ -1151,18 +1151,19 @@ export function replaceCommentBody(state, id, body) {
   };
 }
 
+// addComment separates the fence with a blank line. Dropping that line puts
+// the prose back the way it was before the thread existed.
+function commentFenceRange(doc, start, end) {
+  let from = start;
+  if (from >= 2 && doc[from - 1] === "\n" && doc[from - 2] === "\n") from -= 1;
+  return [from, end];
+}
+
 export function removeCommentThread(state, id) {
   const doc = state.doc;
   const ranges = [];
   const fence = fenceContentRanges(doc).find((item) => item.lang === "comment" && item.commentId === id);
-  if (fence) {
-    let from = fence.start;
-    const to = fence.end;
-    // addComment separates the fence with a blank line. Dropping that line puts
-    // the prose back the way it was before the thread existed.
-    if (from >= 2 && doc[from - 1] === "\n" && doc[from - 2] === "\n") from -= 1;
-    ranges.push([from, to]);
-  }
+  if (fence) ranges.push(commentFenceRange(doc, fence.start, fence.end));
   const hidden = hiddenFenceRanges(doc);
   for (const token of commentTokens(doc)) {
     if (token.id !== id || offsetHidden(token.start, hidden)) continue;
@@ -1614,6 +1615,125 @@ function planAnchorPatch(text, item) {
   return { from: item.openerStart, to: item.openerStart + openerLine.length, inserted: head };
 }
 
+// The interior stayed when the splice only lifted the markers, or when the
+// words are still in the replacement and not only in the text outside the span.
+function interiorKept(doc, change, span) {
+  const inserted = typeof change.inserted === "string" ? change.inserted : "";
+  const interior = doc.slice(span.interiorStart, span.interiorEnd);
+  if (interior === "") return false;
+  const removed = doc.slice(change.from, change.to);
+  const relStart = span.openStart - change.from;
+  const relEnd = span.closeEnd - change.from;
+  if (removed.slice(0, relStart) + interior + removed.slice(relEnd) === inserted) return true;
+  if (!inserted.includes(interior)) return false;
+  let prefix = 0;
+  while (prefix < relStart && prefix < inserted.length && removed.charCodeAt(prefix) === inserted.charCodeAt(prefix)) prefix += 1;
+  let suffix = 0;
+  const tail = removed.length - relEnd;
+  while (
+    suffix < tail &&
+    suffix < inserted.length - prefix &&
+    removed.charCodeAt(removed.length - 1 - suffix) === inserted.charCodeAt(inserted.length - 1 - suffix)
+  ) suffix += 1;
+  const end = inserted.length - suffix;
+  return end > prefix && inserted.slice(prefix, end).includes(interior);
+}
+
+function spanGone(doc, change, span) {
+  const inserted = typeof change.inserted === "string" ? change.inserted : "";
+  if (span.openStart < change.from || span.closeEnd > change.to) return false;
+  if (inserted.includes(doc.slice(span.openStart, span.openEnd))) return false;
+  if (inserted.includes(doc.slice(span.closeStart, span.closeEnd))) return false;
+  return !interiorKept(doc, change, span);
+}
+
+function shiftPast(span, from, to, size) {
+  if (span.closeEnd <= from) return span;
+  if (span.openStart >= to) {
+    const delta = size - (to - from);
+    const move = (index) => index + delta;
+    return {
+      openStart: move(span.openStart),
+      openEnd: move(span.openEnd),
+      closeStart: move(span.closeStart),
+      closeEnd: move(span.closeEnd),
+      interiorStart: move(span.interiorStart),
+      interiorEnd: move(span.interiorEnd),
+    };
+  }
+  return null;
+}
+
+// Ids whose brace spans this edit removed, markers and text. A span that the
+// edit only overlapped stays, and so does text the replacement kept.
+function removedBraceIds(doc, changes) {
+  const groups = new Map();
+  for (const span of findSpans(doc)) {
+    if (!groups.has(span.id)) groups.set(span.id, []);
+    groups.get(span.id).push({
+      openStart: span.openStart,
+      openEnd: span.openEnd,
+      closeStart: span.closeStart,
+      closeEnd: span.closeEnd,
+      interiorStart: span.interiorStart,
+      interiorEnd: span.interiorEnd,
+    });
+  }
+  const removed = new Set();
+  const stuck = new Set();
+  let text = doc;
+  for (const change of changes) {
+    const inserted = typeof change.inserted === "string" ? change.inserted : "";
+    for (const [id, spans] of groups) {
+      if (removed.has(id) || stuck.has(id) || spans.length === 0) continue;
+      const left = [];
+      let gone = 0;
+      for (const span of spans) {
+        if (spanGone(text, change, span)) {
+          gone += 1;
+          continue;
+        }
+        const shifted = shiftPast(span, change.from, change.to, inserted.length);
+        if (!shifted) stuck.add(id);
+        else left.push(shifted);
+      }
+      if (stuck.has(id)) continue;
+      if (gone === spans.length) removed.add(id);
+      else groups.set(id, left);
+    }
+    text = text.slice(0, change.from) + inserted + text.slice(change.to);
+  }
+  for (const id of stuck) removed.delete(id);
+  return removed;
+}
+
+function appendLostBraceThreads(doc, changes, text, cursor, anchor) {
+  const lost = removedBraceIds(doc, changes);
+  if (lost.size === 0) return { text, cursor, anchor, changes };
+  const tokens = commentTokens(text);
+  const ranges = [];
+  for (const thread of commentThreads(text)) {
+    if (thread.lines || thread.pin) continue;
+    if (!lost.has(thread.id)) continue;
+    if (tokens.some((token) => token.id === thread.id)) continue;
+    const [from, to] = commentFenceRange(text, thread.start, thread.end);
+    if (to > from) ranges.push([from, to]);
+  }
+  if (ranges.length === 0) return { text, cursor, anchor, changes };
+  ranges.sort((a, b) => b[0] - a[0] || b[1] - a[1]);
+  const all = changes.slice();
+  let next = text;
+  let nextCursor = cursor;
+  let nextAnchor = anchor;
+  for (const [from, to] of ranges) {
+    all.push({ from, to, inserted: "", removed: next.slice(from, to) });
+    next = next.slice(0, from) + next.slice(to);
+    nextCursor = shiftDelete(nextCursor, from, to);
+    nextAnchor = shiftDelete(nextAnchor, from, to);
+  }
+  return { text: next, cursor: nextCursor, anchor: nextAnchor, changes: all };
+}
+
 // Header rewrites ride in the same change list as the splice. Undo inverts both.
 // A fault refuses the whole edit, so the caller writes nothing.
 function settleChanges(doc, changes, cursor, anchor) {
@@ -1645,15 +1765,37 @@ function settleChanges(doc, changes, cursor, anchor) {
     nextCursor = shiftReplace(nextCursor, extra.from, extra.to, extra.inserted.length);
     nextAnchor = shiftReplace(nextAnchor, extra.from, extra.to, extra.inserted.length);
   }
-  const reason = commentAnchorReason(text);
+  const dropped = appendLostBraceThreads(doc, all, text, nextCursor, nextAnchor);
+  const reason = commentAnchorReason(dropped.text);
   if (reason) return { refused: 400, reason };
-  return { doc: text, cursor: nextCursor, anchor: nextAnchor, changes: all };
+  return { doc: dropped.text, cursor: dropped.cursor, anchor: dropped.anchor, changes: dropped.changes };
 }
 
 export function settleSplice(doc, from, to, inserted) {
   const text = typeof inserted === "string" ? inserted : "";
   const changes = [{ from, to, inserted: text, removed: doc.slice(from, to) }];
   return settleChanges(doc, changes, from + text.length, from + text.length);
+}
+
+// The requested caret is an offset after the edit's own splice. A later change
+// in that same list, such as a comment fence this edit drops, shifts it.
+export function caretAfterEdit(beforeLength, changes, requested, finalLength) {
+  if (!Array.isArray(changes) || changes.length === 0 || typeof requested !== "number" || !Number.isFinite(requested)) return null;
+  const first = changes[0];
+  if (!first || !Number.isInteger(first.from) || !Number.isInteger(first.to) || first.to < first.from) return null;
+  const inserted = typeof first.inserted === "string" ? first.inserted : "";
+  const afterFirst = beforeLength - (first.to - first.from) + inserted.length;
+  let caret = Math.max(0, Math.min(Math.max(0, afterFirst), Math.trunc(requested)));
+  for (let i = 1; i < changes.length; i += 1) {
+    const change = changes[i];
+    if (!change || !Number.isInteger(change.from) || !Number.isInteger(change.to) || change.to < change.from) continue;
+    const text = typeof change.inserted === "string" ? change.inserted : "";
+    if (caret <= change.from) continue;
+    if (caret >= change.to) caret += text.length - (change.to - change.from);
+    else caret = change.from + text.length;
+  }
+  const limit = Number.isInteger(finalLength) ? finalLength : caret;
+  return Math.max(0, Math.min(limit, caret));
 }
 
 // A click inside a marker belongs on the nearer edge. The view draws that marker
@@ -4089,8 +4231,7 @@ function applySplice(state, from, to, text, cursor) {
   const next = splice(state, from, to, text, cursor);
   if (next === state) return state;
   const cleaned = cleanupComments(next.doc, next.cursor);
-  // Only an intact empty span may lose its thread. Breaking a mark, or
-  // selecting through one, is not that span, so the caller keeps the old text.
+  // Half a mark is not a dropped thread. The caller keeps the old text.
   if (cleaned.broken) return null;
   const changes = [{ from, to, inserted: text, removed: state.doc.slice(from, to) }];
   if (cleaned.changes.length > 0) changes.push(...cleaned.changes);
@@ -4869,18 +5010,29 @@ function lineAnchorFits(thread) {
   return start >= 1 && end >= start && end <= thread.bodyCount;
 }
 
-// A line range that no longer fits deletes that fence. A brace fence goes only
-// with an empty interior. A pin does not, and neither does a fence whose text
-// is still marked. Deleting the marked prose is not an empty interior.
+// A line range that no longer fits deletes that fence. A brace fence goes with
+// an empty interior, or when this edit already removed that thread's markers
+// and text. A pin does not. The blank line delete drops is the one in front
+// of the fence, the same line comment delete drops.
 function fenceRemovalAllowed(before, thread, from, to, inserted, originallyMarked) {
-  if (inserted !== "" || from !== thread.start || to !== thread.end) return false;
+  if (inserted !== "" || to !== thread.end) return false;
   if (thread.pin) return false;
-  if (thread.lines) return !lineAnchorFits(thread);
+  if (thread.lines) return from === thread.start && !lineAnchorFits(thread);
+  const blank = from + 1 === thread.start
+    && from >= 1
+    && before[from] === "\n"
+    && before[from - 1] === "\n";
+  if (from !== thread.start && !blank) return false;
   if (!originallyMarked.has(thread.id)) return false;
+  let open = false;
+  let empty = false;
   for (const span of findSpans(before)) {
-    if (span.id === thread.id && span.interiorStart === span.interiorEnd) return true;
+    if (span.id !== thread.id) continue;
+    open = true;
+    if (span.interiorStart === span.interiorEnd) empty = true;
   }
-  return false;
+  if (!open && !commentTokens(before).some((token) => token.id === thread.id)) return true;
+  return empty && from === thread.start;
 }
 
 function blankBetween(doc, left, right) {

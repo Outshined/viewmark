@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { vimKey, vimMatchStarts, vimSubmit, VIM_SEARCH_LIMIT } from "../src/vim.js";
-import { backspace, codeSpanAt, commentStorageReason, createState, deleteForward, insert, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
+import { backspace, caretAfterEdit, codeSpanAt, commentStorageReason, createState, deleteForward, insert, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
 
 const CARET = "‸";
 
@@ -3462,14 +3462,16 @@ test("dd past the last comment fence deletes nothing and leaves the caret", () =
   assert.notEqual(cut.cursor, 0);
 });
 
-// The hub stores insert(), which also drops an empty brace. dd of the paragraph
-// that holds the marks is not that drop: the fences and the blank between them stay.
-test("8r57d6f2 dd deletes the paragraph and leaves both comment fences", () => {
+// dd of the paragraph that holds a comment's text and markers deletes that
+// thread, the way the originator would. The other thread stays, notes and all.
+test("jhd65qg4 dd of a commented paragraph deletes that thread and leaves the other", () => {
   const thread = (id, text) => `\`\`\`comment ${id} resolved\n:: 0\n@2026-10-16T12:00:00.000Z qa\n${text}\n\`\`\`\n`;
-  const fences = `${thread("c1", "First thread.")}\n${thread("c2", "Second thread.")}`;
+  const first = thread("c1", "First thread.");
+  const fences = `${first}\n${thread("c2", "Second thread.")}`;
   const text = `Para {c1}one{/c1}.\n\nSecond {c2}paragraph{/c2}.\n\n${fences}`;
   let doc = text;
   let cursor = text.indexOf("Second") + 2;
+  const storedOf = [];
   for (let n = 0; n < 4; n += 1) {
     const out = run(`${doc.slice(0, cursor)}‸${doc.slice(cursor)}`, ["d", "d"]);
     const step = out.steps.find((item) => item.effect && item.effect.type === "splice");
@@ -3481,26 +3483,33 @@ test("8r57d6f2 dd deletes the paragraph and leaves both comment fences", () => {
       const refused = !next || next.refused || commentStorageReason(doc, changes);
       if (!refused && next.doc !== doc) {
         stored = next.doc;
-        cursor = changes.length === 1 && Number.isInteger(effect.caret)
-          ? Math.max(0, Math.min(stored.length, effect.caret))
+        const placed = Number.isInteger(effect.caret)
+          ? caretAfterEdit(doc.length, changes, effect.caret, stored.length)
           : next.cursor;
+        cursor = placed == null ? next.cursor : placed;
       } else {
         cursor = out.cursor;
       }
     } else {
       cursor = out.cursor;
     }
-    const tail = stored.slice(stored.indexOf("```comment"));
-    assert.equal(tail.startsWith(fences), true, `dd number ${n + 1}: ${JSON.stringify(tail)}`);
-    if (n === 0) {
-      const prose = stored.slice(0, stored.indexOf("```comment"));
-      assert.equal(prose.includes("Second"), false);
-      assert.equal(prose.includes("paragraph"), false);
-      assert.equal(prose.includes("Para {c1}one{/c1}."), true);
-      assert.equal(tail, fences);
-    }
+    storedOf.push(stored);
     doc = stored;
   }
+  const after = storedOf[0];
+  assert.equal(after.includes("Second"), false);
+  assert.equal(after.includes("paragraph"), false);
+  assert.equal(after.includes("```comment c2"), false);
+  assert.equal(after.includes("Second thread."), false);
+  assert.equal(after, `Para {c1}one{/c1}.\n\n\n${first}`);
+  for (const later of storedOf.slice(1)) {
+    assert.equal(later.includes("```comment c1 resolved"), true);
+    assert.equal(later.includes("First thread."), true);
+    assert.equal(later.includes("```comment c2"), false);
+  }
+  assert.equal(storedOf[1], `Para {c1}one{/c1}.\n\n${first}`);
+  assert.equal(storedOf[2], storedOf[1]);
+  assert.equal(storedOf[3], storedOf[1]);
 });
 
 test("ctrl-o none clears once", () => {
