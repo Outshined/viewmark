@@ -2588,6 +2588,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let sourceMode = false;
   let rawPath = "";
   let viewToggle = null;
+  let pathStrip = null;
+  let pathStripLine = null;
+  let fileMenu = null;
+  let fileMenuPath = "";
+  let fileMenuPathEl = null;
   let vimStatus = null;
   let vimLine = null;
   let vimPrompt = null;
@@ -6873,9 +6878,57 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     setStyle(panel, "left", "auto");
   }
 
+  function appendPathSpan(parent, className, text) {
+    const span = document.createElement("span");
+    span.className = className;
+    span.textContent = text;
+    parent.appendChild(span);
+  }
+
+  // Chrome, after the lines, so a line's child index stays the block it paints.
+  function syncPathStrip() {
+    if (!pathStripLine || typeof pathStripLine.replaceChildren !== "function") return;
+    pathStripLine.replaceChildren();
+    const parts = pathParts(openPath);
+    if (!parts) return;
+    for (let i = 0; i < parts.dirs.length; i += 1) {
+      if (i > 0) appendPathSpan(pathStripLine, "md-path-sep", " / ");
+      appendPathSpan(pathStripLine, "md-path-dir", parts.dirs[i]);
+    }
+    if (parts.dirs.length > 0) appendPathSpan(pathStripLine, "md-path-sep", " / ");
+    appendPathSpan(pathStripLine, "md-path-name", parts.name);
+  }
+
+  function mountPathStrip() {
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return;
+    if (!pathStrip) {
+      const strip = document.createElement("div");
+      strip.className = "md-path-strip";
+      strip.contentEditable = "false";
+      if (typeof strip.setAttribute === "function") strip.setAttribute("contenteditable", "false");
+      const line = document.createElement("div");
+      line.className = "md-path-line";
+      strip.appendChild(line);
+      // A press here selects the path. It must not place the document caret.
+      if (typeof strip.addEventListener === "function") {
+        const keep = (event) => {
+          if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+        };
+        strip.addEventListener("mousedown", keep, { signal: ac.signal });
+        strip.addEventListener("pointerdown", keep, { signal: ac.signal });
+        strip.addEventListener("click", keep, { signal: ac.signal });
+      }
+      pathStrip = strip;
+      pathStripLine = line;
+    }
+    syncPathStrip();
+    appendEditorChrome(pathStrip);
+  }
+
   // Last, so a line's child index stays the block it paints. Fixed, once the
   // pane has a box, so the control stays in the visible corner while text scrolls.
   function mountViewToggle() {
+    mountPathStrip();
     mountDocMenu();
     const button = ensureViewToggle();
     if (typeof button.setAttribute === "function") button.setAttribute("aria-pressed", sourceMode ? "true" : "false");
@@ -6912,6 +6965,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const width = Number(rect.width);
     const height = Number(rect.height);
     const top = Number(rect.top);
+    const left = Number(rect.left);
     const right = Number(rect.right);
     if (!(width > 0) || !(height > 0) || !Number.isFinite(top) || !Number.isFinite(right)) return;
     const inset = 6;
@@ -6924,6 +6978,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     setStyle(button, "left", "auto");
     pinDocMenu(visibleTop + inset, edge);
     pinVimStatus(visibleTop + inset, edge);
+    if (pathStrip && Number.isFinite(left)) {
+      const visibleLeft = left < 0 ? 0 : left;
+      const span = visibleRight - visibleLeft;
+      if (span > 0) {
+        setStyle(pathStrip, "position", "fixed");
+        setStyle(pathStrip, "top", `${visibleTop}px`);
+        setStyle(pathStrip, "left", `${visibleLeft}px`);
+        setStyle(pathStrip, "width", `${span}px`);
+        setStyle(pathStrip, "right", "auto");
+      }
+    }
   }
 
   // After the lines, so a line's child index stays the block it paints.
@@ -7167,6 +7232,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const value = typeof path === "string" ? path : "";
     const slash = value.lastIndexOf("/");
     return slash < 0 ? value : value.slice(slash + 1);
+  }
+
+  // The filename is the last segment. Earlier segments are directories.
+  function pathParts(path) {
+    if (typeof path !== "string" || path === "") return null;
+    const parts = path.split("/").filter((part) => part !== "");
+    if (parts.length === 0) return null;
+    return { dirs: parts.slice(0, -1), name: parts[parts.length - 1] };
   }
 
   function moveBlocked(dir) {
@@ -7441,6 +7514,88 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     openConfirm();
   }
 
+  function closeFileMenu() {
+    fileMenuPath = "";
+    if (!fileMenu) return;
+    hideElement(fileMenu);
+  }
+
+  function closeFileMenuIfStale() {
+    if (!fileMenu || fileMenu.hidden || fileMenuPath === "") return;
+    if (!fileList.includes(fileMenuPath)) closeFileMenu();
+  }
+
+  function ensureFileMenu() {
+    if (fileMenu) return fileMenu;
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return null;
+    const parent = confirmParent();
+    if (!parent) return null;
+    const menu = document.createElement("div");
+    menu.className = "md-file-menu";
+    if (typeof menu.setAttribute === "function") menu.setAttribute("role", "menu");
+    hideElement(menu);
+    const head = document.createElement("div");
+    head.className = "md-file-menu-head";
+    const pathEl = document.createElement("div");
+    pathEl.className = "md-file-menu-path";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "icon-btn md-path-copy";
+    if (typeof copy.setAttribute === "function") {
+      copy.setAttribute("type", "button");
+      copy.setAttribute("aria-label", "Copy path");
+    }
+    const glyph = copyGlyph();
+    if (glyph) {
+      if (typeof glyph.setAttribute === "function") {
+        glyph.setAttribute("fill", "none");
+        glyph.setAttribute("stroke", "currentColor");
+        glyph.setAttribute("stroke-width", "2");
+        glyph.setAttribute("stroke-linecap", "round");
+        glyph.setAttribute("stroke-linejoin", "round");
+      }
+      copy.appendChild(glyph);
+    }
+    if (typeof copy.addEventListener === "function") {
+      copy.addEventListener("click", (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        stopEvent(event);
+        if (fileMenuPath) writeClipboard(fileMenuPath);
+      });
+    }
+    head.append(pathEl, copy);
+    menu.appendChild(head);
+    if (typeof menu.addEventListener === "function") {
+      const keep = (event) => {
+        if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      };
+      menu.addEventListener("mousedown", keep);
+      menu.addEventListener("contextmenu", (event) => {
+        if (event && typeof event.preventDefault === "function") event.preventDefault();
+        keep(event);
+      });
+    }
+    parent.appendChild(menu);
+    fileMenu = menu;
+    fileMenuPathEl = pathEl;
+    bindTicketPointer();
+    return menu;
+  }
+
+  function openFileMenu(path, x, y) {
+    if (typeof path !== "string" || path === "") return;
+    const menu = ensureFileMenu();
+    if (!menu) return;
+    fileMenuPath = path;
+    if (fileMenuPathEl) fileMenuPathEl.textContent = path;
+    const left = Number.isFinite(x) ? x : 0;
+    const top = Number.isFinite(y) ? y : 0;
+    setStyle(menu, "position", "fixed");
+    setStyle(menu, "left", `${left}px`);
+    setStyle(menu, "top", `${top}px`);
+    showElement(menu);
+  }
+
   function renderFileRow(file) {
     const row = document.createElement("div");
     row.className = "md-file-row";
@@ -7453,6 +7608,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     bindDragSource(button, file.path, false);
     bindFileDrop(button, file.path);
     button.addEventListener("click", (event) => {
+      if (event && typeof event.button === "number" && event.button !== 0) return;
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       hashComment = null;
       pinnedComment = null;
@@ -7462,7 +7618,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       emit({ type: "open", path: file.path });
       publishHash();
       syncEntryLink();
+      closeFileMenu();
+      syncPathStrip();
       renderFileTree(fileList, false);
+    });
+    row.addEventListener("contextmenu", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      stopEvent(event);
+      const point = event || {};
+      openFileMenu(file.path, point.clientX, point.clientY);
     });
     row.append(button);
     return row;
@@ -7558,6 +7722,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof tree.replaceChildren !== "function") return;
     if (seed) seedOpen(openPath);
     tree.replaceChildren(...renderEntries(buildFileTree(fileList)));
+    closeFileMenuIfStale();
     // The open panel tracks the new rows. Another hover is not required.
     syncWideFileDrawer(drawer);
   }
@@ -10326,7 +10491,26 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }, 0);
   }
 
+  function eventElement(event) {
+    const node = event && event.target;
+    if (!node) return null;
+    if (node.nodeType === 1) return node;
+    return node.parentElement || null;
+  }
+
+  // Selecting the path is not a caret press and not a navigation.
+  function inPathStrip(event) {
+    const el = eventElement(event);
+    if (!el || typeof el.closest !== "function") return false;
+    return !!el.closest(".md-path-strip");
+  }
+
   listen("mousedown", (event) => {
+    if (inPathStrip(event)) {
+      endTypingRunLater();
+      gestureArmed = false;
+      return;
+    }
     linkTabOpened = false;
     linkTabCaret = null;
     endTypingRunLater();
@@ -10574,6 +10758,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   listen("mousemove", onRootMouseMove);
 
   listen("click", (event) => {
+    if (inPathStrip(event)) return;
     try {
       onEditorClick(event);
     } finally {
@@ -11374,6 +11559,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const button = ticketForm && findClassChild(ticketForm, "md-ticket-pane-menu");
     if (panel && !panel.hidden && !nodeWithin(panel, target) && !nodeWithin(button, target)) closeTicketMenu();
     if (docMenuPanel && !docMenuPanel.hidden && !nodeWithin(docMenuPanel, target) && !nodeWithin(docMenuButton, target)) closeDocMenu();
+    closePopupOutside(fileMenu, null, target);
   }
 
   function bindTicketPointer() {
@@ -13257,6 +13443,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       unbindNewFile();
       unbindTickets();
       unbindTreeDrop();
+      if (fileMenu) detachNode(fileMenu);
+      fileMenu = null;
+      fileMenuPathEl = null;
+      fileMenuPath = "";
       if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
         document.removeEventListener("selectionchange", onSelectionChange);
       }

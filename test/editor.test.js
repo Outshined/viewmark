@@ -5396,9 +5396,9 @@ function mountEditor(options = {}) {
     Object.defineProperty(el, "textContent", {
       get() {
         const list = nodeList ? el._kids : el.childNodes;
-        // The menu is pinned on the editor. Its labels are not the document.
+        // The menu and the path strip are pinned on the editor. Their labels are not the document.
         return list.map((child) => {
-          if (child.classList && child.classList.contains("md-doc-menu-panel")) return "";
+          if (child.classList && (child.classList.contains("md-doc-menu-panel") || child.classList.contains("md-path-strip"))) return "";
           return child.textContent == null ? "" : child.textContent;
         }).join("");
       },
@@ -24561,4 +24561,192 @@ test("visual line paints each source line and skips a paragraph gap", () => {
     assert.equal(gaps().some(selected), false);
     diagramView.destroy();
   });
+});
+
+test("stored path is the editor strip and the closed file's menu header", () => {
+  const mounted = mountEditor();
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const stripRule = css.match(/\.md-path-strip\s*\{[^}]*\}/);
+  assert.ok(stripRule);
+  assert.match(stripRule[0], /height:\s*calc\(0\.35rem \+ 1\.75rem \+ 0\.35rem\)/);
+  assert.match(stripRule[0], /background:\s*#1c1b19/);
+  assert.match(stripRule[0], /border-bottom:\s*1px solid #4a463f/);
+  assert.match(stripRule[0], /user-select:\s*text/);
+  assert.match(stripRule[0], /padding:\s*0\.35rem calc\(0\.35rem \+ \(1\.75rem \+ 4px\) \* 2 \+ 2\.5rem\) 0\.35rem 0\.35rem/);
+  assert.match(css, /\.md-path-dir,\s*\.md-path-sep\s*\{[^}]*color:\s*#9c968c/);
+  assert.match(css, /\.md-path-name\s*\{[^}]*color:\s*#e7e2d8/);
+  assert.match(css, /\.editor\s*\{[^}]*padding:\s*calc\(0\.35rem \+ 1\.75rem \+ 0\.35rem \+ 1px\) 3rem 4rem 1\.4rem/);
+  assert.match(css, /button\.icon-btn\.md-view-toggle[^{]*\{[^}]*right:\s*0\.35rem/);
+  assert.match(css, /button\.md-doc-menu\s*\{[^}]*right:\s*calc\(0\.35rem \+ 1\.75rem \+ 4px\)/);
+  const menuRule = css.match(/div\.md-file-menu\s*\{[^}]*\}/);
+  assert.ok(menuRule);
+  assert.match(menuRule[0], /background:\s*#242320/);
+  assert.match(menuRule[0], /border:\s*1px solid #c4b8a4/);
+  assert.match(css, /\.md-file-menu-path\s*\{[^}]*color:\s*#9c968c/);
+  assert.match(css, /button\.md-path-copy\s*\{[^}]*width:\s*1\.75rem/);
+  assert.match(css, /button\.md-path-copy\s*\{[^}]*height:\s*1\.75rem/);
+  assert.match(css, /div\.md-file-menu\[hidden\]\s*\{[^}]*display:\s*none/);
+
+  const nav = document.createElement("nav");
+  nav.className = "files";
+  const sheet = document.createElement("div");
+  sheet.append(nav, mounted.root);
+  const transport = holdingTransport();
+  const writes = [];
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      clipboard: {
+        writeText(text) {
+          writes.push(text);
+          return Promise.resolve();
+        },
+      },
+    },
+  });
+  const fileButton = (path) => walkNodes(nav, (node) => node.dataset && node.dataset.path === path && node.classList && node.classList.contains("md-file"))[0];
+  const pathStrip = () => walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-path-strip"))[0];
+  const pathLine = () => walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-path-line"))[0];
+  const opens = () => transport.sent.filter((message) => message.type === "open");
+  try {
+    const view = createEditor(mounted.root, "", 0, transport);
+    const head = walkNodes(nav, (node) => node.classList && node.classList.contains("md-pane-head"))[0];
+    assert.equal(head.childNodes[0].textContent, "Files");
+    assert.equal(head.childNodes[1].getAttribute("aria-label"), "New file");
+    assert.equal(head.childNodes[2].getAttribute("aria-label"), "Delete file");
+    assert.equal(head.childNodes.length, 3);
+
+    const welcome = "# Welcome\n\nHi\n";
+    transport.deliver({
+      type: "docs",
+      files: ["notes/welcome.md", "notes/also.md", "welcome.md", "a/b/c.md"],
+      titles: { "notes/welcome.md": "Welcome", "notes/also.md": "Welcome" },
+    });
+    transport.deliver({ type: "file", rev: 1, text: welcome, path: "notes/welcome.md", cursor: 0, anchor: 0, locks: [] });
+    assert.equal(view.getState().doc, welcome);
+    assert.equal(fileButton("notes/welcome.md").textContent, "Welcome");
+    assert.equal(fileButton("notes/also.md").textContent, "Welcome");
+    assert.equal(fileButton("welcome.md").textContent, "welcome.md");
+    for (const path of ["notes/welcome.md", "notes/also.md", "welcome.md"]) {
+      const button = fileButton(path);
+      const row = button.parentElement;
+      assert.equal(row.classList.contains("md-file-row"), true);
+      assert.equal(row.childNodes.length, 1);
+      assert.equal(row.childNodes[0], button);
+      assert.equal(button.getAttribute("title"), null);
+      assert.equal(button.dataset.path, path);
+    }
+    const strip = pathStrip();
+    const line = pathLine();
+    assert.equal(strip.getAttribute("contenteditable"), "false");
+    assert.equal(line.closest("a"), null);
+    assert.equal(line.closest("button"), null);
+    assert.equal(line.textContent, "notes / welcome.md");
+    assert.deepEqual(line.childNodes.map((node) => node.className), ["md-path-dir", "md-path-sep", "md-path-name"]);
+    assert.deepEqual(line.childNodes.map((node) => node.textContent), ["notes", " / ", "welcome.md"]);
+    const toggle = viewToggleOf(mounted.root);
+    const menuButton = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-doc-menu"))[0];
+    assert.ok(mounted.root.childNodes.indexOf(strip) > mounted.root.childNodes.indexOf(walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-line"))[0]));
+    assert.ok(mounted.root.childNodes.indexOf(strip) < mounted.root.childNodes.indexOf(menuButton));
+    assert.ok(mounted.root.childNodes.indexOf(menuButton) < mounted.root.childNodes.indexOf(toggle));
+    assert.equal(mounted.root.childNodes.at(-1), toggle);
+
+    const before = opens().length;
+    const caret = view.getState().cursor;
+    mounted.listeners.mousedown({ target: line, button: 0, preventDefault() {}, stopPropagation() {} });
+    mounted.listeners.click({ target: line, button: 0, preventDefault() {}, stopPropagation() {} });
+    assert.equal(opens().length, before);
+    assert.equal(view.getState().doc, welcome);
+    assert.equal(view.getState().cursor, caret);
+    let stopped = false;
+    strip.listeners.click({ stopPropagation() { stopped = true; } });
+    assert.equal(stopped, true);
+
+    const closed = fileButton("notes/also.md");
+    let prevented = false;
+    closed.parentElement.listeners.contextmenu({
+      clientX: 18,
+      clientY: 42,
+      preventDefault() { prevented = true; },
+      stopPropagation() {},
+    });
+    assert.equal(prevented, true);
+    assert.equal(opens().length, before);
+    assert.equal(view.getState().doc, welcome);
+    assert.equal(fileButton("notes/welcome.md").classList.contains("md-file-current"), true);
+    assert.equal(closed.classList.contains("md-file-current"), false);
+    const menu = walkNodes(sheet, (node) => node.classList && node.classList.contains("md-file-menu"))[0];
+    assert.equal(menu.hidden, false);
+    assert.equal(menu.getAttribute("role"), "menu");
+    assert.equal(menu.styleProps.position, "fixed");
+    assert.equal(menu.styleProps.left, "18px");
+    assert.equal(menu.styleProps.top, "42px");
+    const header = walkNodes(menu, (node) => node.classList && node.classList.contains("md-file-menu-path"))[0];
+    assert.equal(header.tagName, "DIV");
+    assert.equal(header.textContent, "notes/also.md");
+    const copy = walkNodes(menu, (node) => node.classList && node.classList.contains("md-path-copy"))[0];
+    assert.equal(copy.tagName, "BUTTON");
+    assert.equal(copy.type, "button");
+    assert.equal(copy.classList.contains("icon-btn"), true);
+    assert.equal(copy.getAttribute("aria-label"), "Copy path");
+    assert.equal(copy.getAttribute("title"), null);
+    assert.equal(copy.textContent, "");
+    const svg = copy.childNodes[0];
+    assert.equal(svg.localName, "svg");
+    assert.equal(svg.getAttribute("viewBox"), "0 0 24 24");
+    assert.equal(svg.getAttribute("aria-hidden"), "true");
+    assert.equal(svg.getAttribute("fill"), "none");
+    assert.equal(svg.getAttribute("stroke"), "currentColor");
+    assert.equal(svg.getAttribute("stroke-width"), "2");
+    assert.equal(svg.getAttribute("stroke-linecap"), "round");
+    assert.equal(svg.getAttribute("stroke-linejoin"), "round");
+    const rects = [...svg.childNodes].filter((node) => node.localName === "rect");
+    assert.equal(rects.length, 2);
+    assert.equal(rects[0].getAttribute("x"), "4");
+    assert.equal(rects[0].getAttribute("y"), "4");
+    assert.equal(rects[0].getAttribute("width"), "12");
+    assert.equal(rects[0].getAttribute("height"), "12");
+    assert.equal(rects[1].getAttribute("x"), "8");
+    assert.equal(rects[1].getAttribute("y"), "8");
+    assert.equal(rects[1].getAttribute("width"), "12");
+    assert.equal(rects[1].getAttribute("height"), "12");
+    copy.listeners.click({ preventDefault() {}, stopPropagation() {} });
+    assert.deepEqual(writes, ["notes/also.md"]);
+    assert.equal(menu.hidden, false);
+    assert.equal(opens().length, before);
+    assert.equal(walkNodes(sheet, (node) => node.classList && node.classList.contains("md-properties")).length, 0);
+    assert.equal(walkNodes(sheet, (node) => node.tagName === "DIALOG" && String(node.textContent || "").includes("Properties")).length, 0);
+
+    transport.deliver({ type: "file", rev: 1, text: "# Welcome\n", path: "welcome.md", cursor: 0, anchor: 0, locks: [] });
+    assert.equal(pathLine().textContent, "welcome.md");
+    assert.deepEqual(pathLine().childNodes.map((node) => node.className), ["md-path-name"]);
+    assert.equal(view.getState().doc, "# Welcome\n");
+    assert.equal(fileButton("welcome.md").dataset.path, "welcome.md");
+
+    transport.deliver({ type: "file", rev: 1, text: "nested\n", path: "a/b/c.md", cursor: 0, anchor: 0, locks: [] });
+    assert.equal(pathLine().textContent, "a / b / c.md");
+    assert.deepEqual(pathLine().childNodes.map((node) => `${node.className}:${node.textContent}`), [
+      "md-path-dir:a",
+      "md-path-sep: / ",
+      "md-path-dir:b",
+      "md-path-sep: / ",
+      "md-path-name:c.md",
+    ]);
+    assert.equal(fileButton("a/b/c.md").textContent, "c.md");
+    assert.equal(fileButton("a/b/c.md").parentElement.childNodes.length, 1);
+    assert.equal(view.getState().doc, "nested\n");
+
+    transport.deliver({ type: "file", rev: 1, text: "body\n", path: "tickets/abcd1234.md", cursor: 0, anchor: 0, locks: [] });
+    assert.equal(pathLine().textContent, "tickets / abcd1234.md");
+    assert.deepEqual(pathLine().childNodes.map((node) => node.textContent), ["tickets", " / ", "abcd1234.md"]);
+    assert.equal(pathLine().childNodes[0].className, "md-path-dir");
+    assert.equal(pathLine().childNodes[2].className, "md-path-name");
+    assert.equal(view.getState().doc, "body\n");
+    view.destroy();
+  } finally {
+    if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
+    else delete globalThis.navigator;
+    mounted.restore();
+  }
 });
