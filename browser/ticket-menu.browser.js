@@ -678,7 +678,7 @@ test("the document menu lists Attach image, Delete file, and Vim keys (R110), an
   const doc = await read();
   assert.equal(doc.label, "Menu");
   assert.equal(doc.role, "menu");
-  assert.deepEqual(doc.items, ["Attach image", "Delete file", "Vim keys"]);
+  assert.deepEqual(doc.items, ["Attach image", "Rename", "Delete file", "Vim keys"]);
   assert.equal(doc.commit, false);
   assert.equal(doc.attach, 0);
   assert.ok(doc.menu.right <= doc.raw.left + 1, "the menu covers the raw toggle");

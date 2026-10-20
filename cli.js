@@ -19,6 +19,7 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME attach <path> --start LINE:OFFSET --end LINE:OFFSET --expect TEXT
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME delete <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME move <path> [--dir DIR]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME rename <path> <name>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME directory create <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME directory delete <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME rev <path>
@@ -46,7 +47,7 @@ Usage:
 --port or VIEWMARK_PORT, default 8765. --user or VIEWMARK_USER; the flag wins.
 Missing, empty, NUL, CR, LF, <, or > is rejected. There is no default name.
 --json is global. --help, help, or no args exits 0.
---repo is required on list, show, create, edit, attach, delete, move, rev, comment, ticket, and directory.
+--repo is required on list, show, create, edit, attach, delete, move, rename, rev, comment, ticket, and directory.
 serve keeps running. The default directory is \`state\` beside the program, and --user is not required.
 
 stdout and stderr:
@@ -133,6 +134,10 @@ directory:
   directory create <path> prints the stored path. Each segment is lowercased, other characters become dashes, and no markdown suffix is added. An empty segment, a dot segment, a dot-dot segment, a .git segment, a path over 1024 characters, and anything under tickets/ is 400 and writes nothing. A directory the store already has is that directory. One existing directory whose name normalizes to the segment is that directory. Two such directories is 409. A picture directory of a document is 409 and names that document.
   directory delete <path> removes a directory only when it holds no documents. A directory that holds documents is 409 and writes nothing.
   --json: create and delete {path}.
+
+rename:
+  rename <path> <name> keeps the parent and changes the last segment. <name> is one segment. The heading stays. Picture paths inside the document are updated the way move updates them. A directory rename moves every document under it. The segment uses the same spelling as create: lowercase, other characters as dashes. A document keeps .md or .markdown when the name has that suffix, and a name without one gains .md. A directory gains no suffix. A slash, an empty segment, a dot segment, a dot-dot segment, a .git segment, a path over 1024 characters, and anything under tickets/ is 400 and writes nothing. A name that normalizes to a document or directory already there is 409 and writes nothing. The create behavior that stores a later stem does not apply. A picture directory that cannot move with the rename is 409 and writes nothing. tickets/ cannot be renamed, and a ticket cannot be renamed this way.
+  stdout is the new path of each moved document, the same as move. --json matches move.
 
 Exit codes: 0, 1, 2, 400, 404, 409.
   0 success, help, or an empty diff
@@ -701,6 +706,13 @@ function printMoved(msg, json) {
 async function runMove(hub, username, docPath, dir, json) {
   hub.send({ type: "move", username, path: docPath, dir });
   const msg = await hub.next((item) => item.type === "moved" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  return printMoved(msg, json);
+}
+
+async function runRename(hub, username, docPath, name, json) {
+  hub.send({ type: "rename", username, path: docPath, name });
+  const msg = await hub.next((item) => item.type === "renamed" || item.type === "error");
   if (msg.type === "error") return serverError(msg);
   return printMoved(msg, json);
 }
@@ -1692,7 +1704,7 @@ async function main() {
     return;
   }
 
-  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "attach" && cmd !== "delete" && cmd !== "move" && cmd !== "rev" && cmd !== "comment" && cmd !== "ticket" && cmd !== "directory") {
+  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "attach" && cmd !== "delete" && cmd !== "move" && cmd !== "rename" && cmd !== "rev" && cmd !== "comment" && cmd !== "ticket" && cmd !== "directory") {
     usage("unknown command");
     return;
   }
@@ -1761,6 +1773,22 @@ async function main() {
       }
     }
     await withHub(port, user, (hub) => runComment(hub, user, command, text, args.json), args.repo);
+    return;
+  }
+  if (cmd === "rename") {
+    if (rest.length === 0) {
+      usage("path required");
+      return;
+    }
+    if (rest.length === 1) {
+      usage("name required");
+      return;
+    }
+    if (rest.length !== 2) {
+      usage("unexpected argument");
+      return;
+    }
+    await withHub(port, user, (hub) => runRename(hub, user, rest[0], rest[1], args.json), args.repo);
     return;
   }
   if (rest.length === 0) {

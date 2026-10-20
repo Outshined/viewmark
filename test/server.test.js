@@ -6503,3 +6503,269 @@ test("a directory can be created before it holds a document", async () => {
     b.ws.close();
   });
 });
+
+test("eftpk82u: rename a document or a directory", async () => {
+  await withDocs(async ({ port, dir }) => {
+    const kept = "# Kept heading\n\nprose stays\n";
+    const draft = "# Draft\n\nstays\n";
+    const pictured = "# Pictured\n\n![shot](notes/pictured/shot.png)\n\n![web](https://example.com/a.png)\n\n![blob](data:image/png;base64,aaaa)\n";
+    const notAllowed = "That name is not allowed.";
+    const used = "That name is already used.";
+    const picture = "A picture directory is in the way.";
+    await fs.writeFile(path.join(dir, "welcome.md"), kept);
+    await fs.mkdir(path.join(dir, "notes"), { recursive: true });
+    await fs.writeFile(path.join(dir, "notes", "draft.md"), draft);
+    await fs.writeFile(path.join(dir, "notes", "Hello.md"), "spelling\n");
+    await fs.mkdir(path.join(dir, "archive"), { recursive: true });
+    await fs.writeFile(path.join(dir, "archive", "keep.md"), "# Keep\n");
+    await fs.writeFile(path.join(dir, "page.markdown"), "# Page\n");
+    const a = await hello(port, "A");
+    const b = await hello(port, "B");
+    const marker = (rel) => path.join(dir, ...rel.split("/"), ".viewmark-dir");
+    const refuse = async (extra, status, reason) => {
+      a.send({ type: "rename", username: "A", ...extra });
+      const msg = await a.next((item) => item.type === "error" || item.type === "docs" || item.type === "renamed");
+      const expect = { type: "error", status };
+      if (reason !== undefined) expect.reason = reason;
+      assert.deepEqual(msg, expect, JSON.stringify(extra));
+      assert.equal(a.all.some((item) => item.type === "docs" || item.type === "renamed"), false);
+      assert.equal(b.all.length, 0);
+    };
+    const renameIdle = async (path, name) => {
+      a.send({ type: "rename", username: "A", path, name });
+      const docs = await a.next((msg) => msg.type === "docs" || msg.type === "renamed" || msg.type === "error");
+      assert.equal(docs.type, "docs", JSON.stringify(docs));
+      const renamed = await a.next((msg) => msg.type === "renamed" || msg.type === "error");
+      assert.equal(renamed.type, "renamed", JSON.stringify(renamed));
+      const docsB = await b.next((msg) => msg.type === "docs" || msg.type === "file" || msg.type === "renamed" || msg.type === "error");
+      assert.equal(docsB.type, "docs");
+      assert.equal(b.all.some((msg) => msg.type === "renamed"), false);
+      return renamed;
+    };
+    const createDir = async (path) => {
+      a.send({ type: "directory.create", username: "A", path });
+      const docs = await a.next((msg) => msg.type === "docs" || msg.type === "error");
+      assert.equal(docs.type, "docs", JSON.stringify(docs));
+      const made = await a.next((msg) => msg.type === "directory" || msg.type === "error");
+      assert.equal(made.type, "directory", JSON.stringify(made));
+      assert.equal((await b.next((msg) => msg.type === "docs" || msg.type === "error")).type, "docs");
+      return made.path;
+    };
+    try {
+      const before = await snapshotTree(dir);
+      for (const name of ["a/b.md", "", "   ", ".", "..", ".git", "---", "tickets", "tickets.md", "Tickets", "a\\b.md", "a\0b", "a".repeat(1024)]) {
+        await refuse({ path: "welcome.md", name }, 400, notAllowed);
+      }
+      await refuse({ path: "welcome.md" }, 400, notAllowed);
+      await refuse({ path: "welcome.md", name: 4 }, 400, notAllowed);
+      await refuse({ path: "tickets", name: "box" }, 400, notAllowed);
+      await refuse({ path: "tickets/seedmark.md", name: "other.md" }, 400, notAllowed);
+      await refuse({ path: "missing.md", name: "other.md" }, 404);
+      await refuse({ path: "../out.md", name: "other.md" }, 404);
+      await refuse({ path: "welcome", name: "other" }, 404);
+      await refuse({ path: "notes/draft.md", name: "a".repeat(1016) }, 400, notAllowed);
+      assert.deepEqual(await snapshotTree(dir), before);
+
+      a.send({ type: "rename", username: "A", path: "welcome.md", name: "Welcome.md" });
+      assert.deepEqual(await a.next((msg) => msg.type === "renamed" || msg.type === "docs" || msg.type === "error"), {
+        type: "renamed",
+        path: "welcome.md",
+        moves: [{ path: "welcome.md", dest: "welcome.md" }],
+      });
+      assert.equal(a.all.length, 0);
+      assert.equal(b.all.length, 0);
+      assert.equal(await readDoc(dir, "welcome.md"), kept);
+
+      await refuse({ path: "notes/draft.md", name: "hello.md" }, 409, used);
+      await refuse({ path: "notes/draft.md", name: "Hello.md" }, 409, used);
+      assert.equal(await readDoc(dir, "notes/draft.md"), draft);
+      assert.equal(await readDoc(dir, "notes/Hello.md"), "spelling\n");
+      await assert.rejects(() => fs.lstat(path.join(dir, "notes", "hello.md")), (err) => err.code === "ENOENT");
+      await assert.rejects(() => fs.lstat(path.join(dir, "notes", "hello-2.md")), (err) => err.code === "ENOENT");
+      await assert.rejects(() => fs.lstat(path.join(dir, "notes", "draft-2.md")), (err) => err.code === "ENOENT");
+      await refuse({ path: "notes", name: "archive" }, 409, used);
+      await refuse({ path: "notes", name: "Archive" }, 409, used);
+      assert.equal(await readDoc(dir, "notes/draft.md"), draft);
+      assert.equal(await readDoc(dir, "archive/keep.md"), "# Keep\n");
+
+      await fs.mkdir(path.join(dir, "notes", "parked"));
+      await fs.writeFile(path.join(dir, "notes", "parked", "other.png"), "other");
+      await fs.mkdir(path.join(dir, "notes", "pictured"));
+      await fs.writeFile(path.join(dir, "notes", "pictured", "shot.png"), "png-bytes");
+      await fs.writeFile(path.join(dir, "notes", "pictured.md"), pictured);
+      await fs.mkdir(path.join(dir, "notes", "Hello"));
+      await fs.writeFile(path.join(dir, "notes", "Hello", "keep.txt"), "keep");
+      await refuse({ path: "notes/pictured.md", name: "Hello.md" }, 409, used);
+      assert.equal(await readDoc(dir, "notes/pictured.md"), pictured);
+      assert.equal(await fs.readFile(path.join(dir, "notes", "pictured", "shot.png"), "utf8"), "png-bytes");
+      await refuse({ path: "notes/pictured.md", name: "parked.md" }, 409, picture);
+      assert.equal(await readDoc(dir, "notes/pictured.md"), pictured);
+      assert.equal(await fs.readFile(path.join(dir, "notes", "parked", "other.png"), "utf8"), "other");
+      await fs.writeFile(path.join(dir, "notes", "bare.md"), "bare\n");
+      await refuse({ path: "notes/bare.md", name: "parked.md" }, 409, picture);
+      assert.equal(await readDoc(dir, "notes/bare.md"), "bare\n");
+      assert.equal(await fs.readFile(path.join(dir, "notes", "parked", "other.png"), "utf8"), "other");
+
+      await fs.mkdir(path.join(dir, "welcome"));
+      await fs.writeFile(path.join(dir, "welcome", "shot.png"), "png");
+      await refuse({ path: "notes", name: "welcome" }, 409, picture);
+      assert.equal(await readDoc(dir, "notes/draft.md"), draft);
+      assert.equal(await fs.readFile(path.join(dir, "welcome", "shot.png"), "utf8"), "png");
+      await fs.writeFile(path.join(dir, "welcome", "inside.md"), "inside\n");
+      await refuse({ path: "notes", name: "welcome" }, 409, used);
+      await fs.rm(path.join(dir, "welcome", "inside.md"));
+      assert.equal(await fs.readFile(path.join(dir, "welcome", "shot.png"), "utf8"), "png");
+      assert.equal(await readDoc(dir, "notes/draft.md"), draft);
+
+      const opened = await openDoc(b, "B", "notes/draft.md");
+      assert.equal(opened.text, draft);
+      assert.equal(opened.rev, 0);
+      await syncLock(b, [], "B", "notes/draft.md", 0, opened.rev);
+      a.send({ type: "rename", username: "A", path: "notes/draft.md", name: "Side Note" });
+      const followed = await b.next((msg) => msg.type === "file" || msg.type === "error");
+      assert.equal(followed.type, "file");
+      assert.equal(followed.path, "notes/side-note.md");
+      assert.equal(followed.rev, 0);
+      assert.equal(followed.text, draft);
+      assert.deepEqual(followed.locks, [{ index: 0, username: "B" }]);
+      const docsB = await b.next((msg) => msg.type === "docs");
+      const docsA = await a.next((msg) => msg.type === "docs" || msg.type === "file" || msg.type === "error");
+      assert.equal(docsA.type, "docs");
+      assert.equal(docsA.files.includes("notes/side-note.md"), true);
+      assert.equal(docsA.files.includes("notes/draft.md"), false);
+      assert.equal(docsB.files.includes("notes/side-note.md"), true);
+      assert.deepEqual(await a.next((msg) => msg.type === "renamed" || msg.type === "error"), {
+        type: "renamed",
+        path: "notes/draft.md",
+        moves: [{ path: "notes/draft.md", dest: "notes/side-note.md" }],
+      });
+      assert.equal(b.all.some((msg) => msg.type === "renamed"), false);
+      assert.equal(await readDoc(dir, "notes/side-note.md"), draft);
+      await assert.rejects(() => fs.lstat(path.join(dir, "notes", "draft.md")), (err) => err.code === "ENOENT");
+      b.send({ type: "edit", username: "B", path: "notes/draft.md", rev: 0, op: "insert", text: "NO" });
+      assert.deepEqual(await b.next((msg) => msg.type === "error" || msg.type === "doc"), { type: "error", status: 409 });
+      assert.equal(await readDoc(dir, "notes/side-note.md"), draft);
+      const at = draft.indexOf("stays");
+      b.send({ type: "edit", username: "B", path: "notes/side-note.md", rev: 0, op: "insert", text: "Z", anchor: at, cursor: at });
+      const edited = await takeDoc(b);
+      assert.equal(edited.text.startsWith("# Draft\n"), true);
+      assert.equal(edited.text.includes("Zstays"), true);
+
+      const shot = await renameIdle("notes/pictured.md", "Shot Book.md");
+      assert.deepEqual(shot.moves, [{ path: "notes/pictured.md", dest: "notes/shot-book.md" }]);
+      const shotText = await readDoc(dir, "notes/shot-book.md");
+      assert.equal(shotText.startsWith("# Pictured\n"), true);
+      assert.equal(shotText.includes("notes/shot-book/shot.png"), true);
+      assert.equal(shotText.includes("notes/pictured/"), false);
+      assert.equal(shotText.includes("https://example.com/a.png"), true);
+      assert.equal(shotText.includes("data:image/png;base64,aaaa"), true);
+      assert.equal(await fs.readFile(path.join(dir, "notes", "shot-book", "shot.png"), "utf8"), "png-bytes");
+      await assert.rejects(() => fs.lstat(path.join(dir, "notes", "pictured.md")), (err) => err.code === "ENOENT");
+      await assert.rejects(() => fs.lstat(path.join(dir, "notes", "pictured")), (err) => err.code === "ENOENT");
+
+      const cased = await renameIdle("notes/Hello.md", "hello.md");
+      assert.deepEqual(cased.moves, [{ path: "notes/Hello.md", dest: "notes/hello.md" }]);
+      assert.equal(await readDoc(dir, "notes/hello.md"), "spelling\n");
+      assert.equal(await fs.readFile(path.join(dir, "notes", "hello", "keep.txt"), "utf8"), "keep");
+      await assert.rejects(() => fs.lstat(path.join(dir, "notes", "Hello.md")), (err) => err.code === "ENOENT");
+
+      const keptSuffix = await renameIdle("page.markdown", "Hello.markdown");
+      assert.deepEqual(keptSuffix.moves, [{ path: "page.markdown", dest: "hello.markdown" }]);
+      assert.equal(await readDoc(dir, "hello.markdown"), "# Page\n");
+      const gained = await renameIdle("hello.markdown", "Other");
+      assert.deepEqual(gained.moves, [{ path: "hello.markdown", dest: "other.md" }]);
+      assert.equal(await readDoc(dir, "other.md"), "# Page\n");
+      await assert.rejects(() => fs.lstat(path.join(dir, "hello.markdown")), (err) => err.code === "ENOENT");
+
+      const leaf = "leaf\n\n![shot](pack/sub/deep/shot.png)\n\n![web](https://example.com/a.png)\n\n![blob](data:image/png;base64,aaaa)\n";
+      const packDraft = "# Pack\n\nstays\n";
+      await fs.mkdir(path.join(dir, "pack", "sub", "deep"), { recursive: true });
+      await fs.writeFile(path.join(dir, "pack", "draft.md"), packDraft);
+      await fs.writeFile(path.join(dir, "pack", "sub", "deep.md"), leaf);
+      await fs.writeFile(path.join(dir, "pack", "sub", "deep", "shot.png"), "png");
+      await fs.writeFile(path.join(dir, "pack", "extra.txt"), "extra\n");
+      const openedLeaf = await openDoc(b, "B", "pack/sub/deep.md");
+      assert.equal(openedLeaf.rev, 0);
+      assert.equal(openedLeaf.text, leaf);
+      a.send({ type: "rename", username: "A", path: "pack", name: "My Notes" });
+      const nested = await b.next((msg) => msg.type === "file" || msg.type === "error");
+      assert.equal(nested.type, "file");
+      assert.equal(nested.path, "my-notes/sub/deep.md");
+      assert.equal(nested.rev, 1);
+      assert.equal(nested.text.includes("my-notes/sub/deep/shot.png"), true);
+      assert.equal(nested.text.includes("https://example.com/a.png"), true);
+      assert.equal(nested.text.includes("data:image/png;base64,aaaa"), true);
+      assert.equal(nested.text.includes("pack/sub/deep/"), false);
+      const nestDocsB = await b.next((msg) => msg.type === "docs");
+      const nestDocsA = await a.next((msg) => msg.type === "docs" || msg.type === "file" || msg.type === "error");
+      assert.equal(nestDocsA.type, "docs");
+      assert.equal(nestDocsA.files.includes("my-notes/draft.md"), true);
+      assert.equal(nestDocsA.files.includes("my-notes/sub/deep.md"), true);
+      assert.equal(nestDocsA.files.includes("pack/draft.md"), false);
+      assert.equal(nestDocsA.titles["my-notes/draft.md"], "Pack");
+      assert.deepEqual(nestDocsB.files, nestDocsA.files);
+      assert.deepEqual(await a.next((msg) => msg.type === "renamed" || msg.type === "error"), {
+        type: "renamed",
+        path: "pack",
+        moves: [
+          { path: "pack/draft.md", dest: "my-notes/draft.md" },
+          { path: "pack/sub/deep.md", dest: "my-notes/sub/deep.md" },
+        ],
+      });
+      assert.equal(b.all.some((msg) => msg.type === "renamed"), false);
+      assert.equal(await readDoc(dir, "my-notes/draft.md"), packDraft);
+      assert.equal(await fs.readFile(path.join(dir, "my-notes", "extra.txt"), "utf8"), "extra\n");
+      assert.equal(await fs.readFile(path.join(dir, "my-notes", "sub", "deep", "shot.png"), "utf8"), "png");
+      await assert.rejects(() => fs.lstat(path.join(dir, "pack")), (err) => err.code === "ENOENT");
+      b.send({ type: "edit", username: "B", path: "pack/sub/deep.md", rev: 1, op: "insert", text: "NO" });
+      assert.deepEqual(await b.next((msg) => msg.type === "error" || msg.type === "doc"), { type: "error", status: 409 });
+      b.send({ type: "edit", username: "B", path: "my-notes/sub/deep.md", rev: 1, op: "insert", text: "Q", anchor: 0, cursor: 0 });
+      const leafEdited = await takeDoc(b);
+      assert.equal(leafEdited.text.startsWith("Qleaf\n"), true);
+
+      assert.equal(await createDir("Empty Box"), "empty-box");
+      const emptied = await renameIdle("empty-box", "My Box");
+      assert.deepEqual(emptied, {
+        type: "renamed",
+        path: "empty-box",
+        moves: [{ path: "empty-box", dest: "my-box" }],
+      });
+      assert.equal(await fs.readFile(marker("my-box"), "utf8"), "");
+      await assert.rejects(() => fs.lstat(marker("empty-box")), (err) => err.code === "ENOENT");
+      a.send({ type: "rename", username: "A", path: "my-box", name: "My Box" });
+      assert.deepEqual(await a.next((msg) => msg.type === "renamed" || msg.type === "docs" || msg.type === "error"), {
+        type: "renamed",
+        path: "my-box",
+        moves: [{ path: "my-box", dest: "my-box" }],
+      });
+      assert.equal(a.all.length, 0);
+      assert.equal(b.all.length, 0);
+      assert.equal(await fs.readFile(marker("my-box"), "utf8"), "");
+      const dashed = await renameIdle("my-box", "drafts.md");
+      assert.deepEqual(dashed.moves, [{ path: "my-box", dest: "drafts-md" }]);
+      assert.equal(await fs.readFile(marker("drafts-md"), "utf8"), "");
+
+      assert.equal(await createDir("hold/pages"), "hold/pages");
+      const nestedTickets = await renameIdle("hold/pages", "tickets");
+      assert.deepEqual(nestedTickets.moves, [{ path: "hold/pages", dest: "hold/tickets" }]);
+      assert.equal(await fs.readFile(marker("hold/tickets"), "utf8"), "");
+      assert.equal(await createDir("box"), "box");
+      await refuse({ path: "box", name: "tickets" }, 400, notAllowed);
+      assert.equal(await fs.readFile(marker("box"), "utf8"), "");
+
+      await fs.writeFile(path.join(dir, "notes", "label.md"), "label\n");
+      const under = await renameIdle("notes/label.md", "tickets.md");
+      assert.deepEqual(under.moves, [{ path: "notes/label.md", dest: "notes/tickets.md" }]);
+      assert.equal(await readDoc(dir, "notes/tickets.md"), "label\n");
+      await fs.writeFile(path.join(dir, "tickets.md"), "# T\n");
+      const away = await renameIdle("tickets.md", "not-tickets.md");
+      assert.deepEqual(away.moves, [{ path: "tickets.md", dest: "not-tickets.md" }]);
+      assert.equal(await readDoc(dir, "not-tickets.md"), "# T\n");
+      await assert.rejects(() => fs.lstat(path.join(dir, "tickets.md")), (err) => err.code === "ENOENT");
+      assert.equal((await fs.lstat(path.join(dir, "tickets", "seedmark.md"))).isFile(), true);
+    } finally {
+      a.ws.close();
+      b.ws.close();
+    }
+  });
+});
