@@ -75,7 +75,11 @@ const HELP_NEEDLES = [
   "comment delete <path> <thread>",
   "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin.",
   "Lines count from 1. Offset counts from 0. The end offset is exclusive.",
-  "--repo is required on list, show, create, edit, attach, delete, move, rev, comment, and ticket.",
+  "--repo is required on list, show, create, edit, attach, delete, move, rev, comment, ticket, and directory.",
+  "viewmark [--port PORT] [--user NAME] [--json] --repo NAME directory create <path>",
+  "viewmark [--port PORT] [--user NAME] [--json] --repo NAME directory delete <path>",
+  "directory create <path> prints the stored path.",
+  "directory delete <path> removes a directory only when it holds no documents.",
   "viewmark [--port PORT] [--user NAME] [--json] --repo NAME attach <path> --start LINE:OFFSET --end LINE:OFFSET --expect TEXT",
   "ticket delete",
   "--title",
@@ -3228,7 +3232,7 @@ test("T-comment-usage", async () => {
   ]) {
     assert.ok(help.stdout.includes(line), line);
   }
-  assert.match(help.stdout, /--repo is required on list, show, create, edit, attach, delete, move, rev, comment, and ticket\./);
+  assert.match(help.stdout, /--repo is required on list, show, create, edit, attach, delete, move, rev, comment, ticket, and directory\./);
 
   const gate = await trap();
   try {
@@ -4739,5 +4743,120 @@ test("picture: a range follows its block and a bad range writes nothing", async 
     assert.equal(outside.stderr, "error 400\n");
     assert.equal(await fs.readFile(path.join(dir, "wide.md"), "utf8"), "alpha\n\nbeta\n");
     await assert.rejects(fs.lstat(path.join(dir, "wide")), (err) => err.code === "ENOENT");
+  });
+});
+
+test("directory create prints the stored path and directory delete removes an empty directory", async () => {
+  const gate = await trap();
+  try {
+    const noRepo = await run(["--port", String(gate.port), "--user", "user", "directory", "create", "notes"]);
+    assert.equal(noRepo.code, 2);
+    assert.equal(noRepo.stdout, "");
+    assert.equal(noRepo.stderr, "viewmark: --repo is required\n");
+
+    const missing = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "directory", "create"]);
+    assert.equal(missing.code, 2);
+    assert.equal(missing.stdout, "");
+    assert.equal(missing.stderr, "viewmark: path required\n");
+    const missingDelete = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "directory", "delete"]);
+    assert.equal(missingDelete.code, 2);
+    assert.equal(missingDelete.stderr, "viewmark: path required\n");
+    const unknown = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "directory", "nope", "notes"]);
+    assert.equal(unknown.code, 2);
+    assert.equal(unknown.stderr, "viewmark: unknown command\n");
+    const extra = await run(["--port", String(gate.port), "--user", "user", "--repo", "docs", "directory", "create", "notes", "extra"]);
+    assert.equal(extra.code, 2);
+    assert.equal(extra.stderr, "viewmark: unexpected argument\n");
+    const flagged = await run([
+      "--port", String(gate.port),
+      "--user", "user",
+      "--repo", "docs",
+      "directory",
+      "create",
+      "notes",
+      "--file",
+      "x",
+    ]);
+    assert.equal(flagged.code, 2);
+    assert.equal(flagged.stdout, "");
+    assert.equal(flagged.stderr, "viewmark: unexpected flag\n");
+    assert.equal(gate.hits.length, 0);
+  } finally {
+    await gate.close();
+  }
+
+  await withDocs(async ({ dir, port }) => {
+    const args = (...more) => ["--port", String(port), "--user", "user", "--repo", "docs", ...more];
+    const made = await run(args("directory", "create", "Notes/Drafts"));
+    assert.equal(made.code, 0);
+    assert.equal(made.stdout, "notes/drafts\n");
+    assert.equal(made.stderr, "");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "drafts", ".viewmark-dir"), "utf8"), "");
+
+    const again = await run(args("directory", "create", "notes/drafts"));
+    assert.equal(again.code, 0);
+    assert.equal(again.stdout, "notes/drafts\n");
+    assert.equal(again.stderr, "");
+
+    const json = await run(["--json", ...args("directory", "create", "Area 51")]);
+    assert.equal(json.code, 0);
+    assert.equal(json.stderr, "");
+    assert.equal(json.stdout, `${JSON.stringify({ path: "area-51" })}\n`);
+
+    const removed = await run(args("directory", "delete", "notes/drafts"));
+    assert.equal(removed.code, 0);
+    assert.equal(removed.stdout, "notes/drafts\n");
+    assert.equal(removed.stderr, "");
+    await assert.rejects(() => fs.lstat(path.join(dir, "notes", "drafts")));
+    const jsonGone = await run(["--json", ...args("directory", "delete", "area-51")]);
+    assert.equal(jsonGone.code, 0);
+    assert.equal(jsonGone.stderr, "");
+    assert.equal(jsonGone.stdout, `${JSON.stringify({ path: "area-51" })}\n`);
+
+    const occupied = await run(args("directory", "delete", "notes"));
+    assert.equal(occupied.code, shellStatus(409));
+    assert.equal(occupied.stdout, "");
+    assert.equal(occupied.stderr, "error 409\ndirectory is not empty\n");
+    assert.equal(await fs.readFile(path.join(dir, "notes", "draft.md"), "utf8"), DRAFT);
+
+    const picture = await run(args("directory", "create", "hello"));
+    assert.equal(picture.code, shellStatus(409));
+    assert.equal(picture.stdout, "");
+    assert.equal(picture.stderr, "error 409\nThat directory holds pictures for hello.md.\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "hello")));
+
+    const bad = await run(args("directory", "create", ".git"));
+    assert.equal(bad.code, shellStatus(400));
+    assert.equal(bad.stdout, "");
+    assert.equal(bad.stderr, "error 400\nname\n");
+
+    const inbox = await run(args("directory", "create", "inbox"));
+    assert.equal(inbox.code, 0);
+    assert.equal(inbox.stdout, "inbox\n");
+    const moved = await run(args("move", "hello.md", "--dir", "inbox"));
+    assert.equal(moved.code, 0);
+    assert.equal(moved.stdout, "inbox/hello.md\n");
+    assert.equal(moved.stderr, "");
+    assert.equal(await fs.readFile(path.join(dir, "inbox", "hello.md"), "utf8"), HELLO);
+    const held = await run(args("directory", "delete", "inbox"));
+    assert.equal(held.code, shellStatus(409));
+    assert.equal(held.stdout, "");
+    assert.equal(await fs.readFile(path.join(dir, "inbox", "hello.md"), "utf8"), HELLO);
+
+    await fs.mkdir(path.join(dir, "My Notes"));
+    const reused = await run(args("directory", "create", "my-notes"));
+    assert.equal(reused.code, 0);
+    assert.equal(reused.stdout, "My Notes\n");
+    assert.equal(reused.stderr, "");
+    assert.equal(await fs.readFile(path.join(dir, "My Notes", ".viewmark-dir"), "utf8"), "");
+
+    await fs.mkdir(path.join(dir, "Draft Box"));
+    await fs.mkdir(path.join(dir, "draft_box"));
+    const clash = await run(args("directory", "create", "draft-box"));
+    assert.equal(clash.code, shellStatus(409));
+    assert.equal(clash.stdout, "");
+    assert.equal(clash.stderr, "error 409\n");
+    await assert.rejects(() => fs.lstat(path.join(dir, "Draft Box", ".viewmark-dir")));
+    await assert.rejects(() => fs.lstat(path.join(dir, "draft_box", ".viewmark-dir")));
   });
 });

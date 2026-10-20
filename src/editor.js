@@ -88,6 +88,38 @@ function createPath(raw) {
   return `${trimmed}.md`;
 }
 
+function normalizeSegment(part) {
+  return String(part).toLowerCase().replace(/[^\p{L}\p{Nd}]+/gu, "-").replace(/^-+|-+$/g, "");
+}
+
+// Same segment rules as directory create. A markdown suffix is not added.
+function normalizeDirRel(rel) {
+  if (typeof rel !== "string") return null;
+  const trimmed = rel.trim().replace(/^\/+|\/+$/g, "");
+  if (!trimmed || trimmed.length > 1024) return null;
+  if (trimmed.includes("\0") || trimmed.includes("\\")) return null;
+  const parts = trimmed.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === ".." || part === ".git")) return null;
+  const slugged = [];
+  for (const part of parts) {
+    const next = normalizeSegment(part);
+    if (!next) return null;
+    slugged.push(next);
+  }
+  const stored = slugged.join("/");
+  if (!stored || stored.length > 1024 || stored === "tickets" || stored.startsWith("tickets/")) return null;
+  return stored;
+}
+
+function assetDirOfPath(rel) {
+  if (typeof rel !== "string") return null;
+  let dir = null;
+  if (rel.endsWith(".markdown")) dir = rel.slice(0, -".markdown".length);
+  else if (rel.endsWith(".md")) dir = rel.slice(0, -3);
+  if (!dir || dir === "tickets") return null;
+  return dir;
+}
+
 function insertAfter(parent, after, node) {
   // A NodeList has no indexOf. appendChild would put this node after later siblings.
   const follower = after ? after.nextSibling : undefined;
@@ -925,18 +957,15 @@ function writeClipboard(text) {
   }
 }
 
-// A directory exists only when some markdown file is stored under it.
-function buildFileTree(files) {
+// Parents of a markdown file are directories. dirs lists folders that hold no markdown.
+function buildFileTree(files, dirs) {
   const root = { dirs: new Map(), files: [] };
-  const list = Array.isArray(files) ? files : [];
-  for (const file of list) {
-    if (typeof file !== "string" || !isMarkdownPath(file)) continue;
-    const parts = file.split("/").filter(Boolean);
-    if (parts.length === 0) continue;
+  const addDir = (dirPath) => {
+    if (typeof dirPath !== "string" || dirPath === "") return;
+    const parts = dirPath.split("/").filter(Boolean);
     let node = root;
     let acc = "";
-    for (let i = 0; i < parts.length - 1; i += 1) {
-      const name = parts[i];
+    for (const name of parts) {
       acc = acc ? `${acc}/${name}` : name;
       let child = node.dirs.get(name);
       if (!child) {
@@ -945,8 +974,24 @@ function buildFileTree(files) {
       }
       node = child;
     }
-    node.files.push({ name: parts[parts.length - 1], path: file });
+  };
+  const list = Array.isArray(files) ? files : [];
+  for (const file of list) {
+    if (typeof file !== "string" || !isMarkdownPath(file)) continue;
+    const parts = file.split("/").filter(Boolean);
+    if (parts.length === 0) continue;
+    addDir(parts.slice(0, -1).join("/"));
+    let node = root;
+    let acc = "";
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const name = parts[i];
+      acc = acc ? `${acc}/${name}` : name;
+      node = node.dirs.get(name);
+    }
+    if (node) node.files.push({ name: parts[parts.length - 1], path: file });
   }
+  const extra = Array.isArray(dirs) ? dirs : [];
+  for (const dir of extra) addDir(dir);
   return root;
 }
 
@@ -2518,6 +2563,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let waitingForFile = false;
   let openPath = "";
   let fileList = [];
+  let dirList = [];
   let fileTitles = null;
   let draggedMove = null;
   let treeDrop = null;
@@ -2592,7 +2638,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let pathStripLine = null;
   let fileMenu = null;
   let fileMenuPath = "";
+  let fileMenuKind = "";
   let fileMenuPathEl = null;
+  let fileMenuCopy = null;
+  let nameDialog = null;
+  let nameDialogTitle = null;
+  let nameDialogWhere = null;
+  let nameDialogField = null;
+  let nameDialogError = null;
+  let nameDialogMode = "";
+  let nameDialogParent = "";
   let vimStatus = null;
   let vimLine = null;
   let vimPrompt = null;
@@ -2867,6 +2922,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       conflictWaiters.push("create");
       fileWaiters.push("create");
     }
+    if (type === "directory.create") conflictWaiters.push("directory");
+    if (type === "directory.delete") conflictWaiters.push("directory-delete");
     // A snapshot restates a caret it already stored. Waiting on that lock
     // would stand in front of a later ticket.set and turn its 409 into a caret restore.
     if (type === "lock" && track) conflictWaiters.push("lock");
@@ -7506,22 +7563,282 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return dialog;
   }
 
-  function showConfirm(name, send) {
+  function showConfirm(name, send, question) {
     const dialog = ensureConfirm();
     if (!dialog || !confirmText) return;
-    confirmText.textContent = `Delete ${name}?`;
+    confirmText.textContent = typeof question === "string" ? question : `Delete ${name}?`;
     confirmSend = send;
     openConfirm();
   }
 
+  function closeNameDialog() {
+    nameDialogMode = "";
+    nameDialogParent = "";
+    if (nameDialogField) nameDialogField.value = "";
+    if (nameDialogError) {
+      nameDialogError.textContent = "";
+      hideElement(nameDialogError);
+    }
+    if (!nameDialog) return;
+    if (typeof nameDialog.close === "function") nameDialog.close();
+    else {
+      nameDialog.open = false;
+      if (typeof nameDialog.removeAttribute === "function") nameDialog.removeAttribute("open");
+    }
+  }
+
+  function openNameDialogEl() {
+    if (!nameDialog) return;
+    const dialog = nameDialog;
+    dialog.open = true;
+    if (typeof dialog.showModal === "function") {
+      try {
+        dialog.showModal();
+      } catch {
+        if (typeof dialog.close === "function") dialog.close();
+        try {
+          dialog.showModal();
+        } catch {
+          dialog.open = true;
+        }
+      }
+    } else if (typeof dialog.setAttribute === "function") {
+      dialog.setAttribute("open", "");
+    }
+  }
+
+  function showNameError(text) {
+    if (!nameDialogError) return;
+    nameDialogError.textContent = text;
+    showElement(nameDialogError);
+  }
+
+  function ensureNameDialog() {
+    if (nameDialog) return nameDialog;
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return null;
+    const parent = confirmParent();
+    if (!parent) return null;
+    const dialog = document.createElement("dialog");
+    dialog.className = "md-confirm md-name";
+    const title = document.createElement("h2");
+    title.className = "md-name-title";
+    const where = document.createElement("p");
+    where.className = "md-name-where";
+    const label = document.createElement("label");
+    label.className = "md-name-label";
+    label.appendChild(document.createTextNode("Name"));
+    const field = document.createElement("input");
+    field.type = "text";
+    field.className = "md-name-field";
+    field.value = "";
+    if (typeof field.setAttribute === "function") field.setAttribute("type", "text");
+    label.appendChild(field);
+    const error = document.createElement("p");
+    error.className = "md-name-error";
+    hideElement(error);
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    if (typeof cancel.setAttribute === "function") cancel.setAttribute("type", "button");
+    const yes = document.createElement("button");
+    yes.type = "button";
+    yes.textContent = "Create";
+    if (typeof yes.setAttribute === "function") yes.setAttribute("type", "button");
+    const actions = document.createElement("div");
+    actions.className = "md-confirm-actions";
+    actions.append(cancel, yes);
+    cancel.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      closeNameDialog();
+    });
+    yes.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      submitNameDialog();
+    });
+    let nameKey = false;
+    const onKey = (event) => {
+      if (!event || nameKey) return;
+      nameKey = true;
+      try {
+        if (event.key === "Escape") {
+          if (typeof event.preventDefault === "function") event.preventDefault();
+          closeNameDialog();
+          return;
+        }
+        if (event.key !== "Enter") return;
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        submitNameDialog();
+      } finally {
+        nameKey = false;
+      }
+    };
+    dialog.addEventListener("keydown", onKey);
+    field.addEventListener("keydown", onKey);
+    dialog.addEventListener("cancel", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      closeNameDialog();
+    });
+    dialog.append(title, where, label, error, actions);
+    parent.appendChild(dialog);
+    nameDialog = dialog;
+    nameDialogTitle = title;
+    nameDialogWhere = where;
+    nameDialogField = field;
+    nameDialogError = error;
+    return dialog;
+  }
+
+  function directoryErrorText(message) {
+    const reason = message && typeof message.reason === "string" ? message.reason : "";
+    if (reason.startsWith("That directory holds pictures for ")) return reason;
+    return "That name is not allowed.";
+  }
+
+  function pictureConflict(dir) {
+    const key = normalizeDirRel(dir);
+    if (!key) return null;
+    for (const file of fileList) {
+      const owner = assetDirOfPath(file);
+      if (!owner) continue;
+      const ownerKey = normalizeDirRel(owner);
+      if (!ownerKey) continue;
+      if (fileList.some((item) => item.startsWith(`${owner}/`))) continue;
+      if (key === ownerKey || key.startsWith(`${ownerKey}/`)) return file;
+    }
+    return null;
+  }
+
+  function dirVisible(dir) {
+    const key = normalizeDirRel(dir);
+    if (!key) return false;
+    const same = (value) => {
+      const next = normalizeDirRel(value);
+      return next === key || (typeof next === "string" && next.startsWith(`${key}/`));
+    };
+    if (dirList.some(same)) return true;
+    return fileList.some((item) => {
+      const slash = item.lastIndexOf("/");
+      if (slash < 0) return false;
+      return same(item.slice(0, slash));
+    });
+  }
+
+  function joinedName(parent, name) {
+    const trimmed = String(name ?? "").trim().replace(/^\/+|\/+$/g, "");
+    if (!trimmed) return "";
+    return parent ? `${parent}/${trimmed}` : trimmed;
+  }
+
+  function allowedDocPath(docPath) {
+    if (typeof docPath !== "string" || docPath === "" || docPath.length > 1024) return false;
+    if (docPath === "tickets" || docPath.startsWith("tickets/")) return false;
+    if (!(docPath.endsWith(".md") || docPath.endsWith(".markdown"))) return false;
+    const stem = docPath.endsWith(".markdown") ? docPath.slice(0, -".markdown".length) : docPath.slice(0, -3);
+    if (!stem) return false;
+    const parts = stem.split("/");
+    if (parts.some((part) => part === "" || part === "." || part === ".." || part === ".git")) return false;
+    return parts.every((part) => normalizeSegment(part) !== "");
+  }
+
+  function submitNameDialog() {
+    if (!nameDialog || nameDialogMode === "") return;
+    const mode = nameDialogMode;
+    const parent = nameDialogParent;
+    const raw = nameDialogField ? nameDialogField.value : "";
+    if (mode === "directory") {
+      const full = joinedName(parent, raw);
+      const stored = normalizeDirRel(full);
+      if (!stored) {
+        showNameError("That name is not allowed.");
+        return;
+      }
+      const owner = pictureConflict(stored);
+      if (owner) {
+        showNameError(`That directory holds pictures for ${owner}.`);
+        return;
+      }
+      if (dirVisible(stored)) {
+        closeNameDialog();
+        return;
+      }
+      emit({ type: "directory.create", path: full });
+      return;
+    }
+    const trimmed = String(raw ?? "").trim().replace(/^\/+/, "");
+    const suffixed = createPath(trimmed);
+    const docPath = parent ? `${parent}/${suffixed}` : suffixed;
+    if (!trimmed || !allowedDocPath(docPath)) {
+      showNameError("That name is not allowed.");
+      return;
+    }
+    emit({ type: "create", path: docPath });
+  }
+
+  function openNameDialog(mode, parent) {
+    const dialog = ensureNameDialog();
+    if (!dialog || !nameDialogTitle || !nameDialogWhere || !nameDialogField) return;
+    nameDialogMode = mode;
+    nameDialogParent = typeof parent === "string" ? parent : "";
+    nameDialogTitle.textContent = mode === "directory" ? "New directory" : "New document";
+    nameDialogWhere.textContent = nameDialogParent ? `In ${nameDialogParent}/` : "In the file root";
+    nameDialogField.value = "";
+    if (nameDialogError) {
+      nameDialogError.textContent = "";
+      hideElement(nameDialogError);
+    }
+    openNameDialogEl();
+    if (typeof nameDialogField.focus === "function") nameDialogField.focus();
+  }
+
+  function revealDir(dirPath) {
+    const parts = String(dirPath || "").split("/").filter(Boolean);
+    let acc = "";
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : part;
+      openDirs.add(acc);
+    }
+  }
+
+  function docsInDir(dir) {
+    const prefix = `${dir}/`;
+    return fileList.filter((file) => typeof file === "string" && file.startsWith(prefix)).length;
+  }
+
+  function confirmDeleteDir(dir) {
+    const name = pathBase(dir);
+    const count = docsInDir(dir);
+    const noun = count === 1 ? "document" : "documents";
+    const question = count === 0 ? `Delete ${name}?` : `Delete ${name} and ${count} ${noun}?`;
+    showConfirm(name, () => emit({ type: "directory.delete", path: dir, documents: count > 0 }), question);
+  }
+
+  function openListed(path) {
+    hashComment = null;
+    pinnedComment = null;
+    openPath = path;
+    seedOpen(openPath);
+    waitingForFile = true;
+    emit({ type: "open", path });
+    publishHash();
+    syncEntryLink();
+    closeFileMenu();
+    syncPathStrip();
+    renderFileTree(fileList, false);
+  }
+
   function closeFileMenu() {
     fileMenuPath = "";
+    fileMenuKind = "";
     if (!fileMenu) return;
     hideElement(fileMenu);
   }
 
   function closeFileMenuIfStale() {
-    if (!fileMenu || fileMenu.hidden || fileMenuPath === "") return;
+    if (!fileMenu || fileMenu.hidden || fileMenuKind === "" || fileMenuKind === "root") return;
+    if (fileMenuKind === "dir") {
+      if (!dirVisible(fileMenuPath)) closeFileMenu();
+      return;
+    }
     if (!fileList.includes(fileMenuPath)) closeFileMenu();
   }
 
@@ -7578,16 +7895,56 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     parent.appendChild(menu);
     fileMenu = menu;
     fileMenuPathEl = pathEl;
+    fileMenuCopy = copy;
     bindTicketPointer();
     return menu;
   }
 
-  function openFileMenu(path, x, y) {
-    if (typeof path !== "string" || path === "") return;
+  function fillFileMenu(menu, kind, path) {
+    for (const child of [...(menu.childNodes || [])]) {
+      if (child && child.classList && child.classList.contains("md-file-menu-item")) detachNode(child);
+    }
+    const add = (label, className, run) => {
+      const button = plainButton(className ? `md-file-menu-item ${className}` : "md-file-menu-item", label);
+      if (typeof button.setAttribute === "function") button.setAttribute("role", "menuitem");
+      if (typeof button.addEventListener === "function") {
+        button.addEventListener("click", (event) => {
+          if (event && typeof event.preventDefault === "function") event.preventDefault();
+          stopEvent(event);
+          closeFileMenu();
+          run();
+        });
+      }
+      menu.appendChild(button);
+    };
+    if (kind === "file") {
+      add("Open", "", () => openListed(path));
+      add("Delete", "md-menu-delete", () => showConfirm(pathBase(path), () => emit({ type: "delete", path })));
+      return;
+    }
+    if (kind === "dir") {
+      add("New document", "", () => openNameDialog("document", path));
+      add("New directory", "", () => openNameDialog("directory", path));
+      add("Delete", "md-menu-delete", () => confirmDeleteDir(path));
+      return;
+    }
+    add("New document", "", () => openNameDialog("document", ""));
+    add("New directory", "", () => openNameDialog("directory", ""));
+  }
+
+  function openFileMenu(path, x, y, kind) {
+    const menuKind = kind === "dir" || kind === "root" ? kind : "file";
+    if (menuKind !== "root" && (typeof path !== "string" || path === "")) return;
     const menu = ensureFileMenu();
     if (!menu) return;
-    fileMenuPath = path;
-    if (fileMenuPathEl) fileMenuPathEl.textContent = path;
+    fileMenuKind = menuKind;
+    fileMenuPath = menuKind === "root" ? "" : path;
+    if (fileMenuPathEl) fileMenuPathEl.textContent = menuKind === "root" ? "File root" : path;
+    if (fileMenuCopy) {
+      if (menuKind === "root") hideElement(fileMenuCopy);
+      else showElement(fileMenuCopy);
+    }
+    fillFileMenu(menu, menuKind, fileMenuPath);
     const left = Number.isFinite(x) ? x : 0;
     const top = Number.isFinite(y) ? y : 0;
     setStyle(menu, "position", "fixed");
@@ -7610,17 +7967,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     button.addEventListener("click", (event) => {
       if (event && typeof event.button === "number" && event.button !== 0) return;
       if (event && typeof event.preventDefault === "function") event.preventDefault();
-      hashComment = null;
-      pinnedComment = null;
-      openPath = file.path;
-      seedOpen(openPath);
-      waitingForFile = true;
-      emit({ type: "open", path: file.path });
-      publishHash();
-      syncEntryLink();
-      closeFileMenu();
-      syncPathStrip();
-      renderFileTree(fileList, false);
+      openListed(file.path);
     });
     row.addEventListener("contextmenu", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
@@ -7652,6 +7999,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       else openDirs.add(dir.path);
       renderFileTree(fileList, false);
     });
+    const onDirMenu = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      stopEvent(event);
+      const point = event || {};
+      openFileMenu(dir.path, point.clientX, point.clientY, "dir");
+    };
+    button.addEventListener("contextmenu", onDirMenu);
+    wrap.addEventListener("contextmenu", onDirMenu);
     wrap.appendChild(button);
     if (open) {
       const kids = document.createElement("div");
@@ -7678,17 +8033,33 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       showDropMark("");
       sendMove("");
     };
+    const onMenu = (event) => {
+      const target = event && event.target;
+      if (target && target !== tree) {
+        let node = target;
+        while (node && node !== tree) {
+          if (node.classList && (node.classList.contains("md-file-row") || node.classList.contains("md-dir"))) return;
+          node = node.parentElement;
+        }
+      }
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      stopEvent(event);
+      const point = event || {};
+      openFileMenu("", point.clientX, point.clientY, "root");
+    };
     tree.addEventListener("dragover", onOver);
     tree.addEventListener("drop", onDrop);
-    treeDrop = { tree, onOver, onDrop };
+    tree.addEventListener("contextmenu", onMenu);
+    treeDrop = { tree, onOver, onDrop, onMenu };
   }
 
   function unbindTreeDrop() {
     if (!treeDrop) return;
-    const { tree, onOver, onDrop } = treeDrop;
+    const { tree, onOver, onDrop, onMenu } = treeDrop;
     if (typeof tree.removeEventListener === "function") {
       tree.removeEventListener("dragover", onOver);
       tree.removeEventListener("drop", onDrop);
+      if (onMenu) tree.removeEventListener("contextmenu", onMenu);
     }
     treeDrop = null;
   }
@@ -7702,8 +8073,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     setStyle(panel, "width", width);
   }
 
-  function renderFileTree(files, seed) {
+  function renderFileTree(files, seed, dirs) {
     fileList = Array.isArray(files) ? files : [];
+    if (dirs !== undefined) dirList = Array.isArray(dirs) ? dirs.filter((dir) => typeof dir === "string") : [];
     const nav = filesNav();
     if (!nav || typeof document === "undefined" || typeof document.createElement !== "function") return;
     const block = ensureFileBlock(nav);
@@ -7721,7 +8093,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     bindTreeDrop(tree);
     if (typeof tree.replaceChildren !== "function") return;
     if (seed) seedOpen(openPath);
-    tree.replaceChildren(...renderEntries(buildFileTree(fileList)));
+    tree.replaceChildren(...renderEntries(buildFileTree(fileList, dirList)));
     closeFileMenuIfStale();
     // The open panel tracks the new rows. Another hover is not required.
     syncWideFileDrawer(drawer);
@@ -8010,7 +8382,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (message.type === "docs") {
       const incoming = message.titles;
       fileTitles = incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : null;
-      renderFileTree(message.files, true);
+      renderFileTree(message.files, true, Array.isArray(message.dirs) ? message.dirs : []);
+      return;
+    }
+    if (message.type === "directory") {
+      const at = conflictWaiters.indexOf("directory");
+      if (at >= 0) conflictWaiters.splice(at, 1);
+      if (typeof message.path === "string" && message.path) revealDir(message.path);
+      if (nameDialogMode === "directory") closeNameDialog();
+      renderFileTree(fileList, false);
+      return;
+    }
+    if (message.type === "directory.deleted") {
+      const at = conflictWaiters.indexOf("directory-delete");
+      if (at >= 0) conflictWaiters.splice(at, 1);
       return;
     }
     if (message.type === "tickets") {
@@ -8101,6 +8486,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         conflictWaiters.shift();
         return;
       }
+      if (conflictWaiters[0] === "directory") {
+        conflictWaiters.shift();
+        if (nameDialogMode === "directory") showNameError(directoryErrorText(message));
+        return;
+      }
+      if (conflictWaiters[0] === "directory-delete") {
+        conflictWaiters.shift();
+        const held = typeof message.heldBy === "string" ? message.heldBy : "";
+        if (held) showNotice(`held by ${held}`);
+        else if (typeof message.reason === "string" && message.reason) showNotice(message.reason);
+        return;
+      }
       if (conflictWaiters[0] === "ticket") {
         conflictWaiters.shift();
         revertTicketForm();
@@ -8123,6 +8520,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (isConflict(message)) expectNewComment = false;
         // No repo is the one create refusal the page can name. A collision is another file, not a message.
         if (message.status === 400 && !activeRepo) showNotice("a repo has to be chosen first");
+        else if (nameDialogMode === "document") showNameError(directoryErrorText(message));
         return;
       }
       if (isConflict(message)) {
@@ -8224,7 +8622,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
     }
     if (ownEdit) flushPendingEdit();
-    if (createdFile) focusCreatedFile();
+    if (createdFile) {
+      if (nameDialogMode === "document") closeNameDialog();
+      focusCreatedFile();
+    }
   }
 
   function showNotice(text) {
@@ -12931,6 +13332,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     openDirs.clear();
     expandedTickets.clear();
     fileList = [];
+    dirList = [];
     fileTitles = null;
     draggedMove = null;
     ticketList = [];
@@ -13446,7 +13848,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (fileMenu) detachNode(fileMenu);
       fileMenu = null;
       fileMenuPathEl = null;
+      fileMenuCopy = null;
       fileMenuPath = "";
+      fileMenuKind = "";
+      if (nameDialog) detachNode(nameDialog);
+      nameDialog = null;
+      nameDialogTitle = null;
+      nameDialogWhere = null;
+      nameDialogField = null;
+      nameDialogError = null;
+      nameDialogMode = "";
+      nameDialogParent = "";
       if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
         document.removeEventListener("selectionchange", onSelectionChange);
       }

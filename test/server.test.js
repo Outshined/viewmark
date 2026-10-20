@@ -6241,3 +6241,265 @@ test("a line inserted above a range shifts the stored numbers and undo restores 
     a.ws.close();
   });
 });
+
+test("a directory can be created before it holds a document", async () => {
+  assert.equal(assetDirOf("tickets.md"), null);
+  assert.equal(assetDirOf("welcome.md"), "welcome");
+  await withDocs(async ({ port, dir }) => {
+    const a = await hello(port, "A");
+    const b = await hello(port, "Bea");
+    const marker = (rel) => path.join(dir, ...rel.split("/"), ".viewmark-dir");
+    const absent = (rel) => assert.rejects(() => fs.lstat(path.join(dir, rel)), (err) => err.code === "ENOENT");
+    const take = async (pred) => a.next((msg) => pred(msg));
+
+    a.send({ type: "list", username: "A" });
+    const initial = await take((msg) => msg.type === "docs");
+    assert.equal(initial.dirs, undefined);
+    assert.equal(initial.files.includes("welcome.md"), true);
+
+    await fs.writeFile(path.join(dir, "plain.md"), "plain\n");
+    await fs.mkdir(path.join(dir, "welcome"));
+    await fs.writeFile(path.join(dir, "welcome", "shot.png"), "png");
+    a.send({ type: "list", username: "A" });
+    const quiet = await take((msg) => msg.type === "docs");
+    assert.equal(quiet.dirs, undefined);
+    assert.equal(quiet.files.includes("welcome.md"), true);
+    assert.equal(quiet.files.some((file) => file.startsWith("welcome/")), false);
+
+    a.send({ type: "move", username: "A", path: "plain.md", dir: "nope" });
+    assert.deepEqual(await take((msg) => msg.type === "error"), { type: "error", status: 404 });
+    a.send({ type: "move", username: "A", path: "plain.md", dir: "welcome" });
+    assert.deepEqual(await take((msg) => msg.type === "error"), { type: "error", status: 404 });
+    assert.equal(await fs.readFile(path.join(dir, "plain.md"), "utf8"), "plain\n");
+    assert.equal(await fs.readFile(path.join(dir, "welcome", "shot.png"), "utf8"), "png");
+
+    const refused = [
+      "",
+      "   ",
+      ".",
+      "..",
+      ".git",
+      "foo/.git",
+      "a//b",
+      "---",
+      "tickets",
+      "tickets/pages",
+      "../out",
+      "x".repeat(1025),
+    ];
+    for (const rel of refused) {
+      a.send({ type: "directory.create", username: "A", path: rel });
+      assert.deepEqual(await take((msg) => msg.type === "error"), { type: "error", status: 400, reason: "name" });
+    }
+    await absent(".git");
+    await absent("a");
+    assert.equal((await fs.readdir(dir)).includes("x".repeat(1025)), false);
+    await assert.rejects(() => fs.lstat(marker("tickets")));
+    assert.equal((await fs.lstat(path.join(dir, "tickets", "seedmark.md"))).isFile(), true);
+
+    a.send({ type: "directory.create", username: "A", path: "welcome" });
+    assert.deepEqual(await take((msg) => msg.type === "error"), {
+      type: "error",
+      status: 409,
+      reason: "That directory holds pictures for welcome.md.",
+      path: "welcome.md",
+    });
+    a.send({ type: "directory.create", username: "A", path: "welcome/extra" });
+    assert.deepEqual(await take((msg) => msg.type === "error"), {
+      type: "error",
+      status: 409,
+      reason: "That directory holds pictures for welcome.md.",
+      path: "welcome.md",
+    });
+    await absent("welcome/.viewmark-dir");
+    await absent("welcome/extra");
+    assert.equal(await fs.readFile(path.join(dir, "welcome", "shot.png"), "utf8"), "png");
+
+    await fs.writeFile(path.join(dir, "tickets.md"), "# Tickets\n");
+    a.send({ type: "list", username: "A" });
+    const tickets = await take((msg) => msg.type === "docs");
+    assert.equal(tickets.files.includes("tickets.md"), true);
+    assert.equal(tickets.dirs, undefined);
+    a.send({ type: "directory.create", username: "A", path: "tickets" });
+    assert.deepEqual(await take((msg) => msg.type === "error"), { type: "error", status: 400, reason: "name" });
+
+    a.send({ type: "directory.create", username: "A", path: "Notes/Drafts" });
+    const drafted = await take((msg) => msg.type === "docs");
+    assert.equal(drafted.files.includes("welcome.md"), true);
+    assert.deepEqual(drafted.dirs, ["notes/drafts"]);
+    assert.equal(drafted.files.some((file) => file.startsWith("notes/drafts/")), false);
+    assert.deepEqual(await take((msg) => msg.type === "directory"), { type: "directory", path: "notes/drafts" });
+    assert.equal(await fs.readFile(marker("notes/drafts"), "utf8"), "");
+    const seen = await b.next((msg) => msg.type === "docs" && Array.isArray(msg.dirs) && msg.dirs.includes("notes/drafts"));
+    assert.deepEqual(seen.dirs, ["notes/drafts"]);
+
+    await fs.writeFile(marker("notes/drafts"), "keep");
+    a.send({ type: "directory.create", username: "A", path: "notes/drafts" });
+    assert.deepEqual(await take((msg) => msg.type === "directory" || msg.type === "docs" || msg.type === "error"), {
+      type: "directory",
+      path: "notes/drafts",
+    });
+    assert.equal(await fs.readFile(marker("notes/drafts"), "utf8"), "keep");
+
+    a.send({ type: "directory.create", username: "A", path: "notes" });
+    assert.deepEqual(await take((msg) => msg.type === "directory" || msg.type === "docs" || msg.type === "error"), {
+      type: "directory",
+      path: "notes",
+    });
+    await absent("notes/.viewmark-dir");
+
+    a.send({ type: "directory.create", username: "A", path: "Area 51" });
+    assert.equal((await take((msg) => msg.type === "docs")).dirs.includes("area-51"), true);
+    assert.deepEqual(await take((msg) => msg.type === "directory"), { type: "directory", path: "area-51" });
+    assert.equal((await fs.lstat(path.join(dir, "area-51"))).isDirectory(), true);
+
+    await fs.mkdir(path.join(dir, "Kept Name"));
+    a.send({ type: "directory.create", username: "A", path: "kept-name" });
+    assert.equal((await take((msg) => msg.type === "docs")).dirs.includes("Kept Name"), true);
+    assert.deepEqual(await take((msg) => msg.type === "directory"), { type: "directory", path: "Kept Name" });
+    assert.equal(await fs.readFile(marker("Kept Name"), "utf8"), "");
+    await absent("kept-name");
+
+    await fs.mkdir(path.join(dir, "My Notes"));
+    a.send({ type: "directory.create", username: "A", path: "My Notes/Drafts" });
+    assert.equal((await take((msg) => msg.type === "docs")).dirs.includes("My Notes/drafts"), true);
+    const nested = await take((msg) => msg.type === "directory");
+    assert.equal(nested.path, "My Notes/drafts");
+    assert.equal(await fs.readFile(marker("My Notes/drafts"), "utf8"), "");
+    await fs.writeFile(marker("My Notes/drafts"), "keep");
+    a.send({ type: "directory.create", username: "A", path: "my-notes" });
+    assert.deepEqual(await take((msg) => msg.type === "directory" || msg.type === "docs" || msg.type === "error"), {
+      type: "directory",
+      path: "My Notes",
+    });
+    await absent("My Notes/.viewmark-dir");
+    assert.equal(await fs.readFile(marker("My Notes/drafts"), "utf8"), "keep");
+
+    await fs.mkdir(path.join(dir, "Draft Box"));
+    await fs.mkdir(path.join(dir, "draft_box"));
+    a.send({ type: "directory.create", username: "A", path: "draft-box" });
+    assert.deepEqual(await take((msg) => msg.type === "error"), { type: "error", status: 409 });
+    a.send({ type: "directory.create", username: "A", path: "draft-box/child" });
+    assert.deepEqual(await take((msg) => msg.type === "error"), { type: "error", status: 409 });
+    await absent("Draft Box/.viewmark-dir");
+    await absent("draft_box/.viewmark-dir");
+    await absent("draft-box");
+
+    a.send({ type: "create", username: "A", path: "pages/note.md", text: "Note\n" });
+    const createdDocs = await take((msg) => msg.type === "docs");
+    assert.equal(createdDocs.files.includes("pages/note.md"), true);
+    assert.equal((createdDocs.dirs || []).includes("pages"), false);
+    const created = await take((msg) => msg.type === "file" && msg.path === "pages/note.md");
+    assert.equal(created.text, "Note\n");
+    a.send({ type: "directory.create", username: "A", path: "pages" });
+    assert.deepEqual(await take((msg) => msg.type === "directory" || msg.type === "error"), { type: "directory", path: "pages" });
+    await absent("pages/.viewmark-dir");
+    a.send({ type: "delete", username: "A", path: "pages/note.md" });
+    assert.deepEqual(await take((msg) => msg.type === "deleted"), { type: "deleted", path: "pages/note.md" });
+    const afterNote = await take((msg) => msg.type === "docs");
+    assert.equal(afterNote.files.includes("pages/note.md"), false);
+    assert.equal((afterNote.dirs || []).includes("pages"), false);
+    a.send({ type: "move", username: "A", path: "plain.md", dir: "pages" });
+    assert.deepEqual(await take((msg) => msg.type === "error"), { type: "error", status: 404 });
+    assert.equal(await fs.readFile(path.join(dir, "plain.md"), "utf8"), "plain\n");
+    a.send({ type: "directory.create", username: "A", path: "pages" });
+    assert.equal((await take((msg) => msg.type === "docs")).dirs.includes("pages"), true);
+    assert.deepEqual(await take((msg) => msg.type === "directory"), { type: "directory", path: "pages" });
+    a.send({ type: "move", username: "A", path: "plain.md", dir: "pages" });
+    const movedDocs = await take((msg) => msg.type === "docs");
+    assert.equal(movedDocs.files.includes("pages/plain.md"), true);
+    assert.equal(movedDocs.files.includes("plain.md"), false);
+    assert.deepEqual(await take((msg) => msg.type === "moved"), {
+      type: "moved",
+      path: "plain.md",
+      moves: [{ path: "plain.md", dest: "pages/plain.md" }],
+    });
+    assert.equal(await fs.readFile(path.join(dir, "pages", "plain.md"), "utf8"), "plain\n");
+    a.send({ type: "delete", username: "A", path: "pages/plain.md" });
+    assert.deepEqual(await take((msg) => msg.type === "deleted"), { type: "deleted", path: "pages/plain.md" });
+    const restored = await take((msg) => msg.type === "docs");
+    assert.equal(restored.dirs.includes("pages"), true);
+    assert.equal(await fs.readFile(marker("pages"), "utf8"), "");
+
+    await fs.writeFile(path.join(dir, "notes", "stay.md"), "stay\n");
+    a.send({ type: "directory.delete", username: "A", path: "notes" });
+    assert.deepEqual(await take((msg) => msg.type === "error"), {
+      type: "error",
+      status: 409,
+      reason: "directory is not empty",
+    });
+    assert.equal(await fs.readFile(path.join(dir, "notes", "stay.md"), "utf8"), "stay\n");
+    assert.equal(await fs.readFile(marker("notes/drafts"), "utf8"), "keep");
+    a.send({ type: "directory.delete", username: "A", path: "notes/drafts" });
+    const removedDocs = await take((msg) => msg.type === "docs");
+    assert.equal((removedDocs.dirs || []).includes("notes/drafts"), false);
+    assert.deepEqual(await take((msg) => msg.type === "directory.deleted"), { type: "directory.deleted", path: "notes/drafts" });
+    await absent("notes/drafts");
+
+    await fs.mkdir(path.join(dir, "lone"));
+    a.send({ type: "directory.delete", username: "A", path: "lone" });
+    assert.deepEqual(await take((msg) => msg.type === "error"), { type: "error", status: 404 });
+    assert.equal((await fs.lstat(path.join(dir, "lone"))).isDirectory(), true);
+
+    await fs.mkdir(path.join(dir, "archive"));
+    await fs.writeFile(path.join(dir, "archive", "keep.md"), "keep\n");
+    a.send({ type: "directory.create", username: "A", path: "box" });
+    assert.equal((await take((msg) => msg.type === "docs")).dirs.includes("box"), true);
+    assert.deepEqual(await take((msg) => msg.type === "directory"), { type: "directory", path: "box" });
+    a.send({ type: "move", username: "A", path: "box", dir: "archive" });
+    const boxed = await take((msg) => msg.type === "docs");
+    assert.equal(boxed.dirs.includes("archive/box"), true);
+    assert.equal(boxed.dirs.includes("box"), false);
+    assert.deepEqual(await take((msg) => msg.type === "moved"), {
+      type: "moved",
+      path: "box",
+      moves: [{ path: "box", dest: "archive/box" }],
+    });
+    assert.equal(await fs.readFile(marker("archive/box"), "utf8"), "");
+    a.send({ type: "move", username: "A", path: "archive/box", dir: "archive" });
+    assert.deepEqual(await take((msg) => msg.type === "moved" || msg.type === "docs" || msg.type === "error"), {
+      type: "moved",
+      path: "archive/box",
+      moves: [{ path: "archive/box", dest: "archive/box" }],
+    });
+
+    a.send({ type: "directory.create", username: "A", path: "hold/welcome" });
+    assert.equal((await take((msg) => msg.type === "docs")).dirs.includes("hold/welcome"), true);
+    assert.deepEqual(await take((msg) => msg.type === "directory"), { type: "directory", path: "hold/welcome" });
+    a.send({ type: "move", username: "A", path: "hold/welcome", dir: "" });
+    assert.deepEqual(await take((msg) => msg.type === "error"), { type: "error", status: 409 });
+    assert.equal(await fs.readFile(marker("hold/welcome"), "utf8"), "");
+    await absent("welcome/.viewmark-dir");
+    assert.equal(await fs.readFile(path.join(dir, "welcome", "shot.png"), "utf8"), "png");
+
+    await fs.mkdir(path.join(dir, "keep", "a"), { recursive: true });
+    await fs.writeFile(path.join(dir, "keep", "a.md"), "A\n");
+    await fs.writeFile(path.join(dir, "keep", "b.md"), "B\n");
+    await fs.writeFile(path.join(dir, "keep", "a", "pic.png"), "pic");
+    await fs.mkdir(path.join(dir, "pile", "a"), { recursive: true });
+    await fs.writeFile(path.join(dir, "pile", "a.md"), "P\n");
+    await fs.writeFile(path.join(dir, "pile", "a", "pic.png"), "pic");
+    a.send({ type: "directory.delete", username: "A", path: "keep" });
+    assert.deepEqual(await take((msg) => msg.type === "error"), {
+      type: "error",
+      status: 409,
+      reason: "directory is not empty",
+    });
+    assert.equal(await fs.readFile(path.join(dir, "keep", "a.md"), "utf8"), "A\n");
+    await openDoc(b, "Bea", "keep/b.md");
+    a.send({ type: "directory.delete", username: "A", path: "keep", documents: true });
+    assert.deepEqual(await take((msg) => msg.type === "error"), { type: "error", status: 409, heldBy: "Bea" });
+    assert.equal(await fs.readFile(path.join(dir, "keep", "a.md"), "utf8"), "A\n");
+    assert.equal(await fs.readFile(path.join(dir, "keep", "b.md"), "utf8"), "B\n");
+    assert.equal(await fs.readFile(path.join(dir, "keep", "a", "pic.png"), "utf8"), "pic");
+
+    await openDoc(a, "A", "pile/a.md");
+    a.send({ type: "directory.delete", username: "A", path: "pile", documents: true });
+    assert.deepEqual(await take((msg) => msg.type === "directory.deleted"), { type: "directory.deleted", path: "pile" });
+    await absent("pile");
+    assert.equal(await fs.readFile(path.join(dir, "keep", "b.md"), "utf8"), "B\n");
+
+    a.ws.close();
+    b.ws.close();
+  });
+});

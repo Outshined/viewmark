@@ -19,6 +19,8 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME attach <path> --start LINE:OFFSET --end LINE:OFFSET --expect TEXT
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME delete <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME move <path> [--dir DIR]
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME directory create <path>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME directory delete <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME rev <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment list <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment show <path> <thread>
@@ -44,7 +46,7 @@ Usage:
 --port or VIEWMARK_PORT, default 8765. --user or VIEWMARK_USER; the flag wins.
 Missing, empty, NUL, CR, LF, <, or > is rejected. There is no default name.
 --json is global. --help, help, or no args exits 0.
---repo is required on list, show, create, edit, attach, delete, move, rev, comment, and ticket.
+--repo is required on list, show, create, edit, attach, delete, move, rev, comment, ticket, and directory.
 serve keeps running. The default directory is \`state\` beside the program, and --user is not required.
 
 stdout and stderr:
@@ -126,6 +128,11 @@ comment:
 
 delete:
   delete <path> removes that document. The path is sent unchanged. ticket delete <id> removes that ticket and clears it from other tickets' parent and depends. Another socket holding the file exits 409 and writes nothing. stdout is the removed path. --json is {path}.
+
+directory:
+  directory create <path> prints the stored path. Each segment is lowercased, other characters become dashes, and no markdown suffix is added. An empty segment, a dot segment, a dot-dot segment, a .git segment, a path over 1024 characters, and anything under tickets/ is 400 and writes nothing. A directory the store already has is that directory. One existing directory whose name normalizes to the segment is that directory. Two such directories is 409. A picture directory of a document is 409 and names that document.
+  directory delete <path> removes a directory only when it holds no documents. A directory that holds documents is 409 and writes nothing.
+  --json: create and delete {path}.
 
 Exit codes: 0, 1, 2, 400, 404, 409.
   0 success, help, or an empty diff
@@ -643,6 +650,30 @@ function printDeleted(msg, json) {
   }
   process.stdout.write(`${msg.path}\n`);
   return 0;
+}
+
+function printPath(msg, json) {
+  if (!msg || typeof msg.path !== "string") return 1;
+  if (json) {
+    writeJson({ path: msg.path });
+    return 0;
+  }
+  process.stdout.write(`${msg.path}\n`);
+  return 0;
+}
+
+async function runDirectoryCreate(hub, username, dirPath, json) {
+  hub.send({ type: "directory.create", username, path: dirPath });
+  const msg = await hub.next((item) => item.type === "directory" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  return printPath(msg, json);
+}
+
+async function runDirectoryDelete(hub, username, dirPath, json) {
+  hub.send({ type: "directory.delete", username, path: dirPath });
+  const msg = await hub.next((item) => item.type === "directory.deleted" || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  return printPath(msg, json);
 }
 
 async function runDelete(hub, username, docPath, json) {
@@ -1661,7 +1692,7 @@ async function main() {
     return;
   }
 
-  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "attach" && cmd !== "delete" && cmd !== "move" && cmd !== "rev" && cmd !== "comment" && cmd !== "ticket") {
+  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "attach" && cmd !== "delete" && cmd !== "move" && cmd !== "rev" && cmd !== "comment" && cmd !== "ticket" && cmd !== "directory") {
     usage("unknown command");
     return;
   }
@@ -1676,6 +1707,24 @@ async function main() {
       return;
     }
     await withHub(port, user, (hub) => runList(hub, user, args.json), args.repo);
+    return;
+  }
+  if (cmd === "directory") {
+    const [sub, dirPath, ...extra] = rest;
+    if (sub !== "create" && sub !== "delete") {
+      usage("unknown command");
+      return;
+    }
+    if (extra.length !== 0) {
+      usage("unexpected argument");
+      return;
+    }
+    if (!dirPath || !dirPath.trim()) {
+      usage("path required");
+      return;
+    }
+    const runDir = sub === "create" ? runDirectoryCreate : runDirectoryDelete;
+    await withHub(port, user, (hub) => runDir(hub, user, dirPath, args.json), args.repo);
     return;
   }
   if (cmd === "ticket") {

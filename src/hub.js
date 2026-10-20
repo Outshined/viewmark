@@ -331,6 +331,147 @@ export function normalizeDocRel(rel) {
   return `${slugged.join("/")}${suffix}`;
 }
 
+// A directory with no markdown stays in the file list only when this file is present.
+// Picture directories are not given one, and a listing skips them while they hold no markdown.
+const DIR_MARK = ".viewmark-dir";
+
+function normalizeDirRel(rel) {
+  if (typeof rel !== "string") return null;
+  const trimmed = rel.trim().replace(/^\/+|\/+$/g, "");
+  if (!trimmed || trimmed.length > 1024) return null;
+  if (trimmed.includes("\0") || trimmed.includes("\\")) return null;
+  const parts = trimmed.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === ".." || part === ".git")) return null;
+  const slugged = [];
+  for (const part of parts) {
+    const next = normalizeSegment(part);
+    if (!next) return null;
+    slugged.push(next);
+  }
+  const stored = slugged.join("/");
+  if (!stored || stored.length > 1024 || isTicketTree(stored)) return null;
+  return stored;
+}
+
+// A quiet picture directory holds a document's images and no markdown.
+// Creating or listing that path, or a directory inside it, would show the pictures as a folder.
+function pictureOwner(listed, rel) {
+  for (const file of listed) {
+    const dir = assetDirOf(file);
+    if (!dir) continue;
+    if (listed.some((item) => item.startsWith(`${dir}/`))) continue;
+    if (rel === dir || rel.startsWith(`${dir}/`)) return file;
+  }
+  return null;
+}
+
+function underQuietPicture(rel, pics) {
+  return pics.some((pic) => rel === pic || rel.startsWith(`${pic}/`));
+}
+
+async function resolveDirStored(rootDir, rel) {
+  const parts = rel.split("/");
+  const used = [];
+  let parent = rootDir;
+  for (let i = 0; i < parts.length; i += 1) {
+    const segment = parts[i];
+    let entries;
+    try {
+      entries = await fs.readdir(parent, { withFileTypes: true });
+    } catch (err) {
+      if (err && err.code === "ENOENT") {
+        used.push(...parts.slice(i));
+        return { rel: used.join("/") };
+      }
+      return null;
+    }
+    const names = [];
+    for (const entry of entries) {
+      if (!segmentUsable(entry.name)) continue;
+      if (entry.isSymbolicLink()) {
+        let info;
+        try {
+          info = await fs.stat(path.join(parent, entry.name));
+        } catch {
+          continue;
+        }
+        if (!info.isDirectory()) continue;
+      } else if (!entry.isDirectory()) continue;
+      names.push(entry.name);
+    }
+    if (names.includes(segment)) {
+      used.push(segment);
+      parent = path.join(parent, segment);
+      continue;
+    }
+    const matches = names.filter((name) => normalizeSegment(name) === segment);
+    if (matches.length > 1) return { conflict: true };
+    if (matches.length === 1) {
+      used.push(matches[0]);
+      parent = path.join(parent, matches[0]);
+      continue;
+    }
+    used.push(...parts.slice(i));
+    return { rel: used.join("/") };
+  }
+  return { rel: used.join("/") };
+}
+
+async function listMarkedDirs(root, listed) {
+  const pics = [];
+  for (const file of listed) {
+    const dir = assetDirOf(file);
+    if (!dir || listed.some((item) => item.startsWith(`${dir}/`))) continue;
+    pics.push(dir);
+  }
+  let rootReal;
+  try {
+    rootReal = await fs.realpath(root);
+  } catch {
+    return [];
+  }
+  const out = [];
+  async function walk(abs, prefix, stack) {
+    let entries;
+    try {
+      entries = await fs.readdir(abs, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    let markdown = false;
+    let marked = false;
+    for (const entry of entries) {
+      if (entry.name === ".git") continue;
+      if (entry.name === DIR_MARK && entry.isFile()) marked = true;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (!(entry.isDirectory() || entry.isSymbolicLink())) {
+        if (entry.isFile() && isMarkdownPath(rel)) markdown = true;
+        continue;
+      }
+      if (prefix === "" && entry.name === "tickets") continue;
+      if (underQuietPicture(rel, pics)) continue;
+      const full = path.join(abs, entry.name);
+      const real = await directoryReal(full, stack);
+      if (!real || realInTicketStore(rootReal, real)) continue;
+      stack.push(real);
+      try {
+        if (await walk(full, rel, stack)) markdown = true;
+      } finally {
+        stack.pop();
+      }
+    }
+    if (marked && !markdown && prefix && !underQuietPicture(prefix, pics)) out.push(prefix);
+    return markdown;
+  }
+  await walk(root, "", [rootReal]);
+  out.sort();
+  return out;
+}
+
+function markedHolds(marked, rel) {
+  return marked.some((item) => item === rel || item.startsWith(`${rel}/`));
+}
+
 // A comment may sit on a ticket document. The tickets directory, a deeper
 // path, and a non-markdown path are not documents.
 function commentPathAllowed(rel) {
@@ -1423,6 +1564,7 @@ export async function createHub(stateDir, sourceRoot) {
     const body = { type: "error", status };
     if (extra && typeof extra.heldBy === "string") body.heldBy = extra.heldBy;
     if (extra && typeof extra.reason === "string") body.reason = extra.reason;
+    if (extra && typeof extra.path === "string") body.path = extra.path;
     send(socket, body);
   }
 
@@ -1921,7 +2063,10 @@ export async function createHub(stateDir, sourceRoot) {
 
   async function docsPayload(repo) {
     const listed = await listMarkdown(repo.path, "");
-    return { type: "docs", files: listed, titles: await titlesFor(repo, listed) };
+    const dirs = await listMarkedDirs(repo.path, listed);
+    const payload = { type: "docs", files: listed, titles: await titlesFor(repo, listed) };
+    if (dirs.length > 0) payload.dirs = dirs;
+    return payload;
   }
 
   function broadcastDocs(repo, msg) {
@@ -1994,11 +2139,32 @@ export async function createHub(stateDir, sourceRoot) {
     if (isTicketTree(rel) || (dir !== "" && isTicketTree(dir))) return fail(socket, 400);
 
     const listed = await listMarkdown(docsDir, "");
+    const marked = await listMarkedDirs(docsDir, listed);
     const fileMove = listed.includes(rel);
     const nested = listed.filter((item) => item.startsWith(`${rel}/`));
-    if (!fileMove && nested.length === 0) return fail(socket, 404);
-    if (dir !== "" && !listed.some((item) => item.startsWith(`${dir}/`))) return fail(socket, 404);
-    if (!fileMove && (dir === rel || dir.startsWith(`${rel}/`))) return fail(socket, 400);
+    const bare = !fileMove && nested.length === 0 && markedHolds(marked, rel);
+    if (!fileMove && nested.length === 0 && !bare) return fail(socket, 404);
+    const destKnown = dir === "" || listed.some((item) => item.startsWith(`${dir}/`)) || markedHolds(marked, dir);
+    if (!destKnown) return fail(socket, 404);
+    if (!fileMove && (dir === rel || (dir !== "" && dir.startsWith(`${rel}/`)))) return fail(socket, 400);
+    if (bare) {
+      const destRoot = dir ? `${dir}/${baseName(rel)}` : baseName(rel);
+      const reply = { type: "moved", path: rel, moves: [{ path: rel, dest: destRoot }] };
+      if (destRoot === rel) {
+        send(socket, reply);
+        return;
+      }
+      if (pictureOwner(listed, destRoot)) return fail(socket, 409);
+      const srcReal = await resolveInside(docsDir, rel);
+      if (!srcReal) return fail(socket, 404);
+      const destFull = await placedFull(docsDir, dir, baseName(rel));
+      if (!destFull) return fail(socket, 404);
+      if (await existsPath(destFull)) return fail(socket, 409);
+      await fs.rename(srcReal, destFull);
+      broadcastDocs(repo, await docsPayload(repo));
+      send(socket, reply);
+      return;
+    }
 
     const pairs = [];
     if (fileMove) {
@@ -2365,7 +2531,7 @@ export async function createHub(stateDir, sourceRoot) {
   }
 
   // The requester may still have the file open. Removal is not an edit: no undo entry.
-  async function unlinkFile(socket, rel) {
+  async function dropDocument(socket, rel) {
     const repo = socket.session.repo;
     if (socket.session.docPath === rel) await releaseFile(socket);
     const cached = repo.files.get(rel);
@@ -2373,7 +2539,100 @@ export async function createHub(stateDir, sourceRoot) {
     await fs.rm(cached ? cached.full : path.join(repo.path, rel), { force: true });
     await removeAssetDir(repo, rel);
     send(socket, { type: "deleted", path: rel });
+  }
+
+  async function unlinkFile(socket, rel) {
+    await dropDocument(socket, rel);
+    broadcastDocs(socket.session.repo, await docsPayload(socket.session.repo));
+  }
+
+  async function removeStoredDir(repo, rel, remaining) {
+    const full = path.join(repo.path, rel);
+    const picture = remaining.some((file) => assetDirOf(file) === rel);
+    if (!picture) {
+      await fs.rm(full, { recursive: true, force: true });
+      return;
+    }
+    let entries;
+    try {
+      entries = await fs.readdir(full, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name !== DIR_MARK && !entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      await fs.rm(path.join(full, entry.name), { recursive: true, force: true });
+    }
+  }
+
+  async function onDirectoryCreate(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const normalized = normalizeDirRel(msg.path);
+    if (!normalized) return fail(socket, 400, { reason: "name" });
+    const placed = await resolveDirStored(repo.path, normalized);
+    if (!placed) return fail(socket, 404);
+    if (placed.conflict) return fail(socket, 409);
+    const stored = placed.rel;
+    if (!stored || stored.length > 1024 || isTicketTree(stored)) return fail(socket, 400, { reason: "name" });
+    const listed = await listMarkdown(repo.path, "");
+    const owner = pictureOwner(listed, stored);
+    if (owner) return fail(socket, 409, { reason: `That directory holds pictures for ${owner}.`, path: owner });
+    const marked = await listMarkedDirs(repo.path, listed);
+    const shown = listed.some((item) => item.startsWith(`${stored}/`)) || markedHolds(marked, stored);
+    if (shown) {
+      send(socket, { type: "directory", path: stored });
+      return;
+    }
+    const dest = await createDest(repo.path, `${stored}/${DIR_MARK}`);
+    if (!dest) return fail(socket, 404);
+    try {
+      const parent = path.dirname(dest);
+      const info = await fs.lstat(parent);
+      if (!info.isDirectory()) return fail(socket, 409);
+      await fs.writeFile(dest, "");
+    } catch (err) {
+      if (err && err.code === "ENOENT") {
+        try {
+          await fs.mkdir(path.dirname(dest), { recursive: true });
+          await fs.writeFile(dest, "");
+        } catch {
+          return fail(socket, 404);
+        }
+      } else {
+        return fail(socket, 409);
+      }
+    }
     broadcastDocs(repo, await docsPayload(repo));
+    send(socket, { type: "directory", path: stored });
+  }
+
+  async function onDirectoryDelete(socket, msg) {
+    const repo = socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const normalized = normalizeDirRel(msg.path);
+    if (!normalized) return fail(socket, 400, { reason: "name" });
+    const placed = await resolveDirStored(repo.path, normalized);
+    if (!placed) return fail(socket, 404);
+    if (placed.conflict) return fail(socket, 409);
+    const rel = placed.rel;
+    if (!rel || isTicketTree(rel)) return fail(socket, 400, { reason: "name" });
+    const listed = await listMarkdown(repo.path, "");
+    const nested = listed.filter((item) => item.startsWith(`${rel}/`));
+    const marked = await listMarkedDirs(repo.path, listed);
+    if (nested.length === 0 && !markedHolds(marked, rel)) return fail(socket, 404);
+    if (nested.length > 0 && msg.documents !== true) return fail(socket, 409, { reason: "directory is not empty" });
+    if (nested.length > 0) {
+      for (const item of nested) {
+        const holder = otherHolder(repo, item, socket);
+        if (holder) return fail(socket, 409, { heldBy: holder });
+      }
+      for (const item of nested) await dropDocument(socket, item);
+    }
+    const remaining = listed.filter((item) => !item.startsWith(`${rel}/`));
+    await removeStoredDir(repo, rel, remaining);
+    broadcastDocs(repo, await docsPayload(repo));
+    send(socket, { type: "directory.deleted", path: rel });
   }
 
   async function onDelete(socket, msg) {
@@ -3283,6 +3542,8 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "rev") return onRev(socket, msg);
     if (msg.type === "open") return onOpen(socket, msg);
     if (msg.type === "create") return onCreate(socket, msg);
+    if (msg.type === "directory.create") return onDirectoryCreate(socket, msg);
+    if (msg.type === "directory.delete") return onDirectoryDelete(socket, msg);
     if (msg.type === "tickets") return onTickets(socket);
     if (msg.type === "ticket.create") return onTicketCreate(socket, msg);
     if (msg.type === "ticket.set") return onTicketSet(socket, msg);
