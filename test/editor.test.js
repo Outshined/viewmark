@@ -25404,3 +25404,150 @@ test("eftpk82u: rename a document or a directory", () => {
     mounted.restore();
   }
 });
+
+// A character step the page applies for h and l. The offset moves by selection.step.
+function installCharStep(mounted) {
+  const selection = {
+    rangeCount: 0,
+    anchorNode: null,
+    anchorOffset: 0,
+    focusNode: null,
+    focusOffset: 0,
+    step: 1,
+    setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset) {
+      selection.anchorNode = anchorNode;
+      selection.anchorOffset = anchorOffset;
+      selection.focusNode = focusNode;
+      selection.focusOffset = focusOffset;
+      selection.rangeCount = 1;
+    },
+    collapse(node, offset) {
+      selection.setBaseAndExtent(node, offset, node, offset);
+    },
+    removeAllRanges() {
+      selection.rangeCount = 0;
+    },
+    addRange() {},
+    modify(_action, direction) {
+      const sign = direction === "forward" || direction === "right" ? 1 : -1;
+      selection.focusOffset += sign * selection.step;
+      selection.anchorNode = selection.focusNode;
+      selection.anchorOffset = selection.focusOffset;
+      selection.rangeCount = 1;
+    },
+    getRangeAt() {
+      return {
+        startContainer: selection.focusNode,
+        startOffset: selection.focusOffset,
+        endContainer: selection.focusNode,
+        endOffset: selection.focusOffset,
+        collapsed: true,
+      };
+    },
+  };
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  globalThis.document.createTreeWalker = (start) => {
+    const nodes = [];
+    const walk = (node) => {
+      if (node.nodeType === 3) nodes.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(start);
+    let index = 0;
+    return { nextNode() { return index < nodes.length ? nodes[index++] : null; } };
+  };
+  globalThis.document.activeElement = mounted.root;
+  globalThis.window.getSelection = () => selection;
+  mounted.root.querySelectorAll = (selector) => {
+    const parts = String(selector).split(",").map((part) => part.trim());
+    const found = [];
+    const walk = (node) => {
+      if (node.nodeType === 1 && parts.some((part) => (
+        part.startsWith(".") ? node.classList.contains(part.slice(1)) : node.tagName === part.toUpperCase()
+      ))) found.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    for (const child of mounted.root.childNodes || []) walk(child);
+    return found;
+  };
+  return selection;
+}
+
+// Ticket 4cypbkfe. ^ lands on the marker. l from there is one source character,
+// still inside the marker, and must not snap to the block end.
+test("4cypbkfe vim l from a marker moves one character", () => {
+  return withVimFlag(true, (mounted) => {
+    const selection = installCharStep(mounted);
+    const press = (key) => vimType(mounted, key);
+    const open = (doc, at) => {
+      selection.step = 1;
+      selection.rangeCount = 0;
+      return createEditor(mounted.root, doc, at);
+    };
+
+    const lines = ["- alpha\n", "# Title\n", "> quote\n", "1. one\n"];
+    for (const doc of lines) {
+      const view = open(doc, 4);
+      press("^");
+      assert.equal(view.getState().cursor, 0, `${JSON.stringify(doc)} ^`);
+      press("l");
+      assert.equal(view.getState().cursor, 1, `${JSON.stringify(doc)} l`);
+      press("l");
+      assert.equal(view.getState().cursor, 2, `${JSON.stringify(doc)} ll`);
+      assert.notEqual(view.getState().cursor, doc.length - 1);
+      view.destroy();
+    }
+
+    const paragraph = open("alpha\n", 3);
+    press("^");
+    assert.equal(paragraph.getState().cursor, 0);
+    press("l");
+    assert.equal(paragraph.getState().cursor, 1);
+    assert.equal(paragraph.getState().doc[1], "l");
+    paragraph.destroy();
+
+    const item = open("- alpha\n", 4);
+    press("^");
+    press("l");
+    assert.equal(item.getState().cursor, 1);
+    press("h");
+    assert.equal(item.getState().cursor, 0, "h inside the marker snapped away");
+    press("l");
+    press("l");
+    assert.equal(item.getState().cursor, 2);
+    press("h");
+    assert.equal(item.getState().cursor, 2, "h from the content left the block");
+    item.destroy();
+
+    const cut = open("- alpha\n", 4);
+    press("^");
+    press("l");
+    assert.equal(cut.getState().cursor, 1);
+    press("x");
+    assert.equal(cut.getState().doc, "-alpha\n");
+    cut.destroy();
+
+    const fence = "```js\nlet y\n```\n";
+    const bodyAt = fence.indexOf("e");
+    const [bodyStart, bodyEnd] = blockSpan(fence, bodyAt);
+    assert.ok(bodyStart > 0);
+    assert.ok(bodyEnd > bodyStart);
+    const opener = open(fence, 0);
+    press("l");
+    assert.equal(opener.getState().cursor, 1, "l on the fence opener snapped to the body end");
+    assert.notEqual(opener.getState().cursor, bodyEnd);
+    opener.destroy();
+
+    const inside = open(fence, bodyAt);
+    selection.step = 20;
+    press("l");
+    assert.equal(inside.getState().cursor, bodyEnd, "l out of a fence body did not stop on the body edge");
+    inside.destroy();
+
+    const back = open(fence, bodyAt);
+    selection.step = 20;
+    press("h");
+    assert.equal(back.getState().cursor, bodyStart, "h out of a fence body did not stop on the body edge");
+    back.destroy();
+  });
+});
