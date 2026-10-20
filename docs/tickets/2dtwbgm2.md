@@ -1,5 +1,5 @@
 title: Show a document's stored filename and path
-state: pending review
+state: closed
 type: enhancement
 priority: high
 parent: 6py4vbnd
