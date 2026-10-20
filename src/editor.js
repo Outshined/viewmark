@@ -1543,10 +1543,15 @@ function placeImageSelection(range, image) {
   return true;
 }
 
-function renderCell(tag, cell) {
+function renderCell(tag, cell, repo, onSized) {
   const el = document.createElement(tag);
   if (cell.parts) {
     for (const part of cell.parts) {
+      // An image part has no classes, so it cannot go through renderRun.
+      if (part.type === "image") {
+        el.append(renderImage(part, repo, onSized));
+        continue;
+      }
       const code = part.classes && part.classes.includes("md-code");
       el.append(renderRun(part, code ? "code" : undefined));
     }
@@ -1566,7 +1571,7 @@ function atomClassName(base, atom) {
   return names.join(" ");
 }
 
-function renderTable(atom) {
+function renderTable(atom, repo, onSized) {
   const el = document.createElement("div");
   el.className = atomClassName(["md-atom", "md-table"], atom);
   el.contentEditable = "false";
@@ -1575,12 +1580,12 @@ function renderTable(atom) {
   const table = document.createElement("table");
   const thead = document.createElement("thead");
   const headRow = document.createElement("tr");
-  for (const cell of atom.header) headRow.appendChild(renderCell("th", cell));
+  for (const cell of atom.header) headRow.appendChild(renderCell("th", cell, repo, onSized));
   thead.appendChild(headRow);
   const tbody = document.createElement("tbody");
   for (const row of atom.rows) {
     const tr = document.createElement("tr");
-    for (const cell of row) tr.appendChild(renderCell("td", cell));
+    for (const cell of row) tr.appendChild(renderCell("td", cell, repo, onSized));
     tbody.appendChild(tr);
   }
   table.append(thead, tbody);
@@ -1836,7 +1841,7 @@ function takeRawMarker(el, marker) {
 }
 
 function renderBlock(block, repo, onSized, onDiagramFitted) {
-  if (block.type === "table") return renderTable(block);
+  if (block.type === "table") return renderTable(block, repo, onSized);
   if (block.type === "diagram") return renderDiagram(block, onDiagramFitted);
   if (block.collapsed) return renderCollapsed(block);
   const el = document.createElement("div");

@@ -4121,6 +4121,63 @@ test("escaped pipes in a table cell draw as pipes without the backslash (ticket 
   }
 });
 
+function cellDraw(cell) {
+  const pieces = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (node.nodeType === 3) {
+      const text = String(node.textContent || "").trim();
+      if (text !== "") pieces.push(text);
+      return;
+    }
+    if (node.tagName === "IMG") {
+      pieces.push(node);
+      return;
+    }
+    for (const child of node.childNodes || []) walk(child);
+  };
+  for (const child of cell.childNodes || []) walk(child);
+  return pieces;
+}
+
+test("a rendered table cell draws an image", () => {
+  const mounted = mountEditor();
+  try {
+    const doc = "# Title\n\n| pic |\n| --- |\n| ![alt](pic.png) |\n";
+    const caret = doc.indexOf("Title");
+    const view = createEditor(mounted.root, doc, caret);
+    assert.equal(view.getState().cursor, caret);
+    const table = mounted.findAll((node) => node.classList && node.classList.contains("md-table"))[0];
+    assert.ok(table);
+    const img = mounted.findAll((node) => node.tagName === "IMG" && node.closest(".md-table") === table)[0];
+    assert.ok(img);
+    assert.equal(img.alt, "alt");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a rendered table cell draws text around an image", () => {
+  const mounted = mountEditor();
+  try {
+    const doc = "Intro\n\n| a |\n| --- |\n| see ![alt](pic.png) here |\n";
+    const caret = doc.indexOf("Intro");
+    const view = createEditor(mounted.root, doc, caret);
+    assert.equal(view.getState().cursor, caret);
+    const cell = mounted.findAll((node) => node.tagName === "TD")[0];
+    const pieces = cellDraw(cell);
+    assert.equal(pieces.length, 3);
+    assert.equal(pieces[0], "see");
+    assert.equal(pieces[1].tagName, "IMG");
+    assert.equal(pieces[1].alt, "alt");
+    assert.equal(pieces[2], "here");
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("T-image-atom", () => {
   const p = plan(F, 0);
   assert.equal(p.lines[0].raw, true);
