@@ -3620,6 +3620,58 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     retainCaret();
   }
 
+  // pointFor skips text inside an atom. A selection end on that element is the
+  // edge before or after it. The source offsets stay where they were.
+  function atomCovering(offset) {
+    let found = null;
+    for (const el of root.querySelectorAll(".md-image, .md-atom")) {
+      const start = Number(el.dataset && el.dataset.start);
+      const end = Number(el.dataset && el.dataset.end);
+      if (!(start <= offset && offset <= end)) continue;
+      if (!found || end - start < found.end - found.start) found = { el, start, end };
+    }
+    return found;
+  }
+
+  function placeAtomSelection(sel, anchorOff, caretOff, from, to) {
+    const range = document.createRange();
+    const apply = (which, offset, point) => {
+      if (point) {
+        if (which === "start") {
+          range.setStart(point.node, point.offset);
+          return true;
+        }
+        if (typeof range.setEnd !== "function") return false;
+        range.setEnd(point.node, point.offset);
+        return true;
+      }
+      const atom = atomCovering(offset);
+      if (!atom || (offset !== atom.start && offset !== atom.end)) return false;
+      const before = offset === atom.start;
+      if (which === "start") {
+        if (before) range.setStartBefore(atom.el);
+        else range.setStartAfter(atom.el);
+        return true;
+      }
+      if (before) {
+        if (typeof range.setEndBefore !== "function") return false;
+        range.setEndBefore(atom.el);
+        return true;
+      }
+      if (typeof range.setEndAfter !== "function") return false;
+      range.setEndAfter(atom.el);
+      return true;
+    };
+    const loOff = Math.min(anchorOff, caretOff);
+    const hiOff = Math.max(anchorOff, caretOff);
+    const pointAt = (offset) => (offset === anchorOff ? from : to);
+    if (!apply("start", loOff, pointAt(loOff)) || !apply("end", hiOff, pointAt(hiOff))) return false;
+    if (typeof sel.removeAllRanges === "function") sel.removeAllRanges();
+    if (typeof sel.addRange !== "function") return false;
+    sel.addRange(range);
+    return true;
+  }
+
   function placeCaretFromState() {
     const sel = window.getSelection();
     if (!sel) return;
@@ -3662,6 +3714,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           return null;
         }
       }
+      // A picture between the ends stays an atom. The highlight is the element,
+      // not a caret that pointFor cannot place inside it.
+      for (const el of root.querySelectorAll(".md-image, .md-atom")) {
+        const start = Number(el.dataset && el.dataset.start);
+        const end = Number(el.dataset && el.dataset.end);
+        if (start >= lo && end <= hi && start < hi) el.classList.add("md-atom-selected");
+      }
       if (coveredOnlyByMarkers(state.doc, lo, hi)) {
         const markers = [];
         for (const el of root.querySelectorAll(".md-comment-marker")) {
@@ -3672,12 +3731,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         markers.sort((a, b) => Number(a.dataset.start) - Number(b.dataset.start));
         if (markers.length > 0 && selectMarkerElements(sel, markers)) return markers[markers.length - 1];
       }
-      const from = pointFor(visibleSelectionOffset(state.doc, anchor, caret));
-      const to = pointFor(visibleSelectionOffset(state.doc, caret, anchor));
+      const anchorOff = visibleSelectionOffset(state.doc, anchor, caret);
+      const caretOff = visibleSelectionOffset(state.doc, caret, anchor);
+      const from = pointFor(anchorOff);
+      const to = pointFor(caretOff);
       if (from && to) {
         sel.setBaseAndExtent(from.node, from.offset, to.node, to.offset);
         return to.node;
       }
+      const missed = (!from && atomCovering(anchorOff)) || (!to && atomCovering(caretOff));
+      if (missed && placeAtomSelection(sel, anchorOff, caretOff, from, to)) {
+        return (to && to.node) || (from && from.node) || missed.el;
+      }
+      if (missed) return null;
     }
     const point = pointFor(caret);
     if (point) return selectCollapsed(sel, point);

@@ -1505,7 +1505,19 @@ function finishMotion(vim, doc, anchor, cursor, raw, motion, operator) {
     return pack("full", true, next, applied.effect);
   }
   if (operator) return pack("full", true, next, null);
-  if (vim.mode === "visual" || vim.mode === "visual-line") {
+  // The motion lands on a column. A visual line is the whole line, so a shorter
+  // line is not cut off at that column. The stored column is the one j and k keep.
+  if (vim.mode === "visual-line") {
+    const origin = lineBounds(doc, anchor, raw);
+    const dest = lineBounds(doc, at, raw);
+    const forward = dest.start >= origin.start;
+    return pack("full", true, leavingOnce(next, vim), {
+      type: "caret",
+      anchor: forward ? origin.start : origin.end,
+      cursor: forward ? dest.end : dest.start,
+    });
+  }
+  if (vim.mode === "visual") {
     let landed = at;
     // e and w stop on the character the selection includes. The caret is the
     // exclusive end, so it sits one unit later. $ parks on the glyph and keeps

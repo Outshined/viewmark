@@ -24215,3 +24215,90 @@ for (const vimOn of [false, true]) {
     }
   });
 }
+
+// The picture stays an atom when the selection ends sit on the lines around it.
+// pointFor cannot land inside that atom, and the range must not collapse.
+test("a selection across an image keeps the atom marked", () => {
+  const mounted = mountEditor();
+  const doc = "Before.\n\n![box](box.svg)\n\nAfter.\n";
+  const cursor = doc.indexOf("After.") + "After.".length;
+  const selection = {
+    rangeCount: 0,
+    anchorNode: null,
+    anchorOffset: 0,
+    focusNode: null,
+    focusOffset: 0,
+    setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset) {
+      selection.anchorNode = anchorNode;
+      selection.anchorOffset = anchorOffset;
+      selection.focusNode = focusNode;
+      selection.focusOffset = focusOffset;
+      selection.rangeCount = 1;
+    },
+    collapse(node, offset) {
+      selection.setBaseAndExtent(node, offset, node, offset);
+    },
+    removeAllRanges() {
+      selection.rangeCount = 0;
+      selection.anchorNode = null;
+      selection.focusNode = null;
+    },
+    addRange() {
+      selection.rangeCount = 1;
+    },
+    getRangeAt() {
+      return {
+        startContainer: selection.anchorNode,
+        startOffset: selection.anchorOffset,
+        endContainer: selection.focusNode,
+        endOffset: selection.focusOffset,
+        collapsed: selection.anchorNode === selection.focusNode && selection.anchorOffset === selection.focusOffset,
+      };
+    },
+  };
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  globalThis.document.createTreeWalker = (start) => {
+    const nodes = [];
+    const walk = (node) => {
+      if (node.nodeType === 3) nodes.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(start);
+    let index = 0;
+    return { nextNode() { return index < nodes.length ? nodes[index++] : null; } };
+  };
+  globalThis.document.activeElement = mounted.root;
+  globalThis.window.getSelection = () => selection;
+  mounted.root.querySelectorAll = (selector) => {
+    const parts = String(selector).split(",").map((part) => part.trim());
+    const found = [];
+    const walk = (node) => {
+      if (node.nodeType === 1 && parts.some((part) => (
+        part.startsWith(".") ? node.classList.contains(part.slice(1)) : node.tagName === part.toUpperCase()
+      ))) found.push(node);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    for (const child of mounted.root.childNodes || []) walk(child);
+    return found;
+  };
+  try {
+    const transport = holdingTransport();
+    const view = createEditor(mounted.root, "", 0, transport);
+    transport.deliver({ type: "file", path: "pic.md", rev: 1, text: doc, cursor, anchor: 0 });
+    const image = mounted.findAll((node) => node.classList && node.classList.contains("md-image"))[0];
+    assert.ok(image);
+    assert.equal(image.classList.contains("md-atom"), true);
+    assert.equal(image.classList.contains("md-atom-selected"), true);
+    assert.equal(doc.slice(Number(image.dataset.start), Number(image.dataset.end)), "![box](box.svg)");
+    assert.ok(Number(image.dataset.start) > 0);
+    assert.ok(Number(image.dataset.end) < cursor);
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, cursor);
+    assert.equal(selection.rangeCount > 0, true);
+    const range = selection.getRangeAt(0);
+    assert.equal(range.collapsed, false);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});

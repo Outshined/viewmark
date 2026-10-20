@@ -1288,13 +1288,61 @@ test("g92jk6em V selects one line of a code fence and Vj selects the next", () =
   const two = run(line.show, ["j"], { vim: line.vim });
   assert.equal(two.vim.mode, "visual-line");
   assert.equal(two.anchor, line.anchor);
-  assert.ok(two.cursor >= two.doc.indexOf("  return 2;") && two.cursor <= two.doc.indexOf("  return 2;") + "  return 2;".length);
+  assert.equal(two.cursor, two.doc.indexOf("  return 2;") + "  return 2;".length);
   const effect = last(run(two.show, ["g", "c"], { vim: two.vim })).effect;
   assert.equal(effect.type, "comment-add");
   assert.equal(effect.anchor, two.doc.indexOf("  return 1;"));
   assert.equal(effect.cursor, two.doc.indexOf("}"));
   const cut = run(start, ["V", "j", "d"]);
   assert.equal(cut.doc, "Intro.\n\n```javascript\nfunction f() {\n}\n```\n\nEnd.\n");
+});
+
+test("visual-line j and k select whole lines", () => {
+  const span = (out) => out.doc.slice(Math.min(out.anchor, out.cursor), Math.max(out.anchor, out.cursor));
+  const doc = "a\n\nbb\n\nccc\n\ndddd\n\neeeee\n\nffffff\n\nggggggg\n";
+  const mid = doc.indexOf("dddd");
+  const down = run(`${doc.slice(0, mid)}‸${doc.slice(mid)}`, ["V", "j", "j", "j"]);
+  assert.equal(down.vim.mode, "visual-line");
+  assert.equal(down.vim.column, 4);
+  assert.equal(span(down), doc.slice(mid, doc.indexOf("ggggggg") + "ggggggg".length));
+  const back = run(down.show, ["k", "k", "k"], { vim: down.vim });
+  assert.equal(span(back), "dddd");
+  assert.equal(back.anchor, mid);
+  assert.equal(back.cursor, mid + "dddd".length);
+  assert.equal(back.vim.column, 4);
+  const up = run(back.show, ["k", "k", "k"], { vim: back.vim });
+  assert.equal(span(up), doc.slice(0, mid + "dddd".length));
+  assert.equal(up.vim.column, 4);
+
+  const heads = "# A\n\n## B\n\n### C\n\nbody\n";
+  const first = run("#‸ A\n\n## B\n\n### C\n\nbody\n", ["V", "j"]);
+  assert.equal(first.vim.mode, "visual-line");
+  assert.equal(first.anchor, 0);
+  assert.equal(first.cursor, heads.indexOf("\n\n") + 1);
+  assert.equal(span(first), "# A\n");
+  assert.ok(first.cursor < heads.indexOf("##"));
+
+  const bullets = run("-‸ a\n- bb\n", ["V", "j"]);
+  assert.equal(span(bullets), "- a\n- bb");
+  const ordered = run("1.‸ a\n2. bb\n", ["V", "j"]);
+  assert.equal(span(ordered), "1. a\n2. bb");
+
+  const image = "Before.\n\n![box](box.svg)\n\nAfter.\n";
+  const token = "![box](box.svg)";
+  const pictured = run(`‸${image}`, ["V", "j"]);
+  assert.equal(pictured.anchor, 0);
+  assert.equal(pictured.cursor, image.indexOf(token) + token.length);
+  assert.equal(span(pictured).includes(token), true);
+
+  const joined = "one\ntwo\nthree";
+  const held = run(`‸${joined}`, ["V", "j"]);
+  assert.equal(span(held), joined);
+  assert.equal(held.cursor, joined.length);
+  const alone = run("‸one\ntwo\nthree\n\nfour\n", ["V"]);
+  assert.equal(span(alone), "one\ntwo\nthree");
+  const next = run("‸one\ntwo\nthree\n\nfour\n", ["V", "j"]);
+  assert.equal(span(next), "one\ntwo\nthree\n\nfour");
+  assert.notEqual(next.cursor, next.doc.indexOf("two"));
 });
 
 test("g92jk6em raw j still moves one source line", () => {
