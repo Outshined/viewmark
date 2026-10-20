@@ -1,5 +1,5 @@
 title: Rename a document or a directory
-state: pending review
+state: closed
 type: enhancement
 priority: medium
 parent: 6py4vbnd
