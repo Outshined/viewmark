@@ -4095,7 +4095,7 @@ test("escaped pipes in a table cell draw as pipes without the backslash (ticket 
   assert.equal(table.rows[1][1].end, table.rows[1][1].start + table.rows[1][1].text.length);
   const plain = plan("a \\| b\n", "a \\| b\n".length);
   assert.equal(plain.blocks.some((block) => block.type === "table"), false);
-  assert.equal(plain.lines[0].runs.map((run) => run.text).join(""), "a \\| b");
+  assert.equal(plain.lines[0].runs.map((run) => run.text).join(""), "a | b");
   const same = plan(D, D.length).blocks.find((block) => block.type === "table");
   assert.deepEqual(shown(same.header), ["a", "b"]);
   assert.deepEqual(shown(same.rows[0]), ["1", "2"]);
@@ -4628,7 +4628,8 @@ test("marks hide their markers", () => {
   assert.equal(under.lines[0].runs[0].text, "c");
   assert.equal(under.lines[0].runs[0].start, 1);
   assert.equal(under.lines[0].runs[0].end, 2);
-  assert.ok(under.lines[0].runs[0].classes.includes("md-em"));
+  assert.ok(under.lines[0].runs[0].classes.includes("md-u"));
+  assert.equal(under.lines[0].runs[0].classes.includes("md-em"), false);
 
   const spaced = plan("``` diagram\nA\n```\n", 30);
   assert.equal(spaced.blocks.some((block) => block.type === "diagram"), false);
@@ -4812,7 +4813,7 @@ test("T-active-format", () => {
   const under = plan("_em_\n", 2).lines[0];
   assert.equal(under.runs.length, 1);
   assert.equal(under.runs[0].text, "_em_");
-  assert.deepEqual(under.runs[0].classes, ["md-em"]);
+  assert.deepEqual(under.runs[0].classes, ["md-u"]);
 
   const us = plan("__ab__\n", 0).lines[0];
   assert.equal(us.runs.length, 1);
@@ -4828,12 +4829,12 @@ test("T-active-format", () => {
   const starUnder = plan("**_z_**\n", 0).lines[0];
   assert.equal(starUnder.runs.length, 1);
   assert.equal(starUnder.runs[0].text, "**_z_**");
-  assert.deepEqual(starUnder.runs[0].classes, ["md-strong", "md-em"]);
+  assert.deepEqual(starUnder.runs[0].classes, ["md-strong", "md-u"]);
 
   const underStar = plan("_**z**_\n", 0).lines[0];
   assert.equal(underStar.runs.length, 1);
   assert.equal(underStar.runs[0].text, "_**z**_");
-  assert.deepEqual(underStar.runs[0].classes, ["md-em", "md-strong"]);
+  assert.deepEqual(underStar.runs[0].classes, ["md-u", "md-strong"]);
 
   const code = plan("`ab`\n", 2).lines[0];
   assert.equal(code.raw, true);

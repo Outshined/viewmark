@@ -16,8 +16,8 @@ function classesOf(line) {
 }
 
 // A closed ~~ pair hides its tildes off the cursor line. The cursor line, an
-// unclosed pair, a code span, and a fence keep the tildes, and a pair stays on
-// one source line.
+// unclosed pair, a code span, and a fence keep the tildes. A pair crosses a
+// soft break inside one paragraph. A blank line ends it.
 test("a closed ~~ pair strikes off the cursor line and the cursor line keeps the tildes", () => {
   for (let level = 1; level <= 6; level += 1) {
     const marks = "#".repeat(level);
@@ -161,9 +161,15 @@ test("a closed ~~ pair strikes off the cursor line and the cursor line keeps the
   const split = "~~one\nstill~~\n";
   const joined = plan(split, split.length).lines;
   assert.equal(joined.length, 1);
-  assert.equal(struck(joined[0]), false);
-  assert.ok(shown(joined[0]).includes("~~one"));
-  assert.ok(shown(joined[0]).includes("still~~"));
+  assert.equal(joined[0].raw, false);
+  assert.equal(struck(joined[0]), true);
+  assert.equal(shown(joined[0]).includes("~"), false);
+  assert.equal(shown(joined[0]), "one still");
+  const onSplit = plan(split, 0).lines[0];
+  assert.equal(onSplit.raw, true);
+  assert.equal(struck(onSplit), false);
+  assert.ok(shown(onSplit).includes("~~one"));
+  assert.ok(shown(onSplit).includes("still~~"));
 
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
   assert.match(css, /\.md-strike\s*\{[^}]*text-decoration:\s*line-through;/);

@@ -18,7 +18,7 @@ const CASES = [
   ["**before `code` after**", "md-strong", ["before", "after"]],
   ["*before `code` after*", "md-em", ["before", "after"]],
   ["__before `code` after__", "md-strong", ["before", "after"]],
-  ["_before `code` after_", "md-em", ["before", "after"]],
+  ["_before `code` after_", "md-u", ["before", "after"]],
 ];
 
 for (const [source, mark, words] of CASES) {
@@ -63,7 +63,7 @@ test("the caret line shows the markers and keeps the mark on both sides of the c
     ["**before `code` after**", "md-strong", "before"],
     ["*before `code` after*", "md-em", "after"],
     ["__before `code` after__", "md-strong", "before"],
-    ["_before `code` after_", "md-em", "after"],
+    ["_before `code` after_", "md-u", "after"],
     ["14. **`vim.js` returns an offset only for a motion the string can answer.**", "md-strong", "returns"],
   ];
   for (const [source, mark, word] of cases) {

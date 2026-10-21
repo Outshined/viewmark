@@ -1654,14 +1654,19 @@ function renderCellLine(block, repo, onSized) {
     if (!(block.alertMarker && block.alert)) el.appendChild(document.createElement("br"));
     return el;
   }
+  let drew = false;
   for (const part of parts) {
+    if (part.type === "footnote") continue;
     if (part.type === "image") {
       el.appendChild(renderImage(part, repo, onSized));
+      drew = true;
       continue;
     }
     const code = part.classes && part.classes.includes("md-code");
     el.appendChild(renderRun(part, code ? "code" : undefined));
+    drew = true;
   }
+  if (!drew) el.appendChild(document.createElement("br"));
   return el;
 }
 
@@ -1687,6 +1692,7 @@ function renderCell(tag, cell, repo, onSized) {
     for (const node of cell.blocks) el.appendChild(renderCellNode(node, repo, onSized));
   } else if (cell.parts) {
     for (const part of cell.parts) {
+      if (part.type === "footnote") continue;
       // An image part has no classes, so it cannot go through renderRun.
       if (part.type === "image") {
         el.append(renderImage(part, repo, onSized));
@@ -1900,6 +1906,7 @@ function appendParts(el, block, repo, onSized) {
   const share = markerOnly(block);
   if (block.slot != null) el.appendChild(renderCaretSlot(block.slot));
   for (const part of block.parts) {
+    if (part.type === "footnote") continue;
     const node = part.type === "image" ? renderImage(part, repo, onSized) : renderRun(part);
     if (share && part.type === "break") pullBreakOntoSlot(node);
     el.appendChild(node);

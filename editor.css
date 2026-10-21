@@ -1198,6 +1198,10 @@ button.md-ticket-filter-all:hover,
   font-style: italic;
 }
 
+.md-u {
+  text-decoration: underline;
+}
+
 .md-strike {
   text-decoration: line-through;
 }
