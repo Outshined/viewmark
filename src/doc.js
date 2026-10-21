@@ -2101,8 +2101,127 @@ function codeTokens(line, lang) {
   return { runs, parts: runs, images: [] };
 }
 
+const ASCII_PUNCT = new Set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~");
+
+function isAsciiPunct(ch) {
+  return typeof ch === "string" && ASCII_PUNCT.has(ch);
+}
+
 function unescapeDestination(raw) {
   return raw.replace(/\\([!-/:-@[-`{-~])/g, "$1");
+}
+
+function isUnicodeSpace(ch) {
+  if (ch == null) return true;
+  return /\p{White_Space}/u.test(ch);
+}
+
+function isUnicodePunct(ch) {
+  if (ch == null) return false;
+  return /[\p{P}\p{S}]/u.test(ch);
+}
+
+function leftFlanking(before, after) {
+  if (isUnicodeSpace(after)) return false;
+  if (!isUnicodePunct(after)) return true;
+  return isUnicodeSpace(before) || isUnicodePunct(before);
+}
+
+function rightFlanking(before, after) {
+  if (isUnicodeSpace(before)) return false;
+  if (!isUnicodePunct(before)) return true;
+  return isUnicodeSpace(after) || isUnicodePunct(after);
+}
+
+const NAMED_ENTITIES = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: "\"",
+  apos: "'",
+  nbsp: "\u00a0",
+  copy: "\u00a9",
+  reg: "\u00ae",
+  trade: "\u2122",
+  mdash: "\u2014",
+  ndash: "\u2013",
+  hellip: "\u2026",
+  laquo: "\u00ab",
+  raquo: "\u00bb",
+  bull: "\u2022",
+  middot: "\u00b7",
+  times: "\u00d7",
+  divide: "\u00f7",
+};
+
+function charFromCode(code) {
+  if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff) return "\uFFFD";
+  if (code >= 0xd800 && code <= 0xdfff) return "\uFFFD";
+  return String.fromCodePoint(code);
+}
+
+function matchEntity(text, index) {
+  if (text[index] !== "&") return null;
+  const rest = text.slice(index);
+  const named = /^&([A-Za-z][A-Za-z0-9]{0,31});/.exec(rest);
+  if (named) {
+    const chars = NAMED_ENTITIES[named[1]];
+    if (!chars) return null;
+    return { length: named[0].length, chars };
+  }
+  const dec = /^&#([0-9]{1,7});/.exec(rest);
+  if (dec) return { length: dec[0].length, chars: charFromCode(Number(dec[1])) };
+  const hex = /^&#[xX]([0-9A-Fa-f]{1,6});/.exec(rest);
+  if (hex) return { length: hex[0].length, chars: charFromCode(Number.parseInt(hex[1], 16)) };
+  return null;
+}
+
+function normLabel(label) {
+  return String(label || "").trim().toLowerCase().replace(/[ \t\n]+/g, " ");
+}
+
+function readTitle(text, index) {
+  const quote = text[index];
+  if (quote !== "\"" && quote !== "'" && quote !== "(") return null;
+  const endQuote = quote === "(" ? ")" : quote;
+  let i = index + 1;
+  let body = "";
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "\n" && quote !== "(") return null;
+    if (ch === "\\") {
+      const next = text[i + 1];
+      if (isAsciiPunct(next)) {
+        body += next;
+        i += 2;
+        continue;
+      }
+    }
+    if (ch === endQuote) return { text: body, end: i + 1 };
+    body += ch;
+    i += 1;
+  }
+  return null;
+}
+
+function parseTitleClose(text, index) {
+  let i = index;
+  while (i < text.length && (text[i] === " " || text[i] === "\t" || text[i] === "\n")) i += 1;
+  if (text[i] === ")") return { end: i, title: "" };
+  const title = readTitle(text, i);
+  if (!title) return null;
+  i = title.end;
+  while (i < text.length && (text[i] === " " || text[i] === "\t" || text[i] === "\n")) i += 1;
+  if (text[i] !== ")") return null;
+  return { end: i, title: title.text };
+}
+
+// A quoted or parenthesized title after the destination is not part of the path.
+function splitBareTitle(raw) {
+  const match = /^(.*\S)[ \t]+("(?:\\.|[^"\n])*"|'(?:\\.|[^'\n])*'|\((?:\\.|[^)\n])*\))[ \t]*$/.exec(raw);
+  if (!match) return { url: raw, title: "" };
+  const quoted = match[2];
+  return { url: match[1], title: unescapeDestination(quoted.slice(1, -1)) };
 }
 
 // The parenthesis at open starts the address. <...> is one address, so a space
@@ -2110,7 +2229,8 @@ function unescapeDestination(raw) {
 // a space, and other markdown viewers would not resolve it. A backslash in the
 // brackets keeps the next character. Outside them, a parenthesis inside the
 // address counts, and the one that brings the open back to zero closes it.
-// end is the index of that parenthesis. url is the path, without the brackets.
+// end is the index of that parenthesis. url is the path, without the brackets
+// and without a following title.
 export function readDestination(text, open) {
   if (typeof text !== "string" || text[open] !== "(") return null;
   if (text[open + 1] === "<") {
@@ -2123,8 +2243,9 @@ export function readDestination(text, open) {
         continue;
       }
       if (ch === ">") {
-        if (text[i + 1] !== ")") return null;
-        return { end: i + 1, url: unescapeDestination(text.slice(start, i)) };
+        const rest = parseTitleClose(text, i + 1);
+        if (!rest) return null;
+        return { end: rest.end, url: unescapeDestination(text.slice(start, i)), title: rest.title };
       }
     }
     return null;
@@ -2135,32 +2256,178 @@ export function readDestination(text, open) {
     if (ch === "(") depth += 1;
     else if (ch === ")") {
       depth -= 1;
-      if (depth === 0) return { end: i, url: text.slice(open + 1, i) };
+      if (depth === 0) {
+        const split = splitBareTitle(text.slice(open + 1, i));
+        return { end: i, url: split.url, title: split.title };
+      }
     }
   }
   return null;
 }
 
-function matchLinkOrImage(text, index, image) {
+function holeAt(holes, index) {
+  if (!holes) return null;
+  for (const hole of holes) {
+    if (index >= hole.open && index < hole.end) return hole;
+  }
+  return null;
+}
+
+function scanBracket(text, open, holes) {
+  if (text[open] !== "[") return -1;
+  let depth = 1;
+  let i = open + 1;
+  while (i < text.length) {
+    const hole = holeAt(holes, i);
+    if (hole) {
+      i = hole.end > i ? hole.end : i + 1;
+      continue;
+    }
+    if (text[i] === "\\" && isAsciiPunct(text[i + 1])) {
+      i += 2;
+      continue;
+    }
+    if (text[i] === "[") {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+    if (text[i] === "]") {
+      depth -= 1;
+      if (depth === 0) return i;
+      i += 1;
+      continue;
+    }
+    if (text[i] === "\n" && text[i + 1] === "\n") return -1;
+    i += 1;
+  }
+  return -1;
+}
+
+function lookupRef(refs, label) {
+  if (!Array.isArray(refs)) return null;
+  const key = normLabel(label);
+  if (!key) return null;
+  for (const ref of refs) {
+    if (ref && normLabel(ref.label) === key && typeof ref.url === "string") return ref;
+  }
+  return null;
+}
+
+function matchLinkOrImage(text, index, image, refs, holes) {
   let cursor = index;
   if (image) {
     if (text[cursor] !== "!") return null;
     cursor += 1;
   }
   if (text[cursor] !== "[") return null;
+  const labelEnd = scanBracket(text, cursor, holes);
+  if (labelEnd < 0) return null;
   const labelStart = cursor + 1;
-  const labelEnd = text.indexOf("]", labelStart);
-  if (labelEnd < 0 || text[labelEnd + 1] !== "(") return null;
-  const dest = readDestination(text, labelEnd + 1);
-  if (!dest) return null;
+  const alt = text.slice(labelStart, labelEnd);
+  if (text[labelEnd + 1] === "(") {
+    const dest = readDestination(text, labelEnd + 1);
+    if (!dest) return null;
+    return {
+      kind: image ? "image" : "link",
+      start: index,
+      end: dest.end + 1,
+      labelStart,
+      labelEnd,
+      alt,
+      url: dest.url,
+      title: dest.title || "",
+    };
+  }
+  let refLabel = null;
+  let end = labelEnd + 1;
+  if (text[labelEnd + 1] === "[") {
+    const refEnd = scanBracket(text, labelEnd + 1, holes);
+    if (refEnd < 0) return null;
+    const explicit = text.slice(labelEnd + 2, refEnd);
+    refLabel = explicit.length === 0 ? alt : explicit;
+    end = refEnd + 1;
+  } else if (text[labelEnd + 1] === ":") {
+    return null;
+  } else {
+    refLabel = alt;
+  }
+  const found = lookupRef(refs, refLabel);
+  if (!found) return null;
   return {
+    kind: image ? "image" : "link",
     start: index,
-    end: dest.end + 1,
+    end,
     labelStart,
     labelEnd,
-    alt: text.slice(labelStart, labelEnd),
-    url: dest.url,
+    alt,
+    url: found.url,
+    title: found.title || "",
   };
+}
+
+function matchCodeSpan(text, open) {
+  let length = 0;
+  while (text[open + length] === "`") length += 1;
+  let i = open + length;
+  while (i < text.length) {
+    if (text[i] !== "`") {
+      i += 1;
+      continue;
+    }
+    let size = 0;
+    while (text[i + size] === "`") size += 1;
+    if (size === length) {
+      return {
+        open,
+        end: i + size,
+        closer: i,
+        contentStart: open + length,
+        contentEnd: i,
+      };
+    }
+    i += size;
+  }
+  return null;
+}
+
+function findCodeSpans(text) {
+  const holes = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "\\" && isAsciiPunct(text[i + 1])) {
+      i += 2;
+      continue;
+    }
+    if (text[i] === "`") {
+      const span = matchCodeSpan(text, i);
+      if (span) {
+        holes.push(span);
+        i = span.end;
+        continue;
+      }
+    }
+    i += 1;
+  }
+  return holes;
+}
+
+function codeBody(text, start, end) {
+  let from = start;
+  let to = end;
+  let body = "";
+  for (let i = from; i < to; i += 1) body += text[i] === "\n" ? " " : text[i];
+  if (body.length >= 2 && body.startsWith(" ") && body.endsWith(" ") && !/^ +$/.test(body)) {
+    from += 1;
+    to -= 1;
+    body = body.slice(1, -1);
+  }
+  return { from, to, body };
+}
+
+function withMark(marks, kind) {
+  if (marks.includes(kind)) return marks.slice();
+  return marks.concat(kind);
 }
 
 function parseMarks(text, base, plainClass, holes, strike) {
@@ -2170,73 +2437,178 @@ function parseMarks(text, base, plainClass, holes, strike) {
   let buf = 0;
   let holeAt = 0;
 
+  function classesNow() {
+    const marks = stack[stack.length - 1].marks;
+    return marks.length > 0 ? marks.slice() : [plainClass];
+  }
+
+  function emitPlain(from, to) {
+    const classes = classesNow();
+    const out = [];
+    let chunk = from;
+    const flushChunk = (upto) => {
+      if (upto <= chunk) return;
+      out.push({
+        type: "run",
+        text: text.slice(chunk, upto),
+        start: base + chunk,
+        end: base + upto,
+        classes: classes.slice(),
+      });
+      chunk = upto;
+    };
+    let i = from;
+    while (i < to) {
+      if (text[i] === "\\" && isAsciiPunct(text[i + 1])) {
+        flushChunk(i);
+        out.push({
+          type: "run",
+          text: text[i + 1],
+          start: base + i + 1,
+          end: base + i + 2,
+          classes: classes.slice(),
+        });
+        i += 2;
+        chunk = i;
+        continue;
+      }
+      const entity = matchEntity(text, i);
+      if (entity && i + entity.length <= to) {
+        flushChunk(i);
+        out.push({
+          type: "run",
+          text: entity.chars,
+          start: base + i,
+          end: base + i + entity.length,
+          classes: classes.slice(),
+        });
+        i += entity.length;
+        chunk = i;
+        continue;
+      }
+      i += 1;
+    }
+    flushChunk(to);
+    return out;
+  }
+
   function flush(upto) {
     if (upto <= buf) return;
-    const marks = stack[stack.length - 1].marks;
-    stack[stack.length - 1].runs.push({
-      type: "run",
-      text: text.slice(buf, upto),
-      start: base + buf,
-      end: base + upto,
-      classes: marks.length > 0 ? marks.slice() : [plainClass],
-    });
+    const runs = emitPlain(buf, upto);
+    const frame = stack[stack.length - 1];
+    for (const run of runs) frame.runs.push(run);
     buf = upto;
   }
 
+  function delimiterRun(at) {
+    const ch = text[at];
+    if (ch !== "*" && ch !== "_" && ch !== "~") return null;
+    if (ch === "~" && !strike) return null;
+    let length = 0;
+    while (text[at + length] === ch) length += 1;
+    if (ch === "~" && length > 2) return { char: ch, length, canOpen: false, canClose: false };
+    const before = at === 0 ? null : text[at - 1];
+    const after = at + length >= text.length ? null : text[at + length];
+    let canOpen = leftFlanking(before, after);
+    let canClose = rightFlanking(before, after);
+    if (ch === "_") {
+      if (canClose && !isUnicodePunct(before)) canOpen = false;
+      if (canOpen && !isUnicodePunct(after)) canClose = false;
+    }
+    return { char: ch, length, canOpen, canClose };
+  }
+
+  function pushFrame(delim, kind, openAt) {
+    const parent = stack[stack.length - 1];
+    stack.push({
+      delim,
+      kind,
+      marks: withMark(parent.marks, kind),
+      runs: [],
+      openAt,
+    });
+  }
+
+  function pushOpener(run) {
+    if (run.char === "~") {
+      pushFrame(run.char.repeat(run.length), "md-strike", index);
+      return;
+    }
+    let left = run.length;
+    let at = index;
+    const pair = run.char === "_" ? "__" : "**";
+    const singleKind = run.char === "_" ? "md-u" : "md-em";
+    while (left >= 2) {
+      pushFrame(pair, "md-strong", at);
+      at += 2;
+      left -= 2;
+    }
+    if (left === 1) pushFrame(run.char, singleKind, at);
+  }
+
+  function tryClose(run) {
+    if (!run.canClose) return 0;
+    let left = run.length;
+    let closed = 0;
+    while (left > 0) {
+      const top = stack[stack.length - 1];
+      if (!top.delim || top.delim[0] !== run.char) break;
+      if (run.char === "~" && top.delim.length !== run.length) break;
+      if (top.delim.length > left) break;
+      const frame = stack.pop();
+      const parent = stack[stack.length - 1];
+      for (const item of frame.runs) parent.runs.push(item);
+      left -= frame.delim.length;
+      closed += frame.delim.length;
+      if (run.char === "~") break;
+    }
+    return closed;
+  }
+
   while (index < text.length) {
-    // A code span is a hole. Its characters are not markers, and a pair outside it still matches.
     if (holes && holeAt < holes.length && index === holes[holeAt].open) {
       const hole = holes[holeAt];
       holeAt += 1;
       flush(index);
-      // The span is copied whole, so a strike opened around it would miss the text.
+      const body = codeBody(text, hole.contentStart, hole.contentEnd);
       const classes = ["md-code"];
       if (stack[stack.length - 1].marks.includes("md-strike")) classes.unshift("md-strike");
-      stack[stack.length - 1].runs.push({
-        type: "run",
-        text: text.slice(hole.open + 1, hole.close),
-        start: base + hole.open + 1,
-        end: base + hole.close,
-        classes,
-      });
-      index = hole.close + 1;
+      if (body.body.length > 0) {
+        stack[stack.length - 1].runs.push({
+          type: "run",
+          text: body.body,
+          start: base + body.from,
+          end: base + body.to,
+          classes,
+        });
+      }
+      index = hole.end;
       buf = index;
       continue;
     }
-    const top = stack[stack.length - 1];
-    if (top.delim && text.startsWith(top.delim, index)) {
-      flush(index);
-      const frame = stack.pop();
-      const parent = stack[stack.length - 1];
-      for (const run of frame.runs) parent.runs.push(run);
-      index += top.delim.length;
-      buf = index;
+    if (text[index] === "\\" && isAsciiPunct(text[index + 1])) {
+      index += 2;
       continue;
     }
-    let opener = null;
-    let kind = null;
-    // Headings, items, quotes, paragraphs, and table cells all pass the flag.
-    if (strike && text.startsWith("~~", index)) {
-      opener = "~~";
-      kind = "md-strike";
-    } else if (text.startsWith("**", index) || text.startsWith("__", index)) {
-      opener = text.slice(index, index + 2);
-      kind = "md-strong";
-    } else if (text[index] === "*" || text[index] === "_") {
-      opener = text[index];
-      kind = "md-em";
-    }
-    if (opener) {
-      flush(index);
-      stack.push({
-        delim: opener,
-        kind,
-        marks: stack[stack.length - 1].marks.concat(kind),
-        runs: [],
-        openAt: index,
-      });
-      index += opener.length;
-      buf = index;
+    const run = delimiterRun(index);
+    if (run) {
+      if (run.canClose && stack.length > 1) {
+        flush(index);
+        const closed = tryClose(run);
+        if (closed > 0) {
+          index += closed;
+          buf = index;
+          continue;
+        }
+      }
+      if (run.canOpen) {
+        flush(index);
+        pushOpener(run);
+        index += run.length;
+        buf = index;
+        continue;
+      }
+      index += run.length;
       continue;
     }
     index += 1;
@@ -2254,73 +2626,210 @@ function parseMarks(text, base, plainClass, holes, strike) {
       end: base + frame.openAt + frame.delim.length,
       classes: parentClasses.slice(),
     });
-    for (const run of frame.runs) {
-      run.classes = run.classes.filter((name) => name !== kind);
-      if (run.classes.length === 0) run.classes = parentClasses.slice();
-      parent.runs.push(run);
+    for (const item of frame.runs) {
+      item.classes = item.classes.filter((name) => name !== kind);
+      if (item.classes.length === 0) item.classes = parentClasses.slice();
+      parent.runs.push(item);
     }
   }
   root.runs.sort((a, b) => a.start - b.start || a.end - b.end);
   return root.runs.filter((run) => run.text.length > 0);
 }
 
-function parseInlines(text, base, plainClass, strike) {
+function holesInside(holes, start, end) {
+  const rel = [];
+  for (const hole of holes) {
+    if (hole.open >= start && hole.end <= end) {
+      rel.push({
+        open: hole.open - start,
+        end: hole.end - start,
+        contentStart: hole.contentStart - start,
+        contentEnd: hole.contentEnd - start,
+      });
+    }
+  }
+  return rel;
+}
+
+function isAbsoluteUri(body) {
+  return /^[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*$/.test(body);
+}
+
+function isEmail(body) {
+  return /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/.test(body);
+}
+
+function matchAngleAutolink(text, index) {
+  if (text[index] !== "<") return null;
+  const close = text.indexOf(">", index + 1);
+  if (close < 0 || close - index > 2000) return null;
+  const body = text.slice(index + 1, close);
+  if (/[\s<>]/.test(body)) return null;
+  if (isAbsoluteUri(body)) return { href: body, text: body, start: index, end: close + 1 };
+  if (isEmail(body)) return { href: `mailto:${body}`, text: body, start: index, end: close + 1 };
+  return null;
+}
+
+function trimAutolink(raw) {
+  let url = raw;
+  while (url.length > 0 && /[?!.,:*_~]/.test(url[url.length - 1])) url = url.slice(0, -1);
+  let open = 0;
+  for (const ch of url) {
+    if (ch === "(") open += 1;
+    else if (ch === ")") open -= 1;
+  }
+  while (open < 0 && url.endsWith(")")) {
+    url = url.slice(0, -1);
+    open += 1;
+  }
+  return url;
+}
+
+function matchExtendedAutolink(text, index) {
+  if (index > 0 && /[A-Za-z0-9_]/.test(text[index - 1])) return null;
+  let hrefPrefix = "";
+  let consumed = 0;
+  if (text.startsWith("https://", index)) consumed = 8;
+  else if (text.startsWith("http://", index)) consumed = 7;
+  else if (text.startsWith("www.", index)) {
+    consumed = 4;
+    hrefPrefix = "http://";
+  } else {
+    const mail = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+/.exec(text.slice(index));
+    if (!mail || !isEmail(mail[0])) return null;
+    return { href: `mailto:${mail[0]}`, text: mail[0], start: index, end: index + mail[0].length, bare: true };
+  }
+  let i = index + consumed;
+  while (i < text.length && !/[\s<>]/.test(text[i])) i += 1;
+  const raw = text.slice(index, i);
+  const trimmed = trimAutolink(raw);
+  if (trimmed.length <= consumed) return null;
+  return { href: hrefPrefix + trimmed, text: trimmed, start: index, end: index + trimmed.length, bare: true };
+}
+
+function matchFootnote(text, index) {
+  if (text[index] !== "[" || text[index + 1] !== "^") return null;
+  let i = index + 2;
+  if (i >= text.length || text[i] === "]") return null;
+  while (i < text.length && text[i] !== "]" && text[i] !== "\n" && text[i] !== " " && text[i] !== "\t") i += 1;
+  if (text[i] !== "]") return null;
+  if (text[i + 1] === ":") return null;
+  return { id: text.slice(index + 2, i), start: index, end: i + 1 };
+}
+
+function linkRuns(text, link, base, holes, strike) {
+  const rel = holesInside(holes, link.labelStart, link.labelEnd);
+  const runs = parseMarks(text.slice(link.labelStart, link.labelEnd), base + link.labelStart, "md-link", rel, strike);
+  for (const run of runs) {
+    if (!run.classes.includes("md-link")) run.classes = run.classes.concat("md-link");
+    run.href = link.url;
+  }
+  return runs;
+}
+
+export function parseInlines(text, base, plainClass, strike, refs) {
+  const source = typeof text === "string" ? text : "";
+  const origin = Number.isFinite(base) ? base : 0;
+  const holes = findCodeSpans(source);
   const parts = [];
   let index = 0;
   let textStart = 0;
-  let holes = [];
+  let segHoles = [];
+  let nextHole = 0;
 
   function flushText(upto) {
-    if (upto <= textStart) return;
-    const runs = parseMarks(text.slice(textStart, upto), base + textStart, plainClass, holes, strike);
+    if (upto <= textStart) {
+      segHoles = [];
+      return;
+    }
+    const rel = holesInside(segHoles, textStart, upto).map((hole) => ({
+      open: hole.open,
+      end: hole.end,
+      contentStart: hole.contentStart,
+      contentEnd: hole.contentEnd,
+    }));
+    const runs = parseMarks(source.slice(textStart, upto), origin + textStart, plainClass, rel, strike);
     for (const run of runs) parts.push(run);
     textStart = upto;
-    holes = [];
+    segHoles = [];
   }
 
-  while (index < text.length) {
-    if (text.startsWith("![", index)) {
-      const image = matchLinkOrImage(text, index, true);
-      if (image) {
+  while (index < source.length) {
+    while (nextHole < holes.length && holes[nextHole].end <= index) nextHole += 1;
+    if (nextHole < holes.length && index >= holes[nextHole].open && index < holes[nextHole].end) {
+      if (index === holes[nextHole].open) segHoles.push(holes[nextHole]);
+      index = holes[nextHole].end;
+      nextHole += 1;
+      continue;
+    }
+    if (source[index] === "\\" && isAsciiPunct(source[index + 1])) {
+      index += 2;
+      continue;
+    }
+    if (source[index] === "[") {
+      const note = matchFootnote(source, index);
+      if (note) {
         flushText(index);
-        parts.push({
-          type: "image",
-          start: base + image.start,
-          end: base + image.end,
-          alt: image.alt,
-          url: image.url,
-        });
-        index = image.end;
+        parts.push({ type: "footnote", id: note.id, start: origin + note.start, end: origin + note.end });
+        index = note.end;
         textStart = index;
         continue;
       }
     }
-    if (text[index] === "[") {
-      const link = matchLinkOrImage(text, index, false);
+    if (source.startsWith("![", index) || source[index] === "[") {
+      const image = source.startsWith("![", index);
+      const link = matchLinkOrImage(source, index, image, refs, holes);
       if (link) {
         flushText(index);
-        const labelRuns = parseMarks(link.alt, base + link.labelStart, "md-link", undefined, strike);
-        for (const run of labelRuns) {
-          if (!run.classes.includes("md-link")) run.classes = run.classes.concat("md-link");
-          run.href = link.url;
-          parts.push(run);
+        if (link.kind === "image") {
+          parts.push({
+            type: "image",
+            start: origin + link.start,
+            end: origin + link.end,
+            alt: link.alt,
+            url: link.url,
+          });
+        } else {
+          for (const run of linkRuns(source, link, origin, holes, strike)) parts.push(run);
         }
         index = link.end;
         textStart = index;
         continue;
       }
     }
-    if (text[index] === "`") {
-      const close = text.indexOf("`", index + 1);
-      if (close > index + 1) {
-        holes.push({ open: index - textStart, close: close - textStart });
-        index = close + 1;
-        continue;
-      }
+    const angle = matchAngleAutolink(source, index);
+    if (angle) {
+      flushText(index);
+      parts.push({
+        type: "run",
+        text: angle.text,
+        start: origin + index + 1,
+        end: origin + angle.end - 1,
+        classes: ["md-link"],
+        href: angle.href,
+      });
+      index = angle.end;
+      textStart = index;
+      continue;
+    }
+    const extended = matchExtendedAutolink(source, index);
+    if (extended && !holes.some((hole) => extended.start < hole.end && extended.end > hole.open)) {
+      flushText(index);
+      parts.push({
+        type: "run",
+        text: extended.text,
+        start: origin + extended.start,
+        end: origin + extended.end,
+        classes: ["md-link"],
+        href: extended.href,
+      });
+      index = extended.end;
+      textStart = index;
+      continue;
     }
     index += 1;
   }
-  flushText(text.length);
+  flushText(source.length);
   return {
     parts,
     runs: parts.filter((part) => part.type === "run"),
@@ -2328,7 +2837,7 @@ function parseInlines(text, base, plainClass, strike) {
   };
 }
 
-function parseSlot(line, mode) {
+function parseSlot(line, mode, refs) {
   if (mode.kind === "codeblock") {
     if (line.start === line.end) return { runs: [], parts: [], images: [] };
     const run = {
@@ -2341,7 +2850,7 @@ function parseSlot(line, mode) {
     return { runs: [run], parts: [run], images: [] };
   }
   if (mode.kind === "hr" || line.start === line.end) return { runs: [], parts: [], images: [] };
-  return parseInlines(line.text.slice(mode.marker), line.start + mode.marker, mode.plain, true);
+  return parseInlines(line.text.slice(mode.marker), line.start + mode.marker, mode.plain, true, refs);
 }
 
 function lineBlank(text) {
@@ -2613,7 +3122,7 @@ function cellQuoteWrap(node, depth) {
   return wrapped;
 }
 
-function cellClassified(line, spans) {
+function cellClassified(line, spans, refs) {
   const peeled = peelCellQuotes(line.text);
   const inner = {
     text: peeled.rest,
@@ -2621,12 +3130,12 @@ function cellClassified(line, spans) {
     end: line.end,
   };
   const mode = classify(peeled.rest);
-  const block = concealCellParts(renderedBlock(inner, mode, parseSlot(inner, mode), spans));
+  const block = concealCellParts(renderedBlock(inner, mode, parseSlot(inner, mode, refs), spans));
   return cellQuoteWrap(block, peeled.depth);
 }
 
 // The caret that shows the table is outside it, so a fence here stays rendered.
-function cellBlocks(lines, spans) {
+function cellBlocks(lines, spans, refs) {
   const blocks = [];
   let index = 0;
   while (index < lines.length) {
@@ -2657,32 +3166,267 @@ function cellBlocks(lines, spans) {
       index = last + 1;
       continue;
     }
-    blocks.push(cellClassified(lines[index], spans));
+    blocks.push(cellClassified(lines[index], spans, refs));
     index += 1;
   }
   return blocks;
 }
 
-function paintInline(line, doc) {
-  const parsed = parseInlines(line.text, line.start, "md-p", true);
+function paintInline(line, doc, refs) {
+  const parsed = parseInlines(line.text, line.start, "md-p", true, refs);
   return paintParts(parsed.parts, findSpans(doc)).map(hidePipeEscape);
 }
 
-function paintCell(cell, doc) {
+function paintCell(cell, doc, refs) {
   const lines = cellLines(cell);
   const broke = cellHasBreak(cell.text);
   const only = lines.length === 1 ? lines[0] : null;
   // One paragraph of inlines stays on the run path. A blank kept from <br><br>
   // is not that paragraph.
   if (only && cellIsPlainParagraph(only.text) && (only.text !== "" || !broke)) {
-    return { ...cell, parts: paintInline(only, doc) };
+    return { ...cell, parts: paintInline(only, doc, refs) };
   }
-  return { ...cell, blocks: cellBlocks(lines, findSpans(doc)) };
+  return { ...cell, blocks: cellBlocks(lines, findSpans(doc), refs) };
+}
+
+// A link reference definition is a block. The first label wins. A later copy stays text.
+function matchRefDef(text) {
+  const open = /^ {0,3}\[/.exec(text);
+  if (!open) return null;
+  let i = open[0].length;
+  const labelStart = i;
+  while (i < text.length && text[i] !== "]" && text[i] !== "\n") {
+    if (text[i] === "\\" && isAsciiPunct(text[i + 1])) i += 2;
+    else i += 1;
+  }
+  if (text[i] !== "]" || text[i + 1] !== ":") return null;
+  const label = text.slice(labelStart, i);
+  if (!normLabel(label)) return null;
+  i += 2;
+  while (i < text.length && (text[i] === " " || text[i] === "\t")) i += 1;
+  if (i >= text.length || text[i] === "\n") return null;
+  let url = "";
+  if (text[i] === "<") {
+    const start = i + 1;
+    i += 1;
+    while (i < text.length && text[i] !== ">" && text[i] !== "\n" && text[i] !== "<") {
+      if (text[i] === "\\") i += 2;
+      else i += 1;
+    }
+    if (text[i] !== ">") return null;
+    url = unescapeDestination(text.slice(start, i));
+    i += 1;
+  } else {
+    const start = i;
+    while (i < text.length && text[i] !== " " && text[i] !== "\t" && text[i] !== "\n") {
+      if (text[i] === "\\" && isAsciiPunct(text[i + 1])) i += 2;
+      else i += 1;
+    }
+    if (i === start) return null;
+    url = unescapeDestination(text.slice(start, i));
+  }
+  while (i < text.length && (text[i] === " " || text[i] === "\t")) i += 1;
+  let title = "";
+  if (i < text.length && text[i] !== "\n") {
+    const read = readTitle(text, i);
+    if (!read) return null;
+    title = read.text;
+    i = read.end;
+    while (i < text.length && (text[i] === " " || text[i] === "\t")) i += 1;
+    if (i < text.length && text[i] !== "\n") return null;
+  }
+  return { label, url, title };
+}
+
+function collectRefs(doc) {
+  const lines = lockLines(doc);
+  const refs = [];
+  const seen = new Set();
+  let index = 0;
+  while (index < lines.length) {
+    if (fenceOpen(lines[index].text)) {
+      const fence = fenceEnd(lines, index);
+      index = fence.last + 1;
+      continue;
+    }
+    if (isTableStart(lines, index)) {
+      let end = index + 2;
+      while (end < lines.length && isTableBody(lines[end].text)) end += 1;
+      index = end;
+      continue;
+    }
+    const def = matchRefDef(lines[index].text);
+    if (def) {
+      const key = normLabel(def.label);
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        refs.push(def);
+      }
+    }
+    index += 1;
+  }
+  return refs;
+}
+
+function mapEnd(map, end) {
+  return map[end - 1] + 1;
+}
+
+function splitMapped(part, logical, map) {
+  if (!part || part.end <= part.start || part.start < 0 || part.end > map.length) return [];
+  if (part.type !== "run") {
+    const copy = { ...part, start: map[part.start], end: mapEnd(map, part.end) };
+    return [{ breakspace: false, start: copy.start, run: copy }];
+  }
+  const from = part.start;
+  const to = part.end;
+  if (part.text.length !== to - from) {
+    const run = cloneRun(part);
+    run.start = map[from];
+    run.end = mapEnd(map, to);
+    return [{ breakspace: false, start: run.start, run }];
+  }
+  const pieces = [];
+  let seg = from;
+  for (let i = from; i <= to; i += 1) {
+    const brk = i < to && logical[i] === "\n";
+    if (!brk && i < to) continue;
+    if (i > seg) {
+      const run = cloneRun(part);
+      run.text = part.text.slice(seg - from, i - from);
+      run.start = map[seg];
+      run.end = map[i - 1] + 1;
+      if (run.text.length > 0) pieces.push({ breakspace: false, start: run.start, run });
+    }
+    if (brk) {
+      const run = cloneRun(part);
+      run.text = " ";
+      run.start = map[i];
+      run.end = map[i] + 1;
+      pieces.push({ breakspace: true, start: run.start, run });
+      seg = i + 1;
+    }
+  }
+  return pieces;
+}
+
+function keepBreak(run, firstPlain) {
+  if (!run || !run.classes || run.classes.length === 0) return null;
+  if (run.classes.length === 1) {
+    const name = run.classes[0];
+    if (name === firstPlain || name === "md-p" || name === "md-syntax") return null;
+  }
+  return run;
+}
+
+function replaceImages(atoms, start, end, images) {
+  for (let i = atoms.length - 1; i >= 0; i -= 1) {
+    const atom = atoms[i];
+    if (atom && atom.type === "image" && atom.start >= start && atom.end <= end) atoms.splice(i, 1);
+  }
+  for (const image of images) atoms.push(image);
+  atoms.sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+// The per-line parse cannot see a mark that opens on one line and closes on the next.
+// The lock is one paragraph, so the lines are parsed again as one string.
+function applyJoined(group, refs, atoms) {
+  let logical = "";
+  const map = [];
+  const ranges = [];
+  for (let g = 0; g < group.length; g += 1) {
+    const slot = group[g];
+    if (g > 0) {
+      map.push(group[g - 1].line.end);
+      logical += "\n";
+    }
+    const marker = Math.min(slot.mode.marker || 0, slot.line.text.length);
+    for (let c = marker; c < slot.line.text.length; c += 1) {
+      map.push(slot.line.start + c);
+      logical += slot.line.text[c];
+    }
+    ranges.push({ slot, base: slot.line.start + marker });
+  }
+  const firstPlain = group[0].mode.plain;
+  const parsed = parseInlines(logical, 0, firstPlain, true, refs);
+  const holes = findCodeSpans(logical);
+  const owned = new Array(logical.length).fill("");
+  for (const part of parsed.parts) {
+    const kind = part.type === "run" ? "run" : "atom";
+    for (let i = part.start; i < part.end && i < owned.length; i += 1) owned[i] = kind;
+  }
+  const buckets = ranges.map(() => ({ parts: [], breakAfter: null, skipJoin: false }));
+  for (const part of parsed.parts) {
+    for (const piece of splitMapped(part, logical, map)) {
+      if (piece.breakspace) {
+        const idx = ranges.findIndex((range) => range.slot.line.end === piece.start);
+        if (idx >= 0) buckets[idx].breakAfter = piece.run;
+        continue;
+      }
+      const idx = ranges.findIndex((range) => piece.start >= range.base && piece.start < range.slot.line.end);
+      if (idx < 0) continue;
+      const plain = ranges[idx].slot.mode.plain;
+      if (piece.run.type === "run" && piece.run.classes.length === 1 && piece.run.classes[0] === firstPlain && firstPlain !== plain) {
+        piece.run.classes = [plain];
+      }
+      buckets[idx].parts.push(piece.run);
+    }
+  }
+  let newline = 0;
+  for (let i = 0; i < logical.length; i += 1) {
+    if (logical[i] !== "\n") continue;
+    const insideCode = holes.some((hole) => i >= hole.contentStart && i < hole.contentEnd);
+    if (buckets[newline] && owned[i] !== "run" && (owned[i] === "atom" || insideCode)) buckets[newline].skipJoin = true;
+    newline += 1;
+  }
+  const images = [];
+  for (let i = 0; i < ranges.length; i += 1) {
+    const parts = buckets[i].parts;
+    ranges[i].slot.parsed = {
+      parts,
+      runs: parts.filter((part) => part.type === "run"),
+      images: parts.filter((part) => part.type === "image"),
+      breakAfter: keepBreak(buckets[i].breakAfter, firstPlain),
+      skipJoin: buckets[i].skipJoin,
+    };
+    for (const image of ranges[i].slot.parsed.images) images.push(image);
+  }
+  replaceImages(atoms, group[0].line.start, group[group.length - 1].line.end, images);
+}
+
+function lockGroup(locks, slots, index) {
+  const slot = slots[index];
+  if (!slot || slot.kind !== "line") return null;
+  const lock = paragraphLock(locks, slot) || quotedLock(locks, slot) || listLock(locks, slot);
+  if (!lock) return null;
+  const group = [slot];
+  let next = index + 1;
+  while (next < slots.length && proseSlot(slots[next]) && slots[next].line.start <= lock.end) {
+    group.push(slots[next]);
+    next += 1;
+  }
+  if (group.length < 2) return null;
+  return { group, next };
+}
+
+function reparseJoined(doc, slots, atoms, refs) {
+  const locks = lockSpans(doc);
+  let index = 0;
+  while (index < slots.length) {
+    const found = lockGroup(locks, slots, index);
+    if (!found) {
+      index += 1;
+      continue;
+    }
+    applyJoined(found.group, refs, atoms);
+    index = found.next;
+  }
 }
 
 function structures(doc) {
   // lineSpans adds an empty row at length. It is not a block, same as lockLines.
   const lines = lockLines(doc);
+  const refs = collectRefs(doc);
   const atoms = [];
   const slots = [];
   let index = 0;
@@ -2736,8 +3480,8 @@ function structures(doc) {
         type: "table",
         start: lines[index].start,
         end: lines[last].end,
-        header: cellRanges(lines[index]).map((cell) => paintCell(cell, doc)),
-        rows: rows.map((row) => row.map((cell) => paintCell(cell, doc))),
+        header: cellRanges(lines[index]).map((cell) => paintCell(cell, doc, refs)),
+        rows: rows.map((row) => row.map((cell) => paintCell(cell, doc, refs))),
       };
       atoms.push(atom);
       slots.push({ kind: "atom", atom });
@@ -2745,11 +3489,12 @@ function structures(doc) {
       continue;
     }
     const mode = classify(lines[index].text);
-    const parsed = parseSlot(lines[index], mode);
+    const parsed = parseSlot(lines[index], mode, refs);
     for (const image of parsed.images) atoms.push(image);
     slots.push({ kind: "line", line: lines[index], mode, parsed });
     index += 1;
   }
+  reparseJoined(doc, slots, atoms, refs);
   return { atoms, slots, comments: commentThreads(doc) };
 }
 
@@ -2814,43 +3559,55 @@ function innerMarks(classes) {
   const marks = [];
   for (let i = classes.length - 1; i >= 0; i -= 1) {
     const name = classes[i];
-    if (name === "md-strong" || name === "md-em" || name === "md-code" || name === "md-strike") marks.push(name);
+    if (name === "md-strong" || name === "md-em" || name === "md-u" || name === "md-code" || name === "md-strike") marks.push(name);
   }
   return marks;
 }
 
 function prefixSize(text, index, mark) {
-  if (mark === "md-code") return text[index] === "`" ? 1 : 0;
-  if (mark === "md-em") {
-    const ch = text[index];
-    return ch === "*" || ch === "_" ? 1 : 0;
+  if (mark === "md-code") {
+    let n = 0;
+    while (text[index + n] === "`") n += 1;
+    return n;
   }
+  if (mark === "md-em") return text[index] === "*" ? 1 : 0;
+  if (mark === "md-u") return text[index] === "_" ? 1 : 0;
   if (mark === "md-strong") {
     const two = text.slice(index, index + 2);
     return two === "**" || two === "__" ? 2 : 0;
   }
-  if (mark === "md-strike") return text.slice(index, index + 2) === "~~" ? 2 : 0;
+  if (mark === "md-strike") {
+    if (text.slice(index, index + 2) === "~~") return 2;
+    return text[index] === "~" ? 1 : 0;
+  }
   return 0;
 }
 
 function suffixSize(text, end, mark) {
   if (end <= 0) return 0;
-  if (mark === "md-code") return text[end - 1] === "`" ? 1 : 0;
-  if (mark === "md-em") {
-    const ch = text[end - 1];
-    return ch === "*" || ch === "_" ? 1 : 0;
+  if (mark === "md-code") {
+    let n = 0;
+    while (end - 1 - n >= 0 && text[end - 1 - n] === "`") n += 1;
+    return n;
   }
+  if (mark === "md-em") return text[end - 1] === "*" ? 1 : 0;
+  if (mark === "md-u") return text[end - 1] === "_" ? 1 : 0;
   if (mark === "md-strong") {
-    const two = text.slice(end - 2, end);
+    const two = text.slice(Math.max(0, end - 2), end);
     return two === "**" || two === "__" ? 2 : 0;
   }
-  if (mark === "md-strike") return text.slice(end - 2, end) === "~~" ? 2 : 0;
+  if (mark === "md-strike") {
+    const two = text.slice(Math.max(0, end - 2), end);
+    if (two === "~~") return 2;
+    return text[end - 1] === "~" ? 1 : 0;
+  }
   return 0;
 }
 
 function attracts(classes) {
   return classes.includes("md-strong")
     || classes.includes("md-em")
+    || classes.includes("md-u")
     || classes.includes("md-code")
     || classes.includes("md-strike")
     || classes.includes("md-link");
@@ -2953,6 +3710,16 @@ function restyleMarkers(line, mode, runs) {
   return peeled;
 }
 
+// The caret line shows the source of an entity. The rendered line shows the character.
+function alignRun(line, run) {
+  const copy = cloneRun(run);
+  const span = copy.end - copy.start;
+  if (span !== copy.text.length && copy.start >= line.start && copy.end <= line.end) {
+    copy.text = line.text.slice(copy.start - line.start, copy.end - line.start);
+  }
+  return copy;
+}
+
 // The block marker is its own run so it does not merge with a following inline gap.
 function fillGaps(line, mode, parsed) {
   const runs = [];
@@ -2968,7 +3735,7 @@ function fillGaps(line, mode, parsed) {
     .sort((a, b) => a.start - b.start || a.end - b.end);
   for (const run of content) {
     if (run.start > at) runs.push(gapRun(line, at, run.start));
-    runs.push(run);
+    runs.push(alignRun(line, run));
     at = run.end;
   }
   if (at < line.end) runs.push(gapRun(line, at, line.end));
@@ -3507,7 +4274,14 @@ function wrappedBlock(group, doc, cursor, spans, revealTail) {
     if (!newline) continue;
     if (hide > 0) parts.push(breakPart(slot.line.end));
     else if (i < group.length - 1) {
-      for (const piece of joinParts(slot.line.end, spans, raw, plain)) parts.push(piece);
+      const marked = !raw && slot.parsed && slot.parsed.breakAfter;
+      if (marked) {
+        for (const piece of paintParts([marked], spans)) parts.push(clonePart(piece));
+      } else if (!raw && slot.parsed && slot.parsed.skipJoin) {
+        // The newline was inside a code span and the edge strip already removed that space.
+      } else {
+        for (const piece of joinParts(slot.line.end, spans, raw, plain)) parts.push(piece);
+      }
     }
   }
   const runs = parts.filter((part) => part.type === "run");
@@ -3582,6 +4356,7 @@ function fenceBlock(slot, cursor, spans) {
 // end is the newline after the last line. A caret there is inside, so the atom opens.
 function expandAtom(blocks, doc, atom, cursor, spans) {
   const lines = linesBetween(doc, atom.start, atom.end);
+  const refs = collectRefs(doc);
   const code = atom.type === "diagram";
   const mode = code
     ? { kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" }
@@ -3590,8 +4365,8 @@ function expandAtom(blocks, doc, atom, cursor, spans) {
     const line = lines[i];
     const edge = code && (i === 0 || (i === lines.length - 1 && isFenceClose(line.text)));
     const parsed = code
-      ? (edge ? parseSlot(line, mode) : codeTokens(line, atom.info))
-      : parseSlot(line, mode);
+      ? (edge ? parseSlot(line, mode, refs) : codeTokens(line, atom.info))
+      : parseSlot(line, mode, refs);
     const onLine = cursor >= line.start && cursor <= line.end;
     blocks.push(onLine ? rawBlock(line, mode, parsed, spans) : renderedBlock(line, mode, parsed, spans));
   }
@@ -4138,19 +4913,10 @@ export function sourceLine(doc, offset) {
 export function codeSpanAt(text, offset) {
   const line = typeof text === "string" ? text : "";
   const at = Math.max(0, Math.min(line.length, Number.isFinite(offset) ? Math.trunc(offset) : 0));
-  let index = 0;
-  while (index < line.length) {
-    if (line[index] !== "`") {
-      index += 1;
-      continue;
+  for (const span of findCodeSpans(line)) {
+    if (at >= span.open && at < span.end) {
+      return { open: span.open, close: span.closer, start: span.contentStart, end: span.contentEnd };
     }
-    const close = line.indexOf("`", index + 1);
-    if (!(close > index + 1)) {
-      index += 1;
-      continue;
-    }
-    if (at >= index && at <= close) return { open: index, close, start: index + 1, end: close };
-    index = close + 1;
   }
   return null;
 }
