@@ -124,11 +124,14 @@ test("a closed ~~ pair strikes off the cursor line and the cursor line keeps the
   const task = "- [ ] ~~gone~~\n";
   const box = plan(task, task.length).lines[0];
   assert.equal(box.raw, false);
+  assert.equal(box.task.checked, false);
   assert.deepEqual(classesOf(box), [
-    { t: "[ ] ", c: ["md-li"] },
     { t: "gone", c: ["md-strike"] },
   ]);
-  assert.equal(task.slice(box.runs[1].start, box.runs[1].end), "gone");
+  assert.equal(task.slice(box.runs[0].start, box.runs[0].end), "gone");
+  const rawTask = plan(task, 0).lines[0];
+  assert.equal(rawTask.raw, true);
+  assert.ok(shown(rawTask).includes("[ ] "));
 
   const emDoc = "~~*one*~~\n";
   const em = plan(emDoc, emDoc.length).lines[0];

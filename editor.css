@@ -1264,6 +1264,70 @@ a.md-link {
   color: #c9c3b6;
 }
 
+.md-line.md-alert {
+  border: 1px solid #5c574e;
+  border-left-width: 4px;
+  border-radius: 6px;
+  padding: 0.4em 0.7em;
+  margin: 0.4em 0;
+}
+
+.md-line.md-alert-note {
+  border-left-color: #6cb6ff;
+  background: #1a2430;
+}
+
+.md-line.md-alert-tip {
+  border-left-color: #3fb950;
+  background: #14241a;
+}
+
+.md-line.md-alert-important {
+  border-left-color: #a371f7;
+  background: #221a30;
+}
+
+.md-line.md-alert-warning {
+  border-left-color: #d29922;
+  background: #2a2416;
+}
+
+.md-line.md-alert-caution {
+  border-left-color: #f85149;
+  background: #2a1614;
+}
+
+.md-alert-title {
+  display: block;
+  font-weight: 600;
+}
+
+.md-task {
+  width: 1em;
+  height: 1em;
+  vertical-align: text-bottom;
+  margin-right: 0.3em;
+}
+
+.md-line.md-in-item {
+  margin-left: 1.3em;
+}
+
+.md-footnotes {
+  margin-top: 1.5em;
+  border-top: 1px solid #3f3c37;
+  padding-top: 0.6em;
+  color: #c9c3b6;
+}
+
+.md-footnote {
+  margin: 0.2em 0;
+}
+
+.md-footnote-id {
+  margin-right: 0.5em;
+}
+
 .md-line.md-li {
   display: list-item;
   list-style: disc;

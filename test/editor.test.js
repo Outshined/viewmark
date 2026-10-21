@@ -4282,8 +4282,11 @@ test("a rendered table cell draws block constructs", () => {
     const task = drawCell(mounted, "- [x] done");
     const taskItem = nodesIn(task.cell, (node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-li"));
     assert.equal(taskItem.length, 1);
-    assert.equal(taskItem[0].textContent, "[x] done");
+    assert.equal(taskItem[0].textContent.includes("done"), true);
+    assert.equal(taskItem[0].textContent.includes("[x]"), false);
     assert.equal(task.cell.textContent.includes("-"), false);
+    const taskMark = nodesIn(task.cell, (node) => node.classList && node.classList.contains("md-task-on"));
+    assert.equal(taskMark.length, 1);
     task.view.destroy();
 
     const title = drawCell(mounted, "# Title");
@@ -4303,14 +4306,17 @@ test("a rendered table cell draws block constructs", () => {
     fence.view.destroy();
 
     const kept = drawCell(mounted, "<br> # Title");
-    assert.equal(kept.cell.textContent, " # Title");
-    assert.equal(nodesIn(kept.cell, (node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-h1")).length, 0);
+    const keptHead = nodesIn(kept.cell, (node) => node.classList && node.classList.contains("md-line") && node.classList.contains("md-h1"));
+    assert.equal(keptHead.length, 1);
+    assert.equal(keptHead[0].textContent, "Title");
     assert.equal(kept.cell.textContent.includes("<br>"), false);
     kept.view.destroy();
 
     const pieces = drawCell(mounted, "--- <br>----<br> ---");
     const pieceLines = (pieces.cell.childNodes || []).filter((node) => node.classList && node.classList.contains("md-line"));
-    assert.deepEqual(pieceLines.map((node) => node.textContent), ["--- ", "----", " ---"]);
+    assert.equal(pieceLines.length, 3);
+    assert.ok(pieceLines.every((node) => node.classList.contains("md-hr")));
+    assert.deepEqual(pieceLines.map((node) => node.textContent), ["", "", ""]);
     pieces.view.destroy();
 
     const blank = drawCell(mounted, "a<br><br>b");
@@ -4371,15 +4377,49 @@ test("a rendered table cell draws block constructs", () => {
   }
 });
 
-test("a document line does not peel cell quotes or split on br", () => {
+test("a task, an alert, and a footnote draw", () => {
+  const mounted = mountEditor();
+  try {
+    const task = createEditor(mounted.root, "- [x] done\n", 20);
+    const item = mounted.findAll((node) => node.classList && node.classList.contains("md-li") && !node.classList.contains("md-raw"))[0];
+    assert.ok(item.textContent.includes("done"));
+    assert.equal(item.textContent.includes("[x]"), false);
+    const box = mounted.findAll((node) => node.classList && node.classList.contains("md-task-on"))[0];
+    assert.equal(box.getAttribute("viewBox"), "0 0 24 24");
+    assert.equal(box.getAttribute("aria-hidden"), "true");
+    task.destroy();
+
+    const alert = createEditor(mounted.root, "> [!WARNING]\n> Careful.\n", 80);
+    const warning = mounted.findAll((node) => node.classList && node.classList.contains("md-alert-warning"));
+    assert.ok(warning.length >= 1);
+    assert.ok(warning[0].classList.contains("md-alert"));
+    assert.equal(mounted.root.textContent.includes("[!WARNING]"), false);
+    assert.ok(mounted.root.textContent.includes("Careful."));
+    assert.ok(mounted.root.textContent.includes("Warning"));
+    alert.destroy();
+
+    const notes = createEditor(mounted.root, "Word\n\n[^n]: The note.\n", 40);
+    const list = mounted.findAll((node) => node.classList && node.classList.contains("md-footnotes"))[0];
+    assert.ok(list);
+    assert.equal(list.contentEditable, "false");
+    assert.ok(list.textContent.includes("The note."));
+    assert.equal(mounted.root.textContent.includes("[^n]:"), false);
+    notes.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a document line peels quotes once and does not split on br", () => {
   const nested = ">> inner\n";
-  const line = plan(nested, nested.length).lines[0];
-  assert.equal(line.classes.includes("md-quote"), false);
-  assert.ok(line.runs.map((run) => run.text).join("").includes(">>"));
+  const line = plan(nested, -1).lines[0];
+  assert.equal(line.classes.includes("md-quote"), true);
+  assert.equal(line.runs.map((run) => run.text).join(""), "inner");
+  assert.equal(line.quoteDepth, 2);
   const tight = ">quoted\n";
-  const tightLine = plan(tight, tight.length).lines[0];
-  assert.equal(tightLine.classes.includes("md-quote"), false);
-  assert.ok(tightLine.runs.map((run) => run.text).join("").includes(">quoted"));
+  const tightLine = plan(tight, -1).lines[0];
+  assert.equal(tightLine.classes.includes("md-quote"), true);
+  assert.equal(tightLine.runs.map((run) => run.text).join(""), "quoted");
   const broken = "a<br>b\n";
   const brokenLine = plan(broken, broken.length).lines[0];
   assert.equal(brokenLine.classes.includes("md-p"), true);
