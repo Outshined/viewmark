@@ -95,21 +95,6 @@ function listSeparator(text, index) {
   return count;
 }
 
-// "> - " is one quoted item. Indent after "> " is a nested item inside that quote.
-function quotedList(text) {
-  if (!text.startsWith("> ")) return null;
-  const list = classifyList(text.slice(2));
-  if (!list) return null;
-  return {
-    kind: list.kind,
-    marker: 2 + list.marker,
-    quote: 2,
-    indent: list.indent,
-    plain: list.plain,
-    quoted: true,
-  };
-}
-
 // A space is one column. A tab advances to the next multiple of 4, even from a stop.
 function classifyList(text) {
   let column = 0;
@@ -122,13 +107,14 @@ function classifyList(text) {
   const bullet = text[index];
   if (bullet === "-" || bullet === "+" || bullet === "*") {
     const separator = listSeparator(text, index + 1);
-    if (separator === 0) return null;
+    // A marker alone is an empty item. "-foo" is not a marker.
+    if (separator === 0 && index + 1 < text.length) return null;
     return { kind: "li", marker: index + 1 + separator, indent: column, plain: "md-li" };
   }
   const ordered = /^(\d{1,9})[.)]/.exec(text.slice(index));
   if (!ordered) return null;
   const separator = listSeparator(text, index + ordered[0].length);
-  if (separator === 0) return null;
+  if (separator === 0 && index + ordered[0].length < text.length) return null;
   return {
     kind: "ol",
     marker: index + ordered[0].length + separator,
@@ -140,20 +126,20 @@ function classifyList(text) {
 // A caret in a fence body gets one newline. The opener and the closer are not body.
 function fenceBody(doc, offset) {
   const lines = lineSpans(doc);
-  let open = false;
+  let opened = null;
   for (const line of lines) {
     if (line.start > offset) break;
-    if (!open) {
-      const opened = fenceOpen(line.text);
-      if (opened && opened.lang !== "comment" && offset > line.end) open = true;
+    if (!opened) {
+      const found = fenceOpen(line.text);
+      if (found && found.lang !== "comment" && offset > line.end) opened = found;
       continue;
     }
-    if (isFenceClose(line.text)) {
+    if (isFenceClose(line.text, opened)) {
       if (offset <= line.end) return false;
-      open = false;
+      opened = null;
     }
   }
-  return open;
+  return opened !== null;
 }
 
 // Enter at the end of a paragraph that would swallow the new line writes the
@@ -541,23 +527,123 @@ export function continuedMarker(doc, cursor) {
   return quote + match[1] + String(Number(match[2]) + 1) + match[3] + match[4];
 }
 
-function classify(text) {
-  if (text === "---" || text === "***" || text === "___") {
-    return { kind: "hr", marker: 0, indent: 0, plain: "md-hr" };
+function leadingSpaceCount(text) {
+  let index = 0;
+  while (index < text.length && text[index] === " ") index += 1;
+  return index;
+}
+
+// 0–3 spaces, then three or more of one of - _ *, spaces or tabs between them.
+function thematicBreak(text) {
+  const indent = leadingSpaceCount(text);
+  if (indent > 3) return null;
+  const marker = text[indent];
+  if (marker !== "-" && marker !== "_" && marker !== "*") return null;
+  let count = 0;
+  for (let index = indent; index < text.length; index += 1) {
+    const ch = text[index];
+    if (ch === marker) count += 1;
+    else if (ch !== " " && ch !== "\t") return null;
   }
-  const heading = /^(#{1,6}) (.*)$/.exec(text);
-  if (heading) {
-    const level = heading[1].length;
-    return { kind: "h", level, marker: level + 1, indent: 0, plain: `md-h${level}` };
+  if (count < 3) return null;
+  return { kind: "hr", marker: 0, indent: 0, plain: "md-hr" };
+}
+
+// Closing hashes are syntax when a space precedes them and only spaces follow.
+function atxHeading(text) {
+  const indent = leadingSpaceCount(text);
+  if (indent > 3) return null;
+  let index = indent;
+  if (text[index] !== "#") return null;
+  let level = 0;
+  while (index < text.length && text[index] === "#" && level < 7) {
+    level += 1;
+    index += 1;
   }
-  if (text.startsWith("> ")) {
-    const item = quotedList(text);
-    if (item) return item;
-    return { kind: "quote", marker: 2, indent: 0, plain: "md-quote" };
-  }
+  if (level < 1 || level > 6) return null;
+  if (index < text.length && text[index] !== " ") return null;
+  const opened = index < text.length ? index + 1 : index;
+  let end = text.length;
+  let trim = text.length;
+  while (trim > opened && text[trim - 1] === " ") trim -= 1;
+  let hashes = trim;
+  while (hashes > opened && text[hashes - 1] === "#") hashes -= 1;
+  if (hashes < trim && hashes > opened && text[hashes - 1] === " ") end = hashes;
+  let contentStart = opened;
+  let contentEnd = end;
+  while (contentStart < contentEnd && text[contentStart] === " ") contentStart += 1;
+  while (contentEnd > contentStart && text[contentEnd - 1] === " ") contentEnd -= 1;
+  return {
+    kind: "h",
+    level,
+    marker: contentStart,
+    contentEnd,
+    indent: 0,
+    plain: `md-h${level}`,
+  };
+}
+
+// A checkbox is not part of the list marker. Enter still continues it unchecked.
+function taskSkip(text, marker) {
+  const rest = text.slice(marker);
+  const match = /^\[([ xX])\]/.exec(rest);
+  if (!match) return null;
+  let skip = match[0].length;
+  if (skip < rest.length && rest[skip] !== " " && rest[skip] !== "\t") return null;
+  if (rest[skip] === " " || rest[skip] === "\t") skip += 1;
+  return { checked: match[1] !== " ", skip };
+}
+
+function classifyBody(text) {
+  const rule = thematicBreak(text);
+  if (rule) return rule;
+  const heading = atxHeading(text);
+  if (heading) return heading;
   const list = classifyList(text);
-  if (list) return list;
+  if (list) {
+    const task = taskSkip(text, list.marker);
+    if (task) list.task = task;
+    return list;
+  }
   return { kind: "p", marker: 0, indent: 0, plain: "md-p" };
+}
+
+function applyQuote(peeled, inner) {
+  if (peeled.depth === 0) return inner;
+  const marker = peeled.consumed + (inner.marker || 0);
+  if (inner.kind === "li" || inner.kind === "ol") {
+    return {
+      ...inner,
+      marker,
+      quote: peeled.consumed,
+      quoted: true,
+      quoteDepth: peeled.depth,
+    };
+  }
+  if (inner.kind === "h" || inner.kind === "hr") {
+    const next = {
+      ...inner,
+      marker,
+      quote: peeled.consumed,
+      quoted: true,
+      quoteDepth: peeled.depth,
+    };
+    if (typeof inner.contentEnd === "number") next.contentEnd = peeled.consumed + inner.contentEnd;
+    return next;
+  }
+  return {
+    kind: "quote",
+    marker: peeled.consumed,
+    indent: 0,
+    plain: "md-quote",
+    quote: peeled.consumed,
+    quoteDepth: peeled.depth,
+  };
+}
+
+function classify(text) {
+  const peeled = peelCellQuotes(text);
+  return applyQuote(peeled, classifyBody(peeled.rest));
 }
 
 // A tail that is not a line range, a pin, or resolved is prose. Incremental
@@ -602,14 +688,28 @@ function commentHead(id, anchor, resolved) {
 }
 
 function fenceOpen(text) {
-  const match = /^```[ \t]*([^`\s]*)(.*)$/.exec(text);
-  if (!match) return null;
-  const lang = match[1];
+  const indent = leadingSpaceCount(text);
+  if (indent > 3) return null;
+  const char = text[indent];
+  if (char !== "`" && char !== "~") return null;
+  let index = indent;
+  let size = 0;
+  while (index < text.length && text[index] === char) {
+    size += 1;
+    index += 1;
+  }
+  if (size < 3) return null;
+  const rest = text.slice(index);
+  // A backtick fence's info string cannot contain a backtick, so the line is not a fence.
+  if (char === "`" && rest.includes("`")) return null;
+  const info = /^[ \t]*([^\s]*)(.*)$/.exec(rest);
+  const lang = info ? info[1] : "";
+  const tailText = info ? info[2] : "";
   let commentId = null;
   let resolved = false;
   let anchor = null;
-  if (lang === "comment") {
-    const id = /^[ \t]*([A-Za-z][A-Za-z0-9_-]*)(.*)$/.exec(match[2]);
+  if (char === "`" && lang === "comment") {
+    const id = /^[ \t]*([A-Za-z][A-Za-z0-9_-]*)(.*)$/.exec(tailText);
     if (id) {
       commentId = id[1];
       const tail = commentTail(id[2]);
@@ -623,11 +723,36 @@ function fenceOpen(text) {
     commentId,
     resolved,
     anchor,
+    char,
+    size,
+    indent,
   };
 }
 
-function isFenceClose(text) {
-  return /^```\s*$/.test(text);
+// Without an opener, any matching closer. With one, the same character and at least that length.
+function fenceCloseParts(text) {
+  const indent = leadingSpaceCount(text);
+  if (indent > 3) return null;
+  const char = text[indent];
+  if (char !== "`" && char !== "~") return null;
+  let index = indent;
+  let size = 0;
+  while (index < text.length && text[index] === char) {
+    size += 1;
+    index += 1;
+  }
+  if (size < 3) return null;
+  for (let cursor = index; cursor < text.length; cursor += 1) {
+    if (text[cursor] !== " " && text[cursor] !== "\t") return null;
+  }
+  return { char, size, indent };
+}
+
+function isFenceClose(text, open) {
+  const parts = fenceCloseParts(text);
+  if (!parts) return false;
+  if (!open) return true;
+  return parts.char === open.char && parts.size >= open.size;
 }
 
 // contentEnd stops at the closing fence line. end includes that line's newline so
@@ -643,7 +768,7 @@ function fenceContentRanges(doc) {
       continue;
     }
     let end = index + 1;
-    while (end < lines.length && !isFenceClose(lines[end].text)) end += 1;
+    while (end < lines.length && !isFenceClose(lines[end].text, opened)) end += 1;
     const closed = end < lines.length;
     const last = closed ? end : lines.length - 1;
     const start = lines[index].start;
@@ -2329,19 +2454,24 @@ function parseInlines(text, base, plainClass, strike) {
 }
 
 function parseSlot(line, mode) {
+  const from = (mode.marker || 0) + (mode.task && mode.task.skip ? mode.task.skip : 0);
+  let to = line.text.length;
+  if (typeof mode.contentEnd === "number") to = Math.min(to, mode.contentEnd);
+  if (to < from) to = from;
   if (mode.kind === "codeblock") {
-    if (line.start === line.end) return { runs: [], parts: [], images: [] };
+    const text = line.text.slice(from, to);
+    if (text === "") return { runs: [], parts: [], images: [] };
     const run = {
       type: "run",
-      text: line.text,
-      start: line.start,
-      end: line.end,
+      text,
+      start: line.start + from,
+      end: line.start + from + text.length,
       classes: ["md-codeblock"],
     };
     return { runs: [run], parts: [run], images: [] };
   }
-  if (mode.kind === "hr" || line.start === line.end) return { runs: [], parts: [], images: [] };
-  return parseInlines(line.text.slice(mode.marker), line.start + mode.marker, mode.plain, true);
+  if (mode.kind === "hr" || line.start === line.end || from >= to) return { runs: [], parts: [], images: [] };
+  return parseInlines(line.text.slice(from, to), line.start + from, mode.plain, true);
 }
 
 function lineBlank(text) {
@@ -2375,14 +2505,252 @@ function keepsHeadingLine(text) {
   return match !== null && classify(match[2]).kind === "h";
 }
 
+function indentColumns(text) {
+  let column = 0;
+  let index = 0;
+  while (index < text.length && (text[index] === " " || text[index] === "\t")) {
+    column += text[index] === "\t" ? 4 - (column % 4) : 1;
+    index += 1;
+  }
+  return { column, index };
+}
+
+// A single dash is an empty item. Two or more, or any run of equals, can underline.
+function setextUnderline(text) {
+  const indent = leadingSpaceCount(text);
+  if (indent > 3) return 0;
+  const marker = text[indent];
+  if (marker !== "=" && marker !== "-") return 0;
+  let index = indent;
+  let count = 0;
+  while (index < text.length && text[index] === marker) {
+    count += 1;
+    index += 1;
+  }
+  if (count < 1 || (marker === "-" && count < 2)) return 0;
+  for (let cursor = index; cursor < text.length; cursor += 1) {
+    if (text[cursor] !== " " && text[cursor] !== "\t") return 0;
+  }
+  return marker === "=" ? 1 : 2;
+}
+
+function indentedCodeLine(text) {
+  if (classify(text).kind !== "p") return false;
+  const columns = indentColumns(text);
+  return columns.column >= 4 && columns.index < text.length;
+}
+
+// The list that can still own the next line: the item, then at most one blank.
+function listColumnBefore(lines, index) {
+  let cursor = index - 1;
+  let blanks = 0;
+  while (cursor >= 0 && lines[cursor].text === "") {
+    blanks += 1;
+    cursor -= 1;
+  }
+  if (blanks > 1 || cursor < 0) return null;
+  const mode = classify(lines[cursor].text);
+  if (mode.kind !== "li" && mode.kind !== "ol") return null;
+  return contentColumn(lines[cursor].text, mode.marker || 0);
+}
+
+function refLabel(text, index) {
+  if (text[index] !== "[") return null;
+  let cursor = index + 1;
+  let label = "";
+  while (cursor < text.length && cursor - index <= 999) {
+    if (text[cursor] === "\\") {
+      label += cursor + 1 < text.length ? text[cursor + 1] : "\\";
+      cursor += cursor + 1 < text.length ? 2 : 1;
+      continue;
+    }
+    if (text[cursor] === "[") return null;
+    if (text[cursor] === "]") break;
+    label += text[cursor];
+    cursor += 1;
+  }
+  if (text[cursor] !== "]" || text[cursor + 1] !== ":") return null;
+  const normalized = label.replace(/\s+/g, " ").trim().toLowerCase();
+  if (normalized === "") return null;
+  return { label: normalized, index: cursor + 2 };
+}
+
+function refDestination(text, index) {
+  let cursor = index;
+  while (cursor < text.length && (text[cursor] === " " || text[cursor] === "\t")) cursor += 1;
+  if (cursor >= text.length) return null;
+  if (text[cursor] === "<") {
+    let end = cursor + 1;
+    let url = "";
+    while (end < text.length && text[end] !== ">") {
+      if (text[end] === "\n" || text[end] === "<") return null;
+      if (text[end] === "\\") {
+        url += end + 1 < text.length ? text[end + 1] : "";
+        end += 2;
+        continue;
+      }
+      url += text[end];
+      end += 1;
+    }
+    if (text[end] !== ">") return null;
+    return { url, index: end + 1 };
+  }
+  let url = "";
+  let depth = 0;
+  while (cursor < text.length && text[cursor] !== " " && text[cursor] !== "\t") {
+    const ch = text[cursor];
+    if (ch === "\\") {
+      url += cursor + 1 < text.length ? text[cursor + 1] : "\\";
+      cursor += cursor + 1 < text.length ? 2 : 1;
+      continue;
+    }
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      if (depth === 0) break;
+      depth -= 1;
+    }
+    url += ch;
+    cursor += 1;
+  }
+  if (url === "" || depth !== 0) return null;
+  return { url, index: cursor };
+}
+
+function refTitle(text, index) {
+  let cursor = index;
+  while (cursor < text.length && (text[cursor] === " " || text[cursor] === "\t")) cursor += 1;
+  if (cursor >= text.length) return { title: "", present: false };
+  const open = text[cursor];
+  const close = open === "(" ? ")" : open;
+  if (open !== '"' && open !== "'" && open !== "(") return null;
+  cursor += 1;
+  let title = "";
+  while (cursor < text.length && text[cursor] !== close) {
+    if (text[cursor] === "\\") {
+      title += cursor + 1 < text.length ? text[cursor + 1] : "";
+      cursor += 2;
+      continue;
+    }
+    title += text[cursor];
+    cursor += 1;
+  }
+  if (text[cursor] !== close) return null;
+  cursor += 1;
+  while (cursor < text.length && (text[cursor] === " " || text[cursor] === "\t")) cursor += 1;
+  if (cursor !== text.length) return null;
+  return { title, present: true };
+}
+
+function readFootnote(text) {
+  const indent = leadingSpaceCount(text);
+  if (indent > 3) return null;
+  const match = /^\[\^([^\s\]]+)\]:[ \t]*(.*)$/.exec(text.slice(indent));
+  if (!match) return null;
+  return { id: match[1], text: match[2] };
+}
+
+function readLinkRef(text) {
+  const indent = leadingSpaceCount(text);
+  if (indent > 3) return null;
+  if (text.slice(indent).startsWith("[^")) return null;
+  const label = refLabel(text, indent);
+  if (!label) return null;
+  const dest = refDestination(text, label.index);
+  if (!dest) return null;
+  const title = refTitle(text, dest.index);
+  if (!title) return null;
+  return { label: label.label, url: dest.url, title: title.title, titlePresent: title.present };
+}
+
+function readTitleLine(text) {
+  const indent = leadingSpaceCount(text);
+  if (indent > 3) return null;
+  const title = refTitle(text, indent);
+  if (!title || !title.present) return null;
+  return title;
+}
+
+// A definition keeps going only through earlier definitions. Real prose in front means it is part of that paragraph.
+function isOwnDef(lines, index) {
+  const text = lines[index].text;
+  if (!readFootnote(text) && !readLinkRef(text)) return false;
+  let cursor = index;
+  while (cursor > 0) {
+    const prev = lines[cursor - 1].text;
+    if (prev === "" || imageLine(prev) || fenceOpen(prev) || isTableStart(lines, cursor - 1)) break;
+    const mode = classify(prev);
+    if (mode.kind === "li" || mode.kind === "ol" || mode.kind === "quote") return false;
+    if (mode.kind !== "p" || keepsHeadingLine(prev)) break;
+    if (!readFootnote(prev) && !readLinkRef(prev)) return false;
+    cursor -= 1;
+  }
+  return true;
+}
+
+function joinedOntoBlock(lines, index) {
+  if (index <= 0) return false;
+  const prev = lines[index - 1].text;
+  if (prev === "" || imageLine(prev) || fenceOpen(prev) || isTableStart(lines, index - 1)) return false;
+  if (keepsHeadingLine(prev)) return false;
+  const mode = classify(prev);
+  if (mode.kind === "li" || mode.kind === "ol" || mode.kind === "quote") return true;
+  if (mode.kind === "p" && !isOwnDef(lines, index - 1)) return true;
+  return false;
+}
+
+// How many lines this reference or footnote owns when it starts a block. Zero when the line stays prose.
+function blockDefLines(lines, index) {
+  if (index < 0 || index >= lines.length) return 0;
+  if (joinedOntoBlock(lines, index)) return 0;
+  const column = listColumnBefore(lines, index);
+  if (column != null && indentColumns(lines[index].text).column >= column) return 0;
+  if (readFootnote(lines[index].text)) return 1;
+  const ref = readLinkRef(lines[index].text);
+  if (!ref) return 0;
+  if (!ref.titlePresent && index + 1 < lines.length && readTitleLine(lines[index + 1].text)) return 2;
+  return 1;
+}
+
+function indentedCodeStart(lines, index) {
+  if (!indentedCodeLine(lines[index].text)) return false;
+  if (joinedOntoBlock(lines, index)) return false;
+  const column = listColumnBefore(lines, index);
+  if (column != null && indentColumns(lines[index].text).column >= column) return false;
+  return true;
+}
+
+function collectIndented(lines, index) {
+  const indexes = [index];
+  let cursor = index + 1;
+  while (cursor < lines.length) {
+    if (lines[cursor].text === "") {
+      let next = cursor;
+      while (next < lines.length && lines[next].text === "") next += 1;
+      if (next < lines.length && indentedCodeLine(lines[next].text)) {
+        for (let at = cursor; at <= next; at += 1) indexes.push(at);
+        cursor = next + 1;
+        continue;
+      }
+      break;
+    }
+    if (!indentedCodeLine(lines[cursor].text)) break;
+    indexes.push(cursor);
+    cursor += 1;
+  }
+  return { indexes, last: indexes[indexes.length - 1], next: cursor };
+}
+
 // Quote markers are written once. The next block, including a child item, is its own span.
 function plainJoin(lines, index) {
+  if (blockDefLines(lines, index) > 0) return index;
   let last = index;
   for (let next = index + 1; next < lines.length; next += 1) {
     const text = lines[next].text;
     if (lineBlank(text) || imageLine(text) || fenceOpen(text) || isTableStart(lines, next)) break;
+    if (blockDefLines(lines, next) > 0 || indentedCodeStart(lines, next)) break;
     if (classify(text).kind !== "p" || keepsHeadingLine(text)) break;
     last = next;
+    if (setextUnderline(text)) break;
   }
   return last;
 }
@@ -2402,8 +2770,9 @@ function listJoin(lines, index) {
 }
 
 function fenceEnd(lines, index) {
+  const opened = fenceOpen(lines[index].text);
   let end = index + 1;
-  while (end < lines.length && !isFenceClose(lines[end].text)) end += 1;
+  while (end < lines.length && !isFenceClose(lines[end].text, opened)) end += 1;
   const closed = end < lines.length;
   return { closed, last: closed ? end : lines.length - 1 };
 }
@@ -2443,6 +2812,18 @@ export function lockSpans(doc) {
         row += 1;
       }
       index = row;
+      continue;
+    }
+    const defSpan = blockDefLines(lines, index);
+    if (defSpan > 0) {
+      for (let line = 0; line < defSpan; line += 1) pushLines(spans, lines, index + line, index + line);
+      index += defSpan;
+      continue;
+    }
+    if (indentedCodeStart(lines, index)) {
+      const chunk = collectIndented(lines, index);
+      pushLines(spans, lines, index, chunk.last);
+      index = chunk.next;
       continue;
     }
     if (lineBlank(textLine) || imageLine(textLine)) {
@@ -2576,14 +2957,23 @@ function cellLines(cell) {
   return pieces;
 }
 
-// Document quotes are "> " only. A cell peels each ">" so ">>" and "> >" nest,
-// and ">quoted" is still one quote.
+// One marker is 0–3 spaces, ">", and one optional space. Document lines and cells share this peel.
+function quoteMarkerSize(text) {
+  let index = 0;
+  while (index < text.length && text[index] === " " && index < 4) index += 1;
+  if (index >= 4 || text[index] !== ">") return 0;
+  index += 1;
+  if (text[index] === " ") index += 1;
+  return index;
+}
+
 function peelCellQuotes(text) {
   let rest = text;
   let consumed = 0;
   let depth = 0;
-  while (rest.startsWith(">")) {
-    const size = rest[1] === " " ? 2 : 1;
+  while (true) {
+    const size = quoteMarkerSize(rest);
+    if (size === 0) break;
     rest = rest.slice(size);
     consumed += size;
     depth += 1;
@@ -2607,9 +2997,18 @@ function concealCellParts(block) {
   return block;
 }
 
-function cellQuoteWrap(node, depth) {
+function alertKindOf(text) {
+  const match = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*$/.exec(text);
+  return match ? match[1].toLowerCase() : "";
+}
+
+function cellQuoteWrap(node, depth, alert) {
   let wrapped = node;
-  for (let i = 0; i < depth; i += 1) wrapped = { type: "quote", child: wrapped };
+  for (let i = 0; i < depth; i += 1) {
+    const layer = { type: "quote", child: wrapped };
+    if (alert && i === depth - 1) layer.alert = alert;
+    wrapped = layer;
+  }
   return wrapped;
 }
 
@@ -2620,9 +3019,29 @@ function cellClassified(line, spans) {
     start: line.start + peeled.consumed,
     end: line.end,
   };
-  const mode = classify(peeled.rest);
+  // The peel already happened. classify would peel the remainder a second time.
+  let mode = classifyBody(peeled.rest);
+  if (mode.kind === "p") {
+    const columns = indentColumns(peeled.rest);
+    if (columns.column >= 4 && columns.index < peeled.rest.length) {
+      mode = {
+        kind: "codeblock",
+        marker: continuationIndent(peeled.rest, 4),
+        indent: 0,
+        plain: "md-codeblock",
+      };
+    }
+  }
+  const alert = peeled.depth > 0 ? alertKindOf(peeled.rest) : "";
   const block = concealCellParts(renderedBlock(inner, mode, parseSlot(inner, mode), spans));
-  return cellQuoteWrap(block, peeled.depth);
+  if (alert) {
+    block.parts = [];
+    block.runs = [];
+    block.text = "";
+    block.alertMarker = true;
+    block.alert = alert;
+  }
+  return cellQuoteWrap(block, peeled.depth, alert);
 }
 
 // The caret that shows the table is outside it, so a fence here stays rendered.
@@ -2633,7 +3052,7 @@ function cellBlocks(lines, spans) {
     const opened = fenceOpen(lines[index].text);
     if (opened) {
       let end = index + 1;
-      while (end < lines.length && !isFenceClose(lines[end].text)) end += 1;
+      while (end < lines.length && !isFenceClose(lines[end].text, opened)) end += 1;
       const closed = end < lines.length;
       const last = closed ? end : lines.length - 1;
       if (opened.diagram) {
@@ -2652,6 +3071,7 @@ function cellBlocks(lines, spans) {
           closed,
           lines: lines.slice(index, last + 1),
           eof: false,
+          indent: opened.indent || 0,
         }, -1, spans)));
       }
       index = last + 1;
@@ -2685,12 +3105,14 @@ function structures(doc) {
   const lines = lockLines(doc);
   const atoms = [];
   const slots = [];
+  const refs = [];
+  const footnotes = [];
   let index = 0;
   while (index < lines.length) {
     const opened = fenceOpen(lines[index].text);
     if (opened) {
       let end = index + 1;
-      while (end < lines.length && !isFenceClose(lines[end].text)) end += 1;
+      while (end < lines.length && !isFenceClose(lines[end].text, opened)) end += 1;
       const closed = end < lines.length;
       const last = closed ? end : lines.length - 1;
       if (opened.lang === "comment") {
@@ -2706,6 +3128,7 @@ function structures(doc) {
           info: opened.lang,
           body: bodyLines.map((line) => line.text).join("\n"),
           bodyStart: index + 1 < lines.length ? lines[index + 1].start : lines[index].end,
+          indent: opened.indent || 0,
         };
         atoms.push(atom);
         slots.push({ kind: "atom", atom });
@@ -2719,6 +3142,7 @@ function structures(doc) {
           lang: opened.lang,
           closed,
           lines: fenceLines,
+          indent: opened.indent || 0,
           // No newline after the last line. A caret there is the end of the file.
           eof: !closed && lines[last].end === doc.length,
         });
@@ -2744,13 +3168,37 @@ function structures(doc) {
       index = last + 1;
       continue;
     }
+    const defSpan = blockDefLines(lines, index);
+    if (defSpan > 0) {
+      const note = readFootnote(lines[index].text);
+      if (note) footnotes.push({ id: note.id, text: note.text });
+      else {
+        const ref = readLinkRef(lines[index].text);
+        if (ref) {
+          let title = ref.title;
+          if (!ref.titlePresent && defSpan === 2) {
+            const next = readTitleLine(lines[index + 1].text);
+            if (next) title = next.title;
+          }
+          refs.push({ label: ref.label, url: ref.url, title: title || "" });
+        }
+      }
+      index += defSpan;
+      continue;
+    }
+    if (indentedCodeStart(lines, index)) {
+      const chunk = collectIndented(lines, index);
+      slots.push({ kind: "indented", lines: chunk.indexes.map((at) => lines[at]) });
+      index = chunk.next;
+      continue;
+    }
     const mode = classify(lines[index].text);
     const parsed = parseSlot(lines[index], mode);
     for (const image of parsed.images) atoms.push(image);
     slots.push({ kind: "line", line: lines[index], mode, parsed });
     index += 1;
   }
-  return { atoms, slots, comments: commentThreads(doc) };
+  return { atoms, slots, comments: commentThreads(doc), refs, footnotes };
 }
 
 function gapRun(line, start, end) {
@@ -3108,13 +3556,22 @@ function dropStrike(runs, plain) {
   return changed ? out : runs;
 }
 
+function finishLineBlock(block, line, mode) {
+  if (mode.task) block.task = { checked: mode.task.checked === true };
+  if ((mode.quoteDepth || 0) > 1) block.quoteDepth = mode.quoteDepth;
+  if (line && (mode.kind === "li" || mode.kind === "ol")) {
+    block.contentColumn = contentColumn(line.text, mode.marker || 0);
+  }
+  return block;
+}
+
 function rawBlock(line, mode, parsed, spans) {
   const empty = line.text === "";
   let runs = empty ? [] : paintRuns(fillGaps(line, mode, parsed), spans, true);
   // The quote mark is the bar. A one-line quoted item still does not show ">".
   if (!empty && mode.quoted && mode.quote) runs = dropPrefix(runs, line.start + mode.quote);
   if (!empty) runs = dropStrike(runs, mode.plain);
-  return {
+  return finishLineBlock({
     type: "line",
     raw: true,
     empty,
@@ -3125,12 +3582,12 @@ function rawBlock(line, mode, parsed, spans) {
     runs,
     parts: runs,
     indent: mode.indent ?? 0,
-  };
+  }, line, mode);
 }
 
 function renderedBlock(line, mode, parsed, spans) {
   if (line.text === "") {
-    return {
+    return finishLineBlock({
       type: "line",
       raw: false,
       empty: true,
@@ -3141,10 +3598,10 @@ function renderedBlock(line, mode, parsed, spans) {
       runs: [],
       parts: [],
       indent: mode.indent ?? 0,
-    };
+    }, line, mode);
   }
   if (mode.kind === "hr") {
-    return {
+    return finishLineBlock({
       type: "line",
       raw: false,
       hr: true,
@@ -3152,11 +3609,11 @@ function renderedBlock(line, mode, parsed, spans) {
       start: line.start,
       end: line.end,
       text: line.text,
-      classes: ["md-hr"],
+      classes: blockClasses(mode, false),
       runs: [],
       parts: [],
       indent: mode.indent ?? 0,
-    };
+    }, line, mode);
   }
   const parts = paintParts(parsed.parts, spans);
   const block = {
@@ -3172,7 +3629,7 @@ function renderedBlock(line, mode, parsed, spans) {
     indent: mode.indent ?? 0,
   };
   if (mode.kind === "ol") block.marker = orderedMarker(line, mode);
-  return block;
+  return finishLineBlock(block, line, mode);
 }
 
 function linesBetween(doc, start, end) {
@@ -3525,7 +3982,7 @@ function wrappedBlock(group, doc, cursor, spans, revealTail) {
     indent: group[0].mode.indent ?? 0,
   };
   if (!raw && group[0].mode.kind === "ol") block.marker = orderedMarker(group[0].line, group[0].mode);
-  return block;
+  return finishLineBlock(block, group[0].line, group[0].mode);
 }
 
 // Rendered fences hide the marker lines. The caret still owns the whole lock, including end,
@@ -3556,10 +4013,14 @@ function fenceBlock(slot, cursor, spans) {
   const bodyEof = slot.eof === true && lines.length > 1 && cursor === end;
   const raw = cursor >= start && cursor <= end && !bodyEof;
   const shown = fenceShown(lines, slot.closed, raw);
+  const indent = slot.indent || 0;
   const parts = [];
   for (let i = 0; i < shown.length; i += 1) {
-    for (const piece of fencePieces(shown[i], slot.lang, raw, spans)) parts.push(piece);
-    if (i < shown.length - 1) parts.push(breakPart(shown[i].end));
+    const source = shown[i];
+    // The opener's indent is the fence's margin, not code.
+    const line = !raw && indent > 0 ? shiftIndent(source, indent) : source;
+    for (const piece of fencePieces(line, slot.lang, raw, spans)) parts.push(piece);
+    if (i < shown.length - 1) parts.push(breakPart(source.end));
   }
   const runs = parts.filter((part) => part.type === "run");
   const bodyLines = slot.closed ? Math.max(0, lines.length - 2) : Math.max(0, lines.length - 1);
@@ -3569,6 +4030,40 @@ function fenceBlock(slot, cursor, spans) {
     empty: false,
     fence: true,
     bodyLines,
+    start,
+    end,
+    text: runs.map((run) => run.text).join(""),
+    classes: blockClasses({ kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" }, raw),
+    runs,
+    parts,
+    indent: 0,
+  };
+}
+
+function shiftIndent(line, columns) {
+  const cut = continuationIndent(line.text, columns);
+  if (cut <= 0) return line;
+  return { text: line.text.slice(cut), start: line.start + cut, end: line.end };
+}
+
+function indentedBlock(lines, cursor, spans, strip) {
+  const start = lines[0].start;
+  const end = lines[lines.length - 1].end;
+  const raw = cursor >= start && cursor <= end;
+  const parts = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const source = lines[i];
+    const line = raw || source.text === "" ? source : shiftIndent(source, strip);
+    if (line.text !== "") {
+      for (const piece of fencePieces(line, "", raw, spans)) parts.push(piece);
+    }
+    if (i < lines.length - 1) parts.push(breakPart(source.end));
+  }
+  const runs = parts.filter((part) => part.type === "run");
+  return {
+    type: "line",
+    raw,
+    empty: false,
     start,
     end,
     text: runs.map((run) => run.text).join(""),
@@ -3846,6 +4341,137 @@ function markBlockGaps(blocks) {
   }
 }
 
+function activeListColumn(blocks) {
+  let seenBlank = false;
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const block = blocks[i];
+    if (blankBlock(block)) {
+      if (seenBlank) return null;
+      seenBlank = true;
+      continue;
+    }
+    if (classHas(block, "md-in-item")) continue;
+    if ((classHas(block, "md-li") || classHas(block, "md-ol")) && typeof block.contentColumn === "number") {
+      return block.contentColumn;
+    }
+    return null;
+  }
+  return null;
+}
+
+function tagInItem(blocks, block, indent) {
+  const column = activeListColumn(blocks);
+  if (column == null || !(indent >= column)) return;
+  addClassName(block, "md-in-item");
+}
+
+function slotIndent(slot) {
+  if (!slot || slot.kind !== "line") return 0;
+  if (slot.mode.kind === "quote") {
+    let column = 0;
+    const text = slot.line.text;
+    while (column < text.length && text[column] === " ") column += 1;
+    return column;
+  }
+  return indentColumns(slot.line.text).column;
+}
+
+function absorbSlot(blocks, slot) {
+  if (!slot || slot.kind !== "line") return false;
+  const column = activeListColumn(blocks);
+  if (column == null) return false;
+  const kind = slot.mode.kind;
+  if (kind !== "p" && kind !== "quote") return false;
+  if (slot.line.text === "") return false;
+  return slotIndent(slot) >= column;
+}
+
+function setextContentLine(slot, first) {
+  if (!slot || slot.kind !== "line" || slot.mode.kind !== "p") return false;
+  if (slot.line.text === "" || imageLine(slot.line.text) || setextUnderline(slot.line.text)) return false;
+  if (!/\S/.test(slot.line.text)) return false;
+  if (first && indentColumns(slot.line.text).column > 3) return false;
+  return true;
+}
+
+function takeSetext(slots, index) {
+  if (!setextContentLine(slots[index], true)) return null;
+  const content = [slots[index]];
+  let next = index + 1;
+  while (next < slots.length && setextContentLine(slots[next], false)) {
+    content.push(slots[next]);
+    next += 1;
+  }
+  if (next >= slots.length || !slots[next] || slots[next].kind !== "line") return null;
+  const level = setextUnderline(slots[next].line.text);
+  if (!level) return null;
+  return { content, under: slots[next], level, next: next + 1 };
+}
+
+function setextBlock(found, doc, spans) {
+  const group = found.content.map((slot, i) => {
+    let marker = 0;
+    if (i === 0) {
+      const spaces = leadingSpaceCount(slot.line.text);
+      if (spaces <= 3) marker = spaces;
+    }
+    const mode = { kind: "h", level: found.level, marker, indent: 0, plain: `md-h${found.level}` };
+    return { line: slot.line, mode, parsed: parseSlot(slot.line, mode) };
+  });
+  const block = group.length > 1
+    ? wrappedBlock(group, doc, -1, spans, false)
+    : renderedBlock(group[0].line, group[0].mode, group[0].parsed, spans);
+  block.classes = [`md-h${found.level}`];
+  block.raw = false;
+  block.start = found.content[0].line.start;
+  block.end = found.under.line.end;
+  return block;
+}
+
+function markAlerts(doc, blocks) {
+  let index = 0;
+  while (index < blocks.length) {
+    const block = blocks[index];
+    if (!classHas(block, "md-quote") || typeof block.start !== "number") {
+      index += 1;
+      continue;
+    }
+    const line = sourceLine(doc, block.start);
+    const peeled = peelCellQuotes(line.text);
+    const kind = peeled.depth > 0 ? alertKindOf(peeled.rest) : "";
+    if (!kind) {
+      index += 1;
+      continue;
+    }
+    let next = index;
+    while (next < blocks.length) {
+      const item = blocks[next];
+      if (blankBlock(item) || !classHas(item, "md-quote")) break;
+      addClassName(item, "md-alert");
+      addClassName(item, `md-alert-${kind}`);
+      if (next === index) {
+        item.alert = kind;
+        item.alertMarker = true;
+        if (!item.raw) {
+          const cut = line.end < doc.length && doc[line.end] === "\n" ? line.end + 1 : line.end;
+          if (item.end > line.end) {
+            const parts = (item.parts || []).filter((part) => part && part.start >= cut);
+            item.parts = parts;
+            item.runs = parts.filter((part) => part.type === "run");
+            item.text = item.runs.map((run) => run.text).join("");
+          } else {
+            item.parts = [];
+            item.runs = [];
+            item.text = "";
+          }
+        }
+      }
+      next += 1;
+    }
+    index = Math.max(next, index + 1);
+  }
+}
+
 export function plan(doc, cursor, revealTail) {
   const text = typeof doc === "string" ? doc : "";
   const reveal = revealTail === true;
@@ -3863,14 +4489,79 @@ export function plan(doc, cursor, revealTail) {
       if ((atom.type === "table" || atom.type === "diagram") && cursor >= atom.start && cursor <= atom.end) {
         expandAtom(blocks, doc, atom, cursor, spans);
       } else {
+        if (typeof atom.indent === "number") tagInItem(blocks, atom, atom.indent);
         blocks.push(atom);
       }
       index += 1;
       continue;
     }
-    if (slot.kind === "fence") {
-      blocks.push(fenceBlock(slot, cursor, spans));
+    if (slot.kind === "indented") {
+      const block = indentedBlock(slot.lines, cursor, spans, 4);
+      tagInItem(blocks, block, 4);
+      blocks.push(block);
       index += 1;
+      continue;
+    }
+    if (slot.kind === "fence") {
+      const block = fenceBlock(slot, cursor, spans);
+      tagInItem(blocks, block, slot.indent || 0);
+      blocks.push(block);
+      index += 1;
+      continue;
+    }
+    if (absorbSlot(blocks, slot)) {
+      const column = activeListColumn(blocks);
+      if (slot.mode.kind === "p" && slotIndent(slot) >= column + 4) {
+        const codeLines = [slot.line];
+        let next = index + 1;
+        while (
+          next < slots.length
+          && slots[next].kind === "line"
+          && slots[next].mode.kind === "p"
+          && slots[next].line.text !== ""
+          && indentColumns(slots[next].line.text).column >= column + 4
+        ) {
+          codeLines.push(slots[next].line);
+          next += 1;
+        }
+        const block = indentedBlock(codeLines, cursor, spans, column + 4);
+        addClassName(block, "md-in-item");
+        blocks.push(block);
+        index = next;
+        continue;
+      }
+      const group = [];
+      let next = index;
+      while (
+        next < slots.length
+        && absorbSlot(blocks, slots[next])
+        && slots[next].mode.kind === "p"
+        && indentColumns(slots[next].line.text).column < column + 4
+      ) {
+        const marker = continuationIndent(slots[next].line.text, column);
+        const mode = { ...slots[next].mode, marker, plain: "md-p" };
+        group.push({ ...slots[next], mode, parsed: parseSlot(slots[next].line, mode) });
+        next += 1;
+      }
+      if (group.length > 1) pushGroup(blocks, group, text, cursor, spans, reveal);
+      else if (group.length === 1) pushLine(blocks, group[0], text, cursor, spans, reveal);
+      else {
+        pushLine(blocks, slot, text, cursor, spans, reveal);
+        next = index + 1;
+      }
+      addClassName(blocks[blocks.length - 1], "md-in-item");
+      index = next;
+      continue;
+    }
+    const setext = takeSetext(slots, index);
+    if (setext) {
+      const start = setext.content[0].line.start;
+      const end = setext.under.line.end;
+      if (cursor >= start && cursor <= end) {
+        for (const line of setext.content) pushLine(blocks, line, text, cursor, spans, reveal);
+        pushLine(blocks, setext.under, text, cursor, spans, reveal);
+      } else blocks.push(setextBlock(setext, text, spans));
+      index = setext.next;
       continue;
     }
     const lock = paragraphLock(locks, slot) || quotedLock(locks, slot) || listLock(locks, slot);
@@ -3892,18 +4583,26 @@ export function plan(doc, cursor, revealTail) {
   }
   // A blank run between two quoted blocks keeps the bar. The blanks stay blocks.
   continueQuoteBars(blocks);
+  markAlerts(text, blocks);
   markParagraphSpace(blocks);
   const lines = blocks.filter((block) => block.type === "line");
   const atoms = [];
   for (const block of blocks) {
     if (block.type === "table" || block.type === "diagram") atoms.push(block);
     else if (block.type === "line" && !block.raw) {
-      for (const part of block.parts) {
+      for (const part of block.parts || []) {
         if (part.type === "image") atoms.push(part);
       }
     }
   }
-  return { blocks, lines, atoms, comments: comments || [] };
+  return {
+    blocks,
+    lines,
+    atoms,
+    comments: comments || [],
+    refs: built.refs || [],
+    footnotes: built.footnotes || [],
+  };
 }
 
 function sourceAtoms(doc) {

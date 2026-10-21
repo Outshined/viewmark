@@ -1559,15 +1559,99 @@ function clearInnerStarts(el) {
   walk(el);
 }
 
+function taskBox(checked) {
+  if (typeof document === "undefined" || typeof document.createElementNS !== "function") return null;
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const name = checked ? "md-task md-task-on" : "md-task";
+  if (typeof svg.className === "string") svg.className = name;
+  svg.setAttribute("class", name);
+  const rect = document.createElementNS(SVG_NS, "rect");
+  rect.setAttribute("x", "4");
+  rect.setAttribute("y", "4");
+  rect.setAttribute("width", "16");
+  rect.setAttribute("height", "16");
+  rect.setAttribute("rx", "2");
+  rect.setAttribute("fill", "none");
+  rect.setAttribute("stroke", "currentColor");
+  rect.setAttribute("stroke-width", "2");
+  rect.setAttribute("stroke-linecap", "round");
+  rect.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(rect);
+  if (checked) {
+    const mark = document.createElementNS(SVG_NS, "polyline");
+    mark.setAttribute("points", "7,12 11,16 17,8");
+    mark.setAttribute("fill", "none");
+    mark.setAttribute("stroke", "currentColor");
+    mark.setAttribute("stroke-width", "2");
+    mark.setAttribute("stroke-linecap", "round");
+    mark.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(mark);
+  }
+  return svg;
+}
+
+const ALERT_TITLES = {
+  note: "Note",
+  tip: "Tip",
+  important: "Important",
+  warning: "Warning",
+  caution: "Caution",
+};
+
+function alertTitle(kind) {
+  const el = document.createElement("span");
+  el.className = "md-alert-title";
+  el.textContent = ALERT_TITLES[kind] || kind;
+  return el;
+}
+
+function wrapQuoteDepth(el, block) {
+  const depth = block && block.quoteDepth > 1 ? block.quoteDepth : 1;
+  let node = el;
+  for (let i = 1; i < depth; i += 1) {
+    const wrap = document.createElement("div");
+    wrap.className = "md-line md-quote";
+    wrap.appendChild(node);
+    node = wrap;
+  }
+  return node;
+}
+
+function renderFootnotes(notes) {
+  if (!notes || notes.length === 0) return null;
+  const el = document.createElement("div");
+  el.className = "md-footnotes";
+  el.contentEditable = "false";
+  for (const note of notes) {
+    const row = document.createElement("div");
+    row.className = "md-footnote";
+    const id = document.createElement("span");
+    id.className = "md-footnote-id";
+    id.textContent = note.id;
+    const body = document.createElement("span");
+    body.className = "md-footnote-text";
+    body.textContent = note.text;
+    row.append(id, body);
+    el.appendChild(row);
+  }
+  return el;
+}
+
 function renderCellLine(block, repo, onSized) {
   const el = document.createElement("div");
   el.className = ["md-line", ...(block.classes || [])].join(" ");
   if (typeof block.indent === "number") el.style.setProperty("--indent", String(block.indent));
   if (block.marker) el.dataset.marker = block.marker;
   if (block.hr) return el;
+  if (!block.raw && block.task) {
+    const box = taskBox(block.task.checked);
+    if (box) el.appendChild(box);
+  }
   const parts = block.parts || [];
   if (parts.length === 0) {
-    el.appendChild(document.createElement("br"));
+    if (!(block.alertMarker && block.alert)) el.appendChild(document.createElement("br"));
     return el;
   }
   for (const part of parts) {
@@ -1584,8 +1668,13 @@ function renderCellLine(block, repo, onSized) {
 function renderCellNode(node, repo, onSized) {
   if (node && node.type === "quote") {
     const el = document.createElement("div");
-    el.className = "md-line md-quote";
-    el.appendChild(renderCellNode(node.child, repo, onSized));
+    const names = ["md-line", "md-quote"];
+    if (node.alert) names.push("md-alert", `md-alert-${node.alert}`);
+    el.className = names.join(" ");
+    if (node.alert) el.appendChild(alertTitle(node.alert));
+    const child = node.child;
+    const markerOnly = child && child.alertMarker && !(child.runs && child.runs.length);
+    if (!markerOnly) el.appendChild(renderCellNode(child, repo, onSized));
     return el;
   }
   if (node && node.type === "diagram") return renderDiagram(node, null);
@@ -1917,11 +2006,16 @@ function renderBlock(block, repo, onSized, onDiagramFitted) {
   if (block.raw) {
     if (block.empty) el.appendChild(document.createElement("br"));
     else appendParts(el, block, repo, onSized);
-    return el;
+    return wrapQuoteDepth(el, block);
+  }
+  if (block.alertMarker && block.alert) el.appendChild(alertTitle(block.alert));
+  if (block.task) {
+    const box = taskBox(block.task.checked);
+    if (box) el.appendChild(box);
   }
   if (block.empty || block.hr) {
     if (block.empty) el.appendChild(document.createElement("br"));
-    return el;
+    return wrapQuoteDepth(el, block);
   }
   appendParts(el, block, repo, onSized);
   if (!el.childNodes || el.childNodes.length === 0) {
@@ -1929,7 +2023,7 @@ function renderBlock(block, repo, onSized, onDiagramFitted) {
     el.dataset.end = String(block.end);
     el.appendChild(document.createElement("br"));
   }
-  return el;
+  return wrapQuoteDepth(el, block);
 }
 
 function expandAtoms(doc, from, to, cursor) {
@@ -7313,6 +7407,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (block === flashBlock) el.classList.add("md-flash");
         return el;
       });
+      const notes = renderFootnotes(planned.footnotes);
+      if (notes) nodes.push(notes);
       const priorTop = caretTop();
       root.replaceChildren(...nodes);
       settleBlankBreaks();
