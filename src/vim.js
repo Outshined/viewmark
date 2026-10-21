@@ -1519,13 +1519,20 @@ function finishMotion(vim, doc, anchor, cursor, raw, motion, operator) {
   }
   if (vim.mode === "visual") {
     let landed = at;
-    // e and w stop on the character the selection includes. The caret is the
-    // exclusive end, so it sits one unit later. $ parks on the glyph and keeps
-    // that exclusive end on the motion.
-    if (motion.word && at > cursor && at < doc.length && doc[at] !== "\n" && doc[at] !== "\r") {
-      landed = at + unitLen(doc, at);
-    } else if (motion.cover && Number.isInteger(motion.end)) {
+    // The glyph a motion stops on is part of the selection. The stored caret is
+    // the exclusive end, one unit later, and the block is drawn on that glyph.
+    // $ already names the exclusive end. A forward word keeps that end even
+    // while the landing is still the low end.
+    const glyph = at < doc.length && doc[at] !== "\n" && doc[at] !== "\r";
+    if (motion.cover && Number.isInteger(motion.end)) {
       landed = motion.end;
+    } else if (glyph && motion.word && at > cursor) {
+      landed = at + unitLen(doc, at);
+    } else if (glyph && !motion.word && at !== cursor && at > anchor) {
+      landed = at + unitLen(doc, at);
+      // j and k keep this column. The exclusive end is one unit later, and that
+      // unit is not the column the motion stopped on.
+      if (next.column == null) next.column = columnOf(doc, at, raw);
     }
     return pack("full", true, leavingOnce(next, vim), { type: "caret", anchor, cursor: landed });
   }
@@ -1721,6 +1728,16 @@ function stepBack(doc, index) {
   const low = doc.charCodeAt(index - 1);
   if (lead >= 0xD800 && lead <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF) return index - 2;
   return index - 1;
+}
+
+// Character visual stores the high end one past the last glyph. The block
+// covers that glyph, so the character under the caret is inside the selection.
+export function visualBlockOffset(doc, anchor, cursor, mode) {
+  const text = typeof doc === "string" ? doc : "";
+  if (mode !== "visual" || !(cursor > anchor)) return cursor;
+  const at = cursor > text.length ? text.length : cursor;
+  if (at <= 0) return cursor;
+  return stepBack(text, at);
 }
 
 // Counted x, X, and s stay on the source line and stop before its newline.

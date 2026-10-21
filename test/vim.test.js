@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { vimKey, vimMatchStarts, vimSubmit, VIM_SEARCH_LIMIT } from "../src/vim.js";
+import { vimKey, vimMatchStarts, vimSubmit, visualBlockOffset, VIM_SEARCH_LIMIT } from "../src/vim.js";
 import { backspace, caretAfterEdit, codeSpanAt, commentStorageReason, createState, deleteForward, insert, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
 
 const CARET = "‸";
@@ -679,7 +679,10 @@ test("swhggkdt", () => {
   const visualPage = run(start, [{ key: "f", ctrl: true }], { mode: "visual" });
   assert.equal(visual.show, visualPage.show);
   assert.equal(visual.anchor, 0);
-  assert.equal(visual.cursor, page.cursor);
+  // The normal caret sits on the glyph. Character visual stores the exclusive end
+  // one unit later, and the block covers that glyph.
+  assert.equal(visualBlockOffset(doc, visual.anchor, visual.cursor, visual.vim.mode), page.cursor);
+  assert.ok(page.cursor >= visual.anchor && page.cursor < visual.cursor);
   assert.notEqual(visual.anchor, visual.cursor);
   assert.equal(visual.doc, doc);
   assert.equal(visual.vim.mode, "visual");
@@ -1377,9 +1380,41 @@ test("VW.12", () => {
   const out = run("al‸pha\n\nbeta\n", ["v", "j"]);
   assert.equal(out.vim.mode, "visual");
   assert.equal(out.anchor, 2);
-  assert.equal(out.show, "al«pha\n\nbet‸a\n");
+  assert.equal(out.show, "al«pha\n\nbeta‸\n");
   assert.notEqual(out.cursor, out.doc.indexOf("\n\n") + 1);
   assert.equal(out.doc, "alpha\n\nbeta\n");
+});
+
+test("visual selection includes the glyph under the caret (ticket 7ntztqb4)", () => {
+  const selected = run("‸one two three\n", ["v", "e", "e"]);
+  assert.equal(selected.show, "«one two‸ three\n");
+  assert.equal(selected.doc.slice(selected.anchor, selected.cursor), "one two");
+  const block = visualBlockOffset(selected.doc, selected.anchor, selected.cursor, selected.vim.mode);
+  assert.equal(selected.doc[block], "o");
+  assert.ok(block >= selected.anchor && block < selected.cursor);
+  const cut = run("‸one two three\n", ["v", "e", "e", "d"]);
+  assert.equal(cut.doc, " three\n");
+  assert.equal(cut.show, "‸ three\n");
+  const noted = run("‸one two three\n", ["v", "e", "e", "g", "c"]);
+  assert.equal(noted.anchor, 0);
+  assert.equal(noted.cursor, "one two".length);
+  assert.equal(last(noted).effect.type, "comment-add");
+
+  const down = run("al‸pha\n\nbeta\n", ["v", "j", "d"]);
+  assert.equal(down.doc, "al\n");
+  assert.equal(down.show, "al‸\n");
+  const found = run("‸one two\n", ["v", "f", "w", "d"]);
+  assert.equal(found.doc, "o\n");
+  assert.equal(found.show, "‸o\n");
+
+  const column = run("‸abcdef\n\nghijkl\n\nmnopqr\n", ["v", "f", "c", "j", "j"]);
+  assert.equal(column.vim.column, 2);
+  const on = visualBlockOffset(column.doc, column.anchor, column.cursor, column.vim.mode);
+  assert.equal(column.doc[on], "o");
+  assert.ok(on >= column.anchor && on < column.cursor);
+  const again = run("‸abcdef\n\nghijkl\n\nmnopqr\n", ["v", "j", "j"]);
+  assert.equal(again.vim.column, 1);
+  assert.equal(again.doc[visualBlockOffset(again.doc, again.anchor, again.cursor, again.vim.mode)], "n");
 });
 
 test("VX.1", () => {

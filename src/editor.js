@@ -44,7 +44,7 @@ import {
   sourceLine,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
-import { vimKey, vimMatchStarts, vimSubmit, VIM_SEARCH_LIMIT } from "./vim.js";
+import { vimKey, vimMatchStarts, vimSubmit, visualBlockOffset, VIM_SEARCH_LIMIT } from "./vim.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES, isTicketToken, parseTicketToken } from "./ticket.js";
 import { MAX_PAYLOAD } from "./ws.js";
 
@@ -6568,8 +6568,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function vimBlockFallback() {
     if (closed || !root || !root.classList || !root.classList.contains("md-vim-block")) return false;
+    if (!editorHasFocus()) return false;
+    // The stored caret is the exclusive end. A native block would cover the
+    // glyph after the selection, which delete and comment would miss.
+    if (vimOn && vimMode === "visual" && state.anchor !== state.cursor) return true;
     if (caretShapeBlockSupported()) return false;
-    return editorHasFocus();
+    return true;
   }
 
   function clearVimBlockCaret() {
@@ -6699,10 +6703,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return boxed;
   }
 
-  // The drawn selection is the Visual span. The block covers the cursor's next glyph.
+  // The drawn selection is the Visual span. Character visual keeps the caret
+  // one past the last glyph, and the block covers that glyph.
   function vimBlockBox() {
     if (typeof document === "undefined" || typeof document.createRange !== "function") return null;
-    const point = pointFor(state.cursor);
+    const point = pointFor(visualBlockOffset(state.doc, state.anchor, state.cursor, vimMode));
     if (!point || !point.node) return null;
     const node = point.node;
     const offset = point.offset || 0;
