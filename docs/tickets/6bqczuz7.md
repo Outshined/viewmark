@@ -1,5 +1,5 @@
 title: Click on a picture in a table cell lands on the image marker
-state: pending review
+state: closed
 type: bug
 priority: medium
 parent: vgx3hpze
