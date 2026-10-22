@@ -25328,7 +25328,7 @@ test("stored path is the editor strip and the closed file's menu header", () => 
     assert.equal(head.childNodes[0].textContent, "Files");
     assert.equal(head.childNodes[1].getAttribute("aria-label"), "New file");
     assert.equal(head.childNodes[2].getAttribute("aria-label"), "Delete file");
-    assert.equal(head.childNodes.length, 3);
+    assert.equal(head.childNodes.length, 4);
 
     const welcome = "# Welcome\n\nHi\n";
     transport.deliver({
@@ -25706,7 +25706,7 @@ test("gjadk8ay: the file pane creates a directory and removes one", () => {
   try {
     view = createEditor(mounted.root, "", 0, transport);
     const head = filesHead();
-    assert.equal(head.childNodes.length, 3);
+    assert.equal(head.childNodes.length, 4);
     assert.equal(head.childNodes[0].textContent, "Files");
     assert.equal(head.childNodes[1].getAttribute("aria-label"), "New file");
     assert.equal(head.childNodes[2].getAttribute("aria-label"), "Delete file");
@@ -25781,7 +25781,7 @@ test("gjadk8ay: the file pane creates a directory and removes one", () => {
       files: ["notes/a.md", "welcome.md"],
       titles: { "welcome.md": "Welcome" },
     });
-    assert.equal(filesHead().childNodes.length, 3);
+    assert.equal(filesHead().childNodes.length, 4);
     assert.equal(dirButton("welcome"), undefined);
     assert.ok(dirButton("notes"));
     assert.ok(fileButton("welcome.md"));
@@ -26034,7 +26034,7 @@ test("gjadk8ay: the file pane creates a directory and removes one", () => {
     assert.equal(nameDialog().open, true);
     assert.equal(nameError().textContent, "That name is not allowed.");
     assert.equal(notice().textContent, "directory is not empty");
-    assert.equal(filesHead().childNodes.length, 3);
+    assert.equal(filesHead().childNodes.length, 4);
     assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
   } finally {
     if (view) view.destroy();
@@ -26096,7 +26096,7 @@ test("eftpk82u: rename a document or a directory", () => {
       files: ["archive/keep.md", "notes/a.md", "notes/welcome.md", "welcome.md"],
       titles: { "notes/welcome.md": "Welcome", "welcome.md": "Welcome" },
     });
-    assert.equal(filesHead().childNodes.length, 3);
+    assert.equal(filesHead().childNodes.length, 4);
     assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
     assert.equal(renameItem().hidden, true);
 
@@ -26120,7 +26120,7 @@ test("eftpk82u: rename a document or a directory", () => {
     assert.equal(nameField().value, "welcome.md");
     assert.equal(nameError().hidden, true);
     assert.deepEqual(byClass(dialog, "md-confirm-actions")[0].childNodes.map((node) => node.textContent), ["Cancel", "Rename"]);
-    assert.equal(filesHead().childNodes.length, 3);
+    assert.equal(filesHead().childNodes.length, 4);
     assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
     click(buttonNamed(dialog, "Cancel"));
     assert.equal(dialog.open, false);
@@ -26204,7 +26204,7 @@ test("eftpk82u: rename a document or a directory", () => {
     assert.equal(byClass(nameDialog(), "md-name-title")[0].textContent, "Rename");
     assert.equal(byClass(nameDialog(), "md-name-where")[0].textContent, "In notes/");
     assert.equal(nameField().value, "welcome.md");
-    assert.equal(filesHead().childNodes.length, 3);
+    assert.equal(filesHead().childNodes.length, 4);
     nameField().value = "Hello There.md";
     const sentAt = transport.sent.length;
     click(buttonNamed(nameDialog(), "Rename"));
@@ -26273,7 +26273,7 @@ test("eftpk82u: rename a document or a directory", () => {
     click(renameItem());
     assert.equal(transport.sent.length, ticketAt);
     assert.equal(nameDialog().open, false);
-    assert.equal(filesHead().childNodes.length, 3);
+    assert.equal(filesHead().childNodes.length, 4);
     assert.equal(walkNodes(nav, (node) => node.classList && node.classList.contains("md-new-name")).length, 1);
   } finally {
     if (view) view.destroy();
@@ -27005,6 +27005,314 @@ test("glyph buttons use one press scale and copy controls show a flyout", async 
     else globalThis.history = previousHistory;
     if (previousLocation === undefined) delete globalThis.location;
     else globalThis.location = previousLocation;
+    mounted.restore();
+  }
+});
+
+test("search files and tickets", () => {
+  const mounted = mountTicketPage();
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(css, /\.md-search-hit\s*\{[^}]*background:\s*#3f5344/);
+  assert.match(css, /\.md-search-hit\s*\{[^}]*color:\s*#e7e2d8/);
+  assert.match(css, /\.md-search-hit::selection\s*\{[^}]*background:\s*#3d5a80/);
+  assert.match(css, /\.md-search-hit::-moz-selection\s*\{[^}]*background:\s*#3d5a80/);
+  assert.match(css, /\.md-search\[hidden\][\s\S]*?display:\s*none/);
+  assert.equal(/\.md-pane-head \.md-file-search\s*\{[^}]*margin-left:\s*auto/.test(css), false);
+  assert.equal(/\.md-pane-head \.md-ticket-search\s*\{[^}]*margin-left:\s*auto/.test(css), false);
+  const transport = holdingTransport();
+  const searches = () => transport.sent.filter((message) => message.type === "search");
+  const fileButton = (filePath) => walkNodes(mounted.nav, (node) => node.dataset && node.dataset.path === filePath && node.classList && node.classList.contains("md-file"))[0];
+  const dirButton = (dir) => walkNodes(mounted.nav, (node) => node.dataset && node.dataset.dir === dir && node.classList && node.classList.contains("md-dir-toggle"))[0];
+  const hitsIn = (node) => walkNodes(node, (item) => item.classList && item.classList.contains("md-search-hit"));
+  const glyph = (button, label) => {
+    assert.equal(button.getAttribute("aria-label"), label);
+    assert.equal(button.getAttribute("title"), label);
+    assert.equal(button.textContent, "");
+    const svg = button.childNodes[0];
+    assert.equal(svg.localName, "svg");
+    assert.equal(svg.getAttribute("viewBox"), "0 0 24 24");
+    assert.equal(svg.getAttribute("aria-hidden"), "true");
+    assert.equal(svg.getAttribute("fill"), null);
+    const paths = [...svg.childNodes].filter((node) => node.localName === "path");
+    assert.deepEqual(paths.map((node) => node.getAttribute("d")), [
+      "M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16",
+      "M21 21l-4.3-4.3",
+    ]);
+    for (const path of paths) {
+      assert.equal(path.getAttribute("fill"), "none");
+      assert.equal(path.getAttribute("stroke"), "currentColor");
+      assert.equal(path.getAttribute("stroke-width"), "2");
+      assert.equal(path.getAttribute("stroke-linecap"), "round");
+      assert.equal(path.getAttribute("stroke-linejoin"), "round");
+    }
+  };
+  try {
+    const view = createEditor(mounted.root, "", 0, transport);
+    const fileBlock = byClass(mounted.nav, "file-block")[0];
+    const ticketBlock = byClass(mounted.nav, "ticket-block")[0];
+    const filesHead = byClass(fileBlock, "md-pane-head")[0];
+    const ticketsHead = byClass(ticketBlock, "md-pane-head")[0];
+    assert.equal(filesHead.childNodes.length, 4);
+    assert.equal(filesHead.childNodes[0].textContent, "Files");
+    assert.equal(filesHead.childNodes[1].getAttribute("aria-label"), "New file");
+    assert.equal(filesHead.childNodes[2].getAttribute("aria-label"), "Delete file");
+    glyph(filesHead.childNodes[3], "Search files");
+    assert.equal(ticketsHead.childNodes[1].getAttribute("aria-label"), "New ticket");
+    assert.equal(ticketsHead.childNodes[2].getAttribute("aria-label"), "Filter");
+    glyph(ticketsHead.childNodes[3], "Search tickets");
+    const fileField = byClass(fileBlock, "md-file-search-field")[0];
+    const ticketField = byClass(ticketBlock, "md-ticket-search-field")[0];
+    const name = byClass(fileBlock, "md-new-name")[0];
+    const menu = byClass(ticketBlock, "md-ticket-filter-menu")[0];
+    const drawer = byClass(fileBlock, "md-file-drawer")[0];
+    assert.equal(fileBlock.childNodes[0], filesHead);
+    assert.equal(fileBlock.childNodes[1], fileField);
+    assert.ok(fileBlock.childNodes.indexOf(filesHead) < fileBlock.childNodes.indexOf(fileField));
+    assert.ok(fileBlock.childNodes.indexOf(fileField) < fileBlock.childNodes.indexOf(name));
+    assert.ok(fileBlock.childNodes.indexOf(name) < fileBlock.childNodes.indexOf(drawer));
+    assert.equal(ticketBlock.childNodes[0], ticketsHead);
+    assert.equal(ticketBlock.childNodes[1], ticketField);
+    assert.ok(ticketBlock.childNodes.indexOf(ticketField) < ticketBlock.childNodes.indexOf(menu));
+    assert.equal(fileField.hidden, true);
+    assert.equal(ticketField.hidden, true);
+    const fileInput = byClass(fileField, "md-search-input")[0];
+    const fileError = byClass(fileField, "md-search-error")[0];
+    filesHead.childNodes[3].listeners.click({ preventDefault() {} });
+    filesHead.childNodes[3].listeners.click({ preventDefault() {} });
+    assert.equal(fileField.hidden, false);
+    assert.equal(fileInput.focused, true);
+    assert.equal(fileError.textContent, "invalid pattern");
+    assert.equal(fileError.hidden, true);
+
+    const long = `${"pad\n".repeat(40)}cat first\n${"pad\n".repeat(2)}cat second\n`;
+    transport.deliver({
+      type: "docs",
+      files: ["hit.md", "catalog.md", "notes/catalog.md", "quiet.md", "quiet/miss.md", "box/inner.md", "shot.md", "case.md"],
+      titles: { "notes/catalog.md": "Welcome" },
+      dirs: ["vacant"],
+    });
+    assert.ok(fileButton("quiet.md"));
+    assert.ok(dirButton("vacant"));
+    assert.equal(fileButton("quiet.md").parentElement.childNodes.length, 1);
+    const beforeEmpty = searches().length;
+    fileInput.value = "";
+    fileInput.listeners.input();
+    assert.equal(searches().length, beforeEmpty);
+    assert.ok(fileButton("quiet.md"));
+    assert.equal(fileField.hidden, false);
+
+    fileInput.value = "cat";
+    fileInput.listeners.input();
+    assert.equal(searches().at(-1).kind, "docs");
+    assert.equal(searches().at(-1).query, "cat");
+    assert.ok(fileButton("quiet.md"));
+    transport.deliver({
+      type: "search",
+      kind: "docs",
+      query: "cat",
+      paths: ["hit.md", "catalog.md", "notes/catalog.md", "box/inner.md", "shot.md"],
+    });
+    assert.equal(fileButton("quiet.md"), undefined);
+    assert.equal(fileButton("quiet/miss.md"), undefined);
+    assert.equal(dirButton("quiet"), undefined);
+    assert.equal(dirButton("vacant"), undefined);
+    assert.ok(fileButton("box/inner.md"));
+    assert.equal(dirButton("box").parentElement.classList.contains("md-dir-collapsed"), false);
+    assert.equal(hitsIn(dirButton("box")).length, 0);
+    const catalog = fileButton("catalog.md");
+    assert.equal(catalog.parentElement.childNodes.length, 1);
+    assert.ok(hitsIn(catalog).some((hit) => hit.textContent === "cat"));
+    assert.equal(byClass(catalog, "md-file-path").length, 0);
+    const nested = fileButton("notes/catalog.md");
+    const pathSpan = byClass(nested, "md-file-path")[0];
+    assert.ok(pathSpan);
+    assert.ok(hitsIn(pathSpan).some((hit) => hit.textContent === "cat"));
+    assert.equal(hitsIn(nested).filter((hit) => hit.parentElement === nested && hit.textContent === "Welcome").length, 0);
+    assert.equal(nested.textContent.includes("Welcome"), true);
+
+    fileInput.value = "dog";
+    fileInput.listeners.input();
+    transport.deliver({ type: "search", kind: "docs", query: "cat", paths: ["quiet.md"] });
+    assert.equal(fileButton("quiet.md"), undefined);
+    assert.ok(fileButton("hit.md"));
+    transport.deliver({ type: "search", kind: "tickets", query: "dog", paths: ["quiet.md"] });
+    assert.ok(fileButton("hit.md"));
+    transport.deliver({ type: "search", kind: "docs", query: "dog", paths: ["quiet.md"] });
+    assert.ok(fileButton("quiet.md"));
+    assert.equal(fileButton("hit.md"), undefined);
+
+    fileInput.value = "cat";
+    fileInput.listeners.input();
+    transport.deliver({
+      type: "search",
+      kind: "docs",
+      query: "cat",
+      paths: ["hit.md", "catalog.md", "notes/catalog.md", "box/inner.md", "shot.md"],
+    });
+    const beforeInvalid = searches().length;
+    fileInput.value = "[";
+    fileInput.listeners.input();
+    assert.equal(searches().length, beforeInvalid);
+    assert.equal(fileError.hidden, false);
+    assert.equal(fileInput.getAttribute("aria-invalid"), "true");
+    assert.ok(fileButton("hit.md"));
+    assert.equal(fileButton("quiet.md"), undefined);
+
+    fileInput.value = "";
+    fileInput.listeners.input();
+    assert.equal(fileField.hidden, false);
+    assert.equal(fileError.hidden, true);
+    assert.ok(fileButton("quiet.md"));
+    assert.ok(dirButton("vacant"));
+    assert.equal(searches().at(-1).query, "cat");
+
+    const scrolled = [];
+    globalThis.window.scrollBy = (dx, dy) => {
+      scrolled.push([dx, dy]);
+    };
+    globalThis.window.innerWidth = 200;
+    globalThis.window.innerHeight = 100;
+    fileInput.value = "cat";
+    fileInput.listeners.input();
+    transport.deliver({ type: "file", path: "hit.md", rev: 1, text: long, cursor: 0, anchor: 0, locks: [] });
+    const bodyHits = hitsIn(mounted.root);
+    assert.equal(bodyHits.length, 2);
+    assert.deepEqual(bodyHits.map((hit) => hit.textContent), ["cat", "cat"]);
+    for (const hit of bodyHits) {
+      const text = hit.childNodes.find((node) => node.nodeType === 3);
+      assert.equal(text.length, Number(hit.dataset.end) - Number(hit.dataset.start));
+      assert.equal(mapOffset(text, 0), Number(hit.dataset.start));
+    }
+    assert.ok(scrolled.some((pair) => pair[1] > 0));
+
+    scrolled.length = 0;
+    transport.deliver({
+      type: "file",
+      path: "catalog.md",
+      rev: 1,
+      text: "nope\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+    });
+    assert.equal(hitsIn(mounted.root).length, 0);
+    assert.equal(scrolled.some((pair) => pair[1] > 0), false);
+
+    transport.deliver({
+      type: "file",
+      path: "case.md",
+      rev: 1,
+      text: "alpha\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+    });
+    fileInput.value = "Alpha";
+    fileInput.listeners.input();
+    assert.equal(hitsIn(mounted.root).length, 0);
+    transport.deliver({ type: "search", kind: "docs", query: "Alpha", paths: [] });
+    assert.equal(fileButton("case.md"), undefined);
+    fileInput.value = "alpha";
+    fileInput.listeners.input();
+    assert.equal(hitsIn(mounted.root).length, 1);
+    assert.equal(hitsIn(mounted.root)[0].textContent, "alpha");
+
+    fileInput.value = "cat-picture";
+    fileInput.listeners.input();
+    transport.deliver({
+      type: "file",
+      path: "shot.md",
+      rev: 1,
+      text: "before\n![alt](cat-picture.png)\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+    });
+    const image = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-image"))[0];
+    assert.ok(image);
+    assert.equal(hitsIn(image).length, 0);
+    assert.equal(hitsIn(mounted.root).length, 0);
+    const toggle = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-view-toggle"))[0];
+    toggle.listeners.click({ preventDefault() {}, stopPropagation() {} });
+    const rawHits = hitsIn(mounted.root);
+    assert.ok(rawHits.some((hit) => hit.textContent === "cat-picture"));
+    toggle.listeners.click({ preventDefault() {}, stopPropagation() {} });
+
+    transport.deliver({ type: "search", kind: "docs", query: "cat-picture", paths: ["shot.md"] });
+    assert.ok(fileButton("shot.md"));
+    const listed = searches().length;
+    transport.deliver({
+      type: "docs",
+      files: ["hit.md", "catalog.md", "notes/catalog.md", "quiet.md", "quiet/miss.md", "box/inner.md", "shot.md", "case.md"],
+      titles: { "notes/catalog.md": "Welcome" },
+      dirs: ["vacant"],
+    });
+    assert.equal(searches().length, listed + 1);
+    assert.equal(searches().at(-1).kind, "docs");
+    assert.equal(searches().at(-1).query, "cat-picture");
+    assert.ok(fileButton("shot.md"));
+
+    fileInput.listeners.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(fileField.hidden, true);
+    assert.equal(fileInput.value, "");
+    assert.equal(hitsIn(mounted.root).length, 0);
+    assert.ok(fileButton("quiet.md"));
+    assert.ok(dirButton("vacant"));
+    const afterEscape = searches().length;
+    transport.deliver({
+      type: "docs",
+      files: ["hit.md", "quiet.md"],
+      titles: {},
+      dirs: ["vacant"],
+    });
+    assert.equal(searches().length, afterEscape);
+
+    const openTicket = ticketFixture("aaaaaaaa", "Cat title", "new", T1);
+    const plain = ticketFixture("bbbbbbbb", "Plain", "new", T0);
+    const closed = ticketFixture("cccccccc", "cat closed", "closed", T2);
+    transport.deliver({ type: "tickets", tickets: [openTicket, plain, closed] });
+    ticketsHead.childNodes[3].listeners.click({ preventDefault() {} });
+    assert.equal(ticketField.hidden, false);
+    const ticketInput = byClass(ticketField, "md-search-input")[0];
+    ticketInput.value = "cat";
+    ticketInput.listeners.input();
+    assert.equal(searches().at(-1).kind, "tickets");
+    assert.equal(searches().at(-1).query, "cat");
+    transport.deliver({
+      type: "search",
+      kind: "tickets",
+      query: "cat",
+      paths: ["tickets/aaaaaaaa.md", "tickets/bbbbbbbb.md", "tickets/cccccccc.md"],
+    });
+    assert.equal(ticketNode(mounted.nav, "cccccccc"), undefined);
+    assert.ok(ticketNode(mounted.nav, "bbbbbbbb"));
+    assert.equal(hitsIn(ticketSpans(mounted.nav, "bbbbbbbb").find((span) => span.classList.contains("md-ticket-title"))).length, 0);
+    const title = ticketSpans(mounted.nav, "aaaaaaaa").find((span) => span.classList.contains("md-ticket-title"));
+    assert.equal(hitsIn(title).length, 0);
+    assert.deepEqual(rootTicketIds(mounted.nav).filter((id) => ticketNode(mounted.nav, id)), ["bbbbbbbb", "aaaaaaaa"]);
+    ticketInput.value = "Cat";
+    ticketInput.listeners.input();
+    transport.deliver({
+      type: "search",
+      kind: "tickets",
+      query: "Cat",
+      paths: ["tickets/aaaaaaaa.md", "tickets/cccccccc.md"],
+    });
+    assert.equal(ticketNode(mounted.nav, "bbbbbbbb"), undefined);
+    assert.equal(ticketNode(mounted.nav, "cccccccc"), undefined);
+    const catTitle = ticketSpans(mounted.nav, "aaaaaaaa").find((span) => span.classList.contains("md-ticket-title"));
+    assert.ok(hitsIn(catTitle).some((hit) => hit.textContent === "Cat"));
+    assert.equal(hitsIn(ticketSpans(mounted.nav, "aaaaaaaa").find((span) => span.classList.contains("md-ticket-id"))).length, 0);
+    const closedBox = filterBox(mounted.nav, "closed");
+    closedBox.checked = true;
+    closedBox.listeners.change();
+    assert.ok(ticketNode(mounted.nav, "cccccccc"));
+    assert.equal(hitsIn(ticketSpans(mounted.nav, "cccccccc").find((span) => span.classList.contains("md-ticket-title"))).length, 0);
+    ticketInput.listeners.keydown({ key: "Escape", preventDefault() {} });
+    assert.equal(ticketField.hidden, true);
+    assert.ok(ticketNode(mounted.nav, "bbbbbbbb"));
+    view.destroy();
+  } finally {
     mounted.restore();
   }
 });

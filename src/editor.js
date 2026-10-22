@@ -42,6 +42,7 @@ import {
   gapCaretStops,
   imageLine,
   sourceLine,
+  searchMatches,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
 import { vimKey, vimMatchStarts, vimSubmit, visualBlockOffset, VIM_SEARCH_LIMIT } from "./vim.js";
@@ -383,6 +384,122 @@ function ensureFilterButton(nav) {
   }
   armGlyphPress(button);
   return button;
+}
+
+// ensureNavButton assigns textContent, which replaces the svg.
+function ensureSearchButton(nav, className, label) {
+  let button = findDeep(nav, className);
+  if (!button) button = document.createElement("button");
+  button.type = "button";
+  button.className = `icon-btn ${className}`;
+  if (typeof button.setAttribute === "function") {
+    button.setAttribute("type", "button");
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
+  }
+  if (button.textContent !== "" || !iconMatches(button, "search")) {
+    for (const child of childArray(button).slice()) detachNode(child);
+    const svg = iconSvg("search");
+    if (svg) button.appendChild(svg);
+  }
+  armGlyphPress(button);
+  return button;
+}
+
+function ensureSearchField(block, kind) {
+  const kindClass = kind === "docs" ? "md-file-search-field" : "md-ticket-search-field";
+  let box = findClassChild(block, kindClass);
+  if (box) return box;
+  box = document.createElement("div");
+  box.className = `md-search ${kindClass}`;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "md-search-input";
+  input.value = "";
+  if (typeof input.setAttribute === "function") {
+    input.setAttribute("type", "text");
+    input.setAttribute("aria-label", kind === "docs" ? "Search files" : "Search tickets");
+  }
+  const error = document.createElement("p");
+  error.className = "md-search-error";
+  error.textContent = "invalid pattern";
+  hideElement(error);
+  box.appendChild(input);
+  box.appendChild(error);
+  hideElement(box);
+  return box;
+}
+
+// Overlapping cuts are already dropped by the walk. A piece is one slice of
+// the text node, so a later caret maps through that slice alone.
+function searchPieces(value, start, ranges) {
+  const end = start + value.length;
+  const pieces = [];
+  let at = start;
+  for (const range of ranges) {
+    const from = Math.max(range.start, at);
+    const to = Math.min(range.end, end);
+    if (to <= from) continue;
+    if (from > at) pieces.push({ start: at, end: from, text: value.slice(at - start, from - start), hit: false });
+    pieces.push({ start: from, end: to, text: value.slice(from - start, to - start), hit: true });
+    at = to;
+  }
+  if (pieces.length === 0) return null;
+  if (at < end) pieces.push({ start: at, end, text: value.slice(at - start), hit: false });
+  return pieces;
+}
+
+function matchSpan(text) {
+  const span = document.createElement("span");
+  span.className = "md-search-hit";
+  span.appendChild(document.createTextNode(text));
+  return span;
+}
+
+function fillMatchText(el, text, query) {
+  const found = query ? searchMatches(text, query) : [];
+  const ranges = Array.isArray(found) ? found : [];
+  const pieces = ranges.length > 0 ? searchPieces(text, 0, ranges) : null;
+  if (!pieces) {
+    el.textContent = text;
+    return false;
+  }
+  if (typeof el.replaceChildren === "function") el.replaceChildren();
+  else el.textContent = "";
+  for (const piece of pieces) {
+    el.appendChild(piece.hit ? matchSpan(piece.text) : document.createTextNode(piece.text));
+  }
+  return true;
+}
+
+function paintButtonLabel(button, label, query) {
+  const found = query ? searchMatches(label, query) : [];
+  const ranges = Array.isArray(found) ? found : [];
+  const pieces = ranges.length > 0 ? searchPieces(label, 0, ranges) : null;
+  if (!pieces) return false;
+  const kids = childArray(button);
+  const text = kids[kids.length - 1];
+  if (!text || text.nodeType !== 3) return false;
+  for (const piece of pieces) placeNodeBefore(button, piece.hit ? matchSpan(piece.text) : document.createTextNode(piece.text), text);
+  detachNode(text);
+  return true;
+}
+
+// The label already shows the same matched text. A second copy of the path
+// would repeat it.
+function pathBesideLabel(filePath, label, query) {
+  if (!query || filePath === label) return false;
+  const pathHits = searchMatches(filePath, query);
+  if (!Array.isArray(pathHits) || pathHits.length === 0) return false;
+  const labelHits = searchMatches(label, query);
+  const seen = new Set();
+  if (Array.isArray(labelHits)) {
+    for (const range of labelHits) seen.add(label.slice(range.start, range.end));
+  }
+  for (const range of pathHits) {
+    if (!seen.has(filePath.slice(range.start, range.end))) return true;
+  }
+  return false;
 }
 
 // Defect is the label for ticket type bug. The form select still uses TICKET_TYPES.
@@ -740,6 +857,7 @@ const ICON_PATHS = {
   delete: ["M18 6 6 18M6 6l12 12"],
   filter: ["M22 3H2l8 9.46V19l4 2v-6.54L22 3z"],
   check: ["M20 6 9 17l-5-5"],
+  search: ["M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16", "M21 21l-4.3-4.3"],
 };
 
 function strokePath(d) {
@@ -3037,6 +3155,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let fileList = [];
   let dirList = [];
   let fileTitles = null;
+  // null until an answer for the query still in the field. The hit query is the
+  // last pattern the field accepted, so an invalid pattern leaves the hits.
+  let docSearch = null;
+  let ticketSearch = null;
+  let docHitQuery = "";
+  let ticketHitQuery = "";
+  let revealSearchHit = false;
+  let fileSearchBox = null;
+  let ticketSearchBox = null;
   let draggedMove = null;
   let treeDrop = null;
   const openDirs = new Set();
@@ -7381,7 +7508,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof root.scrollLeft === "number") root.scrollLeft = 0;
     layoutComments();
     hideCommentButton();
+    paintSearchHits();
     placeCaret(priorTop);
+    revealFirstSearchHit();
   }
 
   function stopViewEvent(event) {
@@ -7804,6 +7933,231 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
+  function activeHitQuery() {
+    return openPath.startsWith("tickets/") ? ticketHitQuery : docHitQuery;
+  }
+
+  function openSearchRanges() {
+    const query = activeHitQuery();
+    if (!query) return [];
+    const found = searchMatches(state.doc, query);
+    return Array.isArray(found) ? found : [];
+  }
+
+  function searchHostSkipped(el) {
+    return hasClass(el, "md-image")
+      || hasClass(el, "md-diagram")
+      || hasClass(el, "md-lock")
+      || hasClass(el, "md-image-caret")
+      || hasClass(el, "md-raw-hang")
+      || hasClass(el, "md-raw-gap")
+      || hasClass(el, "md-comment-marker");
+  }
+
+  function collectSearchText(node, out) {
+    if (!node) return;
+    if (node.nodeType === 3) {
+      out.push(node);
+      return;
+    }
+    if (node.nodeType !== 1 || searchHostSkipped(node)) return;
+    for (const child of childArray(node)) collectSearchText(child, out);
+  }
+
+  // Each piece keeps its own offsets. The parent run still spans the whole
+  // line, and a caret in a later piece would otherwise use that wider start.
+  function paintSearchText(text, ranges) {
+    const parent = text.parentElement;
+    if (!parent || hasClass(parent, "md-search-hit") || searchHostSkipped(parent)) return;
+    const value = typeof text.textContent === "string" ? text.textContent : "";
+    if (value === "\u200b") return;
+    const tagged = nearestTagged(text);
+    if (!tagged) return;
+    const start = Number(tagged.dataset.start);
+    const end = Number(tagged.dataset.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || value.length !== end - start) return;
+    const pieces = searchPieces(value, start, ranges);
+    if (!pieces) return;
+    for (const piece of pieces) {
+      const span = document.createElement("span");
+      if (piece.hit) span.className = "md-search-hit";
+      span.dataset.start = String(piece.start);
+      span.dataset.end = String(piece.end);
+      span.appendChild(document.createTextNode(piece.text));
+      placeNodeBefore(parent, span, text);
+    }
+    detachNode(text);
+  }
+
+  function paintSearchHits() {
+    const ranges = openSearchRanges();
+    if (ranges.length === 0) return;
+    const texts = [];
+    for (const child of childArray(root)) collectSearchText(child, texts);
+    for (const text of texts) paintSearchText(text, ranges);
+  }
+
+  function revealFirstSearchHit() {
+    if (!revealSearchHit) return;
+    revealSearchHit = false;
+    const hit = findElement(root, (el) => hasClass(el, "md-search-hit"));
+    if (!hit) return;
+    if (typeof hit.scrollIntoView === "function") hit.scrollIntoView({ block: "nearest", inline: "nearest" });
+    bringRectIntoView(elementBox(hit));
+  }
+
+  function searchBox(kind) {
+    return kind === "docs" ? fileSearchBox : ticketSearchBox;
+  }
+
+  function searchFieldQuery(kind) {
+    const box = searchBox(kind);
+    if (!box || box.hidden) return null;
+    const input = findClassChild(box, "md-search-input");
+    if (!input) return null;
+    return typeof input.value === "string" ? input.value : "";
+  }
+
+  function markSearchInvalid(kind, invalid) {
+    const box = searchBox(kind);
+    if (!box) return;
+    const input = findClassChild(box, "md-search-input");
+    const error = findClassChild(box, "md-search-error");
+    if (input && typeof input.setAttribute === "function") {
+      if (invalid) input.setAttribute("aria-invalid", "true");
+      else if (typeof input.removeAttribute === "function") input.removeAttribute("aria-invalid");
+    }
+    if (!error) return;
+    if (invalid) showElement(error);
+    else hideElement(error);
+  }
+
+  function clearSearchHits(kind) {
+    if (kind === "docs") {
+      docSearch = null;
+      docHitQuery = "";
+      return;
+    }
+    ticketSearch = null;
+    ticketHitQuery = "";
+  }
+
+  function showSearchLists() {
+    renderFileTree(fileList, false);
+    renderTicketTree();
+  }
+
+  function applySearchInput(kind) {
+    const query = searchFieldQuery(kind);
+    if (query == null) return;
+    if (query === "") {
+      markSearchInvalid(kind, false);
+      clearSearchHits(kind);
+      revealSearchHit = false;
+      showSearchLists();
+      render();
+      return;
+    }
+    if (searchMatches("", query) == null) {
+      markSearchInvalid(kind, true);
+      return;
+    }
+    markSearchInvalid(kind, false);
+    const previous = kind === "docs" ? docHitQuery : ticketHitQuery;
+    if (kind === "docs") docHitQuery = query;
+    else ticketHitQuery = query;
+    const applies = openPath.startsWith("tickets/") ? kind === "tickets" : kind === "docs";
+    if (query !== previous && applies && openPath) revealSearchHit = true;
+    render();
+    emit({ type: "search", kind, query });
+  }
+
+  function dismissSearch(kind) {
+    const box = searchBox(kind);
+    const input = box && findClassChild(box, "md-search-input");
+    if (input) input.value = "";
+    markSearchInvalid(kind, false);
+    if (box) hideElement(box);
+    clearSearchHits(kind);
+    revealSearchHit = false;
+    showSearchLists();
+    render();
+  }
+
+  function showSearchField(kind) {
+    const box = searchBox(kind);
+    const input = box && findClassChild(box, "md-search-input");
+    if (!box || !input) return;
+    showElement(box);
+    if (typeof input.focus === "function") input.focus();
+  }
+
+  function askSearch(kind) {
+    const query = searchFieldQuery(kind);
+    if (!query || searchMatches("", query) == null) return;
+    emit({ type: "search", kind, query });
+  }
+
+  function revealSearchDirs(paths) {
+    for (const rel of paths) {
+      if (typeof rel !== "string") continue;
+      const parts = rel.split("/").filter(Boolean);
+      let acc = "";
+      for (let i = 0; i < parts.length - 1; i += 1) {
+        acc = acc ? `${acc}/${parts[i]}` : parts[i];
+        openDirs.add(acc);
+      }
+    }
+  }
+
+  function applySearchAnswer(message) {
+    const kind = message.kind === "docs" || message.kind === "tickets" ? message.kind : "";
+    if (!kind) return;
+    const query = searchFieldQuery(kind);
+    if (!query || query !== message.query || searchMatches("", query) == null) return;
+    if (!Array.isArray(message.paths) || message.paths.some((item) => typeof item !== "string")) return;
+    const paths = new Set(message.paths);
+    if (kind === "docs") {
+      docSearch = { query, paths };
+      revealSearchDirs(message.paths);
+      renderFileTree(fileList, false);
+      return;
+    }
+    ticketSearch = { query, paths };
+    renderTicketTree();
+  }
+
+  function bindSearchControl(kind, button, box) {
+    const onSearch = (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      showSearchField(kind);
+    };
+    const onSearchInput = () => applySearchInput(kind);
+    const onSearchKey = (event) => {
+      if (!event || event.key !== "Escape") return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      dismissSearch(kind);
+    };
+    const input = findClassChild(box, "md-search-input");
+    if (typeof button.addEventListener === "function") button.addEventListener("click", onSearch);
+    if (input && typeof input.addEventListener === "function") {
+      input.addEventListener("input", onSearchInput);
+      input.addEventListener("keydown", onSearchKey);
+    }
+    return { onSearch, onSearchInput, onSearchKey, searchInput: input, searchButton: button };
+  }
+
+  function unbindSearchControl(binding) {
+    if (!binding) return;
+    if (binding.searchButton && binding.onSearch && typeof binding.searchButton.removeEventListener === "function") {
+      binding.searchButton.removeEventListener("click", binding.onSearch);
+    }
+    if (binding.searchInput && typeof binding.searchInput.removeEventListener === "function") {
+      if (binding.onSearchInput) binding.searchInput.removeEventListener("input", binding.onSearchInput);
+      if (binding.onSearchKey) binding.searchInput.removeEventListener("keydown", binding.onSearchKey);
+    }
+  }
+
   function render() {
     if (gestureTimer != null) {
       clearTimeout(gestureTimer);
@@ -7853,6 +8207,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       hideResolvedHighlights();
       markCurrentHighlights();
       paintAnchorMarks();
+      paintSearchHits();
       renderCommentAside(planned.comments);
       layoutComments();
       watchPictures();
@@ -7861,6 +8216,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         restoreEditorFocus = false;
         focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
       } else placeCaret(priorTop);
+      revealFirstSearchHit();
       updateCommentButton();
       if (scrollCommentId) {
         const card = findCommentCard(scrollCommentId);
@@ -8718,7 +9074,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     button.className = "md-file icon-btn";
     if (file.path === openPath) button.classList.add("md-file-current");
     button.dataset.path = file.path;
-    appendIconLabel(button, "file", fileLabel(file));
+    const label = fileLabel(file);
+    appendIconLabel(button, "file", label);
+    const query = docSearch && typeof docSearch.query === "string" ? docSearch.query : "";
+    if (query) {
+      paintButtonLabel(button, label, query);
+      if (pathBesideLabel(file.path, label, query)) {
+        const pathSpan = document.createElement("span");
+        pathSpan.className = "md-file-path";
+        fillMatchText(pathSpan, file.path, query);
+        button.appendChild(pathSpan);
+        button.classList.add("md-file-with-path");
+      }
+    }
     bindDragSource(button, file.path, false);
     bindFileDrop(button, file.path);
     button.addEventListener("click", (event) => {
@@ -8850,7 +9218,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     bindTreeDrop(tree);
     if (typeof tree.replaceChildren !== "function") return;
     if (seed) seedOpen(openPath);
-    tree.replaceChildren(...renderEntries(buildFileTree(fileList, dirList)));
+    const listed = docSearch ? fileList.filter((item) => docSearch.paths.has(item)) : fileList;
+    const marked = docSearch ? [] : dirList;
+    tree.replaceChildren(...renderEntries(buildFileTree(listed, marked)));
     closeFileMenuIfStale();
     // The open panel tracks the new rows. Another hover is not required.
     syncWideFileDrawer(drawer);
@@ -8988,6 +9358,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     else remoteCaret = null;
     const pinScroll = ownDoc ? pinScrollHold : null;
     if (message.type === "file") pinScrollHold = null;
+    if (message.type === "file" && activeHitQuery()) revealSearchHit = true;
     render();
     if (pinScroll) releasePinScroll(pinScroll);
     if (message.type === "file") publishHash();
@@ -9140,6 +9511,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const incoming = message.titles;
       fileTitles = incoming && typeof incoming === "object" && !Array.isArray(incoming) ? incoming : null;
       renderFileTree(message.files, true, Array.isArray(message.dirs) ? message.dirs : []);
+      askSearch("docs");
+      return;
+    }
+    if (message.type === "search") {
+      applySearchAnswer(message);
       return;
     }
     if (message.type === "directory") {
@@ -12259,12 +12635,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function visibleTicketList() {
     const on = enabledFilters(filesNav());
-    return ticketList.filter((ticket) => {
+    const filtered = ticketList.filter((ticket) => {
       if (ticket.state === "closed" && !on.has("closed")) return false;
       if (!on.has(ticket.priority)) return false;
       if (!on.has(ticket.type)) return false;
       return true;
     });
+    if (!ticketSearch) return filtered;
+    return filtered.filter((ticket) => ticketSearch.paths.has(`tickets/${ticket.id}.md`));
   }
 
   function seedTicketAncestors(id) {
@@ -12301,10 +12679,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       ["md-ticket-state", ticket.state],
       ["md-ticket-type", ticket.type],
     ];
+    const titleQuery = ticketSearch && typeof ticketSearch.query === "string" ? ticketSearch.query : "";
     for (const [className, text] of fields) {
       const span = document.createElement("span");
       span.className = className;
-      span.textContent = text;
+      if (className === "md-ticket-title" && titleQuery) fillMatchText(span, text, titleQuery);
+      else span.textContent = text;
       open.appendChild(span);
     }
     if (openPath === path) row.classList.add("md-ticket-current");
@@ -13678,6 +14058,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     foreignList = nextForeign;
     if (openTicket && !ticketList.some((ticket) => ticket.id === openTicket.id)) {
       clearOpenTicket();
+      askSearch("tickets");
       return;
     }
     if (openTicket) {
@@ -13685,6 +14066,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       renderTicketForm();
     }
     renderTicketTree();
+    askSearch("tickets");
   }
 
   function applyTicketNotice(message) {
@@ -13793,6 +14175,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (binding.showAll && binding.onShowAll && typeof binding.showAll.removeEventListener === "function") {
       binding.showAll.removeEventListener("click", binding.onShowAll);
     }
+    unbindSearchControl(binding);
   }
 
   function unbindTickets() {
@@ -13830,12 +14213,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     placeAfter(head, heading, button);
     const filterButton = ensureFilterButton(nav);
     placeAfter(head, button, filterButton);
+    const searchButton = ensureSearchButton(nav, "md-ticket-search", "Search tickets");
+    placeAfter(head, filterButton, searchButton);
+    const searchField = ensureSearchField(block, "tickets");
+    ticketSearchBox = searchField;
     let menu = findClassChild(block, "md-ticket-filter-menu");
     if (!menu) {
       menu = document.createElement("div");
       menu.className = "md-ticket-filter-menu";
     }
-    placeAfter(block, head, menu);
+    placeAfter(block, head, searchField);
+    placeAfter(block, searchField, menu);
     buildFilterMenu(menu);
     applyFilterDefaults(menu);
     hideElement(menu);
@@ -13884,7 +14272,18 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     filterButton.addEventListener("click", onFilter);
     for (const box of boxes) box.addEventListener("change", onChange);
     if (showAll && typeof showAll.addEventListener === "function") showAll.addEventListener("click", onShowAll);
-    const binding = { button, onClick, filterButton, filterMenu: menu, onFilter, boxes, onChange, showAll, onShowAll };
+    const binding = {
+      button,
+      onClick,
+      filterButton,
+      filterMenu: menu,
+      onFilter,
+      boxes,
+      onChange,
+      showAll,
+      onShowAll,
+      ...bindSearchControl("tickets", searchButton, searchField),
+    };
     ticketBindings.set(button, binding);
     ticketChrome = binding;
     // The filter sits on every document. A ticket picker does not, so the outside press is bound here.
@@ -13994,6 +14393,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (binding.deleteButton && binding.onDelete && typeof binding.deleteButton.removeEventListener === "function") {
       binding.deleteButton.removeEventListener("click", binding.onDelete);
     }
+    unbindSearchControl(binding);
     newFileBindings.delete(newFileButton);
   }
 
@@ -14018,6 +14418,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     armGlyphPress(remove);
     placeAfter(head, button, remove);
+    const searchButton = ensureSearchButton(nav, "md-file-search", "Search files");
+    placeAfter(head, remove, searchButton);
+    const searchField = ensureSearchField(block, "docs");
+    fileSearchBox = searchField;
     let field = findDeep(nav, "md-new-name");
     if (!field) {
       field = document.createElement("input");
@@ -14027,7 +14431,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (typeof field.setAttribute === "function") field.setAttribute("type", "text");
       hideNameField(field);
     }
-    placeAfter(block, head, field);
+    placeAfter(block, head, searchField);
+    placeAfter(block, searchField, field);
     const previous = newFileBindings.get(button);
     if (previous && typeof button.removeEventListener === "function") {
       button.removeEventListener("click", previous.onClick);
@@ -14038,6 +14443,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (previous && previous.deleteButton && previous.onDelete && typeof previous.deleteButton.removeEventListener === "function") {
       previous.deleteButton.removeEventListener("click", previous.onDelete);
     }
+    unbindSearchControl(previous);
     const onClick = (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       field.hidden = false;
@@ -14069,7 +14475,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     button.addEventListener("click", onClick);
     field.addEventListener("keydown", onKey);
     if (typeof remove.addEventListener === "function") remove.addEventListener("click", onDelete);
-    newFileBindings.set(button, { onClick, onKey, field, deleteButton: remove, onDelete });
+    newFileBindings.set(button, {
+      onClick,
+      onKey,
+      field,
+      deleteButton: remove,
+      onDelete,
+      ...bindSearchControl("docs", searchButton, searchField),
+    });
     newFileButton = button;
     newFileOnClick = onClick;
     bindFileDrawer(block);

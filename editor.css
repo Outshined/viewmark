@@ -2069,3 +2069,58 @@ button.icon-btn.md-add-comment[hidden] {
     max-height: 50vh;
   }
 }
+
+.md-search[hidden],
+.md-search-error[hidden] {
+  display: none;
+}
+
+.md-search {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.md-search-error {
+  margin: 0;
+  color: var(--danger);
+}
+
+input.md-search-input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.md-search-hit {
+  background: #3f5344;
+  color: #e7e2d8;
+}
+
+.md-search-hit::selection {
+  background: #3d5a80;
+  color: #e7e2d8;
+}
+
+.md-search-hit::-moz-selection {
+  background: #3d5a80;
+  color: #e7e2d8;
+}
+
+.file-tree button.md-file.md-file-with-path {
+  flex-wrap: wrap;
+  white-space: normal;
+  overflow: visible;
+}
+
+.md-file-path {
+  flex: 1 0 100%;
+  min-width: 0;
+  color: #9c968c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md-pane-head .md-file-search,
+.md-pane-head .md-ticket-search {
+  margin: 0 0 0 0.35rem;
+}

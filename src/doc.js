@@ -6779,3 +6779,44 @@ export function commentNoteDiffReason(doc, splices) {
   }
   return null;
 }
+
+// The page and the hub share this walk. An empty pattern is a query with no
+// characters: no ranges, and not an error. A pattern the engine rejects is null.
+// A zero-width match does not advance lastIndex, so it is skipped.
+export function searchMatches(text, pattern) {
+  const source = typeof text === "string" ? text : "";
+  if (typeof pattern !== "string") return null;
+  if (pattern === "") return [];
+  let re;
+  try {
+    re = new RegExp(pattern, "g");
+  } catch {
+    return null;
+  }
+  const ranges = [];
+  let match;
+  while ((match = re.exec(source)) !== null) {
+    const start = match.index;
+    const size = match[0].length;
+    if (size > 0) ranges.push({ start, end: start + size });
+    if (size === 0 || re.lastIndex <= start) re.lastIndex = start + 1;
+    if (re.lastIndex > source.length) break;
+  }
+  return ranges;
+}
+
+// Ticket files keep the header in front of the body. The open editor string is
+// the body alone, so only a full-file search adds this offset.
+export function ticketBodyOffset(text) {
+  if (typeof text !== "string") return 0;
+  const split = text.indexOf("\n\n");
+  return split < 0 ? 0 : split + 2;
+}
+
+export function searchTicketBody(text, pattern) {
+  const source = typeof text === "string" ? text : "";
+  const base = ticketBodyOffset(source);
+  const found = searchMatches(source.slice(base), pattern);
+  if (!found || base === 0) return found;
+  return found.map((range) => ({ start: range.start + base, end: range.end + base }));
+}

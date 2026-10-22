@@ -5,7 +5,7 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { start } from "./server.js";
-import { parseUnifiedDiff } from "./src/doc.js";
+import { parseUnifiedDiff, searchMatches } from "./src/doc.js";
 import { TICKET_ALPHABET, TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES, isTicketToken } from "./src/ticket.js";
 import { MAX_PAYLOAD } from "./src/ws.js";
 
@@ -22,6 +22,8 @@ Usage:
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME rename <path> <name>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME directory create <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME directory delete <path>
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME search --docs QUERY
+  viewmark [--port PORT] [--user NAME] [--json] --repo NAME search --tickets QUERY
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME rev <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment list <path>
   viewmark [--port PORT] [--user NAME] [--json] --repo NAME comment show <path> <thread>
@@ -47,11 +49,12 @@ Usage:
 --port or VIEWMARK_PORT, default 8765. --user or VIEWMARK_USER; the flag wins.
 Missing, empty, NUL, CR, LF, <, or > is rejected. There is no default name.
 --json is global. --help, help, or no args exits 0.
---repo is required on list, show, create, edit, attach, delete, move, rename, rev, comment, ticket, and directory.
+--repo is required on list, show, create, edit, attach, delete, move, rename, rev, comment, ticket, directory, and search.
 serve keeps running. The default directory is \`state\` beside the program, and --user is not required.
 
 stdout and stderr:
   list: one path per line on stdout
+  search: one path per line on stdout
   show: the document text on stdout and rev N on stderr
   create: path on stdout and rev 0 on stderr
   edit: the diff on stdin, then the same stdout and stderr as show
@@ -62,7 +65,7 @@ stdout and stderr:
   other statuses: error STATUS on stderr, then held by NAME or the reason when the hub names one
   Each hunk is its own splice, so unchanged text between hunks stays put. Another socket's span is 409 and names that user, and a brace comment that overlaps a fence or a table or splits a comment is 409 and names that. A source fence's comments are the comment fences in the run immediately after it, and the token after the id is the body-line range. An image line or a mermaid fence takes a pin after the id. A range or pin that is not in that run, a pin outside 0 to 1, and a range outside the body lines are 400 and write nothing.
   --json: one object plus a newline and empty stderr:
-    list {files}; show and edit {path,rev,text}; create {path,rev:0};
+    list {files}; search {paths}; show and edit {path,rev,text}; create {path,rev:0};
     conflict {path,rev,text,error:"conflict"} and heldBy only when the hub names that user;
     context {path,rev,text,error:"context"};
   repo list: name, description, and path, tab-separated, in name order
@@ -134,6 +137,11 @@ directory:
   directory create <path> prints the stored path. Each segment is lowercased, other characters become dashes, and no markdown suffix is added. An empty segment, a dot segment, a dot-dot segment, a .git segment, a path over 1024 characters, and anything under tickets/ is 400 and writes nothing. A directory the store already has is that directory. One existing directory whose name normalizes to the segment is that directory. Two such directories is 409. A picture directory of a document is 409 and names that document.
   directory delete <path> removes a directory only when it holds no documents. A directory that holds documents is 409 and writes nothing.
   --json: create and delete {path}.
+
+search:
+  One of --docs or --tickets. QUERY is one argument.
+  One path per line. An invalid pattern exits 400 and writes nothing.
+  --json: {paths}.
 
 rename:
   rename <path> <name> keeps the parent and changes the last segment. <name> is one segment. The heading stays. Picture paths inside the document are updated the way move updates them. A directory rename moves every document under it. The segment uses the same spelling as create: lowercase, other characters as dashes. A document keeps .md or .markdown when the name has that suffix, and a name without one gains .md. A directory gains no suffix. A slash, an empty segment, a dot segment, a dot-dot segment, a .git segment, a path over 1024 characters, and anything under tickets/ is 400 and writes nothing. A name that normalizes to a document or directory already there is 409 and writes nothing. The create behavior that stores a later stem does not apply. A picture directory that cannot move with the rename is 409 and writes nothing. tickets/ cannot be renamed, and a ticket cannot be renamed this way.
@@ -283,6 +291,8 @@ function parseArgs(argv) {
     expectSet: false,
     expect: "",
     closed: false,
+    docs: false,
+    tickets: false,
     positionals: [],
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -301,6 +311,14 @@ function parseArgs(argv) {
     }
     if (arg === "--closed") {
       args.closed = true;
+      continue;
+    }
+    if (arg === "--docs") {
+      args.docs = true;
+      continue;
+    }
+    if (arg === "--tickets") {
+      args.tickets = true;
       continue;
     }
     if (arg.startsWith("--")) {
@@ -621,6 +639,19 @@ async function runList(hub, username, json) {
     return 0;
   }
   if (msg.files.length > 0) process.stdout.write(msg.files.map((file) => `${file}\n`).join(""));
+  return 0;
+}
+
+async function runSearch(hub, username, kind, query, json) {
+  hub.send({ type: "search", username, kind, query });
+  const msg = await hub.next((item) => (item.type === "search" && item.kind === kind && item.query === query) || item.type === "error");
+  if (msg.type === "error") return serverError(msg);
+  if (!Array.isArray(msg.paths) || msg.paths.some((item) => typeof item !== "string")) return 1;
+  if (json) {
+    writeJson({ paths: msg.paths });
+    return 0;
+  }
+  if (msg.paths.length > 0) process.stdout.write(msg.paths.map((item) => `${item}\n`).join(""));
   return 0;
 }
 
@@ -1545,10 +1576,18 @@ function prepareComment(args, rest) {
 }
 
 function serveFlagRejected(args) {
-  if (args.json || args.closed) return true;
+  if (args.json || args.closed || args.docs || args.tickets) return true;
   return args.revSet || args.findSet || args.replaceSet || args.titleSet
     || args.stateSet || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet || args.assigneeSet
     || args.repoSet || args.nameSet || args.descriptionSet || args.pathSet
+    || args.fileSet || args.dirSet || args.startSet || args.endSet || args.expectSet;
+}
+
+function searchFlagRejected(args) {
+  if (args.closed) return true;
+  return args.revSet || args.findSet || args.replaceSet || args.titleSet
+    || args.stateSet || args.typeSet || args.prioritySet || args.parentSet || args.dependsSet || args.assigneeSet
+    || args.nameSet || args.descriptionSet || args.pathSet
     || args.fileSet || args.dirSet || args.startSet || args.endSet || args.expectSet;
 }
 
@@ -1645,6 +1684,10 @@ async function main() {
     usage("unexpected flag");
     return;
   }
+  if ((args.docs || args.tickets) && cmd !== "search") {
+    usage("unexpected flag");
+    return;
+  }
 
   const user = args.userSet ? args.user : process.env.VIEWMARK_USER;
   if (user === undefined) {
@@ -1704,7 +1747,7 @@ async function main() {
     return;
   }
 
-  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "attach" && cmd !== "delete" && cmd !== "move" && cmd !== "rename" && cmd !== "rev" && cmd !== "comment" && cmd !== "ticket" && cmd !== "directory") {
+  if (cmd !== "list" && cmd !== "show" && cmd !== "create" && cmd !== "edit" && cmd !== "attach" && cmd !== "delete" && cmd !== "move" && cmd !== "rename" && cmd !== "rev" && cmd !== "comment" && cmd !== "ticket" && cmd !== "directory" && cmd !== "search") {
     usage("unknown command");
     return;
   }
@@ -1719,6 +1762,33 @@ async function main() {
       return;
     }
     await withHub(port, user, (hub) => runList(hub, user, args.json), args.repo);
+    return;
+  }
+  if (cmd === "search") {
+    if (searchFlagRejected(args)) {
+      usage("unexpected flag");
+      return;
+    }
+    if (args.docs === args.tickets) {
+      usage("search takes one of --docs or --tickets");
+      return;
+    }
+    if (rest.length === 0) {
+      usage("query required");
+      return;
+    }
+    if (rest.length !== 1) {
+      usage("unexpected argument");
+      return;
+    }
+    const query = rest[0];
+    if (searchMatches("", query) == null) {
+      process.stderr.write("error 400\ninvalid pattern\n");
+      process.exitCode = 400;
+      return;
+    }
+    const kind = args.docs ? "docs" : "tickets";
+    await withHub(port, user, (hub) => runSearch(hub, user, kind, query, args.json), args.repo);
     return;
   }
   if (cmd === "directory") {

@@ -31,6 +31,7 @@ import {
   settleSplice,
   caretAfterEdit,
   splitCommentNote,
+  searchMatches,
 } from "./doc.js";
 import {
   TICKET_ALPHABET,
@@ -299,6 +300,11 @@ async function placedFull(rootDir, dir, name) {
 function baseName(rel) {
   const slash = rel.lastIndexOf("/");
   return slash === -1 ? rel : rel.slice(slash + 1);
+}
+
+function searchHit(text, query) {
+  const found = searchMatches(text, query);
+  return Array.isArray(found) && found.length > 0;
 }
 
 function isTicketTree(rel) {
@@ -2212,6 +2218,95 @@ export async function createHub(stateDir, sourceRoot) {
     send(socket, await docsPayload(repo));
   }
 
+  // The cache already holds an open file. loadFile would put that file in the
+  // session for a search that only needs to read it.
+  async function searchDocText(repo, rel) {
+    const cached = repo.files.get(rel);
+    if (cached && typeof cached.text === "string" && !cached.ticket) return cached.text;
+    try {
+      return await fs.readFile(path.join(repo.path, rel), "utf8");
+    } catch {
+      return null;
+    }
+  }
+
+  async function searchDocs(repo, query) {
+    const listed = await listMarkdown(repo.path, "");
+    const paths = [];
+    for (const rel of listed) {
+      if (searchHit(rel, query)) {
+        paths.push(rel);
+        continue;
+      }
+      const text = await searchDocText(repo, rel);
+      if (text == null) continue;
+      const label = headingTitle(text) || baseName(rel);
+      if (searchHit(label, query) || searchHit(text, query)) paths.push(rel);
+    }
+    return paths;
+  }
+
+  async function searchTickets(repo, query) {
+    const dir = path.join(repo.path, "tickets");
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      if (err && (err.code === "ENOENT" || err.code === "ENOTDIR")) return [];
+      throw err;
+    }
+    const found = [];
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || !entry.isFile()) continue;
+      const rel = `tickets/${entry.name}`;
+      const id = ticketIdFromRel(rel);
+      if (!id) continue;
+      const cached = repo.files.get(rel);
+      let title = "";
+      let body = "";
+      let created = "";
+      if (cached && cached.ticket) {
+        title = typeof cached.ticket.title === "string" ? cached.ticket.title : "";
+        body = typeof cached.text === "string" ? cached.text : "";
+        created = typeof cached.ticket.created === "string" ? cached.ticket.created : "";
+      } else {
+        let raw;
+        try {
+          raw = await fs.readFile(path.join(dir, entry.name), "utf8");
+        } catch {
+          continue;
+        }
+        const parsed = parseTicket(id, raw);
+        if (!parsed) continue;
+        title = parsed.title;
+        body = parsed.body;
+        created = parsed.created;
+      }
+      if (!searchHit(title, query) && !searchHit(body, query)) continue;
+      found.push({ rel, id, created });
+    }
+    found.sort((a, b) => {
+      if (a.created < b.created) return -1;
+      if (a.created > b.created) return 1;
+      if (a.id < b.id) return -1;
+      if (a.id > b.id) return 1;
+      return 0;
+    });
+    return found.map((item) => item.rel);
+  }
+
+  async function onSearch(socket, msg) {
+    const repo = socket.session && socket.session.repo;
+    if (!repo) return fail(socket, 400);
+    const kind = msg && msg.kind;
+    if (kind !== "docs" && kind !== "tickets") return fail(socket, 400);
+    const query = msg && msg.query;
+    if (typeof query !== "string") return fail(socket, 400);
+    if (searchMatches("", query) == null) return fail(socket, 400, { reason: "invalid pattern" });
+    const paths = query === "" ? [] : kind === "docs" ? await searchDocs(repo, query) : await searchTickets(repo, query);
+    send(socket, { type: "search", kind, query, paths });
+  }
+
   async function onRev(socket, msg) {
     const repo = socket.session.repo;
     if (!repo) return fail(socket, 400);
@@ -3683,6 +3778,7 @@ export async function createHub(stateDir, sourceRoot) {
     if (msg.type === "comment.delete") return onCommentDelete(socket, msg);
     if (msg.type === "comment.add") return onCommentAdd(socket, msg);
     if (msg.type === "list") return onList(socket);
+    if (msg.type === "search") return onSearch(socket, msg);
     if (msg.type === "move") return onMove(socket, msg);
     if (msg.type === "rename") return onRename(socket, msg);
     if (msg.type === "rev") return onRev(socket, msg);

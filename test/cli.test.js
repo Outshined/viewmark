@@ -77,9 +77,14 @@ const HELP_NEEDLES = [
   "comment delete <path> <thread>",
   "An agent leaves a question with `comment add PATH --start LINE:OFFSET --end LINE:OFFSET --expect TEXT` and the question on stdin.",
   "Lines count from 1. Offset counts from 0. The end offset is exclusive.",
-  "--repo is required on list, show, create, edit, attach, delete, move, rename, rev, comment, ticket, and directory.",
+  "--repo is required on list, show, create, edit, attach, delete, move, rename, rev, comment, ticket, directory, and search.",
   "viewmark [--port PORT] [--user NAME] [--json] --repo NAME directory create <path>",
   "viewmark [--port PORT] [--user NAME] [--json] --repo NAME directory delete <path>",
+  "viewmark [--port PORT] [--user NAME] [--json] --repo NAME search --docs QUERY",
+  "viewmark [--port PORT] [--user NAME] [--json] --repo NAME search --tickets QUERY",
+  "One of --docs or --tickets. QUERY is one argument.",
+  "An invalid pattern exits 400 and writes nothing.",
+  "--json: {paths}.",
   "directory create <path> prints the stored path.",
   "directory delete <path> removes a directory only when it holds no documents.",
   "viewmark [--port PORT] [--user NAME] [--json] --repo NAME attach <path> --start LINE:OFFSET --end LINE:OFFSET --expect TEXT",
@@ -3234,7 +3239,7 @@ test("T-comment-usage", async () => {
   ]) {
     assert.ok(help.stdout.includes(line), line);
   }
-  assert.match(help.stdout, /--repo is required on list, show, create, edit, attach, delete, move, rename, rev, comment, ticket, and directory\./);
+  assert.match(help.stdout, /--repo is required on list, show, create, edit, attach, delete, move, rename, rev, comment, ticket, directory, and search\./);
 
   const gate = await trap();
   try {
