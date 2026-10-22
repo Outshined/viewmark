@@ -1217,6 +1217,99 @@ function hasClass(el, name) {
   return el.classList.contains(name);
 }
 
+function diagramClickNode(target) {
+  if (!target || typeof target.closest !== "function") return null;
+  if (target.closest(".edgeLabel") || target.closest(".edgePath")) return null;
+  const node = target.closest(".node");
+  if (!node) return null;
+  return node;
+}
+
+function diagramNodeId(node) {
+  const raw = node && typeof node.getAttribute === "function" ? node.getAttribute("id") : "";
+  const match = /^flowchart-(.+)-(\d+)$/.exec(String(raw || ""));
+  return match ? match[1] : "";
+}
+
+function flatLabel(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function elementsByClass(el, className) {
+  const found = [];
+  const walk = (node) => {
+    for (const child of childArray(node)) {
+      if (!child || child.nodeType !== 1) continue;
+      if (hasClass(child, className)) found.push(child);
+      walk(child);
+    }
+  };
+  walk(el);
+  return found;
+}
+
+// The drawn letters, not a title or the node id sitting beside them.
+function diagramLabelText(node) {
+  const label = findElement(node, (el) => hasClass(el, "label"));
+  if (!label) return "";
+  const inners = elementsByClass(label, "text-inner-tspan");
+  if (inners.length > 0) return flatLabel(inners.map((el) => el.textContent).join(""));
+  const html = findElement(label, (el) => hasClass(el, "nodeLabel"));
+  if (html) return flatLabel(html.textContent);
+  const text = findElement(label, (el) => String(el.tagName || "").toUpperCase() === "TEXT");
+  if (text) return flatLabel(text.textContent);
+  return flatLabel(label.textContent);
+}
+
+function directiveLine(source, at) {
+  const lineStart = source.lastIndexOf("\n", at - 1) + 1;
+  const lineEnd = source.indexOf("\n", at);
+  const line = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd).trim();
+  return /^(?:flowchart|graph)\b/i.test(line);
+}
+
+function boundedHits(source, needle) {
+  const hits = [];
+  if (!needle) return hits;
+  let from = 0;
+  while (from < source.length) {
+    const at = source.indexOf(needle, from);
+    if (at < 0) break;
+    const before = at > 0 ? source[at - 1] : "";
+    const after = source[at + needle.length] || "";
+    if (!/[A-Za-z0-9_]/.test(before) && !/[A-Za-z0-9_]/.test(after)) hits.push(at);
+    from = at + needle.length;
+  }
+  return hits;
+}
+
+// Repeated label text belongs to the node under the pointer. The flowchart
+// word is not that label.
+function labelSourceIndex(source, label, nodeId) {
+  const hits = boundedHits(source, label).filter((at) => !directiveLine(source, at));
+  if (hits.length === 0) return -1;
+  if (hits.length === 1 || !nodeId) return hits[0];
+  const idAt = boundedHits(source, nodeId).find((at) => !directiveLine(source, at));
+  if (idAt == null) return hits[0];
+  const lineStart = source.lastIndexOf("\n", idAt - 1) + 1;
+  const lineEnd = source.indexOf("\n", idAt);
+  const end = lineEnd < 0 ? source.length : lineEnd;
+  const onLine = hits.find((at) => at >= lineStart && at < end);
+  return onLine == null ? hits[0] : onLine;
+}
+
+function diagramLabelOffset(atom, target) {
+  const bodyStart = Number(atom.dataset.bodyStart);
+  const source = typeof atom.diagramSource === "string" ? atom.diagramSource : "";
+  // A one-line body has no later line. CK.mm.1 stays on that start.
+  if (!source.includes("\n")) return bodyStart;
+  const node = diagramClickNode(target);
+  if (!node) return bodyStart;
+  const at = labelSourceIndex(source, diagramLabelText(node), diagramNodeId(node));
+  if (at < 0) return bodyStart;
+  return bodyStart + at;
+}
+
 function atomClickOffset(atom, target) {
   if (hasClass(atom, "md-image")) return Number(atom.dataset.start);
   if (hasClass(atom, "md-table")) {
@@ -1226,7 +1319,7 @@ function atomClickOffset(atom, target) {
     }
     return Number(atom.dataset.start);
   }
-  if (hasClass(atom, "md-diagram")) return Number(atom.dataset.bodyStart);
+  if (hasClass(atom, "md-diagram")) return diagramLabelOffset(atom, target);
   return Number(atom.dataset.start);
 }
 
