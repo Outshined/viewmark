@@ -7615,6 +7615,133 @@ test("an image line has a caret mark at its start and through its newline", () =
   }
 });
 
+// The click's fraction of the picture box, as pictureClickOffset maps it.
+function pictureFraction(start, end, left, right, x) {
+  if (!(right > left) || !Number.isFinite(x)) return start;
+  let frac = (x - left) / (right - left);
+  if (frac < 0) frac = 0;
+  if (frac > 1) frac = 1;
+  let at = start + Math.floor(frac * (end - start) + 1e-6);
+  if (at >= end) at = end - 1;
+  if (at < start) at = start;
+  return at;
+}
+
+test("6bqczuz7 a click in the center of a picture in a table cell opens the table on that picture", () => {
+  const mounted = mountEditor();
+  const click = (target, x, y) => {
+    mounted.listeners.click({ target, clientX: x, clientY: y, detail: 1, preventDefault() {} });
+  };
+  const cellImage = () => mounted.findAll((node) => node.classList && node.classList.contains("md-image") && node.closest(".md-table"))[0];
+  const drawn = (image) => {
+    const frame = image.childNodes.find((node) => node.classList && node.classList.contains("md-pin-frame"));
+    return frame.childNodes.find((node) => node.tagName === "IMG");
+  };
+  const box = (image, left, right) => {
+    const img = drawn(image);
+    img.getBoundingClientRect = () => ({ left, right, top: 10, bottom: 50, width: right - left, height: 40 });
+    return img;
+  };
+  try {
+    const syntax = "![kennel](box.svg)";
+    const solo = "![box](box.svg)\n";
+    const doc = `Lead.\n\n| pic | note |\n| --- | --- |\n| ${syntax} | word |\n\nTail.\n\n${solo}`;
+    const start = doc.indexOf(syntax);
+    const end = start + syntax.length;
+    const note = doc.indexOf("word");
+    const line = doc.indexOf(solo);
+    assert.equal(doc[start], "!");
+    assert.ok(start < note);
+    assert.ok(note < line);
+
+    const closed = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const image = cellImage();
+    assert.ok(image);
+    assert.equal(image.imageStart, start);
+    assert.equal(image.imageEnd, end);
+    assert.equal(image.dataset.start, undefined);
+    const center = box(image, 100, 320);
+    click(center, 210, 30);
+    assert.equal(closed.getState().anchor, pictureFraction(start, end, 100, 320, 210));
+    assert.equal(closed.getState().cursor, closed.getState().anchor);
+    assert.notEqual(closed.getState().cursor, start);
+    assert.equal(doc[closed.getState().cursor], syntax[closed.getState().cursor - start]);
+    assert.equal(closed.getState().doc, doc);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-table")).length, 0);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-image")).length, 1);
+    closed.destroy();
+
+    const edges = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const edged = cellImage();
+    const edgeImg = box(edged, 100, 320);
+    click(edgeImg, 100, 30);
+    assert.equal(edges.getState().cursor, start);
+    assert.equal(edges.getState().anchor, start);
+    edges.destroy();
+
+    const right = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const rightImage = cellImage();
+    const rightImg = box(rightImage, 100, 320);
+    click(rightImg, 320, 30);
+    assert.equal(right.getState().cursor, end - 1);
+    assert.equal(right.getState().anchor, end - 1);
+    assert.notEqual(doc[right.getState().cursor], "!");
+    right.destroy();
+
+    const aroundSyntax = "![alt](pic.png)";
+    const around = `Lead.\n\n| h |\n| --- |\n| see ${aroundSyntax} here |\n`;
+    const aroundStart = around.indexOf(aroundSyntax);
+    const cellStart = around.indexOf("see ");
+    const beside = createEditor(mounted.root, around, around.indexOf("Lead"));
+    const besideImage = cellImage();
+    const besideImg = box(besideImage, 40, 240);
+    const see = mounted.findAll((node) => node.closest && node.closest("td") && !node.closest(".md-image") && (node.textContent === "see" || node.textContent === "see "))[0];
+    assert.ok(see);
+    click(see, 1, 1);
+    assert.equal(beside.getState().cursor, cellStart);
+    assert.equal(beside.getState().anchor, cellStart);
+    beside.destroy();
+
+    const middle = createEditor(mounted.root, around, around.indexOf("Lead"));
+    const middleImg = box(cellImage(), 40, 240);
+    click(middleImg, 140, 20);
+    const landed = pictureFraction(aroundStart, aroundStart + aroundSyntax.length, 40, 240, 140);
+    assert.equal(middle.getState().cursor, landed);
+    assert.equal(middle.getState().anchor, landed);
+    assert.notEqual(landed, cellStart);
+    assert.notEqual(landed, aroundStart);
+    assert.equal(middle.getState().doc[landed], aroundSyntax[landed - aroundStart]);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-table")).length, 0);
+    middle.destroy();
+
+    const word = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const wordCell = mounted.findAll((node) => node.tagName === "TD" && node.textContent === "word")[0];
+    click(wordCell, 1, 1);
+    assert.equal(word.getState().cursor, note);
+    assert.equal(word.getState().anchor, note);
+    word.destroy();
+
+    const kept = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const standalone = mounted.findAll((node) => node.classList && node.classList.contains("md-image") && !node.closest(".md-table"))[0];
+    click(standalone, 210, 30);
+    assert.equal(kept.getState().anchor, line);
+    assert.equal(kept.getState().cursor, line + solo.length);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-image") && !node.closest(".md-table")).length, 1);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-table")).length, 1);
+    kept.destroy();
+
+    const flow = "```mermaid\nflowchart TD\n  KennelLabel-->Other\n```\n";
+    const diagram = createEditor(mounted.root, flow, flow.length);
+    const labelAt = flow.indexOf("KennelLabel");
+    mounted.listeners.click({ target: mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0], clientX: 12, clientY: 12, detail: 1, preventDefault() {} });
+    assert.equal(diagram.getState().cursor, flow.indexOf("flowchart TD"));
+    assert.notEqual(diagram.getState().cursor, labelAt);
+    diagram.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("a pointer over a picture shows that picture's pin, and a drop uses the picture", () => {
   const mounted = mountSheet();
   const move = (target) => {

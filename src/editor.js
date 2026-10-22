@@ -1428,9 +1428,47 @@ function diagramLabelOffset(atom, target) {
   return bodyStart + at;
 }
 
-function atomClickOffset(atom, target) {
+function pictureSpan(image) {
+  if (!image) return null;
+  const start = Number(image.imageStart != null ? image.imageStart : image.dataset && image.dataset.start);
+  const end = Number(image.imageEnd != null ? image.imageEnd : image.dataset && image.dataset.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return [start, end];
+}
+
+function measuredBox(node) {
+  if (!node || typeof node.getBoundingClientRect !== "function") return null;
+  const rect = node.getBoundingClientRect();
+  if (!rect || !(rect.width > 0) || !Number.isFinite(rect.left)) return null;
+  return rect;
+}
+
+// The drawn picture covers its syntax. The click's fraction of that box is the
+// same fraction of the syntax, so the center is not the undrawn !.
+function pictureClickOffset(image, event) {
+  const span = pictureSpan(image);
+  if (!span) return null;
+  const [start, end] = span;
+  const rect = measuredBox(drawnPicture(image)) || measuredBox(image);
+  // No box means the click has no fraction of the picture. The syntax start is that click.
+  if (!rect || !event || !Number.isFinite(event.clientX)) return start;
+  let frac = (event.clientX - rect.left) / rect.width;
+  if (frac < 0) frac = 0;
+  if (frac > 1) frac = 1;
+  let at = start + Math.floor(frac * (end - start) + 1e-6);
+  if (at >= end) at = end - 1;
+  if (at < start) at = start;
+  return at;
+}
+
+function atomClickOffset(atom, target, event) {
   if (hasClass(atom, "md-image")) return Number(atom.dataset.start);
   if (hasClass(atom, "md-table")) {
+    const image = target && typeof target.closest === "function" ? target.closest(".md-image") : null;
+    if (image && typeof image.closest === "function" && image.closest(".md-table") === atom) {
+      const at = pictureClickOffset(image, event);
+      if (at != null) return at;
+    }
     const cell = target?.closest?.("td, th");
     if (cell && cell.dataset && cell.dataset.start != null && cell.dataset.start !== "") {
       return Number(cell.dataset.start);
@@ -1851,6 +1889,9 @@ function renderImage(image, repo, onSized) {
   el.contentEditable = "false";
   el.dataset.start = String(image.start);
   el.dataset.end = String(image.end);
+  // A cell clears dataset offsets on its inner nodes. The click still needs this range.
+  el.imageStart = image.start;
+  el.imageEnd = image.end;
   if (image.comment) el.dataset.comment = image.comment;
   const frame = pinFrameElement();
   const img = document.createElement("img");
@@ -12492,7 +12533,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         }
       }
       if (detail === 1) gestureHold = true;
-      const next = atomClickOffset(atom, target);
+      const next = atomClickOffset(atom, target, event);
       state = { ...state, anchor: next, cursor: next };
       if (!claimLines(next, next)) {
         if (detail === 1) gestureHold = false;
