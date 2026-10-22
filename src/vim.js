@@ -1,5 +1,5 @@
 // Pure key match. The page applies the effect. This module does not touch the editor.
-import { codeFenceBodies, codeSpanAt, commentStorageReason, commentThreads, createState, deleteForward, endBeforeTail, findSpans, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, wordStop } from "./doc.js";
+import { codeFenceBodies, codeSpanAt, commentStorageReason, commentThreads, createState, deleteForward, endBeforeTail, findSpans, imageLine, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, wordStop } from "./doc.js";
 
 const REPEAT_CAP = 10000;
 const PAGE = 20;
@@ -500,6 +500,21 @@ function gapHole(lines, cursor) {
   return { prev, next };
 }
 
+// The newline after a standalone picture is a paragraph gap, so it is not a
+// vim line. lineIndex calls that caret the last line, and Home leaves the
+// picture. The picture is the vim line this gap follows.
+function pictureBeforeGap(doc, cursor, raw) {
+  if (raw || cursor <= 0 || cursor > doc.length) return null;
+  if (!paragraphGapAt(doc, cursor)) return null;
+  const lines = vimLines(doc, cursor, false);
+  const prev = gapHole(lines, cursor).prev;
+  if (prev < 0) return null;
+  const line = lines[prev];
+  if (line.end >= doc.length || doc[line.end] !== "\n" || cursor !== line.end + 1) return null;
+  if (!imageLine(doc.slice(line.start, line.end))) return null;
+  return line;
+}
+
 function moveVertical(doc, cursor, delta, count, raw, column, exclusive) {
   const lines = raw ? rawLines(doc) : renderedLines(doc, cursor, true);
   let index = -1;
@@ -880,7 +895,7 @@ function runMotion(id, spec) {
     return { kind: "caret", cursor: moved, column: keep == null ? columnOf(doc, cursor, raw) : keep, linewise: true, inclusive: false, past: false, word: false };
   }
   if (id === "0") {
-    const line = lineBounds(doc, cursor, raw);
+    const line = pictureBeforeGap(doc, cursor, raw) || lineBounds(doc, cursor, raw);
     return { kind: "caret", cursor: legal(doc, line.start, 1, raw), column: null, linewise: false, inclusive: false, past: false, word: false };
   }
   if (id === "^") {

@@ -1304,6 +1304,54 @@ test("4wch9t9w h l 0 $ w and b on a mermaid opener, closer, and the prose under 
   }
 });
 
+// Ticket r84sx9dx. The caret on the newline after a standalone picture sits on
+// the paragraph gap under it. That gap is not a vim line, so Home must stay on
+// the picture. j and k from that newline already step to the prose and the picture.
+test("r84sx9dx Home from the newline after a picture stays on that picture", () => {
+  const prose = "Paragraph is ordinary prose and not a picture.\n\n";
+  const last = "Last paragraph of the document.\n";
+  const names = ["top", "mid", "bot"];
+  let doc = prose.repeat(4);
+  const pictures = [];
+  for (const name of names) {
+    const line = `![${name}](${name}.svg)\n`;
+    pictures.push({ name, start: doc.length, line, gap: doc.length + line.length });
+    doc += `${line}\n${prose.repeat(name === "bot" ? 3 : 12)}`;
+  }
+  doc += last;
+  const lastAt = doc.lastIndexOf("Last paragraph");
+  assert.ok(lastAt > pictures[pictures.length - 1].gap);
+
+  for (const picture of pictures) {
+    assert.equal(doc[picture.gap], "\n", picture.name);
+    assert.equal(doc[picture.gap - 1], "\n", picture.name);
+    assert.equal(doc.slice(picture.start, picture.gap - 1), picture.line.slice(0, -1), picture.name);
+    const home = run(caretAt(doc, picture.gap), ["Home"]);
+    assert.equal(home.cursor, picture.start, picture.name);
+    assert.notEqual(home.cursor, lastAt, picture.name);
+    assert.equal(run(caretAt(doc, picture.gap), ["0"]).cursor, picture.start, picture.name);
+    assert.equal(run(caretAt(doc, picture.start + 2), ["Home"]).cursor, picture.start, picture.name);
+    assert.equal(run(caretAt(doc, picture.gap - 1), ["Home"]).cursor, picture.start, picture.name);
+    const down = run(caretAt(doc, picture.gap), ["j"]);
+    assert.equal(down.cursor, picture.gap + 1, picture.name);
+    assert.equal(lineAtCaret(down).startsWith("Paragraph"), true, picture.name);
+    const up = run(caretAt(doc, picture.gap), ["k"]);
+    assert.equal(up.cursor, picture.start, picture.name);
+    assert.equal(lineAtCaret(up), picture.line.slice(0, -1), picture.name);
+    assert.equal(run(caretAt(doc, picture.gap), ["Home"], { raw: true }).cursor, picture.gap, picture.name);
+  }
+
+  const crlf = "Before.\r\n\r\n![top](top.svg)\r\n\r\nAfter.\r\n\r\nLast paragraph.\r\n";
+  const image = "![top](top.svg)";
+  const start = crlf.indexOf(image);
+  const gap = start + image.length + 2;
+  assert.equal(crlf[gap], "\r");
+  assert.equal(run(caretAt(crlf, gap), ["Home"]).cursor, start);
+  assert.notEqual(run(caretAt(crlf, gap), ["Home"]).cursor, crlf.lastIndexOf("Last paragraph"));
+  assert.equal(run(caretAt(crlf, gap), ["j"]).cursor, crlf.indexOf("After."));
+  assert.equal(run(caretAt(crlf, gap), ["k"]).cursor, start);
+});
+
 // The fence in the rendered view is one block. j, k, and V still move one line of code.
 test("g92jk6em j and k move one line of a code fence and keep the column", () => {
   const start = "Intro.\n\n```javascript\nfunction f() {\n  ‸return 1;\n  return 2;\n}\n```\n\nEnd.\n";
