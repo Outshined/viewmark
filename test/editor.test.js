@@ -7463,6 +7463,98 @@ test("fence clicks open source", () => {
   }
 });
 
+test("a diagram label click lands on that label", () => {
+  const mounted = mountEditor();
+  const click = (target) => {
+    mounted.listeners.click({ target, clientX: 1, clientY: 1, detail: 1, preventDefault() {} });
+  };
+  const plant = (box, text, id) => {
+    const node = document.createElement("g");
+    node.className = "node";
+    if (id) node.setAttribute("id", id);
+    const label = document.createElement("g");
+    label.className = "label";
+    const drawn = document.createElement("text");
+    const inner = document.createElement("tspan");
+    inner.className = "text-inner-tspan";
+    inner.textContent = text;
+    drawn.appendChild(inner);
+    label.appendChild(drawn);
+    node.appendChild(label);
+    box.appendChild(node);
+    return inner;
+  };
+  const boxOf = () => mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
+  try {
+    const doc = "```mermaid\nflowchart TD\n  Spot[Dog sees the cat]\n  Launch[Launch across the rug]\n```\n";
+    const flow = doc.indexOf("flowchart TD");
+    const dog = createEditor(mounted.root, doc, doc.length);
+    click(plant(boxOf(), "Dog sees the cat", "flowchart-Spot-0"));
+    assert.equal(dog.getState().cursor, doc.indexOf("Dog sees the cat"));
+    assert.equal(dog.getState().anchor, dog.getState().cursor);
+    assert.notEqual(dog.getState().cursor, flow);
+    dog.destroy();
+
+    const launch = createEditor(mounted.root, doc, doc.length);
+    click(plant(boxOf(), "Launch across the rug", "flowchart-Launch-1"));
+    assert.equal(launch.getState().cursor, doc.indexOf("Launch across the rug"));
+    assert.equal(launch.getState().anchor, launch.getState().cursor);
+    launch.destroy();
+
+    const same = "```mermaid\nflowchart TD\n  A[Same]\n  B[Same]\n```\n";
+    const repeated = createEditor(mounted.root, same, same.length);
+    const sameBox = boxOf();
+    plant(sameBox, "Same", "flowchart-A-0");
+    click(plant(sameBox, "Same", "flowchart-B-1"));
+    assert.equal(repeated.getState().cursor, same.lastIndexOf("Same"));
+    assert.equal(repeated.getState().anchor, repeated.getState().cursor);
+    repeated.destroy();
+
+    const named = "```mermaid\nflowchart TD\n  TD\n```\n";
+    const td = createEditor(mounted.root, named, named.length);
+    click(plant(boxOf(), "TD", "flowchart-TD-0"));
+    assert.equal(td.getState().cursor, named.lastIndexOf("TD"));
+    assert.notEqual(td.getState().cursor, named.indexOf("flowchart TD"));
+    td.destroy();
+
+    const helloDoc = "```mermaid\nA[Hello]\n```\n";
+    const hello = createEditor(mounted.root, helloDoc, helloDoc.length);
+    click(plant(boxOf(), "Hello", "flowchart-A-0"));
+    assert.equal(hello.getState().cursor, helloDoc.indexOf("A[Hello]"));
+    assert.equal(hello.getState().anchor, hello.getState().cursor);
+    hello.destroy();
+
+    const line = createEditor(mounted.root, E, E.length);
+    click(plant(boxOf(), "B", "flowchart-B-1"));
+    assert.equal(line.getState().cursor, E.indexOf("A-->B"));
+    assert.equal(line.getState().anchor, line.getState().cursor);
+    line.destroy();
+
+    const edgeView = createEditor(mounted.root, doc, doc.length);
+    const edge = document.createElement("g");
+    edge.className = "edgeLabel";
+    const edgeLabel = document.createElement("g");
+    edgeLabel.className = "label";
+    const edgeText = document.createElement("text");
+    edgeText.textContent = "Dog sees the cat";
+    edgeLabel.appendChild(edgeText);
+    edge.appendChild(edgeLabel);
+    boxOf().appendChild(edge);
+    click(edgeText);
+    assert.equal(edgeView.getState().cursor, flow);
+    assert.equal(edgeView.getState().anchor, flow);
+    edgeView.destroy();
+
+    const plain = createEditor(mounted.root, doc, doc.length);
+    click(boxOf());
+    assert.equal(plain.getState().cursor, flow);
+    assert.equal(plain.getState().anchor, flow);
+    plain.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("an image line has a caret mark at its start and through its newline", () => {
   const mounted = mountEditor();
   const doc = "x\n\n![box](box.svg)\n";
