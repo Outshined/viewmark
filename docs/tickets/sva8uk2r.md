@@ -1,5 +1,5 @@
 title: Click on a heading in a table cell lands on the hashes
-state: in progress
+state: pending review
 type: bug
 priority: medium
 parent: vgx3hpze

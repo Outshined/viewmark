@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { launchBrowser, Page, startHub } from "./harness.js";
 
 // Ticket sva8uk2r. A click on a drawn heading letter in a table cell opens the
-// table with the caret on that letter, not the first hash. A click on a list
-// word, a quote word, a code word, or a plain word stays on the cell text it
-// already used. Vim keys are off.
+// table with the caret on that letter, not the first hash. A click on a drawn
+// letter of a list word, a quote word, a code word, or a plain word lands on
+// that letter. Vim keys are off.
 
 const HEAD = "## Kennel";
 const LIST = "- listed";
@@ -63,16 +63,17 @@ test("sva8uk2r: a click on a heading letter in a table cell opens on that letter
   const { page } = await setup(t);
   const kennel = TEXT.indexOf("Kennel");
   const hash = TEXT.indexOf(HEAD);
-  const listAt = TEXT.indexOf(LIST);
-  const quoteAt = TEXT.indexOf(QUOTE);
-  const codeAt = TEXT.indexOf(CODE);
+  const listed = TEXT.indexOf("listed");
+  const quoted = TEXT.indexOf("quoted");
+  const coded = TEXT.indexOf("coded");
   const plainAt = TEXT.indexOf(PLAIN);
   assert.equal(TEXT[hash], "#");
   assert.equal(kennel, hash + 3);
   assert.equal(TEXT[kennel + 2], "n");
-  assert.equal(TEXT[listAt], "-");
-  assert.equal(TEXT[quoteAt], ">");
-  assert.equal(TEXT[codeAt], "`");
+  assert.equal(TEXT[listed + 2], "s");
+  assert.equal(TEXT[quoted + 1], "u");
+  assert.equal(TEXT[coded + 2], "d");
+  assert.equal(TEXT[plainAt + 3], "i");
   assert.equal(TEXT.slice(plainAt, plainAt + PLAIN.length), PLAIN);
   assert.equal(await page.eval(`document.querySelector("#editor").classList.contains("md-vim-block")`), false);
 
@@ -97,10 +98,10 @@ test("sva8uk2r: a click on a heading letter in a table cell opens on that letter
     assert.equal(TEXT[caret.focus], ch);
   };
 
-  await stay("listed", 2, listAt, "-");
-  await stay("quoted", 1, quoteAt, ">");
-  await stay("coded", 2, codeAt, "`");
-  await stay("plain", 3, plainAt, "p");
+  await stay("listed", 2, listed + 2, "s");
+  await stay("quoted", 1, quoted + 1, "u");
+  await stay("coded", 2, coded + 2, "d");
+  await stay("plain", 3, plainAt + 3, "i");
 
   let point = null;
   await page.until(async () => {

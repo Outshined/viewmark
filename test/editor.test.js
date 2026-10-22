@@ -7846,73 +7846,54 @@ test("sva8uk2r a click on a heading letter in a table cell opens on that letter"
     assert.equal(missed.getState().anchor, hashAt);
     missed.destroy();
 
-    const kept = createEditor(mounted.root, doc, doc.indexOf("Lead"));
-    const keptWord = (word, at, index) => {
+    const onLetter = (word, at, index, ch) => {
+      const view = createEditor(mounted.root, doc, doc.indexOf("Lead"));
       const text = cellText(word);
       assert.ok(text, word);
+      assert.equal(text.parentElement.sourceStart, at, word);
+      assert.equal(text.parentElement.sourceEnd - text.parentElement.sourceStart, word.length, word);
       boxes(text, 10, 8, 4, 12);
-      pointAt(text, index);
+      pointAt(text, 0);
       click(text.parentElement, 10 + index * 8 + 3, 10);
-      assert.equal(kept.getState().cursor, at, word);
-      assert.equal(kept.getState().anchor, at, word);
+      assert.equal(view.getState().cursor, at + index, word);
+      assert.equal(view.getState().anchor, at + index, word);
+      assert.equal(doc[view.getState().cursor], ch, word);
+      view.destroy();
     };
-    keptWord("list", listWord, 2);
-    kept.destroy();
+    onLetter("list", listWord, 2, "s");
+    onLetter("quote", quoteWord, 3, "t");
+    onLetter("code", codeWord, 2, "d");
+    onLetter("plain", plainAt, 3, "i");
+    onLetter("listed", doc.indexOf("listed"), 2, "s");
+    onLetter("quoted", doc.indexOf("quoted"), 1, "u");
+    onLetter("coded", doc.indexOf("coded"), 2, "d");
 
-    const keptQuote = createEditor(mounted.root, doc, doc.indexOf("Lead"));
-    const quoteText = cellText("quote");
-    boxes(quoteText, 10, 8, 4, 12);
-    pointAt(quoteText, 3);
-    click(quoteText.parentElement, 10 + 3 * 8 + 3, 10);
-    assert.equal(keptQuote.getState().cursor, quoteWord);
-    assert.equal(keptQuote.getState().anchor, quoteWord);
-    keptQuote.destroy();
+    globalThis.document.createRange = savedRange;
+    const caretList = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const caretListed = cellText("listed");
+    pointAt(caretListed, 2);
+    click(caretListed.parentElement, 4, 8);
+    assert.equal(caretList.getState().cursor, doc.indexOf("listed") + 2);
+    assert.equal(doc[caretList.getState().cursor], "s");
+    assert.notEqual(caretList.getState().cursor, listAt);
+    caretList.destroy();
 
-    const keptCode = createEditor(mounted.root, doc, doc.indexOf("Lead"));
-    const codeText = cellText("code");
-    boxes(codeText, 10, 8, 4, 12);
-    pointAt(codeText, 2);
-    click(codeText.parentElement, 10 + 2 * 8 + 3, 10);
-    assert.equal(keptCode.getState().cursor, codeWord);
-    assert.equal(keptCode.getState().anchor, codeWord);
-    keptCode.destroy();
+    const missedList = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const missedListed = cellText("listed");
+    boxes(missedListed, 100, 10, 10, 20);
+    pointAt(missedListed, 2);
+    click(missedListed.parentElement, 40, 20);
+    assert.equal(missedList.getState().cursor, listAt);
+    assert.equal(doc[missedList.getState().cursor], "-");
+    missedList.destroy();
 
-    const keptPlain = createEditor(mounted.root, doc, doc.indexOf("Lead"));
-    const plainText = cellText("plain");
-    boxes(plainText, 10, 8, 4, 12);
-    pointAt(plainText, 3);
-    click(plainText.parentElement, 10 + 3 * 8 + 3, 10);
-    assert.equal(keptPlain.getState().cursor, plainAt);
-    assert.equal(keptPlain.getState().anchor, plainAt);
-    keptPlain.destroy();
-
-    const keptList = createEditor(mounted.root, doc, doc.indexOf("Lead"));
-    const listed = cellText("listed");
-    boxes(listed, 10, 8, 4, 12);
-    pointAt(listed, 2);
-    click(listed.parentElement, 10 + 2 * 8 + 3, 10);
-    assert.equal(keptList.getState().cursor, listAt);
-    assert.equal(doc[keptList.getState().cursor], "-");
-    assert.notEqual(keptList.getState().cursor, doc.indexOf("listed"));
-    keptList.destroy();
-
-    const keptQuoted = createEditor(mounted.root, doc, doc.indexOf("Lead"));
-    const quoted = cellText("quoted");
-    boxes(quoted, 10, 8, 4, 12);
-    pointAt(quoted, 1);
-    click(quoted.parentElement, 18, 10);
-    assert.equal(keptQuoted.getState().cursor, quoteAt);
-    assert.equal(doc[keptQuoted.getState().cursor], ">");
-    keptQuoted.destroy();
-
-    const keptCoded = createEditor(mounted.root, doc, doc.indexOf("Lead"));
-    const coded = cellText("coded");
-    boxes(coded, 10, 8, 4, 12);
-    pointAt(coded, 2);
-    click(coded.parentElement, 29, 10);
-    assert.equal(keptCoded.getState().cursor, codeAt);
-    assert.equal(doc[keptCoded.getState().cursor], "`");
-    keptCoded.destroy();
+    const missedPlain = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const missedPlainText = cellText("plain");
+    delete globalThis.document.caretPositionFromPoint;
+    click(missedPlainText.parentElement, 4, 8);
+    assert.equal(missedPlain.getState().cursor, plainAt);
+    assert.equal(doc[missedPlain.getState().cursor], "p");
+    missedPlain.destroy();
 
     const titleDoc = "Lead.\n\n| h |\n| --- |\n| # Title |\n";
     const titleAt = titleDoc.indexOf("Title");
@@ -7970,12 +7951,13 @@ test("sva8uk2r a click on a heading letter in a table cell opens on that letter"
     assert.equal(mixed[mixedList], "-");
     const mixedListView = createEditor(mounted.root, mixed, mixed.indexOf("Lead"));
     const mixedListed = cellText("listed");
+    assert.equal(mixedListed.parentElement.sourceStart, mixedWord);
     boxes(mixedListed, 10, 8, 4, 12);
-    pointAt(mixedListed, 3);
-    click(mixedListed.parentElement, 37, 10);
-    assert.equal(mixedListView.getState().cursor, mixedHash);
-    assert.equal(mixed[mixedListView.getState().cursor], "#");
-    assert.notEqual(mixedListView.getState().cursor, mixedWord);
+    pointAt(mixedListed, 0);
+    click(mixedListed.parentElement, 10 + 2 * 8 + 3, 10);
+    assert.equal(mixedListView.getState().cursor, mixedWord + 2);
+    assert.equal(mixed[mixedListView.getState().cursor], "s");
+    assert.notEqual(mixedListView.getState().cursor, mixedHash);
     assert.notEqual(mixedListView.getState().cursor, mixedList);
     mixedListView.destroy();
 

@@ -1461,8 +1461,8 @@ function pictureClickOffset(image, event) {
   return at;
 }
 
-// The cell drops dataset offsets. A heading title is drawn without its hashes,
-// so the letter still needs the run's source offset.
+// The cell drops dataset offsets. A drawn letter is not the mark in front of
+// the word, so the run keeps that letter's source offset.
 function tagRunSource(el, part) {
   if (!el || !part || part.type !== "run") return;
   if (!Number.isFinite(part.start) || !Number.isFinite(part.end) || part.end < part.start) return;
@@ -1564,6 +1564,61 @@ function headingLetterOffset(cell, target, event) {
   return info.el.sourceStart + index;
 }
 
+function inDrawnHeading(node, cell) {
+  const el = node && node.parentElement;
+  if (!el || typeof el.closest !== "function") return false;
+  const line = el.closest(".md-h1, .md-h2, .md-h3, .md-h4, .md-h5, .md-h6");
+  if (!line || hasClass(line, "md-raw")) return false;
+  return typeof line.closest === "function" && line.closest("td, th") === cell;
+}
+
+function cellLetterTexts(cell) {
+  const found = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (node.nodeType === 3) {
+      if (runText(node) && !inDrawnHeading(node, cell)) found.push(node);
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    for (const child of childArray(node)) walk(child);
+  };
+  walk(cell);
+  return found;
+}
+
+// The list mark, the quote mark, and the code marks are not drawn. A plain word
+// is its letters. The pointer's letter is that source offset. Boxes that miss
+// the pointer are not a letter, so the cell start stays.
+function cellLetterOffset(cell, target, event) {
+  const el = target && target.nodeType === 1 ? target : target && target.parentElement;
+  if (!el || typeof el.closest !== "function" || el.closest("td, th") !== cell) return null;
+  const nodes = cellLetterTexts(cell);
+  let laidOut = false;
+  for (const node of nodes) {
+    const info = runText(node);
+    if (charRect(node, 0)) laidOut = true;
+    const index = glyphIndex(node, info.text, event);
+    if (index == null) continue;
+    return info.el.sourceStart + index;
+  }
+  if (laidOut) return null;
+  if (!event || typeof document.caretPositionFromPoint !== "function") return null;
+  if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return null;
+  let pos = null;
+  try {
+    pos = document.caretPositionFromPoint(event.clientX, event.clientY);
+  } catch {
+    pos = null;
+  }
+  if (!pos || !nodes.includes(pos.offsetNode)) return null;
+  const info = runText(pos.offsetNode);
+  let index = pos.offset;
+  if (!Number.isFinite(index) || index < 0) index = 0;
+  if (index >= info.text.length) index = info.text.length - 1;
+  return info.el.sourceStart + index;
+}
+
 function atomClickOffset(atom, target, event) {
   if (hasClass(atom, "md-image")) return Number(atom.dataset.start);
   if (hasClass(atom, "md-table")) {
@@ -1576,6 +1631,8 @@ function atomClickOffset(atom, target, event) {
     if (cell && cell.dataset && cell.dataset.start != null && cell.dataset.start !== "") {
       const letter = headingLetterOffset(cell, target, event);
       if (letter != null) return letter;
+      const drawn = cellLetterOffset(cell, target, event);
+      if (drawn != null) return drawn;
       return Number(cell.dataset.start);
     }
     return Number(atom.dataset.start);
@@ -2228,7 +2285,9 @@ function renderCell(tag, cell, repo, onSized) {
         continue;
       }
       const code = part.classes && part.classes.includes("md-code");
-      el.append(renderRun(part, code ? "code" : undefined));
+      const run = renderRun(part, code ? "code" : undefined);
+      tagRunSource(run, part);
+      el.append(run);
     }
   } else {
     el.textContent = cell.text;
