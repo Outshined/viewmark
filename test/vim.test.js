@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { vimKey, vimMatchStarts, vimSubmit, visualBlockOffset, VIM_SEARCH_LIMIT } from "../src/vim.js";
+import { playVimChange, vimKey, vimMatchStarts, vimSubmit, visualBlockOffset, VIM_SEARCH_LIMIT } from "../src/vim.js";
 import { backspace, caretAfterEdit, codeSpanAt, commentStorageReason, createState, deleteForward, insert, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
 
 const CARET = "‸";
@@ -60,7 +60,48 @@ function run(start, keys, opts = {}) {
     });
     steps.push(result);
     vim = result.vim;
-    const effect = result.effect;
+    let effect = result.effect;
+    if (effect && effect.type === "repeat") {
+      const played = playVimChange({
+        vim,
+        doc,
+        cursor,
+        anchor,
+        raw: opts.raw === true,
+        layout: opts.layout === true,
+        count: Number.isInteger(effect.count) ? effect.count : null,
+      });
+      vim = played.vim;
+      effect = played.effect;
+      steps[steps.length - 1] = { ...result, vim, effect };
+    }
+    if (opts.type === true && !result.consumed && vim.recording && vim.mode === "insert" && !effect) {
+      const key = keyOf(item);
+      const loose = looseInsert(doc, cursor, key, opts.raw === true);
+      if (loose) {
+        doc = loose.doc;
+        cursor = loose.cursor;
+        anchor = loose.anchor;
+        continue;
+      }
+    }
+    if (opts.type === true && effect && effect.type === "word-delete") {
+      const span = looseWord(doc, cursor);
+      doc = doc.slice(0, span.from) + doc.slice(span.to);
+      cursor = span.from;
+      anchor = cursor;
+      continue;
+    }
+    if (opts.type === true && effect && effect.type === "view-motion" && (effect.command === "h" || effect.command === "l")) {
+      const repeat = Number.isInteger(effect.repeat) && effect.repeat > 0 ? effect.repeat : 1;
+      const dir = effect.command === "h" ? -1 : 1;
+      for (let n = 0; n < repeat; n += 1) {
+        if (dir < 0) cursor = cursor <= 0 ? 0 : cursor - 1;
+        else if (cursor < doc.length && doc[cursor] !== "\n" && doc[cursor] !== "\r") cursor += 1;
+      }
+      if (vim.mode !== "visual" && vim.mode !== "visual-line") anchor = cursor;
+      continue;
+    }
     if (!effect) continue;
     if (effect.type === "caret") {
       anchor = effect.anchor;
@@ -85,6 +126,50 @@ function run(start, keys, opts = {}) {
     }
   }
   return { doc, cursor, anchor, vim, steps, show: show(doc, cursor, anchor) };
+}
+
+function looseInsert(doc, cursor, key, raw) {
+  if (key.ctrl || key.meta || key.alt) return null;
+  if (key.key === "Backspace") {
+    const next = backspace(createState(doc, cursor, cursor));
+    return { doc: next.doc, cursor: next.cursor, anchor: next.cursor };
+  }
+  if (key.key === "Delete") {
+    const next = deleteForward(createState(doc, cursor, cursor));
+    return { doc: next.doc, cursor: next.cursor, anchor: next.cursor };
+  }
+  if (key.key === "Enter") {
+    const next = insert(createState(doc, cursor, cursor), "\n", false, raw, false);
+    return { doc: next.doc, cursor: next.cursor, anchor: next.cursor };
+  }
+  if (key.key === "ArrowLeft") {
+    const at = cursor <= 0 ? 0 : cursor - 1;
+    return { doc, cursor: at, anchor: at };
+  }
+  if (key.key === "ArrowRight") {
+    if (cursor < doc.length && doc[cursor] !== "\n" && doc[cursor] !== "\r") {
+      return { doc, cursor: cursor + 1, anchor: cursor + 1 };
+    }
+    return { doc, cursor, anchor: cursor };
+  }
+  if (typeof key.key === "string" && key.key.length === 1) {
+    const next = insert(createState(doc, cursor, cursor), key.key, false, raw, true);
+    return { doc: next.doc, cursor: next.cursor, anchor: next.cursor };
+  }
+  return null;
+}
+
+function looseWord(doc, cursor) {
+  const space = (ch) => /\s/.test(ch);
+  const word = (ch) => /[A-Za-z0-9_]/.test(ch);
+  let index = cursor;
+  while (index > 0 && space(doc[index - 1])) index -= 1;
+  if (index > 0) {
+    const kind = word(doc[index - 1]);
+    while (index > 0 && !space(doc[index - 1]) && word(doc[index - 1]) === kind) index -= 1;
+  }
+  if (index === cursor) return { from: Math.max(0, cursor - 1), to: cursor };
+  return { from: index, to: cursor };
 }
 
 function last(out) {
@@ -240,6 +325,10 @@ test("modifier key keeps a pending operator", () => {
     find: { ch: "x", forward: false, till: true },
     column: 4,
     once: true,
+    strokes: [],
+    change: null,
+    recording: null,
+    replaying: false,
   };
   for (const name of ["Shift", "Control", "Alt", "Meta"]) {
     for (const ctrl of [false, true]) {
@@ -1683,7 +1772,7 @@ test("VX.5", () => {
 
 test("VX.6", () => {
   const dot = run("‸alpha\n", ["."]);
-  assert.equal(dot.steps[0].match, "none");
+  assert.equal(dot.steps[0].match, "full");
   assert.equal(dot.steps[0].consumed, true);
   assert.equal(dot.steps[0].effect, null);
   assert.equal(dot.show, "‸alpha\n");
@@ -3766,4 +3855,356 @@ test("ctrl-o visual e keeps once", () => {
   const cut = run("‸alpha beta\n", ["i", { key: "o", ctrl: true }, "v", "e", "d"]);
   assert.equal(cut.vim.mode, "insert");
   assert.equal(cut.doc, " beta\n");
+});
+
+function changeKeys(out) {
+  const change = out.vim.change;
+  if (!change || !Array.isArray(change.keys)) return "";
+  return change.keys.map((key) => key.key).join("");
+}
+
+test("dot repeats x at the caret and a second dot is the same change (ticket py7xfb9e)", () => {
+  const once = run("ab‸cde", ["x"], { type: true });
+  assert.equal(once.show, "ab‸de");
+  assert.equal(changeKeys(once), "x");
+  const moved = run(once.show, ["l", "."], { type: true, vim: once.vim });
+  // x on the last glyph parks on the glyph that remains.
+  assert.equal(moved.show, "ab‸d");
+  assert.equal(moved.doc, "abd");
+  const again = run(moved.show, ["."], { vim: moved.vim });
+  assert.equal(again.doc, "ab");
+  assert.equal(changeKeys(again), "x");
+  assert.equal(again.vim.change.count, null);
+  const grouped = again.steps.filter((step) => step.effect && step.effect.type === "splice");
+  assert.equal(grouped.at(-1).effect.group, undefined);
+  assert.equal(Object.hasOwn(grouped.at(-1).effect, "group"), false);
+});
+
+test("dot with no remembered change is consumed and writes nothing (ticket py7xfb9e)", () => {
+  const out = run("‸abc", ["."]);
+  assert.equal(out.steps[0].match, "full");
+  assert.equal(out.steps[0].consumed, true);
+  assert.equal(out.steps[0].effect, null);
+  assert.equal(out.show, "‸abc");
+  assert.equal(out.vim.change, null);
+});
+
+test("a count before dot replaces the stored count and the next dot keeps it (ticket py7xfb9e)", () => {
+  const out = run("‸abcdefghij", ["3", "x", "2", ".", "."]);
+  assert.equal(out.doc, "hij");
+  assert.equal(out.show, "‸hij");
+  assert.equal(out.vim.change.count, 2);
+  assert.equal(changeKeys(out), "x");
+  const capped = run("‸abcdef", ["1", "0", "0", "0", "1", "x"]);
+  assert.equal(capped.vim.change.count, 10000);
+  assert.equal(capped.doc, "");
+});
+
+test("i repeats append after the parked glyph, and 2. writes the chunk twice (ticket py7xfb9e)", () => {
+  const once = run("‸x", ["i", "a", "b", "Escape", "."], { type: true });
+  assert.equal(once.doc, "ababx");
+  assert.equal(once.show, "aba‸bx");
+  assert.equal(once.vim.change.insert, "repeat");
+  assert.equal(once.vim.change.enter, "i");
+  assert.equal(once.vim.change.count, null);
+  const two = run("‸x", ["i", "a", "b", "Escape", "2", "."], { type: true });
+  assert.equal(two.doc, "abababx");
+  assert.equal(two.show, "ababa‸bx");
+  assert.equal(two.vim.change.count, 2);
+  const counted = run("‸x", ["3", "i", "a", "b", "Escape"], { type: true });
+  assert.equal(counted.doc, "abababx");
+  assert.equal(counted.show, "ababa‸bx");
+  assert.equal(counted.vim.change.count, 3);
+  assert.equal(counted.steps.at(-1).effect.group, true);
+  const repeated = run("‸x", ["3", "i", "a", "b", "Escape", "."], { type: true });
+  assert.equal(repeated.doc, "ababababababx");
+  assert.equal(repeated.show, "abababababa‸bx");
+  assert.equal(Object.hasOwn(repeated.steps.at(-1).effect, "group"), false);
+  const replaced = run("‸x", ["3", "i", "a", "b", "Escape", "2", "."], { type: true });
+  assert.equal(replaced.doc, "abababababx");
+  assert.equal(replaced.show, "ababababa‸bx");
+  assert.equal(replaced.vim.change.count, 2);
+});
+
+test("an insert log replays backspace, and an empty i inserts nothing (ticket py7xfb9e)", () => {
+  const logged = run("‸x", ["i", "a", "b", "Backspace", "c", "Escape", "."], { type: true });
+  assert.equal(logged.doc, "acacx");
+  assert.equal(logged.show, "aca‸cx");
+  assert.deepEqual(logged.vim.change.log.map((entry) => entry.t === "text" ? entry.text : entry.t), ["a", "b", "bs", "c"]);
+  const empty = run("ab‸c", ["i", "Escape", "."], { type: true });
+  assert.equal(empty.doc, "abc");
+  assert.equal(empty.show, "a‸bc");
+  assert.equal(empty.vim.mode, "normal");
+  assert.equal(empty.vim.change.log.length, 0);
+  assert.equal(empty.steps.at(-1).effect, null);
+});
+
+test("a repeat plays arrows and a nested ctrl-o change inside the insert log (ticket py7xfb9e)", () => {
+  const arrow = run("‸z", ["i", "a", "b", "ArrowLeft", "c", "Escape", "."], { type: true });
+  assert.equal(arrow.doc, "acacbbz");
+  assert.equal(arrow.show, "aca‸cbbz");
+  assert.equal(arrow.vim.change.log.some((entry) => entry.t === "left"), true);
+  const nested = run("‸xyz", ["i", "a", { key: "o", ctrl: true }, "x", "b", "Escape", "."], { type: true });
+  assert.equal(nested.doc, "ababz");
+  assert.equal(nested.show, "aba‸bz");
+  assert.equal(nested.vim.change.log[1].t, "edit");
+  assert.equal(nested.vim.change.log[1].change.nested, true);
+  assert.equal(nested.vim.change.log[1].change.insert, null);
+  assert.equal(changeKeys({ vim: { change: nested.vim.change.log[1].change } }), "x");
+  const word = run("‸one two", ["i", "Q", { key: "o", ctrl: true }, "c", "w", "Z", "Escape"], { type: true });
+  assert.equal(word.doc, "QZ two");
+  assert.equal(word.vim.change.log.some((entry) => entry.t === "edit" && changeKeys({ vim: { change: entry.change } }) === "cw"), true);
+});
+
+test("a, A, I, and gI repeat at the place that command inserts (ticket py7xfb9e)", () => {
+  const append = run("ab‸c", ["a", "X", "Escape", "."], { type: true });
+  assert.equal(append.doc, "abcXX");
+  assert.equal(append.show, "abcX‸X");
+  const line = run("a‸b\ncd\n", ["A", "X", "Escape", "j", "."], { type: true, raw: true });
+  assert.equal(line.doc, "abX\ncdX\n");
+  assert.equal(line.show, "abX\ncd‸X\n");
+  const indent = run("  ‸ab\n", ["I", "Z", "Escape", "."], { type: true });
+  assert.equal(indent.doc, "  ZZab\n");
+  const column = run("  ‸ab\n", ["g", "I", "Z", "Escape", "."], { type: true });
+  assert.equal(column.doc, "ZZ  ab\n");
+  assert.equal(column.vim.change.enter, "gI");
+});
+
+test("o and O repeat as separate lines, and a count before dot changes how many (ticket py7xfb9e)", () => {
+  const below = run("‸aa\n", ["o", "a", "b", "Escape", "."], { type: true, raw: true });
+  assert.equal(below.doc, "aa\nab\nab\n");
+  assert.equal(below.doc.includes("abab"), false);
+  const above = run("bb\n‸", ["O", "a", "b", "Escape", "."], { type: true, raw: true });
+  assert.equal(above.doc, "bb\nab\nab\n");
+  const three = run("‸aa\n", ["3", "o", "a", "b", "Escape"], { type: true, raw: true });
+  assert.equal(three.doc, "aa\nab\nab\nab\n");
+  assert.equal(three.vim.change.count, 3);
+  assert.equal(three.steps.at(-1).effect.group, true);
+  const open = three.steps.find((step) => step.effect && step.effect.type === "splice" && step.effect.group !== true);
+  assert.equal(Object.hasOwn(open.effect, "group"), false);
+  const again = run("‸aa\n", ["3", "o", "a", "b", "Escape", "."], { type: true, raw: true });
+  assert.equal(again.doc, "aa\nab\nab\nab\nab\nab\nab\n");
+  assert.equal(Object.hasOwn(again.steps.at(-1).effect, "group"), false);
+  const two = run("‸aa\n", ["3", "o", "a", "b", "Escape", "2", "."], { type: true, raw: true });
+  assert.equal(two.doc, "aa\nab\nab\nab\nab\nab\n");
+  assert.equal(two.vim.change.count, 2);
+  const rendered = run("‸aa\n\nbb\n", ["3", "o", "a", "b", "Escape"], { type: true });
+  assert.equal(rendered.doc, "aa\n\nab\n\nab\n\nab\n\nbb\n");
+  assert.equal(rendered.doc.includes("abab"), false);
+});
+
+test("2cw repeats the operator count and writes the inserted text once (ticket py7xfb9e)", () => {
+  const out = run("‸one two three four\n", ["2", "c", "w", "X", "X", "Escape", "w", "."], { type: true });
+  assert.equal(out.doc, "XX XX\n");
+  assert.equal(out.show, "XX X‸X\n");
+  assert.equal(out.vim.change.insert, "once");
+  assert.equal(out.vim.change.count, 2);
+  assert.equal(changeKeys(out), "cw");
+  assert.equal(Object.hasOwn(out.steps.at(-1).effect, "group"), false);
+});
+
+test("3dd repeats three lines, and 2. then dot each delete two (ticket py7xfb9e)", () => {
+  const body = "a\nb\nc\nd\ne\nf\ng\n";
+  const three = run(`‸${body}`, ["3", "d", "d", "."], { raw: true });
+  assert.equal(three.doc, "g\n");
+  assert.equal(three.vim.change.count, 3);
+  assert.equal(changeKeys(three), "dd");
+  const replaced = run(`‸${body}`, ["3", "d", "d", "2", "."], { raw: true });
+  assert.equal(replaced.doc, "f\ng\n");
+  assert.equal(replaced.vim.change.count, 2);
+  const kept = run(`‸${body}`, ["3", "d", "d", "2", ".", "."], { raw: true });
+  assert.equal(kept.doc, "");
+  assert.equal(kept.vim.change.count, 2);
+});
+
+test("a motion, a yank, a search, and a colon command leave the remembered change (ticket py7xfb9e)", () => {
+  const moved = run("‸ab\n\ncd", ["x", "j"]);
+  assert.equal(changeKeys(moved), "x");
+  assert.equal(moved.steps[1].effect.type, "caret");
+  const yanked = run("‸abcd", ["x", "y", "y", "."]);
+  assert.equal(yanked.doc, "cd");
+  assert.equal(changeKeys(yanked), "x");
+  const searched = run("‸abc abc", ["x", "/", "n", "N", "*", "#"]);
+  assert.equal(changeKeys(searched), "x");
+  assert.equal(searched.steps[1].effect.type, "prompt");
+  assert.equal(searched.steps[2].effect, null);
+  assert.equal(searched.steps[3].effect, null);
+  const scrolled = run("‸abc\n", ["x", "z", "z"]);
+  assert.equal(changeKeys(scrolled), "x");
+  assert.equal(scrolled.steps[2].effect.type, "scroll");
+  const undone = run("‸abc", ["x", "u"]);
+  assert.equal(changeKeys(undone), "x");
+  assert.equal(undone.steps[1].effect.type, "history");
+  const colon = run("‸old", ["x", ":"]);
+  assert.equal(changeKeys(colon), "x");
+  assert.equal(colon.steps[1].effect.kind, "ex");
+  const prior = run("‸ab", ["x"]);
+  const sub = vimSubmit({
+    line: "s/old/new/g",
+    kind: "ex",
+    vim: prior.vim,
+    doc: "old old\n",
+    cursor: 0,
+    anchor: 0,
+    flag: true,
+  });
+  assert.equal(changeKeys({ vim: sub.vim }), "x");
+  assert.equal(sub.effect.type, "splice");
+  assert.equal(sub.effect.text.includes("new"), true);
+  const equal = run("‸ab\n", ["x", "=", "="]);
+  assert.equal(changeKeys(equal), "x");
+  const comment = run("«bc‸d", ["g", "c"], { vim: { ...prior.vim, mode: "visual" } });
+  assert.equal(changeKeys(comment), "x");
+  assert.equal(comment.steps[1].effect.type, "comment-add");
+  const clip = run("‸abc", ["x", { key: "v", ctrl: true }]);
+  assert.equal(clip.steps[1].consumed, false);
+  assert.equal(changeKeys(clip), "x");
+});
+
+test("dot in insert is a period, and dot in visual leaves the highlight (ticket py7xfb9e)", () => {
+  const inserted = run("‸x", ["i", ".", "Escape", "."], { type: true });
+  assert.equal(inserted.doc, "..x");
+  assert.equal(inserted.show, ".‸.x");
+  assert.deepEqual(inserted.vim.change.log, [{ t: "text", text: "." }]);
+  const visual = run("‸abcdef", ["v", "l", "."], { type: true });
+  assert.equal(visual.vim.mode, "visual");
+  assert.equal(visual.doc, "abcdef");
+  assert.equal(visual.show, "«ab‸cdef");
+  assert.equal(visual.steps.at(-1).match, "full");
+  assert.equal(visual.steps.at(-1).effect, null);
+  assert.equal(visual.vim.change, null);
+  const line = run("‸abcdef", ["V", "."], { type: true });
+  assert.equal(line.vim.mode, "visual-line");
+  assert.equal(line.doc, "abcdef");
+  assert.notEqual(line.anchor, line.cursor);
+});
+
+test("f. finds a period, and r. replaces with a period (ticket py7xfb9e)", () => {
+  const prior = run("‸abc", ["x"]);
+  const found = run("a.b‸c.d", ["f", "."], { vim: prior.vim });
+  assert.equal(found.doc, "a.bc.d");
+  assert.equal(found.show, "a.bc‸.d");
+  assert.equal(changeKeys(found), "x");
+  const replaced = run("‸abc", ["r", ".", "l", "."], { type: true });
+  assert.equal(replaced.doc, "..c");
+  assert.equal(replaced.show, ".‸.c");
+  assert.equal(changeKeys(replaced), "r.");
+});
+
+test("an operator waiting on dot clears and does not play the change (ticket py7xfb9e)", () => {
+  const prior = run("‸abcd", ["x"]);
+  const out = run(prior.show, ["d", "."], { vim: prior.vim });
+  assert.equal(out.steps.at(-1).match, "none");
+  assert.equal(out.steps.at(-1).consumed, true);
+  assert.equal(out.steps.at(-1).effect, null);
+  assert.equal(out.doc, "bcd");
+  assert.equal(out.vim.input.operator, null);
+  assert.equal(changeKeys(out), "x");
+  const played = run(out.show, ["."], { vim: out.vim });
+  assert.equal(played.doc, "cd");
+});
+
+test("a missed dfx changes nothing and does not store a count (ticket py7xfb9e)", () => {
+  const hit = run("‸abxcd", ["d", "f", "x"]);
+  assert.equal(hit.doc, "cd");
+  assert.equal(hit.show, "‸cd");
+  assert.equal(changeKeys(hit), "dfx");
+  assert.equal(hit.vim.change.count, null);
+  const missed = run(hit.show, ["5", "."], { vim: hit.vim });
+  assert.equal(missed.doc, "cd");
+  assert.equal(missed.show, "‸cd");
+  assert.equal(missed.vim.change.count, null);
+  assert.equal(missed.steps.at(-1).effect, null);
+  const prior = run("‸ab\n", ["x"]);
+  const none = run("‸b\n", ["d", "f", "x"], { vim: prior.vim });
+  assert.equal(none.doc, "b\n");
+  assert.equal(changeKeys(none), "x");
+  assert.equal(none.vim.change.count, null);
+});
+
+test("visual line dot deletes the same number of lines, and a count does not resize it (ticket py7xfb9e)", () => {
+  const body = "aa\n\nbb\n\ncc\n\ndd\n\nee\n";
+  const cut = run(`‸${body}`, ["V", "j", "d"]);
+  assert.equal(cut.doc, "cc\n\ndd\n\nee\n");
+  assert.equal(cut.vim.change.visual.mode, "visual-line");
+  assert.equal(cut.vim.change.visual.lines, 2);
+  assert.equal(cut.vim.change.count, null);
+  const again = run(cut.show, ["."], { vim: cut.vim });
+  assert.equal(again.doc, "ee\n");
+  assert.equal(again.vim.change.count, null);
+  const counted = run(`‸${body}`, ["V", "j", "d", "2", "."]);
+  assert.equal(counted.doc, "ee\n");
+  assert.equal(counted.vim.change.count, null);
+  assert.equal(counted.vim.change.visual.lines, 2);
+  const raw = run("‸aa\nbb\ncc\ndd\nee\n", ["V", "j", "d", "9", "."], { raw: true });
+  assert.equal(raw.doc, "ee\n");
+  assert.equal(raw.vim.change.count, null);
+  assert.equal(raw.vim.change.visual.lines, 2);
+});
+
+test("character visual dot uses the same character span (ticket py7xfb9e)", () => {
+  const line = run("‸abcdef xyz\n", ["v", "l", "l", "d", "w", "."], { type: true });
+  assert.equal(line.doc, "def \n");
+  assert.equal(line.vim.change.visual.mode, "visual");
+  assert.equal(line.vim.change.visual.lines, 1);
+  assert.equal(line.vim.change.visual.chars, 3);
+  const across = run("‸aa bb\n\ncc dd\n\nee ff\n", ["v", "j", "d"]);
+  assert.equal(across.vim.change.visual.lines, 2);
+  assert.equal(across.vim.change.visual.lastChars, 2);
+  assert.equal(across.doc, " dd\n\nee ff\n");
+  const repeated = run("‸qq rr\n\nss tt\n\n", ["."], { vim: across.vim });
+  assert.equal(repeated.doc, " tt\n\n");
+});
+
+test("dot puts the register as it is now, and ]p reindents in one splice (ticket py7xfb9e)", () => {
+  const yanked = run("‸ab\n", ["y", "y"]);
+  assert.equal(yanked.vim.change, null);
+  const put = run("‸zz\n", ["p"], { vim: yanked.vim });
+  assert.equal(put.doc, "zz\nab\n");
+  assert.equal(changeKeys(put), "p");
+  const other = run("‸QQ\n", ["y", "y"]);
+  put.vim.register = other.vim.register;
+  const dot = run(put.show, ["."], { vim: put.vim });
+  assert.equal(dot.doc, "zz\nab\nQQ\n");
+  assert.equal(dot.vim.register.text, "QQ\n");
+  const child = run("‸\tchild\n", ["y", "y"], { raw: true });
+  const indented = run("\tparent\n‸here\n", ["]", "p"], { raw: true, vim: child.vim });
+  const splice = oneSplice(indented);
+  assert.equal(splice.text, "\tchild\n");
+  assert.equal(Object.hasOwn(splice, "group"), false);
+  const more = run(indented.show, ["."], { raw: true, vim: indented.vim });
+  assert.equal(more.doc, "\tparent\nhere\n\tchild\n\tchild\n");
+  assert.equal(more.steps.at(-1).effect.type, "splice");
+  assert.equal(Object.hasOwn(more.steps.at(-1).effect, "group"), false);
+});
+
+test("dG keeps a null count and d1G keeps 1, so dot plays that command (ticket py7xfb9e)", () => {
+  const body = "aa\n\nbb\n\ncc\n\ndd\n";
+  const end = run(`aa\n\nbb\n\n‸cc\n\ndd\n`, ["d", "G"]);
+  assert.equal(end.doc, "aa\n\nbb\n\n");
+  assert.equal(end.vim.change.count, null);
+  const top = run(`aa\n\nbb\n\n‸cc\n\ndd\n`, ["d", "1", "G"]);
+  assert.equal(top.doc, "dd\n");
+  assert.equal(top.vim.change.count, 1);
+  assert.equal(run(`‸${body}`, ["."], { vim: end.vim }).doc, "");
+  assert.equal(run(`aa\n\nbb\n\n‸cc\n\ndd\n`, ["."], { vim: top.vim }).doc, "dd\n");
+});
+
+test("other changes repeat, and vim keys off does not consume dot (ticket py7xfb9e)", () => {
+  const joined = run("‸aa\nbb\ncc\n", ["J", "."], { raw: true });
+  assert.equal(joined.doc, "aa bb cc\n");
+  assert.equal(changeKeys(joined), "J");
+  const toggled = run("‸Ab Cd", ["g", "U", "w", "w", "."]);
+  assert.equal(toggled.doc, "AB CD");
+  const indented = run("‸ab\n", [">", ">", "."]);
+  assert.equal(indented.doc, "\t\tab\n");
+  const swapped = run("‸abc", ["~", "."]);
+  assert.equal(swapped.doc, "ABc");
+  const prior = run("‸abc", ["x"]);
+  const off = run("‸bc", ["."], { flag: false, vim: prior.vim });
+  assert.equal(off.steps[0].match, "none");
+  assert.equal(off.steps[0].consumed, false);
+  assert.equal(off.steps[0].effect, null);
+  assert.equal(off.doc, "bc");
+  assert.equal(changeKeys(off), "x");
 });

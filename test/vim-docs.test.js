@@ -37,7 +37,7 @@ const VIM_FACTS = [
   "Matches are painted while the pattern is typed and after Enter.",
   "`:noh` clears that paint and leaves the pattern, so `n` still repeats.",
   "There is no visual-block mode.",
-  "`.` does not repeat a change.",
+  "`.` in normal repeats the last change at the caret, and a count typed before `.` replaces the count stored on that change.",
   "In normal, `U` changes nothing.",
 ];
 
@@ -59,6 +59,10 @@ const STALE_SEARCH = [
   "the hits are not drawn",
 ];
 
+const STALE_REPEAT = [
+  "`.` does not repeat a change.",
+];
+
 function assertFacts(rel, text) {
   for (const fact of VIM_FACTS) {
     assert.ok(text.includes(fact), `${rel} is missing ${JSON.stringify(fact)}`);
@@ -67,6 +71,9 @@ function assertFacts(rel, text) {
     assert.equal(text.includes(stale), false, `${rel} still says ${JSON.stringify(stale)}`);
   }
   for (const stale of STALE_SEARCH) {
+    assert.equal(text.includes(stale), false, `${rel} still says ${JSON.stringify(stale)}`);
+  }
+  for (const stale of STALE_REPEAT) {
     assert.equal(text.includes(stale), false, `${rel} still says ${JSON.stringify(stale)}`);
   }
 }
@@ -95,6 +102,17 @@ test("starter docs, project docs, and the README cover vim keys", async () => {
     assertFacts(rel, text);
     assert.equal(fenceCount(text) % 2, 0, `${rel} has an open fence`);
     assert.ok(plan(text).blocks.length > 0, `${rel} does not plan`);
+  }
+
+  const projectEditing = await read("docs/editing.md");
+  assertFacts("docs/editing.md", projectEditing);
+  for (const rel of ["docs/qa/editor-matrix-test-plan.md", "samples/qa/editor-matrix-test-plan.md"]) {
+    const text = await read(rel);
+    assert.ok(
+      text.includes("`.` in normal repeats the last change at the caret, and a count typed before `.` replaces the count stored on that change."),
+      `${rel} repeat`,
+    );
+    assert.equal(text.includes("`.` does not repeat a change."), false, `${rel} stale repeat`);
   }
 
   assert.ok(readme.includes("## Vim keys"), "README heading");
