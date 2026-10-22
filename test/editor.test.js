@@ -717,11 +717,20 @@ test("movement skips the blank between paragraphs", () => {
   assert.equal(placeMove("hello\n\n\n", 7, 6, "backward", "character"), 5);
   assert.equal(placeMove("hello\n\n\n", 5, 7, "forward", "line"), 7);
   assert.equal(placeMove("hello\n\n\n", 7, 5, "backward", "line"), 5);
-  assert.equal(placeMove("a\n\n# H\n", 0, 2, "forward", "character"), 2);
-  assert.equal(placeMove("a\n\n# H\n", 0, 3, "forward", "line"), 2);
-  assert.equal(placeMove("a\n\n# H\n", 1, 1, "forward", "line"), 2);
+  // The blank beside a heading is not a stop. The step lands on the drawn line.
+  assert.equal(placeMove("a\n\n# H\n", 0, 2, "forward", "character"), 3);
+  assert.equal(placeMove("a\n\n# H\n", 0, 3, "forward", "line"), 3);
+  assert.equal(placeMove("a\n\n# H\n", 1, 1, "forward", "line"), 3);
+  // Offset 4 is the space on the open heading, so this step is already on that line.
   assert.equal(placeMove("a\n\n# H\n", 5, 4, "backward", "line"), 4);
-  assert.equal(placeMove("a\n\n# H\n", 3, 1, "backward", "line"), 2);
+  assert.equal(placeMove("a\n\n# H\n", 3, 1, "backward", "line"), 1);
+  assert.equal(placeMove("a\n\n# H\n", 5, 2, "backward", "line"), 1);
+  assert.equal(placeMove("a\n\n# H\n", 3, 2, "backward", "character"), 1);
+  assert.equal(placeMove("# H\n\nnext\n", 2, 4, "forward", "line"), 5);
+  assert.equal(placeMove("# H\n\nnext\n", 5, 4, "backward", "line"), 3);
+  assert.equal(placeMove("# H\n\nnext\n", 2, 4, "forward", "character"), 5);
+  assert.equal(placeMove("# H\n\n\nnext\n", 3, 4, "forward", "line"), 4);
+  assert.equal(placeMove("# H\n\n", 2, 4, "forward", "line"), 4);
   assert.equal(placeMove("a\n\n# H\n", 0, 3, "forward", "character"), 3);
   assert.deepEqual(gapCaretStops("a\n\n# H\n", 0), [2]);
   assert.deepEqual(gapCaretStops("a\n\n# H\n", 2), []);
@@ -749,6 +758,26 @@ test("movement skips the blank between paragraphs", () => {
   assert.equal(skipHidden("one\n\ntwo\n", 4, "backward"), 3);
   assert.equal(skipHidden("one\n\ntwo\n", 4, "nearer"), 3);
   assert.equal(skipHidden("hello\n\n\n", 6, "nearer"), 5);
+});
+
+// Ticket x5fxzp58. Down from the last code line continues to the closer. The
+// newline after the opener is the end of that line, so left stays there and
+// End does not advance.
+test("x5fxzp58 a fence step does not stop on the break before the closer", () => {
+  const doc = "```js\nfunction f() {\n  return 1;\n}\n```\n";
+  const openBreak = doc.indexOf("\n");
+  const fn = doc.indexOf("function");
+  const brace = doc.indexOf("}");
+  const braceBreak = brace + 1;
+  const closer = doc.lastIndexOf("```");
+  assert.equal(doc[openBreak], "\n");
+  assert.equal(doc[braceBreak], "\n");
+  assert.equal(placeMove(doc, fn, openBreak, "backward", "character"), openBreak);
+  assert.equal(placeMove(doc, brace, braceBreak, "forward", "line"), closer);
+  assert.equal(placeMove(doc, closer, braceBreak, "backward", "line"), braceBreak);
+  assert.equal(placeMove(doc, 0, openBreak, "forward", "lineboundary"), openBreak);
+  assert.equal(placeMove(doc, openBreak, openBreak, "forward", "character"), fn);
+  assert.equal(placeMove(doc, openBreak - 1, openBreak, "forward", "character"), openBreak);
 });
 
 // Ticket 6a2t6dy5. The blank under one of these blocks is the space before the
@@ -25393,7 +25422,8 @@ test("a selection across an image keeps the atom marked", () => {
 });
 
 // V anchors on the heading marker. After j that line is rendered, so the marker
-// has no text node. The visual line still covers the heading and the blank.
+// has no text node. The step lands on the next drawn line, and the range still
+// starts on the heading's text.
 test("visual line on a heading stays across the blank under it", () => {
   const mounted = mountEditor();
   const doc = "# Heading\n\nNext line is here.\n";
@@ -25528,10 +25558,11 @@ test("visual line on a heading stays across the blank under it", () => {
       preventDefault() {},
     });
   };
+  const nextEnd = doc.indexOf("Next line is here.") + "Next line is here.".length;
   const covers = () => {
     const state = view.getState();
     assert.equal(Math.min(state.anchor, state.cursor), 0);
-    assert.equal(Math.max(state.anchor, state.cursor), doc.indexOf("\n\n") + 1);
+    assert.equal(Math.max(state.anchor, state.cursor), nextEnd);
   };
   let view = null;
   try {
@@ -25540,15 +25571,16 @@ test("visual line on a heading stays across the blank under it", () => {
     press("j");
     covers();
     const heading = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "Heading")[0];
-    const blank = mounted.findAll((node) => node.tagName === "BR" && node.parentElement && node.parentElement.classList.contains("md-raw"))[0];
+    const next = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "Next line is here.")[0];
+    const blank = mounted.findAll((node) => node.tagName === "BR")[0];
     assert.ok(heading);
-    assert.ok(blank);
+    assert.ok(next);
     const range = selection.getRangeAt(0);
     assert.equal(range.collapsed, false);
     assert.equal(range.startContainer, heading);
     assert.equal(range.startOffset, 0);
-    assert.equal(range.endContainer, blank.parentElement);
-    assert.equal(range.endOffset, childIndex(blank));
+    assert.equal(range.endContainer, next);
+    assert.equal(range.endOffset, next.length);
     assert.notEqual(range.startContainer, blank);
     assert.notEqual(range.endContainer, blank);
     selection.setBaseAndExtent(heading, 0, heading, 0);
@@ -25556,8 +25588,9 @@ test("visual line on a heading stays across the blank under it", () => {
     covers();
     const restored = selection.getRangeAt(0);
     assert.equal(restored.collapsed, false);
+    assert.equal(restored.startContainer, heading);
     press("d");
-    assert.equal(view.getState().doc, "Next line is here.\n");
+    assert.equal(view.getState().doc, "");
     view.destroy();
     view = null;
   } finally {
@@ -25602,10 +25635,10 @@ test("visual line paints each source line and skips a paragraph gap", () => {
     vimType(mounted, "j");
     assert.equal(status(), "VL");
     assert.equal(Math.min(view.getState().anchor, view.getState().cursor), 0);
-    assert.equal(Math.max(view.getState().anchor, view.getState().cursor), doc.indexOf("\n\n") + 1);
+    assert.equal(Math.max(view.getState().anchor, view.getState().cursor), doc.indexOf("Next line is here.") + "Next line is here.".length);
     assert.equal(selected(heading()), true);
     assert.equal(selected(blank()), true);
-    assert.equal(selected(paragraph()), false);
+    assert.equal(selected(paragraph()), true);
     assert.equal(gaps().some(selected), false);
     view.destroy();
 

@@ -186,6 +186,15 @@ function fenceCloseText(text) {
   return index === text.length;
 }
 
+function headingBlock(block) {
+  const classes = block && block.classes;
+  if (!classes) return false;
+  for (let level = 1; level <= 6; level += 1) {
+    if (classes.includes(`md-h${level}`)) return true;
+  }
+  return false;
+}
+
 function diagramEnds(doc) {
   const ends = [];
   for (const block of plan(doc, -1).blocks) {
@@ -214,12 +223,15 @@ function renderedLines(doc, cursor, expandFences) {
     // A gap is already skipped. The first of two blanks after a fence is drawn
     // while the caret stands on it, and that row is still not a vim line. A
     // further blank stays a line, and so does the row when nothing follows.
-    // An opened diagram draws its closer as a source line, so the pad under it
-    // is not a gap yet. A step onto it closes the diagram and this list then
-    // drops the row, so k steps back from the last line.
+    // The blank under a heading is the same kind of stop: nothing is drawn
+    // there, unless the caret is already standing on it. An opened diagram
+    // draws its closer as a source line, so the pad under it is not a gap yet.
+    // A step onto it closes the diagram and this list then drops the row, so k
+    // steps back from the last line.
     const prev = blocks[i - 1];
     if (block.empty && prev && i + 1 < blocks.length) {
       if (prev.fence) continue;
+      if (!block.raw && headingBlock(prev) && !blocks[i + 1].empty) continue;
       if (prev.type === "line" && !prev.empty && fenceCloseText(prev.text)) {
         if (!ends) ends = diagramEnds(doc);
         if (ends.includes(prev.end)) continue;

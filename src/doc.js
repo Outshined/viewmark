@@ -5552,6 +5552,53 @@ function lineClearedRule(doc, cursor, landed, forward) {
   return nearest;
 }
 
+// A blank beside a heading has no glyph. The caret on that newline is a 0×0 box
+// at the origin, so a step continues to the line on that side. A second blank
+// stays a line, and so does a trailing blank with nothing after it.
+function headingBlankStep(doc, offset, forward) {
+  const text = typeof doc === "string" ? doc : "";
+  if (!Number.isFinite(offset)) return null;
+  const at = Math.trunc(offset);
+  if (at < 0 || at >= text.length || text[at] !== "\n") return null;
+  const line = sourceLine(text, at);
+  if (line.start !== at || line.end !== at) return null;
+  const nextAt = at + 1;
+  if (nextAt >= text.length || text[nextAt] === "\n") return null;
+  const next = sourceLine(text, nextAt);
+  if (next.text.length === 0) return null;
+  if (at === 0 || text[at - 1] !== "\n") return null;
+  const prev = sourceLine(text, at - 1);
+  if (prev.text.length === 0) return null;
+  const prevKind = classify(prev.text).kind;
+  const nextKind = classify(next.text).kind;
+  if (prevKind !== "h" && nextKind !== "h") return null;
+  return forward ? next.start : prev.end;
+}
+
+// The newline between two lines of an open fence is a break, not a glyph.
+// Down continues to the next line. The offset itself is the end of the previous
+// line's text, so up and left stay there.
+function fenceBreakEnd(doc, cursor, offset) {
+  const text = typeof doc === "string" ? doc : "";
+  if (!Number.isFinite(offset)) return null;
+  const at = Math.trunc(offset);
+  if (at < 0 || at >= text.length || text[at] !== "\n") return null;
+  const from = Number.isFinite(cursor) ? cursor : at;
+  for (const block of plan(text, from).blocks) {
+    if (!block || block.fence !== true || !block.raw || !block.parts) continue;
+    for (const part of block.parts) {
+      if (part && part.type === "break" && part.start === at) return part.end;
+    }
+  }
+  return null;
+}
+
+// End and a caret already on the break use this. Planning at the offset keeps
+// the fence open, which is when the break is drawn.
+export function fenceBreakOffset(doc, offset) {
+  return fenceBreakEnd(doc, offset, offset) != null;
+}
+
 // The blank has no height. A step that lands on it continues to the paragraph
 // on that side. A click, which has no direction, stays with the paragraph above.
 function paragraphGapLeave(doc, offset, direction) {
@@ -5595,6 +5642,14 @@ export function placeMove(doc, cursor, landed, direction, granularity) {
       const at = forward ? rule.start : rule.end;
       if (forward ? at < next : at > next) next = at;
     }
+  }
+  const pastBlank = headingBlankStep(doc, next, forward);
+  if (pastBlank != null) next = pastBlank;
+  // A character step onto the break is the end of that line. A line step, and a
+  // character step that was already on the break, continue to the next line.
+  if (forward && (granularity === "line" || (granularity === "character" && cursor === next))) {
+    const pastBreak = fenceBreakEnd(doc, cursor, next);
+    if (pastBreak != null) next = pastBreak;
   }
   return next;
 }

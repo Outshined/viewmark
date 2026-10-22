@@ -1142,6 +1142,26 @@ test("pn4hbr22 dk from below a table deletes that table line", () => {
   assert.equal(into.doc, "After.\n");
 });
 
+test("x5fxzp58 j and k skip the blank after a heading", () => {
+  const down = run("‸# H\n\nnext\n", ["j"]);
+  assert.equal(lineAtCaret(down), "next");
+  assert.notEqual(down.cursor, down.doc.indexOf("\n\n") + 1);
+  const up = run("# H\n\n‸next\n", ["k"]);
+  assert.equal(lineAtCaret(up), "# H");
+  const fromPara = run("a‸\n\n# H\n\nb\n", ["j"]);
+  assert.equal(lineAtCaret(fromPara), "# H");
+  const fromBelow = run("a\n\n# H\n\n‸b\n", ["k"]);
+  assert.equal(lineAtCaret(fromBelow), "# H");
+  const back = press(fromBelow, "j");
+  assert.equal(lineAtCaret(back), "b");
+  const doubled = run("‸# H\n\n\nnext\n", ["j"]);
+  assert.equal(lineAtCaret(doubled), "");
+  assert.equal(doubled.cursor, doubled.doc.indexOf("\n\n") + 1);
+  const fromNext = run("# H\n\n\n‸next\n", ["k"]);
+  assert.equal(lineAtCaret(fromNext), "");
+  assert.equal(fromNext.cursor, fromNext.doc.indexOf("next") - 1);
+});
+
 test("6a2t6dy5 j and k skip the blank under a rule, an image, or a diagram", () => {
   const cases = [
     ["---\n\nAfter.\n", "---"],
@@ -1505,9 +1525,9 @@ test("visual-line j and k select whole lines", () => {
   const first = run("#‸ A\n\n## B\n\n### C\n\nbody\n", ["V", "j"]);
   assert.equal(first.vim.mode, "visual-line");
   assert.equal(first.anchor, 0);
-  assert.equal(first.cursor, heads.indexOf("\n\n") + 1);
-  assert.equal(span(first), "# A\n");
-  assert.ok(first.cursor < heads.indexOf("##"));
+  // The blank under the heading is not a drawn line, so j covers ## B.
+  assert.equal(first.cursor, heads.indexOf("## B") + "## B".length);
+  assert.equal(span(first), "# A\n\n## B");
 
   const bullets = run("-‸ a\n- bb\n", ["V", "j"]);
   assert.equal(span(bullets), "- a\n- bb");

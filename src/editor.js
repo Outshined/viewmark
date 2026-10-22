@@ -40,6 +40,7 @@ import {
   endBeforeTrailingCommentFence,
   ruleLineStop,
   gapCaretStops,
+  fenceBreakOffset,
   imageLine,
   sourceLine,
   searchMatches,
@@ -4315,8 +4316,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const start = Number(tagged.dataset.start);
       const end = Number(tagged.dataset.end);
       if (start === end && start === offset) return { node: br, offset: 0 };
-      // A hard break stands for one source newline, not an empty line.
-      if (end === start + 1 && offset === start) return { node: br, offset: 0 };
+      // A break after a drawn run is that run's end. The br's range is a 0×0 box
+      // at the origin, so End and ArrowLeft would draw no caret.
+      if (end === start + 1 && offset === start) {
+        if (atEnd) return atEnd;
+        return { node: br, offset: 0 };
+      }
     }
     return atEnd;
   }
@@ -10204,8 +10209,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       // modify stops on the marker edge, which is this same offset. The gap's end
       // is where the next letter is drawn, so the caret has to be placed there.
       // A zero-width marker's own stop has no box, so the caret is placed on the text.
+      // End on an open fence lands on the opener's break. The selection stays on
+      // that br until it is placed at the end of the opener text.
       if (before !== after) render();
-      else if (anchor !== next || next !== landed || inRawGap(drawn && drawn.node) || markerCaretUnboxed(state.doc, next)) placeCaret();
+      else if (anchor !== next || next !== landed || fenceBreakOffset(state.doc, next) || inRawGap(drawn && drawn.node) || markerCaretUnboxed(state.doc, next)) placeCaret();
       // The selection is already on this stop, so the caret is not placed again.
       // Firefox's block is a separate mark and would stay where it was.
       else syncVimBlockMark();
