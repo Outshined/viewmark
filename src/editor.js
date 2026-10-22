@@ -997,6 +997,8 @@ function absoluteHash(hash) {
 
 const GLYPH_PRESS_MS = 160;
 const COPY_FLYOUT_MS = 1000;
+// Same gap as the lift in `.md-copy-flyout`. The note sits that far off the control.
+const COPY_FLYOUT_GAP = "0.35rem";
 const glyphArmed = new WeakSet();
 const glyphPressAt = new WeakMap();
 
@@ -1091,7 +1093,71 @@ function buttonAnchor(button) {
   const top = Number(rect.top);
   if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(left) || !Number.isFinite(top)) return null;
   if (width <= 0 && height <= 0) return null;
-  return { left: left + (width > 0 ? width / 2 : 0), top };
+  const bottom = Number(rect.bottom);
+  return {
+    left: left + (width > 0 ? width / 2 : 0),
+    top,
+    bottom: Number.isFinite(bottom) ? bottom : top + (height > 0 ? height : 0),
+  };
+}
+
+function viewportSize() {
+  const view = typeof globalThis.window === "object" && globalThis.window ? globalThis.window : null;
+  if (!view) return { width: null, height: null };
+  const width = Number(view.innerWidth);
+  const height = Number(view.innerHeight);
+  return {
+    width: Number.isFinite(width) && width > 0 ? width : null,
+    height: Number.isFinite(height) && height > 0 ? height : null,
+  };
+}
+
+function elementBox(el) {
+  if (!el || typeof el.getBoundingClientRect !== "function") return null;
+  let rect = null;
+  try {
+    rect = el.getBoundingClientRect();
+  } catch {
+    return null;
+  }
+  if (!rect) return null;
+  const top = Number(rect.top);
+  const left = Number(rect.left);
+  const right = Number(rect.right);
+  const bottom = Number(rect.bottom);
+  if (![top, left, right, bottom].every(Number.isFinite)) return null;
+  return { top, left, right, bottom };
+}
+
+// Move [start, end] into [0, limit]. A span wider than the limit keeps its start at 0.
+function shiftInto(start, end, limit) {
+  let delta = 0;
+  if (start < 0) delta -= start;
+  if (end + delta > limit) delta -= end + delta - limit;
+  if (start + delta < 0) delta = -start;
+  return delta;
+}
+
+// The flyout rule lifts the note by its own height, so a control at the top of the
+// viewport leaves the note off the page. The measured box is that lift. Prefer it.
+// When it leaves the viewport, sit below the control. A horizontal overflow shifts inward.
+function fitCopyFlyout(note, place) {
+  if (!note || !place || !Number.isFinite(place.left) || !Number.isFinite(place.top)) return;
+  const view = viewportSize();
+  if (view.width == null && view.height == null) return;
+  const rect = elementBox(note);
+  if (!rect) return;
+  let left = place.left;
+  let top = place.top;
+  let below = false;
+  if (view.height != null && (rect.top < 0 || rect.bottom > view.height)) {
+    below = true;
+    top = Number.isFinite(place.bottom) ? place.bottom : place.top;
+  }
+  if (view.width != null) left += shiftInto(rect.left, rect.right, view.width);
+  setStyle(note, "left", `${left}px`);
+  setStyle(note, "top", `${top}px`);
+  if (below) setStyle(note, "transform", `translate(-50%, ${COPY_FLYOUT_GAP})`);
 }
 
 // Resolves true only when the write is accepted. A throw or a rejection is false.
@@ -14066,7 +14132,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     for (const button of [...copyFlyouts.keys()]) clearCopyFlyout(button);
   }
 
-  // The note sits above the control, where the title tooltip would. The title stays the control name.
+  // Prefer the space above the control, where the title tooltip would. The title stays the control name.
   // A menu that closes would hide a child, so a measured control is parented outside that panel.
   function showCopyFlyout(doc, button, message, place) {
     if (closed || !button || !message || !doc || typeof doc.createElement !== "function") return;
@@ -14086,6 +14152,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       button.classList.add("md-flyout-host");
     }
     parent.appendChild(note);
+    if (host && place) fitCopyFlyout(note, place);
     const timer = setTimeout(() => {
       const current = copyFlyouts.get(button);
       if (!current || current.note !== note) return;

@@ -49,7 +49,7 @@ button.md-glyph-press:not(.md-file):not(.md-dir-toggle) {
   animation: md-glyph-press 160ms ease-out;
 }
 
-/* Above the control, where its title tooltip would sit. A measured control sets fixed coordinates inline. */
+/* Above the control, where its title tooltip would sit. A measured control sets fixed coordinates inline and replaces this lift when that box would leave the page. */
 .md-copy-flyout {
   position: absolute;
   left: 50%;

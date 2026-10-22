@@ -26817,6 +26817,90 @@ test("glyph buttons use one press scale and copy controls show a flyout", async 
     assertStill(ticketMark);
     t.mock.timers.tick(1000);
     assert.equal(flyouts().length, 0);
+
+    globalThis.window.innerWidth = 800;
+    globalThis.window.innerHeight = 600;
+    const origCreate = document.createElement;
+    let noteBox = null;
+    document.createElement = (tag) => {
+      const el = origCreate(tag);
+      const read = el.getBoundingClientRect.bind(el);
+      el.getBoundingClientRect = () => (noteBox && el.classList && el.classList.contains("md-copy-flyout") ? noteBox : read());
+      return el;
+    };
+    const showId = async (box, note) => {
+      stubRect(copyId, box.left, box.top, box.width, box.height);
+      noteBox = note;
+      press(copyId);
+      await settle();
+      const notes = flyouts();
+      assert.equal(notes.length, 1);
+      return notes[0];
+    };
+    const assertIdNote = (note, left, top, transform) => {
+      assert.equal(note.textContent, "ID copied to clipboard");
+      assert.equal(note.parentElement, mounted.body);
+      assert.equal(note.styleProps.position, "fixed");
+      assert.equal(note.styleProps.left, `${left}px`);
+      assert.equal(note.styleProps.top, `${top}px`);
+      assert.equal(note.styleProps.transform, transform);
+      assert.equal(note.getAttribute("role"), "status");
+      assert.equal(note.getAttribute("tabindex"), null);
+      assert.equal(note.focused, false);
+      assert.equal(copyId.focused, false);
+      assert.equal(copyId.getAttribute("title"), "Copy ticket id");
+      assert.equal(copyId.getAttribute("aria-label"), "Copy ticket id");
+      assertStill(ticketMark);
+    };
+    try {
+      const fits = await showId(
+        { left: 8, top: 24, width: 20, height: 10 },
+        { left: 3, top: 4, right: 33, bottom: 20, width: 30, height: 16 },
+      );
+      assertIdNote(fits, 18, 24, undefined);
+
+      const above = await showId(
+        { left: 8, top: 24, width: 20, height: 10 },
+        { left: 3, top: -6, right: 33, bottom: 14, width: 30, height: 20 },
+      );
+      assertIdNote(above, 18, 34, "translate(-50%, 0.35rem)");
+
+      const shifted = await showId(
+        { left: 8, top: 24, width: 20, height: 10 },
+        { left: -22, top: -10, right: 58, bottom: 16, width: 80, height: 26 },
+      );
+      assertIdNote(shifted, 40, 34, "translate(-50%, 0.35rem)");
+
+      const leftEdge = await showId(
+        { left: 0, top: 200, width: 20, height: 10 },
+        { left: -10, top: 170, right: 30, bottom: 196, width: 40, height: 26 },
+      );
+      assertIdNote(leftEdge, 20, 200, undefined);
+
+      const rightEdge = await showId(
+        { left: 760, top: 120, width: 20, height: 10 },
+        { left: 720, top: 90, right: 820, bottom: 114, width: 100, height: 24 },
+      );
+      assertIdNote(rightEdge, 750, 120, undefined);
+
+      const wide = await showId(
+        { left: 390, top: 200, width: 20, height: 10 },
+        { left: -50, top: 160, right: 850, bottom: 190, width: 900, height: 30 },
+      );
+      assertIdNote(wide, 450, 200, undefined);
+
+      const flush = await showId(
+        { left: 390, top: 40, width: 20, height: 10 },
+        { left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 },
+      );
+      assertIdNote(flush, 400, 40, undefined);
+    } finally {
+      document.createElement = origCreate;
+      delete globalThis.window.innerWidth;
+      delete globalThis.window.innerHeight;
+    }
+    t.mock.timers.tick(1000);
+    assert.equal(flyouts().length, 0);
     assert.equal(view.getState().cursor, 3);
     assert.equal(view.getState().anchor, 3);
   } finally {
