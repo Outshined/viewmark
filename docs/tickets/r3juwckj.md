@@ -1,5 +1,5 @@
 title: Search docs and tickets
-state: in progress
+state: closed
 type: enhancement
 priority: medium
 parent:
