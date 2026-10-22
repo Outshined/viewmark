@@ -2,12 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { launchBrowser, Page, startHub } from "./harness.js";
 
-// Ticket 4wch9t9w. With vim keys on, j from an open mermaid fence's opener walks
-// the source, and the step off the closer lands on the following prose. The
-// block mark stays on that prose and inside the window. The blank under the
+// Ticket 4wch9t9w. With vim keys on, j from the line above an open mermaid fence
+// walks the source, and the step off the closer lands on the following prose.
+// The block mark stays on that prose and inside the window. The blank under the
 // fence has no height once the diagram closes, so that step must not stop there.
+// h and l on the closer stay on that line. A fence of only A-->B never draws
+// an svg, so the source is a graph mermaid can draw.
 
-const TEXT = "Above.\n\n```mermaid\nA-->B\n```\n\nAfter.\n";
+const TEXT = "Above.\n\n```mermaid\ngraph TD\nA-->B\n```\n\nAfter.\n";
 
 async function setup(t, text) {
   const hub = await startHub();
@@ -36,15 +38,50 @@ async function normalAt(page, offset) {
 test("4wch9t9w: with vim keys on, j off a mermaid closer lands on the following prose under the block mark", { timeout: 120000 }, async (t) => {
   const { page } = await setup(t, TEXT);
   const opener = TEXT.indexOf("```mermaid");
+  const graph = TEXT.indexOf("graph TD");
+  const source = TEXT.indexOf("A-->B");
+  const closer = TEXT.lastIndexOf("```");
   const prose = TEXT.indexOf("After.");
+  const focus = async () => (await page.caret()).focus;
   await normalAt(page, 0);
   await page.key("j");
   await page.quiet();
-  assert.equal((await page.caret()).focus, opener, "j from the line above did not land on the opener");
+  assert.equal(await focus(), opener, "j from the line above did not land on the opener");
   await page.key("j");
   await page.quiet();
+  assert.equal(await focus(), graph, "j from the opener did not land on the graph line");
   await page.key("j");
   await page.quiet();
+  assert.equal(await focus(), source, "j from the graph line did not land on the source");
+  await page.key("j");
+  await page.quiet();
+  assert.equal(await focus(), closer, "j from the source did not land on the closer");
+  await page.key("l");
+  await page.quiet();
+  assert.equal(await focus(), closer + 1, "l on the closer left that line");
+  await page.key("l");
+  await page.quiet();
+  assert.equal(await focus(), closer + 2, "l did not reach the last backtick");
+  await page.key("l");
+  await page.quiet();
+  assert.equal(await focus(), closer + 2, "l on the last backtick left it");
+  await page.key("0");
+  await page.quiet();
+  assert.equal(await focus(), closer, "0 did not land on the first backtick");
+  await page.key("h");
+  await page.quiet();
+  assert.equal(await focus(), closer, "h on the first backtick left it");
+  await page.key("$");
+  await page.quiet();
+  assert.equal(await focus(), closer + 2, "$ did not land on the last backtick");
+  await page.key("0");
+  await page.quiet();
+  await page.key("w");
+  await page.quiet();
+  assert.equal(await focus(), prose, "w from the closer did not land on the following prose");
+  await page.key("b");
+  await page.quiet();
+  assert.equal(await focus(), closer, "b from the prose did not land on the closer");
   await page.key("j");
   await page.quiet();
   await page.until(
@@ -53,7 +90,7 @@ test("4wch9t9w: with vim keys on, j off a mermaid closer lands on the following 
     15000,
   );
   await page.quiet();
-  assert.equal((await page.caret()).focus, prose, "j off the closer did not land on the following prose");
+  assert.equal(await focus(), prose, "j off the closer did not land on the following prose");
   const mark = await page.eval(`(() => {
     const node = document.querySelector(".md-vim-block-mark");
     if (!node) return null;

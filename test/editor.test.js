@@ -26163,6 +26163,55 @@ test("4cypbkfe vim l from a marker moves one character", () => {
   });
 });
 
+// Ticket 4wch9t9w. blockSpan of a mermaid closer is the fence body, so h and l
+// on that line look like leaving and the snap pulls onto the body. The closer
+// is still the lock, and a step that stays there is one character on that line.
+test("4wch9t9w vim h and l on a mermaid closer stay on that line", () => {
+  return withVimFlag(true, (mounted) => {
+    const selection = installCharStep(mounted);
+    const press = (key) => vimType(mounted, key);
+    const doc = "Above.\n\n```mermaid\ngraph TD\nA-->B\n```\n\nAfter.\n";
+    const closer = doc.lastIndexOf("```");
+    const prose = doc.indexOf("After.");
+    const bodyEnd = blockSpan(doc, closer)[1];
+    assert.equal(closer, 34);
+    assert.equal(bodyEnd, 33);
+    assert.equal(prose, 39);
+    assert.equal(doc[closer], "`");
+    assert.equal(doc[closer + 2], "`");
+
+    const open = (at) => {
+      selection.step = 1;
+      selection.rangeCount = 0;
+      return createEditor(mounted.root, doc, at);
+    };
+
+    const line = open(closer);
+    assert.equal(line.getState().cursor, closer);
+    press("l");
+    assert.equal(line.getState().cursor, closer + 1, "l on the closer snapped onto the body");
+    assert.notEqual(line.getState().cursor, bodyEnd);
+    press("l");
+    assert.equal(line.getState().cursor, closer + 2, "l did not reach the last backtick");
+    press("l");
+    assert.equal(line.getState().cursor, closer + 2, "l on the last backtick left it");
+    press("0");
+    assert.equal(line.getState().cursor, closer, "0 did not land on the first backtick");
+    press("h");
+    assert.equal(line.getState().cursor, closer, "h on the first backtick left it");
+    press("$");
+    assert.equal(line.getState().cursor, closer + 2, "$ did not land on the last backtick");
+    press("h");
+    assert.equal(line.getState().cursor, closer + 1, "h on the closer left the line");
+    press("0");
+    press("w");
+    assert.equal(line.getState().cursor, prose, "w from the closer did not land on the following prose");
+    press("b");
+    assert.equal(line.getState().cursor, closer, "b from the prose did not land on the closer");
+    line.destroy();
+  });
+});
+
 test("glyph buttons use one press scale and copy controls show a flyout", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");

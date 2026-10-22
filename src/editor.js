@@ -10496,15 +10496,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         else {
           // Leaving the block puts the next letter on the line under it.
           // A step that started before the content and is still in that lock has not left.
+          // The closer is past that content, so the same snap would pull h and l onto the body.
           const before = state.cursor;
           moveCaret(forward ? "forward" : "backward", "character", extend);
           const [start, end] = blockSpan(state.doc, before);
-          if (state.cursor < start || state.cursor > end) {
-            let held = false;
-            if (before < start) {
-              const lock = lockSpans(state.doc).find((span) => before >= span.start && before <= span.end);
-              held = Boolean(lock && state.cursor >= lock.start && state.cursor <= lock.end);
-            }
+          const lock = lockSpans(state.doc).find((span) => before >= span.start && before <= span.end);
+          const inLock = (at) => Boolean(lock && at >= lock.start && at <= lock.end);
+          if (before > end && inLock(before)) {
+            if (state.cursor <= end || !inLock(state.cursor)) moveVimCaret(extend ? state.anchor : before, before);
+          } else if (state.cursor < start || state.cursor > end) {
+            const held = before < start && inLock(state.cursor);
             if (!held) {
               const at = forward ? end : start;
               moveVimCaret(extend ? state.anchor : at, at);
