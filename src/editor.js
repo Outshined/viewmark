@@ -14053,8 +14053,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const place = buttonAnchor(button);
     const doc = typeof document !== "undefined" ? document : null;
     writeClipboard(text).then((ok) => {
-      if (!ok || closed || !button) return;
-      showCopyFlyout(doc, button, message, place);
+      if (closed || !button) return;
+      showCopyFlyout(doc, button, ok ? message : "Could not copy to clipboard", place);
     });
   }
 

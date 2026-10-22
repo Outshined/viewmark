@@ -26537,22 +26537,42 @@ test("glyph buttons use one press scale and copy controls show a flyout", async 
     assertPressed(remove);
     assertStill(ticketMark);
 
+    const assertCopyError = () => {
+      const denied = flyouts();
+      assert.equal(denied.length, 1);
+      assert.equal(denied[0].textContent, "Could not copy to clipboard");
+      assert.equal(denied[0].tagName, "SPAN");
+      assert.equal(denied[0].parentElement, mounted.body);
+      assert.equal(denied[0].getAttribute("role"), "status");
+      assert.equal(denied[0].getAttribute("tabindex"), null);
+      assert.equal(denied[0].focused, false);
+      assert.equal(denied[0].styleProps.position, "fixed");
+      assert.equal(denied[0].styleProps.left, "18px");
+      assert.equal(denied[0].styleProps.top, "24px");
+      assert.equal(copyId.focused, false);
+      assert.equal(copyId.getAttribute("title"), "Copy ticket id");
+      assertStill(ticketMark);
+      t.mock.timers.tick(999);
+      assert.equal(flyouts().length, 1);
+      t.mock.timers.tick(1);
+      assert.equal(flyouts().length, 0);
+      assertStill(ticketMark);
+    };
+
     mode = "reject";
     const rejectedAt = writes.length;
     press(copyId);
     await settle();
     assert.equal(writes.length, rejectedAt + 1);
     assert.equal(writes.at(-1), "aaaaaaaa");
-    assert.equal(flyouts().length, 0);
-    assertStill(ticketMark);
+    assertCopyError();
 
     mode = "throw";
     const thrownAt = writes.length;
     press(copyId);
     await settle();
     assert.equal(writes.length, thrownAt + 1);
-    assert.equal(flyouts().length, 0);
-    assertStill(ticketMark);
+    assertCopyError();
 
     mode = "ok";
     navClipboard.clipboard = {};
@@ -26560,8 +26580,7 @@ test("glyph buttons use one press scale and copy controls show a flyout", async 
     press(copyId);
     await settle();
     assert.equal(writes.length, missedAt);
-    assert.equal(flyouts().length, 0);
-    assertStill(ticketMark);
+    assertCopyError();
 
     navClipboard.clipboard = {
       writeText(text) {
