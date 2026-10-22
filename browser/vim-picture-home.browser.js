@@ -71,7 +71,7 @@ test("r84sx9dx: with vim keys on, Home from the newline after a picture stays on
     const selected = await page.caret();
     assert.equal(Math.min(selected.anchor, selected.focus), picture.start, `${picture.name}: the click did not start at the picture`);
     assert.equal(Math.max(selected.anchor, selected.focus), picture.gap, `${picture.name}: the click did not end on the newline after the picture`);
-    await page.key("ArrowLeft");
+    await page.key("←");
     await page.quiet();
     const gap = await page.caret();
     assert.equal(gap.focus, picture.gap, `${picture.name}: ArrowLeft left ${gap.focus}, not the newline after the picture`);
