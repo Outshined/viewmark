@@ -72,11 +72,30 @@ test("bkmujvq5: the first line and its caret sit below the path strip", async (t
   await page.click(point.x, point.y);
   await page.quiet();
   const clicked = await page.caret();
-  const stripBottom = await page.eval(`document.querySelector("#editor .md-path-strip").getBoundingClientRect().bottom`);
-  assert.equal(clicked.focus, 0);
+  // A click a few pixels in hits a glyph on the first line, not its first offset.
+  const onLine = await page.eval(`(() => {
+    const line = [...document.querySelectorAll("#editor .md-line")].find((el) => el.textContent.includes("row 00"));
+    const nodes = [line, ...line.querySelectorAll("[data-start]")];
+    let start = Infinity;
+    let end = -Infinity;
+    for (const node of nodes) {
+      if (!node.dataset || node.dataset.start == null || node.dataset.start === "") continue;
+      const from = Number(node.dataset.start);
+      const to = node.dataset.end == null || node.dataset.end === "" ? from : Number(node.dataset.end);
+      if (Number.isFinite(from)) start = Math.min(start, from);
+      if (Number.isFinite(to)) end = Math.max(end, to);
+    }
+    return {
+      start,
+      end,
+      stripBottom: document.querySelector("#editor .md-path-strip").getBoundingClientRect().bottom,
+    };
+  })()`);
+  assert.ok(Number.isFinite(onLine.start) && Number.isFinite(onLine.end) && onLine.start <= onLine.end, `no span for the first line`);
+  assert.ok(Number.isFinite(clicked.focus) && clicked.focus >= onLine.start && clicked.focus <= onLine.end, `caret ${clicked.focus} is off the first line ${onLine.start}-${onLine.end}`);
   assert.ok(clicked.rect, "no caret rect");
-  assert.ok(clicked.rect.top >= stripBottom - 1, `caret top ${clicked.rect.top} is under the strip ${stripBottom}`);
-  assert.ok(clicked.rect.bottom > stripBottom, `caret bottom ${clicked.rect.bottom} is not on the first line`);
+  assert.ok(clicked.rect.top >= onLine.stripBottom - 1, `caret top ${clicked.rect.top} is under the strip ${onLine.stripBottom}`);
+  assert.ok(clicked.rect.bottom > onLine.stripBottom, `caret bottom ${clicked.rect.bottom} is not on the first line`);
 
   await page.eval("window.scrollTo(0, document.scrollingElement.scrollHeight); true");
   await page.frame();
