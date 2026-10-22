@@ -27443,3 +27443,221 @@ test("search files and tickets", () => {
     mounted.restore();
   }
 });
+
+// The hub answers inside send. A refused edit has to do that too, or the page
+// would keep the command that never landed.
+function gateTransport(doc, cursor) {
+  const inner = createMemoryTransport(doc, cursor);
+  let listener = null;
+  let refuse = false;
+  const sent = [];
+  return {
+    username: "me",
+    memory: true,
+    sent,
+    setRefuse(next) { refuse = next === true; },
+    send(message) {
+      sent.push(message);
+      if (message && message.type === "edit" && refuse) {
+        if (listener) listener({ type: "error", status: 409, heldBy: "qa-two" });
+        return true;
+      }
+      return inner.send(message);
+    },
+    subscribe(fn) {
+      listener = fn;
+      const stop = inner.subscribe(fn);
+      return () => {
+        if (listener === fn) listener = null;
+        stop();
+      };
+    },
+    deliver(message) {
+      if (listener) listener(message);
+    },
+  };
+}
+
+test("u after dot restores only that repeat (ticket py7xfb9e)", () => {
+  return withVimFlag(true, (mounted) => {
+    const opened = recordingTransport("abxcd\n", 3);
+    const view = createEditor(mounted.root, "abxcd\n", 3, opened.transport);
+    vimType(mounted, "x");
+    assert.equal(view.getState().doc, "abxd\n");
+    vimType(mounted, "0");
+    vimType(mounted, ".");
+    const after = view.getState().doc;
+    assert.notEqual(after, "abxd\n");
+    assert.equal(after.includes("c"), false);
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, "abxd\n");
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, "abxcd\n");
+    view.destroy();
+  });
+});
+
+test("a counted insert and a repeated cw are each one undo (ticket py7xfb9e)", () => {
+  return withVimFlag(true, (mounted) => {
+    const opened = recordingTransport("x\n", 0);
+    const view = createEditor(mounted.root, "x\n", 0, opened.transport);
+    vimType(mounted, "3");
+    vimType(mounted, "i");
+    vimType(mounted, "a");
+    vimType(mounted, "b");
+    vimType(mounted, "Escape");
+    assert.equal(view.getState().doc, "abababx\n");
+    assert.equal(opened.edits[0].group, undefined);
+    assert.equal(opened.edits.slice(1).every((edit) => edit.group === true), true);
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, "x\n");
+    view.destroy();
+
+    const changed = recordingTransport("one two three four\n", 0);
+    const word = createEditor(mounted.root, "one two three four\n", 0, changed.transport);
+    vimType(mounted, "2");
+    vimType(mounted, "c");
+    vimType(mounted, "w");
+    vimType(mounted, "X");
+    vimType(mounted, "X");
+    vimType(mounted, "Escape");
+    const cut = word.getState().doc;
+    assert.equal(cut.startsWith("XX"), true);
+    assert.equal(cut.includes("one"), false);
+    assert.equal(changed.edits[0].group, undefined);
+    assert.equal(changed.edits.slice(1).every((edit) => edit.group === true), true);
+    const beforeDot = changed.edits.length;
+    vimType(mounted, "w");
+    vimType(mounted, ".");
+    assert.equal(word.getState().doc, "XX XX\n");
+    assert.equal(changed.edits.length, beforeDot + 1);
+    assert.equal(changed.edits.at(-1).group, undefined);
+    assert.equal(changed.edits.at(-1).text, "XX");
+    vimType(mounted, "u");
+    assert.equal(word.getState().doc, cut);
+    vimType(mounted, "u");
+    assert.equal(word.getState().doc, "one two three four\n");
+    word.destroy();
+  });
+});
+
+test("a refused span flashes the holder and keeps the remembered change (ticket py7xfb9e)", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  return withVimFlag(true, (mounted) => {
+    const transport = gateTransport("abcd\n\nzz\n", 0);
+    const view = createEditor(mounted.root, "abcd\n\nzz\n", 0, transport);
+    const flash = () => {
+      const mark = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-lock") && node.textContent === "qa-two")[0];
+      assert.ok(mark);
+      return mark.classList.contains("md-flash");
+    };
+    transport.deliver({ type: "locks", lines: [{ index: 0, username: "qa-two" }] });
+    transport.setRefuse(true);
+    vimType(mounted, "x");
+    assert.equal(view.getState().doc, "abcd\n\nzz\n");
+    assert.equal(flash(), true);
+    transport.setRefuse(false);
+    vimType(mounted, ".");
+    assert.equal(view.getState().doc, "abcd\n\nzz\n");
+
+    vimType(mounted, "x");
+    assert.equal(view.getState().doc, "bcd\n\nzz\n");
+    vimType(mounted, "0");
+    transport.deliver({ type: "locks", lines: [{ index: 0, username: "qa-two" }] });
+    transport.setRefuse(true);
+    vimType(mounted, "x");
+    assert.equal(view.getState().doc, "bcd\n\nzz\n");
+    assert.equal(flash(), true);
+    transport.setRefuse(false);
+    vimType(mounted, ".");
+    assert.equal(view.getState().doc.includes("a"), false);
+    assert.notEqual(view.getState().doc, "bcd\n\nzz\n");
+    vimType(mounted, "u");
+    assert.equal(view.getState().doc, "bcd\n\nzz\n");
+    view.destroy();
+  });
+});
+
+test("vim keys off types a period, and turning them off and on clears the change (ticket py7xfb9e)", () => {
+  return withVimFlag(false, (mounted) => {
+    const view = createEditor(mounted.root, "ab\n", 0);
+    vimType(mounted, ".");
+    assert.equal(view.getState().doc, ".ab\n");
+    view.destroy();
+  }).then(() => withVimFlag(true, (mounted) => {
+    const view = createEditor(mounted.root, "abcd\n", 0);
+    const click = (node) => node.listeners.click({ preventDefault() {}, stopPropagation() {} });
+    const button = () => walkNodes(mounted.root, (node) => node.tagName === "BUTTON" && node.textContent === "Vim keys")[0];
+    vimType(mounted, "x");
+    assert.equal(view.getState().doc, "bcd\n");
+    click(button());
+    assert.equal(button().getAttribute("aria-checked"), "false");
+    click(button());
+    assert.equal(button().getAttribute("aria-checked"), "true");
+    vimType(mounted, ".");
+    assert.equal(view.getState().doc, "bcd\n");
+    view.destroy();
+  }));
+});
+
+test("a file switch and a remote edit keep the remembered change (ticket py7xfb9e)", () => {
+  return withVimFlag(true, (mounted) => {
+    const transport = holdingTransport();
+    transport.username = "me";
+    const view = createEditor(mounted.root, "abcd\n", 0, transport);
+    vimType(mounted, "x");
+    const first = transport.sent.filter((message) => message.type === "edit");
+    assert.equal(first.length, 1);
+    assert.equal(first[0].op, "delete");
+    transport.deliver({
+      type: "doc",
+      rev: 1,
+      text: "bcd\n",
+      from: 0,
+      to: 1,
+      inserted: "",
+      actor: "me",
+      cursor: 0,
+      anchor: 0,
+      undo: [],
+      redo: [],
+    });
+    assert.equal(view.getState().doc, "bcd\n");
+    transport.deliver({
+      type: "file",
+      rev: 1,
+      path: "b.md",
+      text: "wxyz\n",
+      cursor: 0,
+      anchor: 0,
+      locks: [],
+    });
+    assert.equal(view.getState().doc, "wxyz\n");
+    transport.deliver({
+      type: "doc",
+      rev: 2,
+      text: "pqrs\n",
+      from: 0,
+      to: 5,
+      inserted: "pqrs\n",
+      actor: "qa-two",
+      cursor: 0,
+      anchor: 0,
+      undo: [],
+      redo: [],
+    });
+    assert.equal(view.getState().doc, "pqrs\n");
+    const before = transport.sent.length;
+    vimType(mounted, ".");
+    const again = transport.sent.slice(before).filter((message) => message.type === "edit");
+    assert.equal(again.length, 1);
+    const edit = again[0];
+    if (edit.op === "delete") assert.equal(edit.anchor, edit.cursor);
+    else {
+      assert.equal(edit.op, "insert");
+      assert.equal(edit.text, "");
+      assert.equal(edit.cursor - edit.anchor, 1);
+    }
+    view.destroy();
+  });
+});

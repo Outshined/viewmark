@@ -1,5 +1,5 @@
 // Pure key match. The page applies the effect. This module does not touch the editor.
-import { codeFenceBodies, codeSpanAt, commentStorageReason, commentThreads, createState, deleteForward, endBeforeTail, findSpans, imageLine, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, wordStop } from "./doc.js";
+import { backspace, codeFenceBodies, codeSpanAt, commentStorageReason, commentThreads, createState, deleteForward, endBeforeTail, findSpans, imageLine, insert, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, wordStop } from "./doc.js";
 
 const REPEAT_CAP = 10000;
 const PAGE = 20;
@@ -15,6 +15,69 @@ const OPERATORS = new Set(["d", "c", "y", ">", "<", "=", "gu", "gU", "g~"]);
 
 function emptyInput() {
   return { prefixRepeat: "", operator: null, motionRepeat: "", motion: null, keyBuffer: "" };
+}
+
+function copyKey(key) {
+  const src = key || {};
+  return {
+    key: typeof src.key === "string" ? src.key : "",
+    ctrl: src.ctrl === true,
+    meta: src.meta === true,
+    alt: src.alt === true,
+    shift: src.shift === true,
+  };
+}
+
+function copyChange(change) {
+  if (!change || typeof change !== "object") return null;
+  const visual = change.visual && typeof change.visual === "object"
+    ? {
+      mode: change.visual.mode === "visual-line" ? "visual-line" : "visual",
+      lines: Number.isInteger(change.visual.lines) ? change.visual.lines : 0,
+      chars: Number.isInteger(change.visual.chars) ? change.visual.chars : 0,
+      lastChars: Number.isInteger(change.visual.lastChars) ? change.visual.lastChars : 0,
+    }
+    : null;
+  return {
+    count: Number.isInteger(change.count) ? change.count : null,
+    keys: Array.isArray(change.keys) ? change.keys.map(copyKey) : [],
+    insert: change.insert === "repeat" || change.insert === "interlace" || change.insert === "once" ? change.insert : null,
+    enter: typeof change.enter === "string" ? change.enter : null,
+    log: Array.isArray(change.log) ? change.log.map(copyEntry) : null,
+    visual,
+    nested: change.nested === true,
+  };
+}
+
+function copyEntry(entry) {
+  if (!entry || typeof entry !== "object") return { t: "text", text: "" };
+  if (entry.t === "text") return { t: "text", text: typeof entry.text === "string" ? entry.text : "" };
+  if (entry.t === "edit") return { t: "edit", change: copyChange(entry.change) };
+  return { t: typeof entry.t === "string" ? entry.t : "text" };
+}
+
+function copyRecording(recording) {
+  if (!recording || typeof recording !== "object") return null;
+  const visual = recording.visual && typeof recording.visual === "object"
+    ? {
+      mode: recording.visual.mode === "visual-line" ? "visual-line" : "visual",
+      lines: Number.isInteger(recording.visual.lines) ? recording.visual.lines : 0,
+      chars: Number.isInteger(recording.visual.chars) ? recording.visual.chars : 0,
+      lastChars: Number.isInteger(recording.visual.lastChars) ? recording.visual.lastChars : 0,
+    }
+    : null;
+  return {
+    count: Number.isInteger(recording.count) ? recording.count : null,
+    keys: Array.isArray(recording.keys) ? recording.keys.map(copyKey) : [],
+    insert: recording.insert || null,
+    enter: typeof recording.enter === "string" ? recording.enter : null,
+    log: Array.isArray(recording.log) ? recording.log.map(copyEntry) : [],
+    visual,
+    baseDoc: typeof recording.baseDoc === "string" ? recording.baseDoc : null,
+    baseCursor: Number.isInteger(recording.baseCursor) ? recording.baseCursor : 0,
+    baseAnchor: Number.isInteger(recording.baseAnchor) ? recording.baseAnchor : 0,
+    raw: recording.raw === true,
+  };
 }
 
 function cloneVim(vim) {
@@ -39,6 +102,10 @@ function cloneVim(vim) {
     find: src.find ? { ch: src.find.ch, forward: src.find.forward !== false, till: src.find.till === true } : null,
     column: Number.isInteger(src.column) ? src.column : null,
     once: src.once === true,
+    strokes: Array.isArray(src.strokes) ? src.strokes.map(copyKey) : [],
+    change: copyChange(src.change),
+    recording: copyRecording(src.recording),
+    replaying: src.replaying === true,
   };
 }
 
@@ -2569,7 +2636,7 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
   }
   if (id === "ctrl-w") return pack("full", true, next, null);
   if (id === "p" || id === "P") return putRegister(vim, doc, cursor, raw, id === "p");
-  if (id === ".") return pack("none", true, clearInput(vim), null);
+  if (id === ".") return repeatDot(vim);
   if (id === "i" || id === "a" || id === "I" || id === "A") {
     next.mode = "insert";
     next.once = false;
@@ -3120,7 +3187,7 @@ function startPrefix(vim, key) {
   return pack("partial", true, next, null);
 }
 
-export function vimKey(input) {
+function vimKeyBody(input) {
   const src = input || {};
   if (src.flag === false) return pack("none", false, cloneVim(src.vim), null);
   const vim = cloneVim(src.vim);
@@ -3173,4 +3240,697 @@ export function vimSubmit(input) {
   if (src.kind === "search") return submitSearch(vim, doc, cursor, line, src.forward !== false);
   if (src.kind === "ex") return submitEx(vim, doc, cursor, raw, line);
   return pack("none", true, vim, null);
+}
+
+// A repeat plays the stored command through these same keys. The play is not a new change.
+function repeatDot(vim) {
+  if (vim.mode === "visual" || vim.mode === "visual-line") {
+    const next = clearInput(vim);
+    next.mode = vim.mode;
+    next.once = vim.once === true;
+    return pack("full", true, next, null);
+  }
+  if (vim.replaying) return pack("full", true, clearInput(vim), null);
+  const count = typedCount(vim);
+  const next = clearInput(vim);
+  if (!next.change) return pack("full", true, next, null);
+  return pack("full", true, next, { type: "repeat", count });
+}
+
+function strokeKey(key) {
+  if (!key || typeof key.key !== "string" || key.key === "") return false;
+  if (key.key === "Shift" || key.key === "Control" || key.key === "Alt" || key.key === "Meta") return false;
+  return true;
+}
+
+function pendingInput(vim) {
+  const input = vim && vim.input;
+  if (!input) return false;
+  return !!input.operator || !!input.keyBuffer;
+}
+
+function pushStroke(vim, key) {
+  const strokes = Array.isArray(vim.strokes) ? vim.strokes.slice() : [];
+  strokes.push(copyKey(key));
+  return { ...vim, strokes };
+}
+
+function bareDot(before, key) {
+  if (!key || key.ctrl || key.meta || key.alt || key.shift) return false;
+  if (key.key !== ".") return false;
+  const input = before.input || emptyInput();
+  return !input.operator && !input.keyBuffer;
+}
+
+function explicitCount(vim) {
+  const input = (vim && vim.input) || emptyInput();
+  let prefix = input.prefixRepeat || "";
+  let motion = input.motionRepeat || "";
+  if (/^\d+$/.test(input.keyBuffer || "")) {
+    if (input.operator) motion = input.keyBuffer;
+    else prefix = input.keyBuffer;
+  }
+  if (prefix === "" && motion === "") return null;
+  return repeatOf({ input: { prefixRepeat: prefix, motionRepeat: motion } });
+}
+
+function stripCounts(keys) {
+  const out = [];
+  let open = false;
+  for (const key of keys || []) {
+    const digit = !key.ctrl && !key.meta && !key.alt && /^[0-9]$/.test(key.key);
+    if (digit && !(key.key === "0" && !open)) {
+      open = true;
+      continue;
+    }
+    open = false;
+    out.push(copyKey(key));
+  }
+  return out;
+}
+
+function enterOf(keys) {
+  if (!keys || keys.length === 0) return null;
+  if (keys.length === 1) {
+    const id = keys[0].key;
+    if (id === "i" || id === "a" || id === "A" || id === "I" || id === "o" || id === "O") return id;
+  }
+  if (keys.length === 2 && keys[0].key === "g" && keys[1].key === "I") return "gI";
+  return null;
+}
+
+function excludedChange(change, result) {
+  const keys = change && change.keys;
+  if (!keys || keys.length === 0) return true;
+  const first = keys[0];
+  const id = first.key;
+  if (first.ctrl && id.toLowerCase() === "r") return true;
+  if (id === "y" || id === "Y" || id === "=" || id === "u" || id === "U") return true;
+  if (id === "/" || id === "?" || id === "n" || id === "N" || id === "*" || id === "#" || id === ":" || id === "z") return true;
+  if (id === "g" && keys[1]) {
+    const second = keys[1].key;
+    if (second === "n" || second === "N" || second === "*" || second === "#" || second === "c") return true;
+  }
+  const effect = result && result.effect;
+  if (!effect) return false;
+  return effect.type === "history" || effect.type === "prompt" || effect.type === "scroll"
+    || effect.type === "comment-add" || effect.type === "comment-current" || effect.type === "nohlsearch";
+}
+
+function textChanged(src, result) {
+  const effect = result && result.effect;
+  if (!effect) return false;
+  if (effect.type === "forward-delete" || effect.type === "backspace") return true;
+  if (effect.type !== "splice") return false;
+  const doc = typeof src.doc === "string" ? src.doc : "";
+  const text = typeof effect.text === "string" ? effect.text : "";
+  if (!Number.isInteger(effect.from) || !Number.isInteger(effect.to)) return false;
+  return text !== doc.slice(effect.from, effect.to);
+}
+
+function measureVisual(doc, anchor, cursor, mode, raw) {
+  const lo = Math.min(anchor, cursor);
+  const hi = Math.max(anchor, cursor);
+  const lines = vimLines(doc, lo, raw);
+  const a = lineIndex(lines, doc, lo, raw);
+  if (mode === "visual-line") {
+    const b = lineIndex(lines, doc, hi, raw);
+    return { mode: "visual-line", lines: Math.max(1, Math.abs(b - a) + 1), chars: 0, lastChars: 0 };
+  }
+  const lastAt = hi > lo ? stepBack(doc, hi) : lo;
+  const b = lineIndex(lines, doc, Math.max(0, Math.min(doc.length, lastAt)), raw);
+  if (a === b) {
+    const n = unitsUntil(doc, lo, hi);
+    return { mode: "visual", lines: 1, chars: n, lastChars: n };
+  }
+  const lastLine = lines[Math.max(a, b)] || lines[lines.length - 1];
+  const lastEnd = Math.min(hi, lastLine.end);
+  const lastChars = unitsUntil(doc, lastLine.start, Math.max(lastLine.start, lastEnd));
+  return { mode: "visual", lines: Math.abs(b - a) + 1, chars: unitsUntil(doc, lo, Math.min(hi, lines[a].end)), lastChars };
+}
+
+function buildChange(before, src, vim) {
+  const doc = typeof src.doc === "string" ? src.doc : "";
+  const cursor = clamp(src.cursor, doc.length);
+  const anchor = src.anchor == null ? cursor : clamp(src.anchor, doc.length);
+  const raw = src.raw === true;
+  let visual = null;
+  if (before.mode === "visual" || before.mode === "visual-line") {
+    visual = measureVisual(doc, anchor, cursor, before.mode, raw);
+  }
+  const keys = stripCounts(vim.strokes);
+  const enter = enterOf(keys);
+  let insert = null;
+  if (vim.mode === "insert") {
+    if (!visual && (enter === "o" || enter === "O")) insert = "interlace";
+    else if (!visual && (enter === "i" || enter === "a" || enter === "A" || enter === "I" || enter === "gI")) insert = "repeat";
+    else insert = "once";
+  }
+  return {
+    count: explicitCount(before),
+    keys,
+    insert,
+    enter: insert ? enter : null,
+    log: insert ? [] : null,
+    visual,
+    nested: false,
+  };
+}
+
+function recordingFrom(change, src) {
+  const doc = typeof src.doc === "string" ? src.doc : "";
+  return {
+    count: change.count,
+    keys: change.keys.map(copyKey),
+    insert: change.insert,
+    enter: change.enter,
+    log: [],
+    visual: change.visual,
+    baseDoc: change.insert === "interlace" ? doc : null,
+    baseCursor: clamp(src.cursor, doc.length),
+    baseAnchor: clamp(src.anchor == null ? src.cursor : src.anchor, doc.length),
+    raw: src.raw === true,
+  };
+}
+
+function finishCommand(before, src, result) {
+  const vim = result.vim;
+  const entered = vim.mode === "insert" && !vim.once && before.mode !== "insert";
+  if (entered) {
+    const change = buildChange(before, src, vim);
+    if (excludedChange(change, result)) {
+      return { ...result, vim: { ...vim, strokes: [], recording: null } };
+    }
+    return {
+      ...result,
+      vim: { ...vim, strokes: [], recording: recordingFrom(change, src), change: copyChange(before.change) },
+    };
+  }
+  if (textChanged(src, result)) {
+    const change = buildChange(before, src, vim);
+    if (!excludedChange(change, result)) {
+      return { ...result, vim: { ...vim, strokes: [], recording: null, change } };
+    }
+  }
+  return { ...result, vim: { ...vim, strokes: [] } };
+}
+
+function surrogateKey(text) {
+  if (typeof text !== "string" || text.length !== 2) return false;
+  const hi = text.charCodeAt(0);
+  const lo = text.charCodeAt(1);
+  return hi >= 0xD800 && hi <= 0xDBFF && lo >= 0xDC00 && lo <= 0xDFFF;
+}
+
+function insertLogEntry(key) {
+  if (key.ctrl || key.meta || key.alt) {
+    const id = key.key.length === 1 ? key.key.toLowerCase() : key.key;
+    if ((key.ctrl || key.meta) && id === "w") return { t: "cw" };
+    if (key.ctrl && !key.meta && id === "u") return { t: "cu" };
+    return null;
+  }
+  if (key.key === "Backspace") return { t: "bs" };
+  if (key.key === "Delete") return { t: "del" };
+  if (key.key === "ArrowLeft") return { t: "left" };
+  if (key.key === "ArrowRight") return { t: "right" };
+  if (key.key === "ArrowUp") return { t: "up" };
+  if (key.key === "ArrowDown") return { t: "down" };
+  if (key.key === "Enter") return { t: "text", text: "\n" };
+  if (typeof key.key === "string" && (key.key.length === 1 || surrogateKey(key.key))) return { t: "text", text: key.key };
+  return null;
+}
+
+function changeFromRecording(rec) {
+  return {
+    count: Number.isInteger(rec.count) ? rec.count : null,
+    keys: rec.keys.map(copyKey),
+    insert: rec.insert === "repeat" || rec.insert === "interlace" || rec.insert === "once" ? rec.insert : null,
+    enter: typeof rec.enter === "string" ? rec.enter : null,
+    log: rec.log.map(copyEntry),
+    visual: rec.visual,
+    nested: false,
+  };
+}
+
+function freshState(doc, cursor, anchor, raw, vim) {
+  const text = typeof doc === "string" ? doc : "";
+  const next = cloneVim(vim);
+  next.replaying = true;
+  next.recording = null;
+  next.strokes = [];
+  next.input = emptyInput();
+  next.once = false;
+  next.mode = "normal";
+  return {
+    doc: text,
+    cursor: clamp(cursor, text.length),
+    anchor: clamp(anchor == null ? cursor : anchor, text.length),
+    raw: raw === true,
+    layout: false,
+    move: null,
+    vim: next,
+  };
+}
+
+function applyBackspace(state) {
+  const next = backspace(createState(state.doc, state.cursor, state.cursor));
+  if (!next || next.refused || typeof next.doc !== "string") return;
+  state.doc = next.doc;
+  state.cursor = next.cursor;
+  state.anchor = next.cursor;
+}
+
+function applyDeleteForward(state) {
+  const next = deleteForward(createState(state.doc, state.cursor, state.cursor));
+  if (!next || next.refused || typeof next.doc !== "string") return;
+  state.doc = next.doc;
+  state.cursor = next.cursor;
+  state.anchor = next.cursor;
+}
+
+function applyInsertText(state, text) {
+  const value = typeof text === "string" ? text : "";
+  if (!value) return;
+  const exact = !/[\n\r]/.test(value);
+  const next = insert(createState(state.doc, state.cursor, state.cursor), value, false, state.raw, exact);
+  if (!next || next.refused || typeof next.doc !== "string") return;
+  state.doc = next.doc;
+  state.cursor = next.cursor;
+  state.anchor = next.cursor;
+}
+
+function repeatWordChar(ch) {
+  return /[A-Za-z0-9_]/.test(ch);
+}
+
+function wordDeleteSpan(doc, cursor) {
+  const space = (ch) => /\s/.test(ch);
+  let index = cursor;
+  while (index > 0 && space(doc[index - 1])) index -= 1;
+  if (index > 0) {
+    const word = repeatWordChar(doc[index - 1]);
+    while (index > 0 && !space(doc[index - 1]) && repeatWordChar(doc[index - 1]) === word) index -= 1;
+  }
+  let start = index;
+  let end = cursor;
+  const atoms = plan(doc, cursor).atoms || [];
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const atom of atoms) {
+      if (!atom || atom.end <= start || atom.start >= end) continue;
+      if (atom.start < start || atom.end > end) {
+        start = Math.min(start, atom.start);
+        end = Math.max(end, atom.end);
+        grew = true;
+      }
+    }
+  }
+  return { from: start, to: end };
+}
+
+function applyWordDelete(state) {
+  if (state.cursor <= 0) return;
+  const span = wordDeleteSpan(state.doc, state.cursor);
+  if (!span || span.from === span.to) {
+    applyBackspace(state);
+    return;
+  }
+  state.doc = state.doc.slice(0, span.from) + state.doc.slice(span.to);
+  state.cursor = span.from;
+  state.anchor = span.from;
+}
+
+function moveArrow(state, dir) {
+  if (typeof state.move === "function") {
+    const at = state.move(state.doc, state.cursor, dir);
+    if (Number.isInteger(at)) {
+      state.cursor = clamp(at, state.doc.length);
+      state.anchor = state.cursor;
+      return;
+    }
+  }
+  const doc = state.doc;
+  if (dir === "left") state.cursor = stepBack(doc, state.cursor);
+  else if (dir === "right") {
+    if (state.cursor < doc.length && !breaksLine(doc, state.cursor)) state.cursor += unitLen(doc, state.cursor);
+  } else if (dir === "up" || dir === "down") {
+    const moved = moveVertical(doc, state.cursor, dir === "down" ? 1 : -1, 1, state.raw, null, false);
+    if (moved && Number.isInteger(moved.cursor)) state.cursor = moved.cursor;
+  }
+  state.cursor = clamp(state.cursor, state.doc.length);
+  state.anchor = state.cursor;
+}
+
+function applyLocal(state, effect) {
+  if (!effect) return;
+  if (effect.type === "splice") {
+    const text = typeof effect.text === "string" ? effect.text : "";
+    const from = Number.isInteger(effect.from) ? effect.from : state.cursor;
+    const to = Number.isInteger(effect.to) ? effect.to : from;
+    state.doc = state.doc.slice(0, from) + text + state.doc.slice(to);
+    const caret = Number.isInteger(effect.caret) ? effect.caret : from + text.length;
+    state.cursor = clamp(caret, state.doc.length);
+    state.anchor = state.cursor;
+    return;
+  }
+  if (effect.type === "caret") {
+    const cursor = Number.isInteger(effect.cursor) ? effect.cursor : state.cursor;
+    const anchor = Number.isInteger(effect.anchor) ? effect.anchor : cursor;
+    state.cursor = clamp(cursor, state.doc.length);
+    state.anchor = clamp(anchor, state.doc.length);
+    return;
+  }
+  if (effect.type === "forward-delete") {
+    applyDeleteForward(state);
+    return;
+  }
+  if (effect.type === "backspace") {
+    applyBackspace(state);
+    return;
+  }
+  if (effect.type === "word-delete") {
+    applyWordDelete(state);
+    return;
+  }
+  if (effect.type === "view-motion") {
+    const command = effect.command;
+    const repeat = Number.isInteger(effect.repeat) && effect.repeat > 0 ? effect.repeat : 1;
+    const dir = command === "h" ? "left" : command === "l" ? "right" : command === "k" || command === "gk" ? "up" : command === "j" || command === "gj" ? "down" : "";
+    for (let n = 0; n < repeat && dir; n += 1) moveArrow(state, dir);
+  }
+}
+
+function feed(state, key) {
+  const result = vimKeyBody({
+    vim: state.vim,
+    key,
+    doc: state.doc,
+    cursor: state.cursor,
+    anchor: state.anchor,
+    raw: state.raw,
+    layout: state.layout === true,
+    flag: true,
+  });
+  state.vim = result.vim || state.vim;
+  state.vim.replaying = true;
+  applyLocal(state, result.effect);
+}
+
+function feedKeys(state, keys) {
+  for (const key of keys || []) feed(state, copyKey(key));
+}
+
+function playLog(state, log) {
+  for (const entry of log || []) {
+    if (!entry) continue;
+    if (entry.t === "text") applyInsertText(state, entry.text);
+    else if (entry.t === "bs") applyBackspace(state);
+    else if (entry.t === "del") applyDeleteForward(state);
+    else if (entry.t === "cw") applyWordDelete(state);
+    else if (entry.t === "cu") feed(state, { key: "u", ctrl: true, meta: false, alt: false, shift: false });
+    else if (entry.t === "left" || entry.t === "right" || entry.t === "up" || entry.t === "down") moveArrow(state, entry.t);
+    else if (entry.t === "edit" && entry.change) playNested(state, entry.change);
+  }
+}
+
+function playNested(state, change) {
+  const savedChange = state.vim.change;
+  const savedRecording = state.vim.recording;
+  const nested = copyChange(change) || {
+    count: null, keys: [], insert: null, enter: null, log: null, visual: null, nested: true,
+  };
+  nested.nested = true;
+  nested.insert = null;
+  // Ctrl-O runs one Normal command and returns to Insert. The key is not insert text.
+  state.vim = { ...state.vim, mode: "insert", once: true, replaying: true, input: emptyInput() };
+  runChange(state, nested, false);
+  state.vim.change = savedChange;
+  state.vim.recording = savedRecording;
+  state.vim.replaying = true;
+}
+
+function presetCount(state, count) {
+  const n = Math.max(1, Math.min(REPEAT_CAP, count));
+  state.vim = {
+    ...state.vim,
+    replaying: true,
+    input: { prefixRepeat: String(n), operator: null, motionRepeat: "", motion: null, keyBuffer: "" },
+  };
+}
+
+function selectVisual(doc, cursor, visual, raw) {
+  const lines = vimLines(doc, cursor, raw);
+  let index = lineIndex(lines, doc, cursor, raw);
+  if (index >= lines.length) index = Math.max(0, lines.length - 1);
+  const count = Math.max(1, visual.lines || 1);
+  const last = Math.min(lines.length - 1, index + count - 1);
+  if (visual.mode === "visual-line") {
+    return { anchor: lines[index].start, cursor: lines[last].end };
+  }
+  if (count <= 1) {
+    const line = lines[index];
+    let to = cursor;
+    const chars = Math.max(0, visual.chars || 0);
+    for (let n = 0; n < chars && to < line.end && to < doc.length; n += 1) to += unitLen(doc, to);
+    return { anchor: cursor, cursor: to };
+  }
+  const lastLine = lines[last];
+  let to = lastLine.start;
+  const chars = Math.max(0, visual.lastChars || 0);
+  for (let n = 0; n < chars && to < lastLine.end && to < doc.length; n += 1) to += unitLen(doc, to);
+  return { anchor: cursor, cursor: to };
+}
+
+function runChange(state, change, escape) {
+  const stop = escape !== false && !change.nested;
+  if (change.visual) {
+    const sel = selectVisual(state.doc, state.cursor, change.visual, state.raw);
+    state.anchor = sel.anchor;
+    state.cursor = sel.cursor;
+    state.vim = { ...state.vim, mode: change.visual.mode, replaying: true, input: emptyInput(), once: false };
+    feedKeys(state, change.keys);
+    if (change.insert) {
+      playLog(state, change.log);
+      if (stop) feed(state, { key: "Escape", ctrl: false, meta: false, alt: false, shift: false });
+    }
+    return;
+  }
+  if (change.insert === "interlace") {
+    const n = change.count == null ? 1 : change.count;
+    const enter = change.enter === "O" ? "O" : "o";
+    for (let i = 0; i < n; i += 1) {
+      state.vim = { ...state.vim, mode: "normal", once: false, replaying: true, input: emptyInput() };
+      feed(state, { key: enter, ctrl: false, meta: false, alt: false, shift: false });
+      playLog(state, change.log);
+      feed(state, { key: "Escape", ctrl: false, meta: false, alt: false, shift: false });
+    }
+    return;
+  }
+  if (change.insert === "repeat") {
+    state.vim = { ...state.vim, mode: "normal", once: false, replaying: true, input: emptyInput() };
+    const keys = change.keys && change.keys.length ? change.keys : [{ key: change.enter || "i", ctrl: false, meta: false, alt: false, shift: false }];
+    feedKeys(state, keys);
+    const n = change.count == null ? 1 : change.count;
+    const log = change.log || [];
+    // Escape leaves the caret on the last glyph i inserted. The next play appends after it.
+    if (change.enter === "i" && log.length > 0) moveArrow(state, "right");
+    for (let i = 0; i < n; i += 1) playLog(state, log);
+    // An empty i inserts nothing. A second Escape would step back one glyph.
+    if (stop && change.enter === "i" && log.length === 0) {
+      state.vim = { ...state.vim, mode: "normal", once: false, replaying: true, input: emptyInput() };
+    } else if (stop) {
+      feed(state, { key: "Escape", ctrl: false, meta: false, alt: false, shift: false });
+    }
+    return;
+  }
+  if (change.insert === "once") {
+    if (change.count != null) presetCount(state, change.count);
+    else state.vim = { ...state.vim, replaying: true, input: emptyInput() };
+    feedKeys(state, change.keys);
+    playLog(state, change.log);
+    if (stop) feed(state, { key: "Escape", ctrl: false, meta: false, alt: false, shift: false });
+    return;
+  }
+  if (change.count != null) presetCount(state, change.count);
+  else state.vim = { ...state.vim, replaying: true, input: emptyInput() };
+  feedKeys(state, change.keys);
+}
+
+function diffSplice(before, after, caret, group) {
+  let head = 0;
+  const limit = Math.min(before.length, after.length);
+  while (head < limit && before[head] === after[head]) head += 1;
+  let tail = 0;
+  while (
+    tail < before.length - head
+    && tail < after.length - head
+    && before[before.length - 1 - tail] === after[after.length - 1 - tail]
+  ) tail += 1;
+  const effect = {
+    type: "splice",
+    from: head,
+    to: before.length - tail,
+    text: after.slice(head, after.length - tail),
+    caret,
+    yank: null,
+  };
+  if (group) effect.group = true;
+  return effect;
+}
+
+function effectBetween(beforeDoc, state, group, fallback) {
+  if (state.doc !== beforeDoc) return diffSplice(beforeDoc, state.doc, state.cursor, group);
+  if (!fallback || fallback.type !== "caret" || fallback.cursor !== state.cursor) {
+    return { type: "caret", anchor: state.cursor, cursor: state.cursor };
+  }
+  return fallback;
+}
+
+function finishRecording(before, src, result) {
+  const rec = copyRecording(before.recording || (result.vim && result.vim.recording));
+  const vim = {
+    ...result.vim,
+    recording: null,
+    strokes: [],
+    replaying: false,
+    change: rec ? changeFromRecording(rec) : copyChange(before.change),
+  };
+  if (!rec) return { ...result, vim };
+  const count = rec.count == null ? 1 : rec.count;
+  const doc = typeof src.doc === "string" ? src.doc : "";
+  const cursor = clamp(src.cursor, doc.length);
+  if (rec.insert === "repeat" && count > 1) {
+    const state = freshState(doc, cursor, cursor, rec.raw, result.vim);
+    for (let i = 1; i < count; i += 1) playLog(state, rec.log);
+    const at = insertStop(state.doc, state.cursor);
+    state.cursor = at;
+    state.anchor = at;
+    return { ...result, vim, effect: effectBetween(doc, state, true, result.effect) };
+  }
+  if (rec.insert === "interlace" && count > 1 && typeof rec.baseDoc === "string") {
+    const state = freshState(rec.baseDoc, rec.baseCursor, rec.baseAnchor, rec.raw, result.vim);
+    const enter = rec.enter === "O" ? "O" : "o";
+    for (let i = 0; i < count; i += 1) {
+      state.vim = { ...state.vim, mode: "normal", once: false, replaying: true, input: emptyInput() };
+      feed(state, { key: enter, ctrl: false, meta: false, alt: false, shift: false });
+      playLog(state, rec.log);
+      feed(state, { key: "Escape", ctrl: false, meta: false, alt: false, shift: false });
+    }
+    return { ...result, vim, effect: effectBetween(doc, state, true, result.effect) };
+  }
+  return { ...result, vim };
+}
+
+function settleInsert(before, src, result, key) {
+  if (!before.recording) return result;
+  if (isEscape(key)) return finishRecording(before, src, result);
+  const recording = copyRecording(result.vim.recording || before.recording);
+  if (!recording) return result;
+  const entry = insertLogEntry(key);
+  if (entry) recording.log = recording.log.concat([entry]);
+  const armed = key.ctrl && !key.meta && !key.alt && String(key.key).toLowerCase() === "o" && result.vim.once;
+  return { ...result, vim: { ...result.vim, recording, strokes: armed ? [] : result.vim.strokes } };
+}
+
+function settleOnce(before, src, result, key) {
+  let vim = { ...result.vim, recording: copyRecording(before.recording) };
+  if (result.consumed && strokeKey(key) && !isEscape(key)) vim = pushStroke(vim, key);
+  if (result.match === "partial" || pendingInput(vim) || vim.once) return { ...result, vim };
+  const keys = stripCounts(vim.strokes);
+  const nested = {
+    count: explicitCount(before),
+    keys,
+    insert: null,
+    enter: null,
+    log: null,
+    visual: null,
+    nested: true,
+  };
+  const recording = copyRecording(vim.recording);
+  if (recording && (textChanged(src, result) || enterOf(keys)) && !excludedChange(nested, result)) {
+    recording.log = recording.log.concat([{ t: "edit", change: nested }]);
+  }
+  return { ...result, vim: { ...vim, strokes: [], recording, change: copyChange(before.change) } };
+}
+
+function settleRepeat(before, src, result) {
+  if (!result || before.replaying) return result;
+  const key = normKey(src.key);
+  if (before.mode === "insert" && !before.once) return settleInsert(before, src, result, key);
+  if (before.once && before.recording) return settleOnce(before, src, result, key);
+  if (!result.consumed) return result;
+  if (bareDot(before, key)) return { ...result, vim: { ...result.vim, strokes: [] } };
+  let vim = result.vim;
+  if (strokeKey(key) && !isEscape(key)) vim = pushStroke(vim, key);
+  if (result.match === "partial" || pendingInput(vim)) return { ...result, vim };
+  return finishCommand(before, src, { ...result, vim });
+}
+
+export function vimKey(input) {
+  const src = input || {};
+  const before = cloneVim(src.vim);
+  const result = vimKeyBody(input);
+  if (before.replaying || src.flag === false) return result;
+  return settleRepeat(before, src, result);
+}
+
+export function playVimChange(input) {
+  const src = input || {};
+  const vim = cloneVim(src.vim);
+  const original = copyChange(vim.change);
+  if (!original || (original.keys.length === 0 && !original.insert)) {
+    vim.replaying = false;
+    return { vim, effect: null, missed: true };
+  }
+  const doc = typeof src.doc === "string" ? src.doc : "";
+  const cursor = clamp(src.cursor, doc.length);
+  const anchor = src.anchor == null ? cursor : clamp(src.anchor, doc.length);
+  const override = Number.isInteger(src.count) ? Math.max(1, Math.min(REPEAT_CAP, src.count)) : null;
+  const change = copyChange(original);
+  if (!change.visual && override != null) change.count = override;
+  const state = freshState(doc, cursor, anchor, src.raw === true, vim);
+  state.layout = src.layout === true;
+  state.move = typeof src.move === "function" ? src.move : null;
+  runChange(state, change, !change.nested);
+  const changedDoc = state.doc !== doc;
+  const changedCaret = state.cursor !== cursor || state.anchor !== anchor;
+  const emptyInsert = !!change.insert && (!change.log || change.log.length === 0);
+  if (!changedDoc && !changedCaret && !emptyInsert) {
+    const keep = cloneVim(vim);
+    keep.replaying = false;
+    return { vim: keep, effect: null, missed: true };
+  }
+  const done = cloneVim(state.vim);
+  done.replaying = false;
+  done.recording = null;
+  done.strokes = [];
+  done.once = false;
+  done.input = emptyInput();
+  if (!change.visual && override != null) {
+    const updated = copyChange(original);
+    updated.count = override;
+    done.change = updated;
+  } else done.change = original;
+  done.register = {
+    text: state.vim.register && typeof state.vim.register.text === "string" ? state.vim.register.text : "",
+    linewise: !!(state.vim.register && state.vim.register.linewise),
+  };
+  let effect = null;
+  if (changedDoc) effect = diffSplice(doc, state.doc, state.cursor, false);
+  else if (state.cursor !== cursor || state.anchor !== anchor) effect = { type: "caret", anchor: state.anchor, cursor: state.cursor };
+  return { vim: done, effect, missed: false };
+}
+
+export function vimNoteArrow(vim, dir) {
+  const next = cloneVim(vim);
+  if (next.replaying || next.mode !== "insert" || next.once || !next.recording) return next;
+  const names = {
+    ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down",
+    left: "left", right: "right", up: "up", down: "down",
+  };
+  const t = names[dir];
+  if (!t) return next;
+  next.recording.log = next.recording.log.concat([{ t }]);
+  return next;
 }

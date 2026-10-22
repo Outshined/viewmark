@@ -45,7 +45,7 @@ import {
   searchMatches,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
-import { vimKey, vimMatchStarts, vimSubmit, visualBlockOffset, VIM_SEARCH_LIMIT } from "./vim.js";
+import { playVimChange, vimKey, vimMatchStarts, vimNoteArrow, vimSubmit, visualBlockOffset, VIM_SEARCH_LIMIT } from "./vim.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES, isTicketToken, parseTicketToken } from "./ticket.js";
 import { MAX_PAYLOAD } from "./ws.js";
 
@@ -3317,6 +3317,16 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let vimFind = null;
   let vimColumn = null;
   let vimOnce = false;
+  // The last change `.` plays. Page memory, with the search pattern and the register.
+  let vimChange = null;
+  let vimChangeRollback = null;
+  // Null is a real memory: the refused command had no earlier change. The flag
+  // says this edit is waiting, so that null is written back.
+  let vimChangeArmed = false;
+  let vimRecording = null;
+  let vimStrokes = [];
+  let vimReplaying = false;
+  let vimInsertRejected = false;
   // The flag is this page's memory. Storage is read once here and written on toggle.
   let vimOn = readVimOn();
   // A screen page is the rows already drawn. Pulling the caret into view would
@@ -7512,6 +7522,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     vimFind = null;
     vimColumn = null;
     vimOnce = false;
+    vimChange = null;
+    vimChangeRollback = null;
+    vimChangeArmed = false;
+    vimRecording = null;
+    vimStrokes = [];
+    vimReplaying = false;
+    vimInsertRejected = false;
     vimInsertOpen = false;
     typingRun = null;
     resetVimHistory();
@@ -9713,8 +9730,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (waiter === "edit") {
           pinScrollHold = null;
           const prior = vimEditRegister || pendingSplicePrior();
+          const rollback = vimChangeRollback;
+          const armed = vimChangeArmed;
+          const rejectedInsert = vimMode === "insert" || !!vimRecording;
           dropPendingEdits();
           if (prior) vimRegister = { text: prior.text, linewise: prior.linewise === true };
+          if (armed) vimChange = rollback;
+          vimChangeRollback = null;
+          vimChangeArmed = false;
+          if (rejectedInsert) vimInsertRejected = true;
           armRefusal(message);
         }
         expectNewComment = false;
@@ -9787,6 +9811,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           conflictWaiters.splice(index, 1);
           ownEdit = true;
           vimEditRegister = null;
+          vimChangeRollback = null;
+          vimChangeArmed = false;
           inflightEdit = null;
         }
       }
@@ -10687,13 +10713,19 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       find: vimFind,
       column: vimColumn,
       once: vimOnce === true,
+      strokes: vimStrokes,
+      change: vimChange,
+      recording: vimRecording,
+      replaying: vimReplaying === true,
     };
   }
 
   function rememberVim(vim) {
     const next = vim || {};
     const wasInsert = vimMode === "insert";
-    vimMode = typeof next.mode === "string" && next.mode ? next.mode : "normal";
+    const nextMode = typeof next.mode === "string" && next.mode ? next.mode : "normal";
+    const refuseChange = vimInsertRejected && wasInsert && nextMode !== "insert";
+    vimMode = nextMode;
     // The one-second window must not attach a new Insert session to the previous run.
     // The splice that entered, such as cw's delete, is the first and stays ungrouped.
     if (vimMode === "insert" && !wasInsert) {
@@ -10723,6 +10755,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     vimFind = next.find || null;
     vimColumn = Number.isInteger(next.column) ? next.column : null;
     vimOnce = next.once === true;
+    if (refuseChange) vimInsertRejected = false;
+    else vimChange = next.change || null;
+    vimRecording = next.recording || null;
+    vimStrokes = Array.isArray(next.strokes) ? next.strokes : [];
+    vimReplaying = next.replaying === true;
     syncVimCaret();
     if (vimStatus) vimStatus.textContent = vimStatusText(vimMode, vimInput);
   }
@@ -11196,6 +11233,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function applyVimEffect(effect) {
     if (!effect || typeof effect.type !== "string") return;
+    if (effect.type === "repeat") {
+      const played = playVimChange({
+        vim: vimSnapshot(),
+        doc: state.doc,
+        cursor: state.cursor,
+        anchor: state.anchor,
+        raw: sourceMode === true,
+        layout: true,
+        count: Number.isInteger(effect.count) ? effect.count : null,
+      });
+      rememberVim(played.vim);
+      const playedSends = played.effect && (played.effect.type === "splice" || played.effect.type === "forward-delete" || played.effect.type === "backspace" || played.effect.type === "word-delete");
+      if (!playedSends) {
+        vimChangeRollback = null;
+        vimChangeArmed = false;
+      }
+      if (played.effect) applyVimEffect(played.effect);
+      return;
+    }
     if (effect.type === "comment-current") {
       if (Number.isInteger(effect.anchor) && Number.isInteger(effect.cursor)) moveVimCaret(effect.anchor, effect.cursor);
       showCommentCurrent(effect.id);
@@ -11234,6 +11290,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       // A yank writes the same bytes back. The register is already stored, so
       // publishing it would move rev without changing the document.
       if (text === state.doc.slice(effect.from, effect.to)) {
+        vimChangeRollback = null;
+        vimChangeArmed = false;
         const at = Number.isInteger(effect.caret) ? effect.caret : state.cursor;
         moveVimCaret(at, at);
         return;
@@ -11246,6 +11304,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         exact: true,
       };
       if (Number.isInteger(effect.caret)) partial.caret = effect.caret;
+      if (effect.group === true) partial.group = true;
       // The range is the splice. u restores the caret from before the command.
       if (vimOn) {
         const before = state.cursor;
@@ -11644,14 +11703,30 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       flag: true,
       layout: true,
     });
-    if (!result || result.consumed !== true) return false;
+    if (!result || result.consumed !== true) {
+      if (result && result.vim && result.vim.recording && vimMode === "insert") rememberVim(result.vim);
+      return false;
+    }
     applyRememberedVim(result.vim, result.effect);
     return true;
+  }
+
+  function effectSendsEdit(effect) {
+    if (!effect) return false;
+    return effect.type === "splice" || effect.type === "forward-delete" || effect.type === "backspace"
+      || effect.type === "word-delete" || effect.type === "repeat";
   }
 
   // rememberVim stores the yank before the hub answers. The prior is kept only
   // when that command's splice is actually sent.
   function applyRememberedVim(vim, effect) {
+    if (effectSendsEdit(effect)) {
+      vimChangeRollback = vimChange;
+      vimChangeArmed = true;
+    } else {
+      vimChangeRollback = null;
+      vimChangeArmed = false;
+    }
     vimSplicePrior = copyVimRegister(vimRegister);
     rememberVim(vim);
     try {
@@ -11678,6 +11753,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       : event.key === "ArrowRight" ? "l"
         : "";
     if (!vertical && !command) return false;
+    if (vimRecording && !vimReplaying) {
+      const dir = event.key === "ArrowLeft" ? "left"
+        : event.key === "ArrowRight" ? "right"
+          : event.key === "ArrowUp" ? "up"
+            : "down";
+      rememberVim(vimNoteArrow(vimSnapshot(), dir));
+    }
     // An arrow ends the open Insert undo step. The next splice is its own undo.
     vimInsertOpen = false;
     if (vertical) {

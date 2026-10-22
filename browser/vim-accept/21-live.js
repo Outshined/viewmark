@@ -589,8 +589,8 @@ test("VX.6 (ticket 7vdep2z4)", async (t) => {
   const revDot = await revOf(hub);
   await tap(A, ".");
   let seen = await view(A, hub);
-  assert.equal(seen.show, "‸lpha beta\n", `VX.6 dot ${got("VX.6", seen)}`);
-  assert.equal(await revOf(hub), revDot);
+  assert.equal(seen.show, "‸pha beta\n", `VX.6 dot ${got("VX.6", seen)}`);
+  assert.equal(await revOf(hub), revDot + 1);
 
   await placeCaret(A, 2);
   await tap(A, "i");
@@ -616,6 +616,6 @@ test("VX.6 (ticket 7vdep2z4)", async (t) => {
   await A.until(() => A.eval(`!!document.querySelector("span.md-vim-status")`), "status after Ctrl+R", 10000);
   await A.quiet();
   seen = await view(A, hub);
-  assert.equal(seen.bytes, "lpha beta\n", `VX.6 Ctrl+R ${got("VX.6", seen)}`);
+  assert.equal(seen.bytes, "pha beta\n", `VX.6 Ctrl+R ${got("VX.6", seen)}`);
   assert.equal(await revOf(hub), revInsert);
 });
