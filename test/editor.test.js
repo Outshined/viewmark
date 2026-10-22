@@ -7742,6 +7742,273 @@ test("6bqczuz7 a click in the center of a picture in a table cell opens the tabl
   }
 });
 
+test("sva8uk2r a click on a heading letter in a table cell opens on that letter", () => {
+  const mounted = mountEditor();
+  const click = (target, x, y) => {
+    mounted.listeners.click({ target, clientX: x, clientY: y, detail: 1, preventDefault() {} });
+  };
+  const cellText = (word) => mounted.findAll((node) => node.nodeType === 3 && node.textContent === word && node.parentElement && node.parentElement.closest && node.parentElement.closest("td, th"))[0];
+  const savedRange = globalThis.document.createRange;
+  const savedCaret = globalThis.document.caretPositionFromPoint;
+  const boxes = (textNode, left, width, top, height) => {
+    globalThis.document.createRange = () => {
+      const range = {
+        startContainer: null,
+        startOffset: 0,
+        setStart(node, offset) {
+          this.startContainer = node;
+          this.startOffset = offset;
+        },
+        setEnd() {},
+        collapse() {},
+        selectNode() {},
+        setStartBefore() {},
+        setStartAfter() {},
+        setEndBefore() {},
+        setEndAfter() {},
+        getBoundingClientRect() {
+          if (this.startContainer !== textNode) return { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 };
+          const x = left + this.startOffset * width;
+          return { left: x, right: x + width, top, bottom: top + height, width, height };
+        },
+        getClientRects() {
+          const rect = this.getBoundingClientRect();
+          return rect.width > 0 ? [rect] : [];
+        },
+      };
+      return range;
+    };
+  };
+  const pointAt = (node, offset) => {
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: node, offset });
+  };
+  try {
+    const head = "## Kennel";
+    const list = "- listed";
+    const quote = "> quoted";
+    const code = "`coded`";
+    const plain = "plain";
+    const doc = `Lead.\n\n| head | list | quote | code | word |\n| --- | --- | --- | --- | --- |\n| ${head} | ${list} | ${quote} | ${code} | ${plain} |\n`;
+    const wordAt = doc.indexOf("Kennel");
+    const hashAt = doc.indexOf(head);
+    const listAt = doc.indexOf(list);
+    const quoteAt = doc.indexOf(quote);
+    const codeAt = doc.indexOf(code);
+    const plainAt = doc.indexOf(plain);
+    const listWord = doc.indexOf("list |");
+    const quoteWord = doc.indexOf("quote |");
+    const codeWord = doc.indexOf("code |");
+    assert.equal(doc[hashAt], "#");
+    assert.equal(wordAt, hashAt + 3);
+    assert.equal(doc[wordAt + 2], "n");
+    assert.equal(doc[listAt], "-");
+    assert.equal(doc[quoteAt], ">");
+    assert.equal(doc[codeAt], "`");
+    assert.equal(doc.slice(plainAt, plainAt + plain.length), plain);
+    assert.equal(doc.slice(listWord, listWord + 4), "list");
+    assert.equal(doc.slice(quoteWord, quoteWord + 5), "quote");
+    assert.equal(doc.slice(codeWord, codeWord + 4), "code");
+
+    const opened = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const letter = cellText("Kennel");
+    assert.ok(letter);
+    assert.equal(letter.parentElement.sourceStart, wordAt);
+    assert.equal(letter.parentElement.sourceEnd, wordAt + "Kennel".length);
+    assert.equal(letter.parentElement.dataset.start, undefined);
+    assert.equal(letter.parentElement.closest("td").textContent.includes("#"), false);
+    boxes(letter, 100, 10, 10, 20);
+    pointAt(letter, 0);
+    click(letter.parentElement, 125, 20);
+    assert.equal(opened.getState().cursor, wordAt + 2);
+    assert.equal(opened.getState().anchor, opened.getState().cursor);
+    assert.equal(doc[opened.getState().cursor], "n");
+    assert.notEqual(opened.getState().cursor, hashAt);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-table")).length, 0);
+    assert.equal(opened.getState().doc, doc);
+    opened.destroy();
+
+    globalThis.document.createRange = savedRange;
+    const pointed = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const pointedLetter = cellText("Kennel");
+    pointAt(pointedLetter, 4);
+    click(pointedLetter.parentElement, 1, 1);
+    assert.equal(pointed.getState().cursor, wordAt + 4);
+    assert.equal(pointed.getState().anchor, pointed.getState().cursor);
+    assert.equal(doc[pointed.getState().cursor], "e");
+    assert.notEqual(pointed.getState().cursor, hashAt);
+    pointed.destroy();
+
+    const missed = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const missedLetter = cellText("Kennel");
+    delete globalThis.document.caretPositionFromPoint;
+    click(missedLetter.parentElement, 40, 12);
+    assert.equal(missed.getState().cursor, hashAt);
+    assert.equal(missed.getState().anchor, hashAt);
+    missed.destroy();
+
+    const kept = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const keptWord = (word, at, index) => {
+      const text = cellText(word);
+      assert.ok(text, word);
+      boxes(text, 10, 8, 4, 12);
+      pointAt(text, index);
+      click(text.parentElement, 10 + index * 8 + 3, 10);
+      assert.equal(kept.getState().cursor, at, word);
+      assert.equal(kept.getState().anchor, at, word);
+    };
+    keptWord("list", listWord, 2);
+    kept.destroy();
+
+    const keptQuote = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const quoteText = cellText("quote");
+    boxes(quoteText, 10, 8, 4, 12);
+    pointAt(quoteText, 3);
+    click(quoteText.parentElement, 10 + 3 * 8 + 3, 10);
+    assert.equal(keptQuote.getState().cursor, quoteWord);
+    assert.equal(keptQuote.getState().anchor, quoteWord);
+    keptQuote.destroy();
+
+    const keptCode = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const codeText = cellText("code");
+    boxes(codeText, 10, 8, 4, 12);
+    pointAt(codeText, 2);
+    click(codeText.parentElement, 10 + 2 * 8 + 3, 10);
+    assert.equal(keptCode.getState().cursor, codeWord);
+    assert.equal(keptCode.getState().anchor, codeWord);
+    keptCode.destroy();
+
+    const keptPlain = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const plainText = cellText("plain");
+    boxes(plainText, 10, 8, 4, 12);
+    pointAt(plainText, 3);
+    click(plainText.parentElement, 10 + 3 * 8 + 3, 10);
+    assert.equal(keptPlain.getState().cursor, plainAt);
+    assert.equal(keptPlain.getState().anchor, plainAt);
+    keptPlain.destroy();
+
+    const keptList = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const listed = cellText("listed");
+    boxes(listed, 10, 8, 4, 12);
+    pointAt(listed, 2);
+    click(listed.parentElement, 10 + 2 * 8 + 3, 10);
+    assert.equal(keptList.getState().cursor, listAt);
+    assert.equal(doc[keptList.getState().cursor], "-");
+    assert.notEqual(keptList.getState().cursor, doc.indexOf("listed"));
+    keptList.destroy();
+
+    const keptQuoted = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const quoted = cellText("quoted");
+    boxes(quoted, 10, 8, 4, 12);
+    pointAt(quoted, 1);
+    click(quoted.parentElement, 18, 10);
+    assert.equal(keptQuoted.getState().cursor, quoteAt);
+    assert.equal(doc[keptQuoted.getState().cursor], ">");
+    keptQuoted.destroy();
+
+    const keptCoded = createEditor(mounted.root, doc, doc.indexOf("Lead"));
+    const coded = cellText("coded");
+    boxes(coded, 10, 8, 4, 12);
+    pointAt(coded, 2);
+    click(coded.parentElement, 29, 10);
+    assert.equal(keptCoded.getState().cursor, codeAt);
+    assert.equal(doc[keptCoded.getState().cursor], "`");
+    keptCoded.destroy();
+
+    const titleDoc = "Lead.\n\n| h |\n| --- |\n| # Title |\n";
+    const titleAt = titleDoc.indexOf("Title");
+    const titleHash = titleDoc.indexOf("# Title");
+    assert.equal(titleAt, titleHash + 2);
+    const titleView = createEditor(mounted.root, titleDoc, titleDoc.indexOf("Lead"));
+    const title = cellText("Title");
+    boxes(title, 40, 10, 8, 18);
+    pointAt(title, 4);
+    click(title.parentElement, 45, 16);
+    assert.equal(titleView.getState().cursor, titleAt);
+    assert.equal(titleView.getState().anchor, titleAt);
+    assert.equal(titleDoc[titleView.getState().cursor], "T");
+    assert.notEqual(titleView.getState().cursor, titleHash);
+    titleView.destroy();
+
+    const closedDoc = "Lead.\n\n| h |\n| --- |\n| ## Kennel ## |\n";
+    const closedAt = closedDoc.indexOf("Kennel");
+    const closedHash = closedDoc.indexOf("## Kennel");
+    assert.equal(closedDoc[closedAt + 5], "l");
+    assert.equal(closedDoc[closedAt + 6], " ");
+    assert.equal(closedDoc[closedAt + 7], "#");
+    const closedView = createEditor(mounted.root, closedDoc, closedDoc.indexOf("Lead"));
+    const closedLetter = cellText("Kennel");
+    assert.equal(closedLetter.parentElement.sourceEnd, closedAt + "Kennel".length);
+    boxes(closedLetter, 100, 10, 10, 20);
+    pointAt(closedLetter, 0);
+    click(closedLetter.parentElement, 155, 20);
+    assert.equal(closedView.getState().cursor, closedAt + 5);
+    assert.equal(closedDoc[closedView.getState().cursor], "l");
+    assert.notEqual(closedView.getState().cursor, closedHash);
+    closedView.destroy();
+
+    const quoteHead = "Lead.\n\n| h |\n| --- |\n| > ## Kennel |\n";
+    const quoteKennel = quoteHead.indexOf("Kennel");
+    const quoteMark = quoteHead.indexOf("> ## Kennel");
+    assert.equal(quoteHead[quoteMark], ">");
+    assert.equal(quoteKennel, quoteMark + 5);
+    const quoteView = createEditor(mounted.root, quoteHead, quoteHead.indexOf("Lead"));
+    const quoteLetter = cellText("Kennel");
+    boxes(quoteLetter, 100, 10, 10, 20);
+    pointAt(quoteLetter, 0);
+    click(quoteLetter.parentElement, 125, 20);
+    assert.equal(quoteView.getState().cursor, quoteKennel + 2);
+    assert.equal(quoteHead[quoteView.getState().cursor], "n");
+    assert.notEqual(quoteView.getState().cursor, quoteMark);
+    quoteView.destroy();
+
+    const mixed = "Lead.\n\n| h |\n| --- |\n| ## Kennel<br>- listed |\n";
+    const mixedHash = mixed.indexOf("## Kennel");
+    const mixedKennel = mixed.indexOf("Kennel");
+    const mixedList = mixed.indexOf("- listed");
+    const mixedWord = mixed.indexOf("listed");
+    assert.equal(mixed[mixedHash], "#");
+    assert.equal(mixed[mixedList], "-");
+    const mixedListView = createEditor(mounted.root, mixed, mixed.indexOf("Lead"));
+    const mixedListed = cellText("listed");
+    boxes(mixedListed, 10, 8, 4, 12);
+    pointAt(mixedListed, 3);
+    click(mixedListed.parentElement, 37, 10);
+    assert.equal(mixedListView.getState().cursor, mixedHash);
+    assert.equal(mixed[mixedListView.getState().cursor], "#");
+    assert.notEqual(mixedListView.getState().cursor, mixedWord);
+    assert.notEqual(mixedListView.getState().cursor, mixedList);
+    mixedListView.destroy();
+
+    const mixedHead = createEditor(mounted.root, mixed, mixed.indexOf("Lead"));
+    const mixedLetter = cellText("Kennel");
+    boxes(mixedLetter, 100, 10, 10, 20);
+    pointAt(mixedLetter, 0);
+    click(mixedLetter.parentElement, 125, 20);
+    assert.equal(mixedHead.getState().cursor, mixedKennel + 2);
+    assert.equal(mixed[mixedHead.getState().cursor], "n");
+    assert.notEqual(mixedHead.getState().cursor, mixedHash);
+    mixedHead.destroy();
+
+    const styled = "Lead.\n\n| h |\n| --- |\n| ## ab **cd** |\n";
+    const styledView = createEditor(mounted.root, styled, styled.indexOf("Lead"));
+    const cd = cellText("cd");
+    assert.ok(cd);
+    assert.equal(styled.slice(cd.parentElement.sourceStart, cd.parentElement.sourceEnd), "cd");
+    assert.notEqual(styled[cd.parentElement.sourceStart], "#");
+    boxes(cd, 0, 10, 0, 16);
+    pointAt(cd, 0);
+    click(cd.parentElement, 15, 8);
+    assert.equal(styledView.getState().cursor, cd.parentElement.sourceStart + 1);
+    assert.equal(styled[styledView.getState().cursor], "d");
+    styledView.destroy();
+  } finally {
+    globalThis.document.createRange = savedRange;
+    if (savedCaret === undefined) delete globalThis.document.caretPositionFromPoint;
+    else globalThis.document.caretPositionFromPoint = savedCaret;
+    mounted.restore();
+  }
+});
+
 test("a pointer over a picture shows that picture's pin, and a drop uses the picture", () => {
   const mounted = mountSheet();
   const move = (target) => {

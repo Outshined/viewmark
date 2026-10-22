@@ -1461,6 +1461,109 @@ function pictureClickOffset(image, event) {
   return at;
 }
 
+// The cell drops dataset offsets. A heading title is drawn without its hashes,
+// so the letter still needs the run's source offset.
+function tagRunSource(el, part) {
+  if (!el || !part || part.type !== "run") return;
+  if (!Number.isFinite(part.start) || !Number.isFinite(part.end) || part.end < part.start) return;
+  el.sourceStart = part.start;
+  el.sourceEnd = part.end;
+}
+
+function charRect(textNode, index) {
+  if (typeof document === "undefined" || typeof document.createRange !== "function") return null;
+  let range;
+  try {
+    range = document.createRange();
+  } catch {
+    return null;
+  }
+  if (!range || typeof range.setStart !== "function" || typeof range.setEnd !== "function" || typeof range.getBoundingClientRect !== "function") return null;
+  try {
+    range.setStart(textNode, index);
+    range.setEnd(textNode, index + 1);
+  } catch {
+    return null;
+  }
+  let rect;
+  try {
+    rect = range.getBoundingClientRect();
+  } catch {
+    return null;
+  }
+  if (!rect || !(rect.width > 0) || !(rect.bottom > rect.top) || !Number.isFinite(rect.left) || !Number.isFinite(rect.right)) return null;
+  return rect;
+}
+
+// The box that contains the pointer is that letter. A missing box is not a guess.
+function glyphIndex(textNode, text, event) {
+  if (!event || !Number.isFinite(event.clientX)) return null;
+  const x = event.clientX;
+  const y = Number.isFinite(event.clientY) ? event.clientY : null;
+  for (let i = 0; i < text.length; i += 1) {
+    const rect = charRect(textNode, i);
+    if (!rect) return null;
+    const inY = y == null || (y >= rect.top && y <= rect.bottom);
+    if (inY && x >= rect.left && x < rect.right) return i;
+  }
+  return null;
+}
+
+function runText(node) {
+  if (!node || node.nodeType !== 3) return null;
+  const el = node.parentElement;
+  if (!el || !Number.isFinite(el.sourceStart) || !Number.isFinite(el.sourceEnd)) return null;
+  const text = String(node.textContent || "");
+  if (text.length === 0 || text.length !== el.sourceEnd - el.sourceStart) return null;
+  return { el, text };
+}
+
+function headingTexts(line) {
+  const found = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (node.nodeType === 3) {
+      if (runText(node)) found.push(node);
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    for (const child of childArray(node)) walk(child);
+  };
+  walk(line);
+  return found;
+}
+
+// The heading marker is not drawn. The cell start is that hash, which the
+// pointer did not hit. The run that drew the letter has its source offset.
+function headingLetterOffset(cell, target, event) {
+  const el = target && target.nodeType === 1 ? target : target && target.parentElement;
+  if (!el || typeof el.closest !== "function") return null;
+  const line = el.closest(".md-h1, .md-h2, .md-h3, .md-h4, .md-h5, .md-h6");
+  if (!line || hasClass(line, "md-raw")) return null;
+  if (typeof line.closest !== "function" || line.closest("td, th") !== cell) return null;
+  const nodes = headingTexts(line);
+  for (const node of nodes) {
+    const info = runText(node);
+    const index = glyphIndex(node, info.text, event);
+    if (index == null) continue;
+    return info.el.sourceStart + index;
+  }
+  if (!event || typeof document.caretPositionFromPoint !== "function") return null;
+  if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return null;
+  let pos = null;
+  try {
+    pos = document.caretPositionFromPoint(event.clientX, event.clientY);
+  } catch {
+    pos = null;
+  }
+  if (!pos || !nodes.includes(pos.offsetNode)) return null;
+  const info = runText(pos.offsetNode);
+  let index = pos.offset;
+  if (!Number.isFinite(index) || index < 0) index = 0;
+  if (index >= info.text.length) index = info.text.length - 1;
+  return info.el.sourceStart + index;
+}
+
 function atomClickOffset(atom, target, event) {
   if (hasClass(atom, "md-image")) return Number(atom.dataset.start);
   if (hasClass(atom, "md-table")) {
@@ -1471,6 +1574,8 @@ function atomClickOffset(atom, target, event) {
     }
     const cell = target?.closest?.("td, th");
     if (cell && cell.dataset && cell.dataset.start != null && cell.dataset.start !== "") {
+      const letter = headingLetterOffset(cell, target, event);
+      if (letter != null) return letter;
       return Number(cell.dataset.start);
     }
     return Number(atom.dataset.start);
@@ -2085,7 +2190,9 @@ function renderCellLine(block, repo, onSized) {
       continue;
     }
     const code = part.classes && part.classes.includes("md-code");
-    el.appendChild(renderRun(part, code ? "code" : undefined));
+    const run = renderRun(part, code ? "code" : undefined);
+    tagRunSource(run, part);
+    el.appendChild(run);
     drew = true;
   }
   if (!drew) el.appendChild(document.createElement("br"));
