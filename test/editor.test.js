@@ -25858,3 +25858,432 @@ test("4cypbkfe vim l from a marker moves one character", () => {
     back.destroy();
   });
 });
+
+test("glyph buttons use one press scale and copy controls show a flyout", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.equal((css.match(/@keyframes\s+md-glyph-press/g) || []).length, 1);
+  assert.match(css, /@keyframes md-glyph-press\s*\{\s*0%\s*\{\s*transform:\s*scale\(1\);\s*\}\s*40%\s*\{\s*transform:\s*scale\(0\.9\);\s*\}\s*100%\s*\{\s*transform:\s*scale\(1\);\s*\}\s*\}/);
+  assert.equal((css.match(/button\.md-glyph-press:not\(\.md-file\):not\(\.md-dir-toggle\)/g) || []).length, 1);
+  assert.equal((css.match(/animation:\s*md-glyph-press\s+160ms\s+ease-out/g) || []).length, 1);
+  const flyRule = css.match(/\.md-copy-flyout\s*\{[^}]*\}/);
+  assert.ok(flyRule);
+  assert.equal(flyRule.length, 1);
+  assert.match(flyRule[0], /pointer-events:\s*none/);
+  assert.match(flyRule[0], /user-select:\s*none/);
+  assert.match(flyRule[0], /transform:\s*translate\(-50%,\s*calc\(-100% - 0\.35rem\)\)/);
+  assert.equal(/position:\s*fixed/.test(flyRule[0]), false);
+  assert.match(css, /button\.md-flyout-host\s*\{[^}]*position:\s*relative/);
+
+  const doc = [
+    "See {c1}fox{/c1}.",
+    "",
+    "```comment c1",
+    ":: 0",
+    "hi",
+    "```",
+    "```js",
+    "one",
+    "two",
+    "```",
+    "```comment c2 1-2",
+    ":: 0",
+    "line",
+    "```",
+    "![alt](box.svg)",
+    "```comment c3 0.25,0.5",
+    ":: 0",
+    "pin",
+    "```",
+    "",
+  ].join("\n");
+  const mounted = mountTicketPage();
+  const previousHistory = globalThis.history;
+  const previousLocation = globalThis.location;
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const previousLocal = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const writes = [];
+  let mode = "ok";
+  const navClipboard = {
+    clipboard: {
+      writeText(text) {
+        writes.push(text);
+        if (mode === "throw") throw new Error("denied");
+        if (mode === "reject") return Promise.reject(new Error("denied"));
+        if (mode === "sync") return "written";
+        return Promise.resolve();
+      },
+    },
+  };
+  const storeData = { "viewmark.repo": "viewmark", "viewmark.vim": "1" };
+  const store = {
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(storeData, key) ? storeData[key] : null;
+    },
+    setItem(key, value) {
+      storeData[key] = String(value);
+    },
+    removeItem(key) {
+      delete storeData[key];
+    },
+  };
+  Object.defineProperty(globalThis, "navigator", { configurable: true, writable: true, value: navClipboard });
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: store });
+  globalThis.history = { replaceState() {} };
+  globalThis.location = { origin: "https://viewmark.test", pathname: "/app", search: "", hash: "" };
+  const transport = holdingTransport();
+  const commentUrl = `https://viewmark.test/app${formatHash({ repo: "viewmark", kind: "comment", path: "docs/a.md", id: "c1" })}`;
+  const ticketUrl = `https://viewmark.test/app${formatHash({ repo: "viewmark", kind: "ticket", id: "aaaaaaaa" })}`;
+  const flyouts = () => mounted.findAll((node) => node.classList && node.classList.contains("md-copy-flyout"));
+  const labeled = (root, label) => walkNodes(root, (node) => node.tagName === "BUTTON" && node.getAttribute && node.getAttribute("aria-label") === label);
+  const press = (button, type = "click", event = {}) => {
+    const fn = button && button.listeners && button.listeners[type];
+    assert.equal(typeof fn, "function");
+    fn({ preventDefault() {}, stopPropagation() {}, button: 0, ...event });
+  };
+  const assertPressed = (button) => {
+    assert.equal(button.classList.contains("md-glyph-press"), true);
+    assert.equal(button.classList.contains("md-file"), false);
+    assert.equal(button.classList.contains("md-dir-toggle"), false);
+    assert.equal(button.tagName, "BUTTON");
+    assert.equal(/[\p{L}\p{N}]/u.test(button.textContent || ""), false);
+  };
+  const assertStill = (mark) => {
+    assert.equal(view.getState().cursor, mark.cursor);
+    assert.equal(view.getState().anchor, mark.anchor);
+    assert.equal(view.getState().doc, mark.doc);
+    assert.equal(document.activeElement, mark.active);
+  };
+  const settle = async () => {
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  };
+  const stubRect = (button, left, top, width, height) => {
+    button.getBoundingClientRect = () => ({ left, top, width, height, right: left + width, bottom: top + height });
+  };
+  let view = null;
+  try {
+    view = createEditor(mounted.root, "", 0, transport, store);
+    const toggle = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-view-toggle"))[0];
+    const docMenu = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-doc-menu"))[0];
+    const filter = labeled(mounted.nav, "Filter")[0];
+    const newFile = labeled(mounted.nav, "New file")[0];
+    const newTicket = labeled(mounted.nav, "New ticket")[0];
+    const deleteFile = labeled(mounted.nav, "Delete file")[0];
+    const showAll = walkNodes(mounted.nav, (node) => node.tagName === "BUTTON" && node.textContent === "show all")[0];
+    assert.ok(toggle && docMenu && filter && newFile && newTicket && deleteFile && showAll);
+
+    let reads = 0;
+    Object.defineProperty(toggle, "offsetWidth", {
+      configurable: true,
+      get() {
+        reads += 1;
+        return 30;
+      },
+    });
+    const realNow = Date.now;
+    let now = 1000000;
+    Date.now = () => now;
+    try {
+      press(toggle, "pointerdown", { button: 2 });
+      assert.equal(reads, 0);
+      assert.equal(toggle.classList.contains("md-glyph-press"), false);
+      press(toggle, "pointerdown");
+      press(toggle, "pointerdown");
+      assert.equal(reads, 1);
+      assertPressed(toggle);
+      now += 160;
+      press(toggle, "pointerdown");
+      assert.equal(reads, 2);
+    } finally {
+      Date.now = realNow;
+    }
+    press(docMenu);
+    assertPressed(docMenu);
+    press(newFile);
+    assertPressed(newFile);
+    press(newTicket);
+    assertPressed(newTicket);
+    press(deleteFile);
+    assertPressed(deleteFile);
+    assert.equal(mounted.findAll((node) => node.tagName === "DIALOG").length, 0);
+    press(showAll);
+    assert.equal(showAll.classList.contains("md-glyph-press"), false);
+    assert.match(showAll.textContent, /[A-Za-z]/);
+    press(filter);
+    assertPressed(filter);
+    assert.equal(flyouts().length, 0);
+
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T0, "", ["bbbbbbbb"], "me");
+    const beta = ticketFixture("bbbbbbbb", "Beta", "new", T1, "", [], "me");
+    transport.deliver({ type: "repos", repos: [{ name: "viewmark", description: "Viewmark" }] });
+    transport.deliver({ type: "docs", files: ["docs/a.md", "docs/b.md"] });
+    transport.deliver({ type: "tickets", tickets: [alpha, beta] });
+    transport.deliver({ type: "file", rev: 1, text: doc, path: "docs/a.md", cursor: 4, anchor: 4, locks: [] });
+    assert.equal(view.getState().cursor, 4);
+    assert.equal(view.getState().anchor, 4);
+    const status = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-vim-status"))[0];
+    assert.equal(status.textContent, "N");
+
+    const card = (id) => walkNodes(mounted.aside, (node) => node.classList && node.classList.contains("md-comment-card") && node.dataset && node.dataset.comment === id)[0];
+    const c1 = card("c1");
+    assert.ok(c1);
+    mounted.aside.listeners.click({ target: c1, preventDefault() {}, stopPropagation() {} });
+    assert.equal(c1.classList.contains("md-comment-current"), true);
+    const yWrites = writes.length;
+    mounted.listeners.keydown({
+      key: "Y",
+      shiftKey: false,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      preventDefault() {},
+    });
+    await settle();
+    assert.equal(writes.length, yWrites + 1);
+    assert.equal(writes.at(-1), commentUrl);
+    assert.equal(flyouts().length, 0);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, 4);
+    assert.equal(view.getState().anchor, 4);
+
+    const bar = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-comment-bar"))[0];
+    const pin = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-comment-pin"))[0];
+    const commentDelete = labeled(c1, "Delete")[0];
+    const resolve = labeled(c1, "Resolve")[0];
+    const reply = labeled(c1, "Reply")[0];
+    const commentCopy = labeled(c1, "Copy link")[0];
+    assert.ok(bar && pin && commentDelete && resolve && reply && commentCopy);
+    press(bar, "mousedown");
+    assertPressed(bar);
+    press(pin, "mousedown");
+    assertPressed(pin);
+    press(commentDelete, "mousedown");
+    assertPressed(commentDelete);
+    assert.equal(view.getState().doc, doc);
+
+    const sort = walkNodes(mounted.nav, (node) => node.tagName === "BUTTON" && node.dataset && node.dataset.sort === "title")[0];
+    assert.ok(sort);
+    assert.match(sort.textContent, /Title/);
+    press(sort);
+    assert.equal(sort.classList.contains("md-glyph-press"), false);
+
+    const fileButton = walkNodes(mounted.nav, (node) => node.classList && node.classList.contains("md-file") && node.dataset && node.dataset.path === "docs/a.md")[0];
+    const dirButton = walkNodes(mounted.nav, (node) => node.classList && node.classList.contains("md-dir-toggle"))[0];
+    assert.ok(fileButton && dirButton);
+    assert.match(fileButton.textContent, /[A-Za-z0-9]/);
+    assert.match(dirButton.textContent, /[A-Za-z]/);
+
+    document.activeElement = mounted.root;
+    const mark = { cursor: view.getState().cursor, anchor: view.getState().anchor, doc: view.getState().doc, active: document.activeElement };
+    const fileRow = fileButton.parentElement;
+    fileRow.listeners.contextmenu({ clientX: 12, clientY: 40, preventDefault() {}, stopPropagation() {} });
+    const pathCopy = walkNodes(mounted.body, (node) => node.classList && node.classList.contains("md-path-copy"))[0];
+    const fileMenu = walkNodes(mounted.body, (node) => node.classList && node.classList.contains("md-file-menu"))[0];
+    assert.ok(pathCopy && fileMenu);
+    assert.equal(pathCopy.getAttribute("title"), null);
+    assert.equal(pathCopy.getAttribute("aria-label"), "Copy path");
+    stubRect(commentCopy, 40, 80, 20, 10);
+    stubRect(pathCopy, 110, 210, 16, 16);
+    const pairWrites = writes.length;
+    press(commentCopy);
+    press(pathCopy);
+    assertPressed(commentCopy);
+    assertPressed(pathCopy);
+    assert.equal(flyouts().length, 0);
+    assert.equal(fileMenu.hidden, false);
+    await settle();
+    assert.deepEqual(writes.slice(pairWrites), [commentUrl, "docs/a.md"]);
+    const pair = flyouts();
+    assert.equal(pair.length, 2);
+    const byText = new Map(pair.map((node) => [node.textContent, node]));
+    const linkNote = byText.get("Link copied to clipboard");
+    const pathNote = byText.get("Path copied to clipboard");
+    assert.ok(linkNote && pathNote);
+    for (const note of pair) {
+      assert.equal(note.tagName, "SPAN");
+      assert.equal(note.parentElement, mounted.body);
+      assert.equal(note.getAttribute("role"), "status");
+      assert.equal(note.getAttribute("tabindex"), null);
+      assert.equal(note.classList.contains("md-notice"), false);
+      assert.equal(note.className.includes("tooltip"), false);
+      assert.equal(note.focused, false);
+    }
+    assert.equal(linkNote.styleProps.position, "fixed");
+    assert.equal(linkNote.styleProps.left, "50px");
+    assert.equal(linkNote.styleProps.top, "80px");
+    assert.equal(pathNote.styleProps.position, "fixed");
+    assert.equal(pathNote.styleProps.left, "118px");
+    assert.equal(pathNote.styleProps.top, "210px");
+    assert.equal(commentCopy.getAttribute("title"), "Copy link");
+    assert.equal(commentCopy.getAttribute("aria-label"), "Copy link");
+    assert.equal(pathCopy.getAttribute("title"), null);
+    assert.equal(commentCopy.focused, false);
+    assert.equal(pathCopy.focused, false);
+    assertStill(mark);
+    t.mock.timers.tick(999);
+    assert.equal(flyouts().length, 2);
+    t.mock.timers.tick(1);
+    assert.equal(flyouts().length, 0);
+    assertStill(mark);
+
+    press(fileButton);
+    assert.equal(fileButton.classList.contains("md-glyph-press"), false);
+    press(dirButton);
+    assert.equal(dirButton.classList.contains("md-glyph-press"), false);
+    press(resolve);
+    assertPressed(resolve);
+    press(reply);
+    assertPressed(reply);
+
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 2,
+      text: "hello\n",
+      cursor: 3,
+      anchor: 3,
+      locks: [],
+      ticket: alpha,
+    });
+    assert.equal(view.getState().cursor, 3);
+    assert.equal(view.getState().anchor, 3);
+    assert.equal(view.getState().doc, "hello\n");
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    const copyId = byClass(form, "md-ticket-copy-id")[0];
+    const menuButton = byClass(form, "md-ticket-pane-menu")[0];
+    const panel = byClass(form, "md-ticket-pane-panel")[0];
+    const menuCopy = panel.childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === "Copy link");
+    const deleteItem = panel.childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === "Delete ticket");
+    const depends = byClass(form, "md-ticket-depends")[0];
+    const add = labeled(depends, "Add")[0];
+    const remove = labeled(depends, "Remove")[0];
+    assert.ok(copyId && menuButton && panel && menuCopy && deleteItem && add && remove);
+    document.activeElement = mounted.root;
+    const ticketMark = { cursor: 3, anchor: 3, doc: "hello\n", active: mounted.root };
+    stubRect(copyId, 8, 24, 20, 10);
+    press(copyId);
+    assertPressed(copyId);
+    assert.equal(flyouts().length, 0);
+    assert.equal(copyId.getAttribute("title"), "Copy ticket id");
+    await settle();
+    let idNotes = flyouts();
+    assert.equal(idNotes.length, 1);
+    assert.equal(idNotes[0].textContent, "ID copied to clipboard");
+    assert.equal(idNotes[0].parentElement, mounted.body);
+    assert.equal(idNotes[0].styleProps.position, "fixed");
+    assert.equal(idNotes[0].styleProps.left, "18px");
+    assert.equal(idNotes[0].styleProps.top, "24px");
+    assert.equal(idNotes[0].getAttribute("role"), "status");
+    assert.equal(idNotes[0].focused, false);
+    assert.equal(copyId.getAttribute("title"), "Copy ticket id");
+    assert.equal(copyId.getAttribute("aria-label"), "Copy ticket id");
+    assert.equal(byClass(form, "md-ticket-fact-id")[0].textContent, "aaaaaaaa");
+    assertStill(ticketMark);
+    t.mock.timers.tick(999);
+    assert.equal(flyouts().length, 1);
+    press(copyId);
+    await settle();
+    assert.equal(flyouts().length, 1);
+    assert.equal(flyouts()[0].textContent, "ID copied to clipboard");
+    t.mock.timers.tick(999);
+    assert.equal(flyouts().length, 1);
+    t.mock.timers.tick(1);
+    assert.equal(flyouts().length, 0);
+    assertStill(ticketMark);
+
+    press(menuButton);
+    assertPressed(menuButton);
+    assert.equal(panel.hidden, false);
+    stubRect(menuCopy, 300, 40, 80, 20);
+    const menuWrites = writes.length;
+    press(menuCopy);
+    assert.equal(menuCopy.classList.contains("md-glyph-press"), false);
+    assert.equal(menuCopy.textContent, "Copy link");
+    assert.equal(menuCopy.getAttribute("title"), null);
+    assert.equal(panel.hidden, true);
+    assert.equal(flyouts().length, 0);
+    await settle();
+    assert.equal(writes.at(-1), ticketUrl);
+    assert.equal(writes.length, menuWrites + 1);
+    const menuNote = flyouts()[0];
+    assert.ok(menuNote);
+    assert.equal(menuNote.textContent, "Link copied to clipboard");
+    assert.equal(menuNote.parentElement, mounted.body);
+    assert.equal(panel.childNodes.includes(menuNote), false);
+    assert.equal(menuNote.styleProps.position, "fixed");
+    assert.equal(menuNote.styleProps.left, "340px");
+    assert.equal(menuNote.styleProps.top, "40px");
+    assert.equal(menuNote.focused, false);
+    assert.equal(menuCopy.focused, false);
+    assertStill(ticketMark);
+    t.mock.timers.tick(1000);
+    assert.equal(flyouts().length, 0);
+
+    press(deleteItem);
+    assert.equal(deleteItem.classList.contains("md-glyph-press"), false);
+    const dialog = mounted.findAll((node) => node.tagName === "DIALOG" && node.classList && node.classList.contains("md-confirm"))[0];
+    assert.equal(dialog.open, true);
+    const cancel = walkNodes(dialog, (node) => node.tagName === "BUTTON" && node.textContent === "Cancel")[0];
+    press(cancel);
+    assert.equal(dialog.open, false);
+    assert.equal(flyouts().length, 0);
+    press(add);
+    assertPressed(add);
+    press(remove);
+    assertPressed(remove);
+    assertStill(ticketMark);
+
+    mode = "reject";
+    const rejectedAt = writes.length;
+    press(copyId);
+    await settle();
+    assert.equal(writes.length, rejectedAt + 1);
+    assert.equal(writes.at(-1), "aaaaaaaa");
+    assert.equal(flyouts().length, 0);
+    assertStill(ticketMark);
+
+    mode = "throw";
+    const thrownAt = writes.length;
+    press(copyId);
+    await settle();
+    assert.equal(writes.length, thrownAt + 1);
+    assert.equal(flyouts().length, 0);
+    assertStill(ticketMark);
+
+    mode = "ok";
+    navClipboard.clipboard = {};
+    const missedAt = writes.length;
+    press(copyId);
+    await settle();
+    assert.equal(writes.length, missedAt);
+    assert.equal(flyouts().length, 0);
+    assertStill(ticketMark);
+
+    navClipboard.clipboard = {
+      writeText(text) {
+        writes.push(text);
+        return "written";
+      },
+    };
+    press(copyId);
+    await settle();
+    assert.equal(flyouts().length, 1);
+    assert.equal(flyouts()[0].textContent, "ID copied to clipboard");
+    assertStill(ticketMark);
+    t.mock.timers.tick(1000);
+    assert.equal(flyouts().length, 0);
+    assert.equal(view.getState().cursor, 3);
+    assert.equal(view.getState().anchor, 3);
+  } finally {
+    if (view) view.destroy();
+    if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
+    else delete globalThis.navigator;
+    if (previousLocal) Object.defineProperty(globalThis, "localStorage", previousLocal);
+    else delete globalThis.localStorage;
+    if (previousHistory === undefined) delete globalThis.history;
+    else globalThis.history = previousHistory;
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
+    mounted.restore();
+  }
+});

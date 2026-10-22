@@ -357,6 +357,7 @@ function ensureNavButton(nav, className, text) {
       const svg = iconSvg("plus");
       if (svg) button.appendChild(svg);
     }
+    armGlyphPress(button);
     return button;
   }
   button.className = className;
@@ -380,6 +381,7 @@ function ensureFilterButton(nav) {
     const svg = iconSvg("filter");
     if (svg) button.appendChild(svg);
   }
+  armGlyphPress(button);
   return button;
 }
 
@@ -827,6 +829,7 @@ function iconButton(action, className) {
   }
   const svg = iconSvg(action);
   if (svg) button.appendChild(svg);
+  armGlyphPress(button);
   return button;
 }
 
@@ -992,15 +995,116 @@ function absoluteHash(hash) {
   return `${origin}${pathname}${hash}`;
 }
 
+const GLYPH_PRESS_MS = 160;
+const COPY_FLYOUT_MS = 1000;
+const glyphArmed = new WeakSet();
+const glyphPressAt = new WeakMap();
+
+function glyphText(button) {
+  const parts = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (node.nodeType === 3) {
+      parts.push(node.textContent || "");
+      return;
+    }
+    if (node.classList && node.classList.contains("md-copy-flyout")) return;
+    for (const child of node.childNodes || []) walk(child);
+  };
+  walk(button);
+  return parts.join("");
+}
+
+function isGlyphButton(button) {
+  if (!button || String(button.tagName || "").toUpperCase() !== "BUTTON") return false;
+  if (!button.classList || typeof button.classList.contains !== "function") return false;
+  if (button.classList.contains("md-file") || button.classList.contains("md-dir-toggle")) return false;
+  return !/[\p{L}\p{N}]/u.test(glyphText(button));
+}
+
+// Pointerdown and click are one press. A second event inside the animation does not restart it.
+function pressGlyph(button, event) {
+  if (!isGlyphButton(button) || !button.classList) return;
+  if (event && typeof event.button === "number" && event.button !== 0) return;
+  const now = Date.now();
+  const last = glyphPressAt.get(button) || 0;
+  if (now - last < GLYPH_PRESS_MS) return;
+  glyphPressAt.set(button, now);
+  button.classList.remove("md-glyph-press");
+  // One layout read restarts the animation. typeof would read it twice.
+  if ("offsetWidth" in button) void button.offsetWidth;
+  button.classList.add("md-glyph-press");
+}
+
+function armGlyphPress(button) {
+  if (!button || glyphArmed.has(button) || typeof button.addEventListener !== "function") return;
+  glyphArmed.add(button);
+  const add = button.addEventListener.bind(button);
+  const remove = typeof button.removeEventListener === "function" ? button.removeEventListener.bind(button) : null;
+  const wraps = new Map();
+  const wrapFor = (type, fn) => {
+    let byFn = wraps.get(type);
+    if (!byFn) {
+      byFn = new Map();
+      wraps.set(type, byFn);
+    }
+    let wrap = byFn.get(fn);
+    if (!wrap) {
+      wrap = (event) => {
+        pressGlyph(button, event);
+        return fn(event);
+      };
+      byFn.set(fn, wrap);
+    }
+    return wrap;
+  };
+  const pressed = (type) => type === "click" || type === "mousedown" || type === "pointerdown";
+  button.addEventListener = (type, fn, options) => {
+    if (pressed(type) && typeof fn === "function") return add(type, wrapFor(type, fn), options);
+    return add(type, fn, options);
+  };
+  if (remove) {
+    button.removeEventListener = (type, fn, options) => {
+      const byFn = wraps.get(type);
+      const wrap = byFn && typeof fn === "function" ? byFn.get(fn) : null;
+      if (wrap) {
+        byFn.delete(fn);
+        return remove(type, wrap, options);
+      }
+      return remove(type, fn, options);
+    };
+  }
+}
+
+function buttonAnchor(button) {
+  if (!button || typeof button.getBoundingClientRect !== "function") return null;
+  let rect = null;
+  try {
+    rect = button.getBoundingClientRect();
+  } catch {
+    return null;
+  }
+  if (!rect) return null;
+  const width = Number(rect.width);
+  const height = Number(rect.height);
+  const left = Number(rect.left);
+  const top = Number(rect.top);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(left) || !Number.isFinite(top)) return null;
+  if (width <= 0 && height <= 0) return null;
+  return { left: left + (width > 0 ? width / 2 : 0), top };
+}
+
+// Resolves true only when the write is accepted. A throw or a rejection is false.
 function writeClipboard(text) {
   const nav = globalThis.navigator;
   const clipboard = nav && nav.clipboard;
-  if (!text || !clipboard || typeof clipboard.writeText !== "function") return;
+  if (!text || !clipboard || typeof clipboard.writeText !== "function") return Promise.resolve(false);
   try {
     const result = clipboard.writeText(text);
-    if (result && typeof result.catch === "function") result.catch(() => {});
+    if (result && typeof result.then === "function") return result.then(() => true, () => false);
+    return Promise.resolve(true);
   } catch {
-    // Clipboard permission is optional.
+    return Promise.resolve(false);
   }
 }
 
@@ -4577,6 +4681,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const icon = strokeIcon(d);
     if (icon) button.appendChild(icon);
+    armGlyphPress(button);
     // Delete sits outside the editor. Taking focus there drops the caret, and
     // the key that follows (undo) never reaches the document.
     if (label === "Delete") {
@@ -4767,10 +4872,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       link.setAttribute("aria-label", "Copy link");
       link.setAttribute("title", "Copy link");
     }
+    armGlyphPress(link);
     link.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       if (event && typeof event.stopPropagation === "function") event.stopPropagation();
-      copyCommentLink(id);
+      copyCommentLink(id, link);
     });
     row.appendChild(link);
     parent.appendChild(row);
@@ -4878,6 +4984,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     button.dataset.comment = thread.id;
     if (currentCommentId === thread.id) button.classList.add("md-comment-current");
     if (editingCommentIds().has(thread.id)) button.classList.add("md-comment-editing");
+    armGlyphPress(button);
     button.addEventListener("mousedown", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
     });
@@ -5356,6 +5463,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (icon) addCommentButton.appendChild(icon);
       addCommentButton.hidden = true;
       host.appendChild(addCommentButton);
+      armGlyphPress(addCommentButton);
       addCommentButton.addEventListener("mousedown", (event) => {
         // A middle button pastes the primary selection. Cancelling that press
         // drops the paste, and only the primary button adds a comment.
@@ -6147,6 +6255,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const icon = strokeIcon(COMMENT_BALLOON);
     if (icon) button.appendChild(icon);
+    armGlyphPress(button);
     // A press here is a drag, not a caret move. preventDefault would cancel the drag.
     button.addEventListener("mousedown", (event) => {
       if (event && typeof event.stopPropagation === "function") event.stopPropagation();
@@ -6984,6 +7093,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       button.setAttribute("title", "Show raw markdown");
       button.setAttribute("contenteditable", "false");
     }
+    armGlyphPress(button);
     if (typeof button.addEventListener === "function") {
       button.addEventListener("mousedown", stopViewEvent, { signal: ac.signal });
       button.addEventListener("pointerdown", stopViewEvent, { signal: ac.signal });
@@ -8202,11 +8312,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       copy.appendChild(glyph);
     }
+    armGlyphPress(copy);
     if (typeof copy.addEventListener === "function") {
       copy.addEventListener("click", (event) => {
         if (event && typeof event.preventDefault === "function") event.preventDefault();
         stopEvent(event);
-        if (fileMenuPath) writeClipboard(fileMenuPath);
+        if (fileMenuPath) copyControl(copy, fileMenuPath, "Path copied to clipboard");
       });
     }
     head.append(pathEl, copy);
@@ -12225,6 +12336,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     svg.appendChild(path);
     button.appendChild(svg);
+    armGlyphPress(button);
     return button;
   }
 
@@ -13033,9 +13145,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       const glyph = copyGlyph();
       if (glyph) copy.appendChild(glyph);
+      armGlyphPress(copy);
       copy.addEventListener("click", (event) => {
         if (event && typeof event.preventDefault === "function") event.preventDefault();
-        writeClipboard(id);
+        copyControl(copy, id, "ID copied to clipboard");
       });
       valueNode.appendChild(copy);
       row.append(fieldName("Id"), valueNode);
@@ -13109,10 +13222,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const copyLink = plainButton("md-ticket-pane-item", "Copy link");
     copyLink.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
-      closeTicketMenu();
       const hash = formatHash({ repo: activeRepo, kind: "ticket", id: ticket.id });
-      if (!hash) return;
-      writeClipboard(absoluteHash(hash));
+      if (hash) copyControl(copyLink, absoluteHash(hash), "Link copied to clipboard");
+      closeTicketMenu();
     });
     const deleteTicket = plainButton("md-ticket-pane-item", "Delete ticket");
     deleteTicket.addEventListener("click", (event) => {
@@ -13588,6 +13700,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const icon = strokeIcon(ICON_PATHS.delete[0]);
       if (icon) remove.appendChild(icon);
     }
+    armGlyphPress(remove);
     placeAfter(head, button, remove);
     let field = findDeep(nav, "md-new-name");
     if (!field) {
@@ -13781,11 +13894,65 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return parsed.repo;
   }
 
-  function copyCommentLink(id) {
+  const copyFlyouts = new Map();
+
+  function clearCopyFlyout(button) {
+    const item = button ? copyFlyouts.get(button) : null;
+    if (!item) return;
+    clearTimeout(item.timer);
+    copyFlyouts.delete(button);
+    detachNode(item.note);
+    if (button.classList) button.classList.remove("md-flyout-host");
+  }
+
+  function clearCopyFlyouts() {
+    for (const button of [...copyFlyouts.keys()]) clearCopyFlyout(button);
+  }
+
+  // The note sits above the control, where the title tooltip would. The title stays the control name.
+  // A menu that closes would hide a child, so a measured control is parented outside that panel.
+  function showCopyFlyout(doc, button, message, place) {
+    if (closed || !button || !message || !doc || typeof doc.createElement !== "function") return;
+    clearCopyFlyout(button);
+    const note = doc.createElement("span");
+    note.className = "md-copy-flyout";
+    note.textContent = message;
+    if (typeof note.setAttribute === "function") note.setAttribute("role", "status");
+    const host = place ? confirmParent() : null;
+    const parent = host || button;
+    if (!parent || typeof parent.appendChild !== "function") return;
+    if (host && place) {
+      setStyle(note, "position", "fixed");
+      setStyle(note, "left", `${place.left}px`);
+      setStyle(note, "top", `${place.top}px`);
+    } else if (button.classList) {
+      button.classList.add("md-flyout-host");
+    }
+    parent.appendChild(note);
+    const timer = setTimeout(() => {
+      const current = copyFlyouts.get(button);
+      if (!current || current.note !== note) return;
+      clearCopyFlyout(button);
+    }, COPY_FLYOUT_MS);
+    copyFlyouts.set(button, { note, timer });
+  }
+
+  function copyControl(button, text, message) {
+    const place = buttonAnchor(button);
+    const doc = typeof document !== "undefined" ? document : null;
+    writeClipboard(text).then((ok) => {
+      if (!ok || closed || !button) return;
+      showCopyFlyout(doc, button, message, place);
+    });
+  }
+
+  function copyCommentLink(id, button) {
     if (!activeRepo || !openPath || !id) return;
     const hash = formatHash({ repo: activeRepo, kind: "comment", path: openPath, id });
     if (!hash) return;
-    writeClipboard(absoluteHash(hash));
+    const text = absoluteHash(hash);
+    if (button) copyControl(button, text, "Link copied to clipboard");
+    else writeClipboard(text);
   }
 
   function copyEntryLink() {
@@ -14194,6 +14361,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         noticeEl.parentElement.removeChild(noticeEl);
       }
       noticeEl = null;
+      clearCopyFlyouts();
       unsubscribe();
       unbindRepoSelect();
       unbindDocMenu();
