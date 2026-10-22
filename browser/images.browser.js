@@ -1,10 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import http from "node:http";
-import { launchBrowser, Page, REPO, startHub } from "./harness.js";
+import { launchBrowser, onPath, Page, REPO, startHub } from "./harness.js";
 
-const CHROMIUM = process.env.VIEWMARK_CHROMIUM || "/usr/bin/chromium";
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   "base64",
@@ -44,8 +42,8 @@ function pasteFile(page, bytes, name, type) {
 }
 
 test("picture: a paste inside alpha beta leaves that paragraph and draws the image after it", async (t) => {
-  if (!existsSync(CHROMIUM)) {
-    t.skip("chromium is not installed");
+  if (!onPath(process.env.VIEWMARK_FIREFOX || "firefox")) {
+    t.skip("firefox is not installed");
     return;
   }
   const hub = await startHub();

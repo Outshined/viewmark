@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
-import { BROWSER, REPO, USER, cli, launchBrowser, Page, startHub } from "./harness.js";
+import { REPO, USER, cli, launchBrowser, Page, startHub } from "./harness.js";
 
 // Ticket d6a4htkt. Ctrl-click opens the address in a new tab. A click without
 // Ctrl still opens a document, ticket, or comment hash in this page, and does
@@ -139,10 +139,10 @@ async function exercise(t, vim) {
   }
 }
 
-test("d6a4htkt: Ctrl-click opens a rendered link in a new tab, vim keys off", { skip: BROWSER !== "firefox" }, async (t) => {
+test("d6a4htkt: Ctrl-click opens a rendered link in a new tab, vim keys off", async (t) => {
   await exercise(t, false);
 });
 
-test("d6a4htkt: Ctrl-click opens a rendered link in a new tab, vim keys on", { skip: BROWSER !== "firefox" }, async (t) => {
+test("d6a4htkt: Ctrl-click opens a rendered link in a new tab, vim keys on", async (t) => {
   await exercise(t, true);
 });

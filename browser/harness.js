@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import net from "node:net";
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -10,9 +10,8 @@ import { lockIndexAt } from "../src/doc.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = path.join(ROOT, "cli.js");
-const CHROMIUM = process.env.VIEWMARK_CHROMIUM || "/usr/bin/chromium";
-// The browser the tests drive: chromium, or firefox (browser/firefox.js).
-export const BROWSER = process.env.VIEWMARK_BROWSER === "firefox" ? "firefox" : "chromium";
+// Firefox is the only browser these tests drive.
+export const BROWSER = "firefox";
 const LIVE_PORT = Number(process.env.VIEWMARK_PORT || 8765);
 export const USER = "qa-bot";
 export const OTHER = "qa-two";
@@ -38,7 +37,7 @@ export function cli(port, args, input = "") {
 
 // A child that cannot outlive this process. It runs under a shell in a process group of its
 // own. The shell reads a pipe from this process, and when the pipe closes it ends the whole
-// group: the child and everything it started, such as Chromium's renderers and crash
+// group: the child and everything it started, such as Firefox's content processes and crash
 // handlers. The pipe closes when stopProcess ends it or when this process ends in any way,
 // SIGKILL included. Then it removes the child's temporary directories, the ones named in
 // TIE_RM, and only those under this harness's viewmark-qa- prefix. The child's own stdin is
@@ -66,7 +65,6 @@ export function onPath(command) {
 // drag-and-drop interception, no input method composition, and no platform font report, and
 // its screenshots leave out the caret, so where the caret is painted cannot be read ("paint").
 export function supports(feature) {
-  if (BROWSER === "chromium") return true;
   return !["drag", "ime", "fonts", "paint"].includes(feature);
 }
 
@@ -279,99 +277,8 @@ export async function startProxy(target) {
   };
 }
 
-class Session {
-  constructor(ws) {
-    this.ws = ws;
-    this.next = 0;
-    this.pending = new Map();
-    this.listeners = new Map();
-    ws.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data);
-      if (message.id != null && this.pending.has(message.id)) {
-        const { resolve, reject, method } = this.pending.get(message.id);
-        this.pending.delete(message.id);
-        if (message.error) reject(new Error(`${method}: ${message.error.message}`));
-        else resolve(message.result);
-        return;
-      }
-      for (const fn of this.listeners.get(message.method) || []) fn(message.params);
-    });
-  }
-
-  send(method, params = {}) {
-    const id = ++this.next;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method });
-      this.ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-
-  on(method, fn) {
-    if (!this.listeners.has(method)) this.listeners.set(method, new Set());
-    this.listeners.get(method).add(fn);
-    return () => this.listeners.get(method).delete(fn);
-  }
-}
-
 export async function launchBrowser() {
-  if (BROWSER === "firefox") return (await import("./firefox.js")).launchFirefox();
-  const profile = mkdtempSync(path.join(tmpdir(), "viewmark-qa-profile-"));
-  const args = [
-    ...(process.env.VIEWMARK_HEADED === "1" ? [] : ["--headless=new"]),
-    "--remote-debugging-port=0",
-    `--user-data-dir=${profile}`,
-    "--window-size=1920,1080",
-    "--force-device-scale-factor=1",
-    "--font-render-hinting=none",
-    "--hide-scrollbars",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-extensions",
-    "--lang=en-US",
-    "about:blank",
-  ];
-  const proc = spawnTied(CHROMIUM, args, "ignore", "ignore", process.env.VIEWMARK_KEEP_PROFILE === "1" ? [] : [profile]);
-  const portFile = path.join(profile, "DevToolsActivePort");
-  for (let i = 0; i < 200 && !existsSync(portFile); i += 1) await sleep(50);
-  const devtools = readFileSync(portFile, "utf8").split("\n")[0];
-  const targets = await (await fetch(`http://127.0.0.1:${devtools}/json/list`)).json();
-  const target = targets.find((item) => item.type === "page");
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => {
-    ws.addEventListener("open", resolve, { once: true });
-    ws.addEventListener("error", reject, { once: true });
-  });
-  const base = `http://127.0.0.1:${devtools}`;
-  const sockets = [ws];
-  return {
-    name: "chromium",
-    session: new Session(ws),
-    targetId: target.id,
-    async newSession() {
-      const made = await (await fetch(`${base}/json/new?about:blank`, { method: "PUT" })).json();
-      const other = new WebSocket(made.webSocketDebuggerUrl);
-      await new Promise((resolve, reject) => {
-        other.addEventListener("open", resolve, { once: true });
-        other.addEventListener("error", reject, { once: true });
-      });
-      sockets.push(other);
-      return { session: new Session(other), targetId: made.id };
-    },
-    async openBlank() {
-      return (await (await fetch(`${base}/json/new?about:blank`, { method: "PUT" })).json()).id;
-    },
-    async activate(id) {
-      await fetch(`${base}/json/activate/${id}`);
-    },
-    async closeTarget(id) {
-      await fetch(`${base}/json/close/${id}`);
-    },
-    async close() {
-      for (const socket of sockets) socket.close();
-      await stopProcess(proc);
-      if (process.env.VIEWMARK_KEEP_PROFILE !== "1") rmSync(profile, { recursive: true, force: true });
-    },
-  };
+  return (await import("./firefox.js")).launchFirefox();
 }
 
 // Passive: it records events and answers geometry questions. It never changes the page.
@@ -742,7 +649,7 @@ window.__qaCaret = async () => {
 };
 `;
 
-// Counts pure red pixels in an 8-bit RGB or RGBA PNG without interlace, as Chromium writes them.
+// Counts pure red pixels in an 8-bit RGB or RGBA PNG without interlace, as Firefox writes them.
 function redPixels(png) {
   return redColumns(png).length;
 }

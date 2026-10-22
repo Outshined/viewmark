@@ -13,7 +13,7 @@ import { AGENT, launchBrowser, Page, startHub } from "./harness.js";
 // range comes from the text alone: the end that is not dragged, and the boundary nearest the
 // pointer, which is where a click there puts the caret. The stored range comes from the hub's
 // bytes. A press, moves with the button held, and a release are plain mouse events, which
-// Firefox over BiDi delivers as Chromium does, so nothing here is skipped in Firefox.
+// Firefox delivers. Firefox is the only browser these tests drive, so nothing here is skipped.
 
 const CM = (id) => `\n\n\`\`\`comment ${id}\n:: 0\n@2026-10-05T16:00:00.000Z ${AGENT}\nNote ${id}.\n\`\`\`\n`;
 const MARK = /\{\/?[A-Za-z][\w-]*\}/g;

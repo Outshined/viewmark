@@ -58,10 +58,10 @@ A glyph that a change does not specify exactly is a 24 by 24 stroke icon: viewBo
 
 `node --test` does not run the browser tests. They are the `browser/*.browser.js` files, and they drive the page in a real browser with real input events.
 
-- `VIEWMARK_BROWSER=firefox node --test browser/enter.browser.js` runs one file. `VIEWMARK_BROWSER=firefox node --test --test-concurrency=3 browser/*.browser.js` runs them all.
+- `node --test browser/enter.browser.js` runs one file. `node --test --test-concurrency=3 browser/*.browser.js` runs them all.
 - `--test-name-pattern` picks tests by name. A cell is a test named by its id, so `--test-name-pattern='^SE\.q\.2$'` runs that cell, and `--test-name-pattern='^SE\.'` runs every Shift+Enter cell.
 - A cell's file is the one whose `defineSuite` line lists the cell's prefix: `BG.` in `empty-line`; `BS.`, `DL.`, `WB.`, `WD.`, and `CR.` in `delete`; `MS.` in `sessions`; `CK.`, `DC.`, `T3.`, `DG.`, and `DD.` in `pointer`; `TB.`, `MV.`, `RD.`, and `WK.` in `tab-move`; `TY.` and `TC.` in `typing`; `EN.`, `SE.`, `EB.`, and `EF.` in `enter`; and `SX.`, `CB.`, `UR.`, and `IM.` in `selection`.
-- The tests run in Firefox. Set `VIEWMARK_BROWSER=firefox` on every run. Firefox runs inside cage when cage is installed, and headless otherwise.
+- The tests run in Firefox. Firefox runs inside cage when cage is installed, and headless otherwise.
 - Each test starts its own hub on a free port, with its own state and repo directories, and removes them when it ends. It never writes to the live hub.
 - The cell suites read their cells from `qa/editor-matrix-test-plan.md` in the `viewmark` repo of the running hub, so that hub must be up. `VIEWMARK_PLAN_PORT` names its port when it is not 8765. `VIEWMARK_PLAN_FILE` names a copy of the plan saved when a run began, so every suite of the run reads the same cells.
 - A ticket that names a test or a cell is not done until that test passes in Firefox. Run it there before closing the ticket.

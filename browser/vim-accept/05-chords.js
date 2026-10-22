@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { BROWSER, launchBrowser, Page, startHub } from "../harness.js";
+import { launchBrowser, Page, startHub } from "../harness.js";
 
 // Chord cells. A caret mark or an anchor mark is not part of the stored bytes.
 const FILE = "a.md";
@@ -299,37 +299,6 @@ test("VK.11 (ticket 7vdep2z4)", { timeout: 180000 }, async (t) => {
     anchor: before.anchor,
     rev: before.rev,
     status: "V",
-  });
-
-  await t.test("composition", async (inner) => {
-    if (BROWSER === "firefox") {
-      inner.skip("firefox has no input method composition");
-      return;
-    }
-    await normal(page);
-    await place(page, 0);
-    const start = await snap(hub, page);
-    await page.session.send("Input.imeSetComposition", {
-      text: "é",
-      selectionStart: 1,
-      selectionEnd: 1,
-    });
-    await page.quiet();
-    await page.eval(`(() => {
-      const root = document.getElementById("editor");
-      root.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
-      root.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "é" }));
-      root.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "é" }));
-      return true;
-    })()`);
-    const after = await snap(hub, page);
-    expectShot(after, "VK.11 composition", {
-      text: body,
-      focus: start.focus,
-      anchor: start.anchor,
-      rev: start.rev,
-      status: "N",
-    });
   });
 });
 

@@ -5,8 +5,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { onPath, spawnTied, stopProcess } from "./harness.js";
 
 // Firefox for the browser tests, over WebDriver BiDi. A FirefoxSession takes the DevTools
-// protocol calls the harness and the tests make, and does each one in Firefox, so the same tests
-// run in either browser. VIEWMARK_BROWSER=firefox selects it.
+// protocol calls the harness and the tests make, and does each one in Firefox. Firefox is the
+// only browser these tests drive.
 //
 // Firefox runs inside cage, a Wayland compositor with a headless backend, when cage is
 // installed: Firefox is then a real window with its own clipboard, which holds pictures, and the
@@ -29,7 +29,7 @@ const PREFS = {
   "datareporting.policy.dataSubmissionEnabled": false,
   "toolkit.telemetry.reportingpolicy.firstRun": false,
   "dom.disable_beforeunload": true,
-  // The clipboard API without a prompt, as Chromium's granted permission gives.
+  // The clipboard API without a prompt.
   "dom.events.testing.asyncClipboard": true,
   "dom.events.asyncClipboard.clipboardItem": true,
   "general.smoothScroll": false,

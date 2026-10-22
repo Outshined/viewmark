@@ -10,9 +10,9 @@ import { launchFirefox } from "./firefox.js";
 
 // Ticket hup4797q: a picture copied in Firefox with Copy Image and pasted into a ticket was drawn,
 // and then gone after a forced reload. These tests copy the picture the way a person does, with
-// Firefox's own context menu, and paste it with Ctrl+V. They drive Firefox whatever
-// VIEWMARK_BROWSER says, because Copy Image is Firefox's menu item. They need a clipboard that
-// holds pictures: cage, or VIEWMARK_HEADED=1.
+// Firefox's own context menu, and paste it with Ctrl+V. Firefox is the only browser these tests
+// drive, and Copy Image is Firefox's menu item. They need a clipboard that holds pictures: cage,
+// or VIEWMARK_HEADED=1.
 
 const FIREFOX = process.env.VIEWMARK_FIREFOX || "firefox";
 const ready = onPath(FIREFOX) && (onPath(process.env.VIEWMARK_CAGE || "cage") || process.env.VIEWMARK_HEADED === "1");

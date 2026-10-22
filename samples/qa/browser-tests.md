@@ -1,5 +1,5 @@
 # Browser tests: how to run them
-The browser tests run the editing matrix of `qa/editor-matrix-test-plan.md` in a real browser, Chromium by default, or Firefox:
+The browser tests run the editing matrix of `qa/editor-matrix-test-plan.md` in Firefox:
 - The keys and the mouse are real input events, sent through the browser's remote protocol.
 - Each result is checked against the bytes a hub holds.
 - The tests live in `browser/` in the viewmark source tree.
@@ -8,8 +8,7 @@ The browser tests run the editing matrix of `qa/editor-matrix-test-plan.md` in a
 
 ## What you need
 - **Node.** There are no packages to install.
-- **Chromium** at `/usr/bin/chromium`. `VIEWMARK_CHROMIUM` names another binary.
-- **Firefox**, only to run the tests in Firefox. It runs inside cage, a compositor with a headless backend, when cage is installed, and with `--headless` otherwise, so your screen and clipboard are not touched.
+- **Firefox.** It runs inside cage, a compositor with a headless backend, when cage is installed, and with `--headless` otherwise, so your screen and clipboard are not touched.
 - **The viewmark hub, running.** At the start of every run, the tests read their cells from `qa/editor-matrix-test-plan.md` in the `viewmark` repo, through `node cli.js show`. The hub is expected on port 8765; `VIEWMARK_PLAN_PORT` names another port. If the hub cannot be reached, the suite stops at once and says so.
 - **A display**, only when you want to watch (`VIEWMARK_HEADED=1`).
 
@@ -30,14 +29,12 @@ node cli.js --port 0 serve <new temporary directory>
 ## Running
 ```text
 node --test browser/*.browser.js                         every suite
-node --test --test-concurrency=3 browser/*.browser.js    three suites at a time, about ten minutes in Chromium
+node --test --test-concurrency=3 browser/*.browser.js    three suites at a time, about ten minutes
 node --test browser/empty-line.browser.js                one suite
 node --test --test-name-pattern='^BG\.p-bl$' browser/empty-line.browser.js
                                                          one cell, with every route it has
 node --test --test-name-pattern='^DL\.' browser/delete.browser.js
                                                          every cell whose id starts with DL.
-VIEWMARK_BROWSER=firefox node --test browser/delete.browser.js
-                                                         the same suite in Firefox
 ```
 
 Each suite has its own hub and its own browser, so suites can run side by side. Every cell starts from a fresh page load, so one cell that wedges the page cannot fail the next. The browser window is 1920 by 1080.
@@ -60,10 +57,8 @@ Each suite has its own hub and its own browser, so suites can run side by side. 
 | `browser/sessions.browser.js` | MS: a second person, an agent, and a dropped socket |
 
 ## Settings
-- `VIEWMARK_BROWSER=firefox`: run in Firefox instead of Chromium.
 - `VIEWMARK_HEADED=1`: show the browser window, so you can watch the cells run.
 - `VIEWMARK_KEEP_PROFILE=1`: keep the browser profile directory after the run.
-- `VIEWMARK_CHROMIUM`: the Chromium binary.
 - `VIEWMARK_FIREFOX`: the Firefox binary, `firefox` by default.
 - `VIEWMARK_CAGE`: the cage binary, `cage` by default.
 - `VIEWMARK_PLAN_PORT`: the port of the hub that holds the plan.
@@ -109,7 +104,7 @@ The plan in the hub is the only copy of the cells. Edit a cell there, and the ne
 
 ## How the harness is put together
 - `browser/harness.js`:
-  - starts the test hub and Chromium;
+  - starts the test hub and Firefox;
   - speaks the DevTools protocol over Node's built-in `WebSocket`;
   - drives the page: keys, clicks, drags, and waiting for quiet;
   - installs a passive script that answers geometry questions and records `keydown`, `beforeinput`, and `selectionchange`.
