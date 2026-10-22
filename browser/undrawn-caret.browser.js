@@ -63,7 +63,7 @@ test("x5fxzp58 vim off: arrows around a heading land on a drawn line", async (t)
   const blankBefore = TEXT.indexOf("\n\n");
   const blankAfter = TEXT.indexOf("\n\n", head);
   await place(page, head);
-  await page.key("ArrowDown");
+  await page.key("↓");
   await page.quiet();
   let caret = await page.caret();
   assertDrawn(caret, "down after the heading");
@@ -71,14 +71,14 @@ test("x5fxzp58 vim off: arrows around a heading land on a drawn line", async (t)
   assert.equal(lineOf(TEXT, caret.focus).text, "next");
   assert.match((await lineHolding(page, caret, "down after the heading")).text, /next/);
 
-  await page.key("ArrowUp");
+  await page.key("↑");
   await page.quiet();
   caret = await page.caret();
   assertDrawn(caret, "up onto the heading");
   assert.notEqual(caret.focus, blankAfter + 1);
   assert.match((await lineHolding(page, caret, "up onto the heading")).text, /Head/);
 
-  await page.key("ArrowUp");
+  await page.key("↑");
   await page.quiet();
   caret = await page.caret();
   assertDrawn(caret, "up onto the paragraph");
@@ -87,9 +87,9 @@ test("x5fxzp58 vim off: arrows around a heading land on a drawn line", async (t)
   assert.match((await lineHolding(page, caret, "up onto the paragraph")).text, /para/);
 
   await place(page, head);
-  await page.key("ArrowLeft");
-  await page.key("ArrowLeft");
-  await page.key("ArrowLeft");
+  await page.key("←");
+  await page.key("←");
+  await page.key("←");
   await page.quiet();
   caret = await page.caret();
   assertDrawn(caret, "left off the heading");
@@ -110,7 +110,7 @@ test("x5fxzp58 vim off: fence End stays on the opener and arrows leave the break
   assert.equal(TEXT[braceBreak], "\n");
 
   await place(page, fn);
-  await page.key("ArrowUp");
+  await page.key("↑");
   await page.quiet();
   let caret = await page.caret();
   assertDrawn(caret, "up onto the opener");
@@ -133,7 +133,7 @@ test("x5fxzp58 vim off: fence End stays on the opener and arrows leave the break
   assert.match((await lineHolding(page, caret, "end on the opener")).text, /```js/);
 
   await place(page, fn);
-  await page.key("ArrowLeft");
+  await page.key("←");
   await page.quiet();
   caret = await page.caret();
   assertDrawn(caret, "left off the function line");
@@ -141,7 +141,7 @@ test("x5fxzp58 vim off: fence End stays on the opener and arrows leave the break
   assert.match((await lineHolding(page, caret, "left off the function line")).text, /```js/);
 
   await place(page, brace);
-  await page.key("ArrowDown");
+  await page.key("↓");
   await page.quiet();
   caret = await page.caret();
   assertDrawn(caret, "down off the last code line");
@@ -159,7 +159,7 @@ test("x5fxzp58 vim on: j and k skip the blank after a heading, and ArrowLeft sta
   await place(page, head);
   await page.key("Escape");
   await page.quiet();
-  await page.key("ArrowDown");
+  await page.key("↓");
   await page.quiet();
   let caret = await page.caret();
   assertDrawn(caret, "vim down after the heading");
@@ -170,7 +170,7 @@ test("x5fxzp58 vim on: j and k skip the blank after a heading, and ArrowLeft sta
   await place(page, TEXT.indexOf("next"));
   await page.key("Escape");
   await page.quiet();
-  await page.key("ArrowUp");
+  await page.key("↑");
   await page.quiet();
   caret = await page.caret();
   assertDrawn(caret, "vim up onto the heading");
@@ -181,7 +181,7 @@ test("x5fxzp58 vim on: j and k skip the blank after a heading, and ArrowLeft sta
   await place(page, fn);
   await page.key("Escape");
   await page.quiet();
-  await page.key("ArrowLeft");
+  await page.key("←");
   await page.quiet();
   caret = await page.caret();
   assert.equal(caret.focus, fn);
