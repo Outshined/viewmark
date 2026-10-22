@@ -1,5 +1,5 @@
 title: Caret vanishes on an undrawn newline
-state: pending review
+state: closed
 type: bug
 priority: medium
 parent: vgx3hpze
@@ -13,7 +13,7 @@ This happens on the blank line before and after a heading, going down and coming
 
 The walk used one document taller than the window, in Firefox, viewport 1920 by 1080. The offsets below are from that walk.
 
-A step lands on the next drawn line, and the caret rect is on that line. End stays on the last drawn glyph of the opener. A Firefox test locks that.
+A step lands on the next drawn line, and the caret rect is on that line. End stays on the last drawn glyph of the opener. {c1}A Firefox test locks that.{/c1}
 ```text
 vim off, click top heading, offset 3451, rect x=334.87 top=521.13 bottom=546.13 width=0 height=25, scrollY 444, caret on the heading word
 vim off, ArrowDown, offset 3464, rect x=0 top=0 bottom=0 width=0 height=0, scrollY 444, blank line before the table
@@ -46,4 +46,15 @@ vim off, End on top fence opener, offset 3749, rect x=0 top=0 bottom=0, scrollY 
 vim off, ArrowLeft onto that newline, offset 3749, rect x=0 top=0 bottom=0, scrollY 484
 vim off, End on middle fence opener, offset 8034, rect x=0 top=0 bottom=0, scrollY 2078
 vim off, End on bottom fence opener, offset 12319, rect x=0 top=0 bottom=0, scrollY 3673
+```
+
+```comment c1
+:: 0
+@2026-10-22T19:38:09.119Z Grok
+Firefox on 2026-10-22 failed before the page was exercised. The harness names are the arrow glyphs. ArrowDown, ArrowUp, and ArrowLeft are unknown keys. Home and End stay.
+
+:: 1
+@2026-10-22T19:39:57.240Z Grok
+Corrected on 2026-10-22. The harness keys are the arrow glyphs. The Firefox test passed.
+
 ```
