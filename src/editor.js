@@ -1928,7 +1928,7 @@ function showDiagramSvg(el, source, svg) {
   if (frame.parentElement !== el) el.replaceChildren(frame);
 }
 
-function renderDiagram(atom, onFitted) {
+function renderDiagram(atom, onFitted, reserveHeight) {
   const el = document.createElement("div");
   el.className = atomClassName(["md-atom", "md-diagram"], atom);
   el.contentEditable = "false";
@@ -1936,10 +1936,14 @@ function renderDiagram(atom, onFitted) {
   el.dataset.end = String(atom.end);
   el.dataset.bodyStart = String(atom.bodyStart);
   const frame = pinFrameElement();
+  // The caret scrolls against this frame before the drawing exists. The last
+  // fitted height is taller than the source pre, so keep it until the svg arrives.
+  if (reserveHeight > 0) setStyle(frame, "min-height", `${Math.round(reserveHeight)}px`);
   const pre = document.createElement("pre");
   pre.textContent = atom.body;
   frame.appendChild(pre);
   el.appendChild(frame);
+  el.diagramSource = typeof atom.body === "string" ? atom.body : "";
   const api = mermaidApi();
   if (!api) return el;
   const source = atom.body;
@@ -1955,7 +1959,7 @@ function renderDiagram(atom, onFitted) {
         return;
       }
       showDiagramSvg(el, source, svg);
-      if (el.isConnected === true && typeof onFitted === "function") onFitted();
+      if (el.isConnected === true && typeof onFitted === "function") onFitted(el);
     })
     .catch((err) => {
       showDiagramSource(el, source, err);
@@ -2092,9 +2096,9 @@ function takeRawMarker(el, marker) {
   return hang;
 }
 
-function renderBlock(block, repo, onSized, onDiagramFitted) {
+function renderBlock(block, repo, onSized, onDiagramFitted, reserveHeight) {
   if (block.type === "table") return renderTable(block, repo, onSized);
-  if (block.type === "diagram") return renderDiagram(block, onDiagramFitted);
+  if (block.type === "diagram") return renderDiagram(block, onDiagramFitted, reserveHeight);
   if (block.collapsed) return renderCollapsed(block);
   const el = document.createElement("div");
   el.className = ["md-line", ...block.classes].join(" ");
@@ -2939,6 +2943,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let closed = false;
   let pictureLayoutFrame = 0;
   let pictureObserver = null;
+  let diagramObserver = null;
+  const diagramHeights = new Map();
   const repoStorage = storage || null;
   // Raw is not stored. It applies only to the document that was open when it was turned on.
   let sourceMode = false;
@@ -5160,6 +5166,33 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
+  // A fitted drawing can grow after it is inserted. That growth is not an image load.
+  function watchDiagrams() {
+    if (typeof ResizeObserver !== "function") return;
+    if (!diagramObserver) {
+      diagramObserver = new ResizeObserver((entries) => {
+        if (closed) return;
+        let changed = false;
+        const list = entries || [];
+        for (let i = 0; i < list.length; i += 1) {
+          const el = list[i] && list[i].target;
+          if (commitDiagramHeight(el)) changed = true;
+        }
+        if (changed) holdCaretAfterDiagram();
+      });
+    }
+    diagramObserver.disconnect();
+    for (const host of elementsWithClass("md-diagram")) {
+      try {
+        diagramObserver.observe(host);
+      } catch {
+        diagramObserver.disconnect();
+        diagramObserver = null;
+        return;
+      }
+    }
+  }
+
   function layoutComments() {
     if (!commentsAside) return;
     const cards = [];
@@ -6353,6 +6386,80 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     });
   }
 
+  function frameMinHeight(frame) {
+    if (!frame || !frame.style) return 0;
+    let raw = "";
+    if (typeof frame.style.getPropertyValue === "function") raw = frame.style.getPropertyValue("min-height");
+    if (!raw && frame.style.minHeight) raw = frame.style.minHeight;
+    const n = parseFloat(raw);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+  }
+
+  function fittedSvgHeight(el) {
+    const frame = pictureFrame(el);
+    const svg = frame && directChildTag(frame, "svg");
+    if (!svg || typeof svg.getBoundingClientRect !== "function") return 0;
+    let rect = null;
+    try {
+      rect = svg.getBoundingClientRect();
+    } catch {
+      return 0;
+    }
+    const height = rect && rect.height;
+    if (typeof height !== "number" || !Number.isFinite(height) || height <= 0) return 0;
+    return Math.round(height);
+  }
+
+  // True when this drawing's box changed. A frame that already reserved the
+  // fitted height has not moved the caret.
+  function commitDiagramHeight(el) {
+    if (closed || !el || el.isConnected === false) return false;
+    const source = el.diagramSource;
+    if (typeof source !== "string") return false;
+    const height = fittedSvgHeight(el);
+    if (!(height > 0)) return false;
+    const frame = pictureFrame(el);
+    const reserved = frameMinHeight(frame);
+    diagramHeights.set(source, height);
+    if (frame) setStyle(frame, "min-height", `${height}px`);
+    return !(reserved > 0 && reserved === height);
+  }
+
+  function caretPushedOut() {
+    const rect = caretRect();
+    if (rect) return !caretInView(rect);
+    const point = pointFor(state.cursor);
+    const node = point && point.node;
+    const host = node && (node.nodeType === 1 ? node : node.parentElement);
+    const box = host && elementBox(host);
+    if (!box || !(box.height > 0)) return false;
+    const view = typeof window !== "undefined" ? window : null;
+    const height = view && view.innerHeight;
+    const width = view && view.innerWidth;
+    if (!(height > 0) || !(width > 0)) return false;
+    const bottom = box.top + box.height;
+    const right = box.left + (box.width > 0 ? box.width : 0);
+    return box.top < 0 || bottom > height || box.left < 0 || right > width;
+  }
+
+  // The drawing arrives after the caret was placed on the source pre. Scroll
+  // only once that height has pushed the caret out, then seat the block mark.
+  // Syncing while the caret is still outside parks the mark off the window.
+  function holdCaretAfterDiagram() {
+    if (closed) return;
+    if (!vimKeepScroll && !pinScrollHold && caretPushedOut()) {
+      const point = pointFor(state.cursor);
+      const node = point && point.node;
+      if (node) scrollCaret(node);
+    }
+    if (!caretPushedOut()) syncVimBlockMark();
+  }
+
+  function afterDiagramFitted(el) {
+    restoreCornerAfterDiagram();
+    if (commitDiagramHeight(el)) holdCaretAfterDiagram();
+  }
+
   function syncCornerPin(event) {
     if (pinDrag) return;
     const target = event && event.target;
@@ -7507,6 +7614,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       syncVimCaret();
       if (sourceMode) {
         if (pictureObserver) pictureObserver.disconnect();
+        if (diagramObserver) diagramObserver.disconnect();
         renderSourceView(caretTop());
         mountViewToggle();
         restoreCornerPin();
@@ -7522,7 +7630,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       blocks = blocksForCaret(blocks);
       const flashBlock = refusal && !refusal.name ? tightestBlock(blocks, refusal.offset) : null;
       const nodes = blocks.map((block) => {
-        const el = renderBlock(block, activeRepo, layoutAfterPicture, restoreCornerAfterDiagram);
+        const reserve = block && block.type === "diagram" && typeof block.body === "string"
+          ? (diagramHeights.get(block.body) || 0)
+          : 0;
+        const el = renderBlock(block, activeRepo, layoutAfterPicture, afterDiagramFitted, reserve);
         adornImageLine(el, block, state.doc);
         hangRawMarker(el, rawListMarker(block), block && block.indent);
         appendLockMarks(el, block);
@@ -7543,6 +7654,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       renderCommentAside(planned.comments);
       layoutComments();
       watchPictures();
+      watchDiagrams();
       if (commentFocus) {
         restoreEditorFocus = false;
         focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
@@ -14345,6 +14457,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (pictureObserver) {
         pictureObserver.disconnect();
         pictureObserver = null;
+      }
+      if (diagramObserver) {
+        diagramObserver.disconnect();
+        diagramObserver = null;
       }
       vimPaintHold = null;
       closeVimLine();

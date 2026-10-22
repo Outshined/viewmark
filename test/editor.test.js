@@ -8036,6 +8036,310 @@ test("mermaid render replaces source", async () => {
   }
 });
 
+// The drawing replaces the source pre after j and k have already placed the caret.
+test("t8c7f4ha fitted diagram keeps the caret in the window", async () => {
+  const previousMermaid = globalThis.mermaid;
+  const previousParser = globalThis.DOMParser;
+  const previousCSS = globalThis.CSS;
+  const previousObserver = globalThis.ResizeObserver;
+  const doc = "Above.\n\n```mermaid\ngraph TD\nA-->B\n```\n\nBelow.\n\nTail.\n";
+  const lineAt = (cursor) => {
+    let start = cursor;
+    while (start > 0 && doc[start - 1] !== "\n") start -= 1;
+    let end = start;
+    while (end < doc.length && doc[end] !== "\n") end += 1;
+    return doc.slice(start, end);
+  };
+  try {
+    await withVimFlag(true, async (mounted) => {
+      const pending = [];
+      let svgHeight = 400;
+      let scrollY = 0;
+      const moves = [];
+      let roCallback = null;
+      const observed = [];
+      globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+      globalThis.CSS = { supports: () => false };
+      globalThis.ResizeObserver = class {
+        constructor(callback) { roCallback = callback; }
+        observe(target) { observed.push(target); }
+        disconnect() { observed.length = 0; }
+      };
+      globalThis.mermaid = {
+        initialize() {},
+        render() {
+          return new Promise((resolve) => { pending.push(resolve); });
+        },
+      };
+      globalThis.DOMParser = class {
+        parseFromString() {
+          const svg = document.createElement("svg");
+          svg.setAttribute("style", "max-width: 200px;");
+          return { documentElement: svg };
+        }
+      };
+      const orig = document.createElement;
+      const flowHost = (el) => {
+        let node = el;
+        while (node) {
+          if (node.classList && (node.classList.contains("md-line") || node.classList.contains("md-diagram"))) return node;
+          node = node.parentElement;
+        }
+        return null;
+      };
+      const flowBlocks = () => (mounted.root.childNodes || []).filter((el) => (
+        el && el.nodeType === 1 && el.classList
+        && (el.classList.contains("md-line") || el.classList.contains("md-diagram"))
+      ));
+      const blockHeight = (el) => {
+        if (el.classList.contains("md-paragraph-gap")) return 0;
+        if (!el.classList.contains("md-diagram")) return 20;
+        const frame = (el.childNodes || []).find((child) => child.classList && child.classList.contains("md-pin-frame"));
+        const svg = frame && (frame.childNodes || []).find((child) => String(child.tagName || "").toUpperCase() === "SVG");
+        if (svg) return svgHeight;
+        const reserved = Number.parseFloat(frame && frame.styleProps && frame.styleProps["min-height"]);
+        if (Number.isFinite(reserved) && reserved > 0) return Math.round(reserved);
+        return 30;
+      };
+      const blockTop = (el) => {
+        let y = -scrollY;
+        for (const block of flowBlocks()) {
+          if (block === el) return y;
+          y += blockHeight(block);
+        }
+        return y;
+      };
+      const blockRect = (el) => {
+        const top = blockTop(el);
+        const height = blockHeight(el);
+        const width = el.classList.contains("md-diagram") ? 200 : 120;
+        return { top, left: 0, right: width, bottom: top + height, width, height };
+      };
+      const glyphFor = (node) => {
+        const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+        const host = flowHost(el);
+        const top = host ? blockRect(host).top : 0;
+        return { top, left: 8, right: 16, bottom: top + 20, width: 8, height: 20 };
+      };
+      document.createElement = (tag) => {
+        const el = orig(tag);
+        el.style.getPropertyValue = (name) => (el.styleProps && el.styleProps[name]) || "";
+        el.getBoundingClientRect = () => {
+          const host = flowHost(el);
+          if (host) return blockRect(host);
+          return { top: 0, left: 0, right: 8, bottom: 16, width: 8, height: 16 };
+        };
+        el.scrollIntoView = () => {
+          const rect = el.getBoundingClientRect();
+          if (!rect || !(rect.height > 0) || rect.height > window.innerHeight) return;
+          let dy = 0;
+          if (rect.top < 0) dy = rect.top;
+          else if (rect.bottom > window.innerHeight) dy = rect.bottom - window.innerHeight;
+          if (dy !== 0) window.scrollBy(0, dy);
+        };
+        return el;
+      };
+      document.body = document.createElement("body");
+      document.activeElement = mounted.root;
+      document.createTreeWalker = () => {
+        const list = [];
+        const walk = (node) => {
+          for (const child of node.childNodes || []) {
+            if (child.nodeType === 3) list.push(child);
+            else walk(child);
+          }
+        };
+        walk(mounted.root);
+        let index = 0;
+        return { nextNode: () => (index < list.length ? list[index++] : null) };
+      };
+      document.createRange = () => {
+        let node = null;
+        return {
+          setStart(next) { node = next; },
+          setEnd() {},
+          collapse() {},
+          selectNode(next) { node = next; },
+          setStartAfter() {},
+          setStartBefore() {},
+          getClientRects() {
+            return node ? [glyphFor(node)] : [];
+          },
+          getBoundingClientRect() {
+            const rects = this.getClientRects();
+            return rects[0] || { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+          },
+        };
+      };
+      const sel = {
+        rangeCount: 0,
+        anchorNode: null,
+        anchorOffset: 0,
+        focusNode: null,
+        focusOffset: 0,
+        ranges: [],
+        setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset) {
+          this.anchorNode = anchorNode;
+          this.anchorOffset = anchorOffset || 0;
+          this.focusNode = focusNode;
+          this.focusOffset = focusOffset || 0;
+          const range = document.createRange();
+          range.setStart(focusNode, this.focusOffset);
+          this.ranges = [range];
+          this.rangeCount = 1;
+        },
+        collapse(node, offset) { this.setBaseAndExtent(node, offset, node, offset); },
+        removeAllRanges() {
+          this.ranges = [];
+          this.rangeCount = 0;
+        },
+        addRange(range) {
+          this.ranges = [range];
+          this.rangeCount = 1;
+        },
+        getRangeAt(index) { return this.ranges[index || 0]; },
+      };
+      window.innerHeight = 200;
+      window.innerWidth = 800;
+      window.scrollBy = (_dx, dy) => {
+        scrollY += dy || 0;
+        if (dy) moves.push(dy);
+      };
+      window.getSelection = () => sel;
+      const diagrams = () => mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"));
+      const frameOf = () => {
+        const host = diagrams()[0];
+        return host && (host.childNodes || []).find((node) => node.classList && node.classList.contains("md-pin-frame"));
+      };
+      const hasPre = () => {
+        const frame = frameOf();
+        return !!frame && (frame.childNodes || []).some((node) => node.tagName === "PRE");
+      };
+      const caretBox = () => {
+        const rects = sel.getRangeAt(0).getClientRects();
+        return rects[rects.length - 1];
+      };
+      const caretInWindow = () => {
+        const rect = caretBox();
+        return rect.top >= 0 && rect.bottom <= window.innerHeight && rect.left >= 0 && rect.right <= window.innerWidth;
+      };
+      const markOnGlyph = () => {
+        const mark = (document.body.childNodes || []).find((node) => node.classList && node.classList.contains("md-vim-block-mark"));
+        const rect = caretBox();
+        assert.ok(mark);
+        assert.equal(mark.styleProps.top, `${rect.top}px`);
+        assert.equal(mark.styleProps.left, `${rect.left}px`);
+        assert.equal(mounted.root.styleProps["caret-color"], "transparent");
+      };
+      const settle = async () => {
+        await new Promise((resolve) => setImmediate(resolve));
+        const queued = pending.splice(0, pending.length);
+        assert.ok(queued.length > 0);
+        for (const resolve of queued) resolve({ svg: "<svg></svg>" });
+        await new Promise((resolve) => setImmediate(resolve));
+      };
+      const fireResize = () => {
+        const list = observed.slice();
+        assert.ok(list.some((node) => node.classList && node.classList.contains("md-diagram")));
+        roCallback(list.map((target) => ({ target })));
+      };
+      let view = createEditor(mounted.root, doc, 0);
+      try {
+        vimPress(mounted, "j");
+        assert.equal(lineAt(view.getState().cursor), "```mermaid");
+        assert.equal(diagrams().length, 0);
+        vimPress(mounted, "j");
+        assert.equal(lineAt(view.getState().cursor), "graph TD");
+        vimPress(mounted, "k");
+        assert.equal(lineAt(view.getState().cursor), "```mermaid");
+        vimPress(mounted, "k");
+        assert.equal(lineAt(view.getState().cursor), "Above.");
+        assert.equal(diagrams().length, 1);
+        view.destroy();
+
+        scrollY = 0;
+        moves.length = 0;
+        view = createEditor(mounted.root, doc, 0);
+        vimPress(mounted, "2");
+        vimPress(mounted, "j");
+        const below = view.getState().cursor;
+        assert.equal(lineAt(below), "Below.");
+        assert.equal(diagrams().length, 1);
+        assert.equal(hasPre(), true);
+        assert.equal(moves.length, 0);
+        await settle();
+        assert.equal(view.getState().cursor, below);
+        assert.equal(hasPre(), false);
+        assert.equal(caretInWindow(), true);
+        assert.ok(moves.some((dy) => dy > 0));
+        markOnGlyph();
+
+        const scrolled = moves.length;
+        const parked = caretBox().top;
+        vimPress(mounted, "j");
+        assert.equal(lineAt(view.getState().cursor), "Tail.");
+        assert.equal(diagrams().length, 1);
+        assert.equal(hasPre(), true);
+        assert.equal(frameOf().styleProps["min-height"], "400px");
+        const afterJump = moves.length;
+        const tailTop = caretBox().top;
+        assert.equal(caretInWindow(), true);
+        await settle();
+        assert.equal(lineAt(view.getState().cursor), "Tail.");
+        assert.equal(moves.length, afterJump);
+        assert.equal(caretBox().top, tailTop);
+        assert.equal(caretInWindow(), true);
+        assert.ok(afterJump >= scrolled);
+        markOnGlyph();
+
+        svgHeight = 800;
+        fireResize();
+        assert.ok(moves.length > afterJump);
+        assert.equal(lineAt(view.getState().cursor), "Tail.");
+        assert.equal(caretInWindow(), true);
+        markOnGlyph();
+        const grown = moves.length;
+        const held = caretBox().top;
+        fireResize();
+        assert.equal(moves.length, grown);
+        assert.equal(lineAt(view.getState().cursor), "Tail.");
+        assert.equal(caretBox().top, held);
+        assert.equal(caretInWindow(), true);
+
+        const aboveTopMoves = moves.length;
+        vimPress(mounted, "3");
+        vimPress(mounted, "k");
+        assert.equal(lineAt(view.getState().cursor), "Above.");
+        assert.equal(diagrams().length, 1);
+        assert.equal(hasPre(), true);
+        assert.equal(frameOf().styleProps["min-height"], "800px");
+        assert.equal(caretInWindow(), true);
+        const past = moves.length;
+        const aboveTop = caretBox().top;
+        await settle();
+        assert.equal(lineAt(view.getState().cursor), "Above.");
+        assert.equal(diagrams().length, 1);
+        assert.equal(moves.length, past);
+        assert.equal(caretBox().top, aboveTop);
+        assert.equal(caretInWindow(), true);
+        assert.ok(past >= aboveTopMoves);
+        markOnGlyph();
+      } finally {
+        view.destroy();
+      }
+    });
+  } finally {
+    if (previousMermaid === undefined) delete globalThis.mermaid;
+    else globalThis.mermaid = previousMermaid;
+    if (previousParser === undefined) delete globalThis.DOMParser;
+    else globalThis.DOMParser = previousParser;
+    if (previousCSS === undefined) delete globalThis.CSS;
+    else globalThis.CSS = previousCSS;
+    if (previousObserver === undefined) delete globalThis.ResizeObserver;
+    else globalThis.ResizeObserver = previousObserver;
+  }
+});
+
 test("a diagram pin move puts the corner on the svg after the frame is fitted", async () => {
   const mounted = mountSheet();
   const picture = { left: 100, top: 50, right: 300, bottom: 150, width: 200, height: 100 };
