@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { launchBrowser, Page, startHub } from "./harness.js";
 
 // Ticket nd9gvgw7. The drawn node label is the line after flowchart TD.
-// A click there opens the diagram with the caret on that label. Vim keys
-// off and on share the offset. A one-line body stays on its start, which
-// CK.mm.1 already locks.
+// A bare id does not draw, so the line is an edge this mermaid renders.
+// A click on that label opens the diagram with the caret on KennelLabel.
+// Vim keys off and on share the offset. A one-line body stays on its start,
+// which CK.mm.1 already locks.
 
 const LABEL = "KennelLabel";
-const TEXT = `Lead.\n\n\`\`\`mermaid\nflowchart TD\n  ${LABEL}\n\`\`\`\n`;
+const TEXT = `Lead.\n\n\`\`\`mermaid\nflowchart TD\n  ${LABEL}-->Other\n\`\`\`\n`;
 const VIM = "viewmark.vim";
 
 async function setup(t) {
@@ -65,7 +66,7 @@ test("nd9gvgw7: a click on a diagram label lands on that label", { timeout: 1800
   assert.equal(TEXT.slice(at, at + LABEL.length), LABEL);
   const lineStart = TEXT.lastIndexOf("\n", at - 1) + 1;
   const lineEnd = TEXT.indexOf("\n", at);
-  assert.equal(TEXT.slice(lineStart, lineEnd).trim(), LABEL);
+  assert.equal(TEXT.slice(lineStart, lineEnd).trim(), `${LABEL}-->Other`);
   assert.equal(TEXT.slice(TEXT.lastIndexOf("\n", lineStart - 2) + 1, lineStart - 1), "flowchart TD");
 
   for (const vim of [false, true]) {
