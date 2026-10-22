@@ -1168,6 +1168,142 @@ test("6a2t6dy5 j and k skip the blank under a rule, an image, or a diagram", () 
   assert.equal(lineAtCaret(press(onSecond, "j")), "After.");
 });
 
+function caretAt(doc, offset) {
+  return doc.slice(0, offset) + "‸" + doc.slice(offset);
+}
+
+test("4wch9t9w j off a mermaid closer lands on the following prose", () => {
+  const doc = "Above.\n\n```mermaid\nA-->B\n```\n\nAfter.\n";
+  const opener = doc.indexOf("```mermaid");
+  const body = doc.indexOf("A-->B");
+  const closer = doc.indexOf("\n```\n", opener) + 1;
+  const blank = closer + "```\n".length;
+  const prose = doc.indexOf("After.");
+  assert.equal(opener, 8);
+  assert.equal(closer, 25);
+  assert.equal(blank, 29);
+  assert.equal(prose, 30);
+
+  const down = run(caretAt(doc, closer), ["j"]);
+  assert.equal(down.cursor, prose);
+  assert.equal(lineAtCaret(down), "After.");
+  assert.notEqual(down.cursor, blank);
+  const again = press(down, "j");
+  assert.equal(again.cursor, prose);
+  assert.notEqual(again.cursor, blank);
+
+  const onGap = run(caretAt(doc, blank), ["j"]);
+  assert.equal(onGap.cursor, prose);
+  const upGap = run(caretAt(doc, blank), ["k"]);
+  assert.equal(upGap.cursor, opener);
+  assert.equal(lineAtCaret(upGap), "```mermaid");
+
+  let out = run(caretAt(doc, prose), ["k"]);
+  assert.equal(out.cursor, opener);
+  assert.equal(lineAtCaret(out), "```mermaid");
+  out = press(out, "j");
+  assert.equal(out.cursor, body);
+  assert.equal(lineAtCaret(out), "A-->B");
+  out = press(out, "k");
+  assert.equal(out.cursor, opener);
+  out = press(out, "k");
+  assert.equal(out.cursor, 0);
+  assert.equal(lineAtCaret(out), "Above.");
+  out = press(out, "j");
+  assert.equal(out.cursor, opener);
+  assert.equal(lineAtCaret(out), "```mermaid");
+
+  const fromColumn = run(caretAt(doc, 3), ["j"]);
+  assert.equal(fromColumn.cursor, opener + 3);
+  assert.equal(lineAtCaret(fromColumn), "```mermaid");
+
+  const raw = run(caretAt(doc, closer), ["j"], { raw: true });
+  assert.equal(raw.cursor, blank);
+  assert.equal(lineAtCaret(raw), "");
+
+  const crlf = "Above.\r\n\r\n```mermaid\r\nA-->B\r\n```\r\n\r\nAfter.\r\n";
+  const crlfCloser = crlf.indexOf("```\r\n\r\n");
+  const crlfDown = run(caretAt(crlf, crlfCloser), ["j"]);
+  assert.equal(crlfDown.cursor, crlf.indexOf("After."));
+  assert.notEqual(crlfDown.cursor, crlfCloser + "```\r\n".length);
+
+  const two = "```mermaid\nA-->B\n```\n\n\nAfter.\n";
+  const twoCloser = two.indexOf("\n```\n") + 1;
+  const twoSecond = two.indexOf("\n\n\n") + 2;
+  const twoDown = run(caretAt(two, twoCloser), ["j"]);
+  assert.equal(twoDown.cursor, twoSecond);
+  assert.notEqual(twoDown.cursor, two.indexOf("After."));
+
+  const code = "Before.\n\n```js\none\n```\n\nAfter.\n";
+  const fromCode = run(caretAt(code, code.indexOf("one")), ["j"]);
+  assert.equal(lineAtCaret(fromCode), "After.");
+  assert.notEqual(fromCode.cursor, code.indexOf("```\n\n") + "```\n".length);
+  const codeCloser = code.lastIndexOf("```");
+  assert.equal(run(caretAt(code, codeCloser), ["j"]).cursor, code.indexOf("After."));
+});
+
+test("4wch9t9w k from the gap under a mermaid fence lands on the opener", () => {
+  let doc = "Above.\n\n```mermaid\nA-->B\n```\n\nAfter.\n";
+  for (let i = 0; i < 80; i += 1) doc += `\nLine ${String(i).padStart(2, "0")} is below the diagram and not the opener.\n`;
+  const opener = doc.indexOf("```mermaid");
+  const closer = doc.indexOf("\n```\n", opener) + 1;
+  const blank = closer + "```\n".length;
+  const prose = doc.indexOf("After.");
+  assert.equal(doc[blank], "\n");
+  assert.ok(doc.length - blank > 1000, "the gap is near the end");
+  assert.ok(prose - blank === 1);
+
+  const down = run(caretAt(doc, closer), ["j"]);
+  assert.equal(down.cursor, prose);
+  assert.equal(lineAtCaret(down), "After.");
+  const next = press(down, "j");
+  assert.equal(lineAtCaret(next), "Line 00 is below the diagram and not the opener.");
+  assert.notEqual(next.cursor, blank);
+
+  const up = run(caretAt(doc, blank), ["k"]);
+  assert.equal(up.cursor, opener);
+  assert.equal(lineAtCaret(up), "```mermaid");
+  assert.ok(up.cursor < prose);
+  const forward = run(caretAt(doc, blank), ["j"]);
+  assert.equal(forward.cursor, prose);
+  assert.equal(lineAtCaret(forward), "After.");
+
+  const fromProse = run(caretAt(doc, prose), ["k"]);
+  assert.equal(fromProse.cursor, opener);
+  assert.equal(lineAtCaret(press(fromProse, "j")), "A-->B");
+});
+
+test("4wch9t9w h l 0 $ w and b on a mermaid opener, closer, and the prose under it", () => {
+  const doc = "Above.\n\n```mermaid\nA-->B\n```\n\nAfter.\n";
+  const opener = doc.indexOf("```mermaid");
+  const body = doc.indexOf("A-->B");
+  const closer = doc.indexOf("\n```\n", opener) + 1;
+  const blank = closer + "```\n".length;
+  const prose = doc.indexOf("After.");
+  const spots = [
+    { name: "opener", at: opener, mid: opener + 4, zero: opener, dollar: opener + "```mermaid".length - 1, w: body, b: 0 },
+    { name: "closer", at: closer, mid: closer + 1, zero: closer, dollar: closer + 2, w: prose, b: body },
+    { name: "prose", at: prose, mid: prose + 2, zero: prose, dollar: prose + "After.".length - 1, w: prose + "After.".length, b: closer },
+  ];
+  for (const spot of spots) {
+    const left = run(caretAt(doc, spot.mid), ["h"]);
+    assertView(left, "h", 1);
+    assert.equal(left.cursor, spot.mid, spot.name);
+    assertView(run(caretAt(doc, spot.mid), ["l"]), "l", 1);
+    const stayed = run(caretAt(doc, spot.dollar), ["l"]);
+    assert.equal(stayed.cursor, spot.dollar, spot.name);
+    assert.equal(last(stayed).effect, null, spot.name);
+    assert.equal(run(caretAt(doc, spot.mid), ["0"]).cursor, spot.zero, spot.name);
+    assert.equal(run(caretAt(doc, spot.mid), ["$"]).cursor, spot.dollar, spot.name);
+    const word = run(caretAt(doc, spot.at), ["w"]);
+    assert.equal(word.cursor, spot.w, spot.name);
+    assert.notEqual(word.cursor, blank, spot.name);
+    const back = run(caretAt(doc, spot.at), ["b"]);
+    assert.equal(back.cursor, spot.b, spot.name);
+    assert.notEqual(back.cursor, blank, spot.name);
+  }
+});
+
 // The fence in the rendered view is one block. j, k, and V still move one line of code.
 test("g92jk6em j and k move one line of a code fence and keep the column", () => {
   const start = "Intro.\n\n```javascript\nfunction f() {\n  ‸return 1;\n  return 2;\n}\n```\n\nEnd.\n";

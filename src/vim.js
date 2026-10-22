@@ -169,9 +169,35 @@ function sourceRows(doc, start, end) {
   return rows;
 }
 
+function fenceCloseText(text) {
+  if (typeof text !== "string") return false;
+  let index = 0;
+  while (index < text.length && text[index] === " ") index += 1;
+  if (index > 3) return false;
+  const ch = text[index];
+  if (ch !== "`" && ch !== "~") return false;
+  let size = 0;
+  while (index < text.length && text[index] === ch) {
+    size += 1;
+    index += 1;
+  }
+  if (size < 3) return false;
+  while (index < text.length && (text[index] === " " || text[index] === "\t")) index += 1;
+  return index === text.length;
+}
+
+function diagramEnds(doc) {
+  const ends = [];
+  for (const block of plan(doc, -1).blocks) {
+    if (block && block.type === "diagram" && typeof block.end === "number") ends.push(block.end);
+  }
+  return ends;
+}
+
 function renderedLines(doc, cursor, expandFences) {
   const blocks = plan(doc, cursor).blocks;
   const bodies = expandFences ? codeFenceBodies(doc) : null;
+  let ends = null;
   const lines = [];
   for (let i = 0; i < blocks.length; i += 1) {
     const block = blocks[i];
@@ -188,7 +214,17 @@ function renderedLines(doc, cursor, expandFences) {
     // A gap is already skipped. The first of two blanks after a fence is drawn
     // while the caret stands on it, and that row is still not a vim line. A
     // further blank stays a line, and so does the row when nothing follows.
-    if (block.empty && blocks[i - 1] && blocks[i - 1].fence && i + 1 < blocks.length) continue;
+    // An opened diagram draws its closer as a source line, so the pad under it
+    // is not a gap yet. A step onto it closes the diagram and this list then
+    // drops the row, so k steps back from the last line.
+    const prev = blocks[i - 1];
+    if (block.empty && prev && i + 1 < blocks.length) {
+      if (prev.fence) continue;
+      if (prev.type === "line" && !prev.empty && fenceCloseText(prev.text)) {
+        if (!ends) ends = diagramEnds(doc);
+        if (ends.includes(prev.end)) continue;
+      }
+    }
     const line = { start: block.start, end: block.end };
     // k lands on the last row. The block stays one vim line for a linewise delete.
     if (block.type === "table") line.table = true;
@@ -444,6 +480,26 @@ function stepMarkerGap(gap, delta, count, length) {
   return stepLine(gap.prev, -1, steps - 1, length);
 }
 
+function paragraphGapAt(doc, cursor) {
+  for (const block of plan(doc, cursor).blocks) {
+    if (!block || !block.classes || !block.classes.includes("md-paragraph-gap")) continue;
+    if (typeof block.start !== "number" || typeof block.end !== "number") continue;
+    if (cursor >= block.start && cursor <= block.end) return true;
+  }
+  return false;
+}
+
+// The caret sits on a pad this list does not draw. prev is the line above it.
+function gapHole(lines, cursor) {
+  let prev = -1;
+  let next = lines.length;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].end < cursor) prev = i;
+    else if (lines[i].start > cursor && next === lines.length) next = i;
+  }
+  return { prev, next };
+}
+
 function moveVertical(doc, cursor, delta, count, raw, column, exclusive) {
   const lines = raw ? rawLines(doc) : renderedLines(doc, cursor, true);
   let index = -1;
@@ -453,10 +509,18 @@ function moveVertical(doc, cursor, delta, count, raw, column, exclusive) {
       break;
     }
   }
+  // A pad is not the last line. lineIndex would say it was, and k would step
+  // back from the end.
+  let marker = null;
+  let hole = null;
+  if (index < 0 && !raw) {
+    marker = fenceMarkerGap(doc, lines, cursor);
+    if (!marker && paragraphGapAt(doc, cursor)) hole = gapHole(lines, cursor);
+  }
   let col = column;
   if (col == null) {
     if (index >= 0) col = cursor - lines[index].start;
-    else if (!raw && fenceMarkerGap(doc, lines, cursor)) col = cursor - sourceLine(doc, cursor).start;
+    else if (marker || hole) col = cursor - sourceLine(doc, cursor).start;
     else col = columnOf(doc, cursor, raw);
   }
   let next;
@@ -464,15 +528,12 @@ function moveVertical(doc, cursor, delta, count, raw, column, exclusive) {
   else if (!raw && doc.endsWith("\n") && cursor >= doc.length) {
     index = lines.length;
     next = stepLine(index, delta, count, lines.length);
+  } else if (marker || hole) {
+    index = -2;
+    next = stepMarkerGap(marker || hole, delta, count, lines.length);
   } else if (!raw) {
-    const gap = fenceMarkerGap(doc, lines, cursor);
-    if (gap) {
-      index = -2;
-      next = stepMarkerGap(gap, delta, count, lines.length);
-    } else {
-      index = lineIndex(lines, doc, cursor, false);
-      next = stepLine(index, delta, count, lines.length);
-    }
+    index = lineIndex(lines, doc, cursor, false);
+    next = stepLine(index, delta, count, lines.length);
   } else {
     index = lineIndex(lines, doc, cursor, true);
     next = stepLine(index, delta, count, lines.length);
