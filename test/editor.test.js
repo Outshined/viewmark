@@ -25372,6 +25372,179 @@ test("stored path is the editor strip and the closed file's menu header", () => 
   }
 });
 
+test("bkmujvq5: the first line's caret scrolls below the path strip", () => {
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  const stripRule = css.match(/\.md-path-strip\s*\{[^}]*\}/);
+  assert.ok(stripRule);
+  assert.match(stripRule[0], /position:\s*absolute/);
+  assert.match(stripRule[0], /top:\s*0/);
+  assert.match(stripRule[0], /height:\s*calc\(0\.35rem \+ 1\.75rem \+ 0\.35rem\)/);
+  assert.match(css, /\.editor\s*\{[^}]*padding:\s*calc\(0\.35rem \+ 1\.75rem \+ 0\.35rem \+ 1px\) 3rem 4rem 1\.4rem/);
+  assert.match(css, /html\s*\{[^}]*scroll-padding-top:\s*calc\(0\.35rem \+ 1\.75rem \+ 0\.35rem \+ 1px\)/);
+
+  const mounted = mountEditor();
+  const previousFilter = globalThis.NodeFilter;
+  const doc = "Alpha\n\nBeta\n";
+  const band = 40;
+  let scrollY = 0;
+  let docTop = band;
+  const moves = [];
+  const contentLines = () => (mounted.root.childNodes || []).filter((el) => (
+    el.classList && el.classList.contains("md-line") && !el.classList.contains("md-paragraph-gap")
+  ));
+  const lineOf = (el) => {
+    let node = el;
+    while (node) {
+      if (node.classList && node.classList.contains("md-line")) return node;
+      node = node.parentElement;
+    }
+    return null;
+  };
+  const lineRect = (el) => {
+    const line = lineOf(el);
+    if (!line || line.classList.contains("md-paragraph-gap")) {
+      return { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+    }
+    const index = contentLines().indexOf(line);
+    const top = docTop + (index < 0 ? 0 : index) * 24 - scrollY;
+    return { top, left: 8, right: 180, bottom: top + 20, width: 172, height: 20 };
+  };
+  const orig = globalThis.document.createElement;
+  globalThis.NodeFilter = previousFilter || { SHOW_TEXT: 4 };
+  globalThis.document.createElement = (tag) => {
+    const el = orig(tag);
+    el.getBoundingClientRect = () => {
+      if (el.classList && el.classList.contains("md-path-strip")) {
+        return { top: 0, left: 0, right: 500, bottom: band, width: 500, height: band };
+      }
+      return lineRect(el);
+    };
+    el.scrollIntoView = () => {
+      const rect = el.getBoundingClientRect();
+      if (!(rect.height > 0)) return;
+      if (rect.top < 0) globalThis.window.scrollBy(0, rect.top);
+      else if (rect.bottom > globalThis.window.innerHeight) globalThis.window.scrollBy(0, rect.bottom - globalThis.window.innerHeight);
+    };
+    return el;
+  };
+  globalThis.document.createTreeWalker = (root) => {
+    const list = [];
+    const walk = (node) => {
+      for (const child of node.childNodes || []) {
+        if (child.nodeType === 3) list.push(child);
+        else walk(child);
+      }
+    };
+    walk(root);
+    let index = 0;
+    return { nextNode: () => (index < list.length ? list[index++] : null) };
+  };
+  globalThis.document.createRange = () => {
+    let node = null;
+    const range = {
+      startContainer: null,
+      startOffset: 0,
+      endContainer: null,
+      endOffset: 0,
+      collapsed: true,
+      setStart(next, offset) {
+        node = next;
+        range.startContainer = next;
+        range.startOffset = offset || 0;
+        range.endContainer = next;
+        range.endOffset = offset || 0;
+      },
+      setEnd() {},
+      collapse() {},
+      selectNode(next) { node = next; range.startContainer = next; },
+      setStartAfter() {},
+      setStartBefore() {},
+      getClientRects() {
+        const host = node && node.nodeType === 1 ? node : node && node.parentElement;
+        if (!host || typeof host.getBoundingClientRect !== "function") return [];
+        const rect = host.getBoundingClientRect();
+        return rect && rect.height > 0 ? [rect] : [];
+      },
+      getBoundingClientRect() {
+        const rects = range.getClientRects();
+        return rects[0] || { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+      },
+    };
+    return range;
+  };
+  const sel = {
+    rangeCount: 0,
+    anchorNode: null,
+    anchorOffset: 0,
+    focusNode: null,
+    focusOffset: 0,
+    ranges: [],
+    setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset) {
+      this.anchorNode = anchorNode;
+      this.anchorOffset = anchorOffset || 0;
+      this.focusNode = focusNode;
+      this.focusOffset = focusOffset || 0;
+      const range = globalThis.document.createRange();
+      range.setStart(focusNode, this.focusOffset);
+      this.ranges = [range];
+      this.rangeCount = 1;
+    },
+    collapse(node, offset) { this.setBaseAndExtent(node, offset, node, offset); },
+    removeAllRanges() {
+      this.ranges = [];
+      this.rangeCount = 0;
+    },
+    addRange(range) {
+      this.ranges = [range];
+      this.rangeCount = 1;
+      this.anchorNode = range.startContainer;
+      this.focusNode = range.startContainer;
+      this.anchorOffset = range.startOffset || 0;
+      this.focusOffset = range.startOffset || 0;
+    },
+    getRangeAt(index) { return this.ranges[index || 0]; },
+  };
+  globalThis.window.innerHeight = 800;
+  globalThis.window.innerWidth = 1000;
+  globalThis.window.getSelection = () => sel;
+  globalThis.window.scrollBy = (_dx, dy) => {
+    const next = Math.max(0, scrollY + (dy || 0));
+    const applied = next - scrollY;
+    scrollY = next;
+    if (applied !== 0) moves.push(applied);
+  };
+  const open = (top, y) => {
+    docTop = top;
+    scrollY = y;
+    moves.length = 0;
+    sel.rangeCount = 0;
+    sel.ranges = [];
+    const view = createEditor(mounted.root, doc, 0);
+    const line = contentLines().find((node) => (node.textContent || "").includes("Alpha"));
+    assert.ok(line);
+    const topNow = line.getBoundingClientRect().top;
+    view.destroy();
+    return topNow;
+  };
+  try {
+    const covered = open(band, band);
+    assert.ok(covered >= band - 0.5, `a line under the strip stayed at ${covered}`);
+    assert.ok(moves.some((dy) => dy < 0), "scrolling the covered line did not move it clear");
+
+    const above = open(band, 200);
+    assert.ok(above >= band - 0.5, `a line above the window landed at ${above}`);
+
+    moves.length = 0;
+    const clear = open(band + 40, 0);
+    assert.ok(Math.abs(clear - (band + 40)) < 0.5, `a line already below the strip moved to ${clear}`);
+    assert.equal(moves.length, 0);
+  } finally {
+    if (previousFilter === undefined) delete globalThis.NodeFilter;
+    else globalThis.NodeFilter = previousFilter;
+    mounted.restore();
+  }
+});
+
 test("gjadk8ay: the file pane creates a directory and removes one", () => {
   const mounted = mountEditor();
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");

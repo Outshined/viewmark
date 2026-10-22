@@ -88,6 +88,11 @@ body {
   min-height: 100%;
 }
 
+/* The path strip is fixed across the top of the pane. A scroll into view stops under it. */
+html {
+  scroll-padding-top: calc(0.35rem + 1.75rem + 0.35rem + 1px);
+}
+
 body {
   background: #1c1b19;
   color: #e7e2d8;

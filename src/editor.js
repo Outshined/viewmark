@@ -3878,6 +3878,26 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return rect ? rect.top : null;
   }
 
+  // The strip is fixed over the pane. Its box is the band a caret must clear.
+  // A stub rect from a test host is not that bar.
+  function pathStripCover() {
+    if (!pathStrip || typeof pathStrip.getBoundingClientRect !== "function") return 0;
+    let rect = null;
+    try {
+      rect = pathStrip.getBoundingClientRect();
+    } catch {
+      return 0;
+    }
+    if (!rect) return 0;
+    const top = Number(rect.top);
+    const bottom = Number(rect.bottom);
+    const height = Number.isFinite(rect.height) ? Number(rect.height) : bottom - top;
+    const width = Number(rect.width);
+    if (!(height >= 24) || !(width >= 80) || !Number.isFinite(top) || !Number.isFinite(bottom)) return 0;
+    if (top > 1 || bottom <= 0) return 0;
+    return bottom;
+  }
+
   function caretInView(rect) {
     const view = typeof window !== "undefined" ? window : null;
     if (!rect || !view) return false;
@@ -3887,7 +3907,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const bottom = Number.isFinite(rect.bottom) ? rect.bottom : rect.top;
     const right = Number.isFinite(rect.right) ? rect.right : rect.left;
     const left = Number.isFinite(rect.left) ? rect.left : 0;
-    return rect.top >= 0 && bottom <= height && left >= 0 && right <= width;
+    const caretHeight = Number.isFinite(rect.height) ? rect.height : bottom - rect.top;
+    const cover = pathStripCover();
+    const band = cover > 0 && caretHeight + cover < height ? cover : 0;
+    return rect.top >= band && bottom <= height && left >= 0 && right <= width;
   }
 
   function domSelectionMatches() {
@@ -3975,7 +3998,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (priorTop !== undefined && domSelectionMatches()) {
         const after = caretRect();
         if (after && caretInView(after)) return;
-        if (priorTop != null && after && Number.isFinite(after.top) && Math.abs(after.top - priorTop) <= 3) return;
+        // A caret Firefox refused to move stays put, unless the path strip covers it.
+        if (priorTop != null && after && Number.isFinite(after.top) && Math.abs(after.top - priorTop) <= 3) {
+          const cover = pathStripCover();
+          if (!(cover > 0 && after.top < cover)) return;
+        }
       }
       scrollCaret(node);
       // Firefox can drop the range while the line scrolls. Put it back before
@@ -3999,15 +4026,29 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const height = view.innerHeight;
     const width = view.innerWidth;
     if (!(height > 0) || !(width > 0) || !(rect.height > 0) || rect.height > height) return;
+    pinViewToggle();
+    const cover = pathStripCover();
+    const band = cover > 0 && rect.height + cover < height ? cover : 0;
     const bottom = rect.top + rect.height;
     const right = rect.left + (rect.width > 0 ? rect.width : 0);
     let dy = 0;
     let dx = 0;
-    if (rect.top < 0) dy = rect.top;
+    if (rect.top < band) dy = rect.top - band;
     else if (bottom > height) dy = bottom - height;
     if (rect.left < 0) dx = rect.left;
     else if (right > width) dx = right - width;
     if (dx !== 0 || dy !== 0) view.scrollBy(dx, dy);
+  }
+
+  // placeCaret runs before the strip is mounted again. This runs after that mount,
+  // and after a browser scroll that parks the caret in the strip.
+  function revealCaretBelowStrip() {
+    if (closed) return;
+    pinViewToggle();
+    if (!(pathStripCover() > 0)) return;
+    const rect = caretRect();
+    if (!rect || caretInView(rect)) return;
+    bringRectIntoView(rect);
   }
 
   function scrollCaret(node) {
@@ -4554,6 +4595,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     state = { ...state, anchor: next.anchor, cursor: next.cursor };
     if (snapped.anchor !== mapped.anchor || snapped.cursor !== mapped.cursor) placeCaret();
+    else revealCaretBelowStrip();
     // A shift-click changes the selection with no drag mouseup. Arrow keys place
     // the caret while this listener is ignored, so they place the button there.
     updateCommentButton();
@@ -7618,6 +7660,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         renderSourceView(caretTop());
         mountViewToggle();
         restoreCornerPin();
+        revealCaretBelowStrip();
         return;
       }
       if (typedTail != null && typedTail !== state.cursor) typedTail = null;
@@ -7668,6 +7711,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       mountViewToggle();
       if (hoverCommentId && !handleDrag) showCommentHandles(hoverCommentId);
       restoreCornerPin();
+      if (!commentFocus) revealCaretBelowStrip();
     } finally {
       if (gestureHeld) gestureHold = false;
       syncVimMatchPaint();
