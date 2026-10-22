@@ -22,8 +22,8 @@ async function setup(t) {
   browser = await launchBrowser();
   const page = new Page(browser.session, hub.port);
   await page.init();
-  await page.eval(`localStorage.removeItem(${JSON.stringify(VIM)})`);
   await page.login();
+  await page.eval(`localStorage.removeItem(${JSON.stringify(VIM)})`);
   await page.open(file);
   return { page };
 }
