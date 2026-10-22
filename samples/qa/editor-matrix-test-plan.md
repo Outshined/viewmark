@@ -1,5 +1,5 @@
 # QA plan: editing matrix in a live browser
-Contract: Every key, click, and clipboard action a person uses on the page, applied to every markdown construct that changes layout, in Chromium and in Firefox, against a running hub, with real input events. The rules below are what the cells check. Each rule names its source: `[A]` AGENTS.md, README.md, or `qa/lock-spans-test-plan.md`; `[T name]` a test in `test/editor.test.js` that asserts it; `[U]` decided by the owner; `[D#]` a default listed under Decisions. A default is approved unless it says it is not, or says which part is QA's reading. A rule with no tag is restated from a tagged rule next to it. Tests are cited by name because line numbers drift.
+Contract: Every key, click, and clipboard action a person uses on the page, applied to every markdown construct that changes layout, in Firefox, against a running hub, with real input events. The rules below are what the cells check. Each rule names its source: `[A]` AGENTS.md, README.md, or `qa/lock-spans-test-plan.md`; `[T name]` a test in `test/editor.test.js` that asserts it; `[U]` decided by the owner; `[D#]` a default listed under Decisions. A default is approved unless it says it is not, or says which part is QA's reading. A rule with no tag is restated from a tagged rule next to it. Tests are cited by name because line numbers drift.
 
 `editing.md` states the same rules for the owner, under the same numbers. A change to a rule here is made there too, and a change there is made here.
 
@@ -194,20 +194,13 @@ Vim keys.
 
 The vim rules are tested by `browser/vim.browser.js`, `browser/vim-g-long.browser.js`, and `browser/vim-accept.browser.js` with its parts in `browser/vim-accept/`, outside the cells.
 
-Setup: The cases run in Chromium, or in Firefox as described below, against a hub. Do not start the hub on port 8765, and do not touch `state/` or `docs/`.
+Setup: The cases run in Firefox, against a hub. Do not start the hub on port 8765, and do not touch `state/` or `docs/`.
 
 - **Hub.** The harness starts the hub inside the test process with `start(0, STATE)`. That function is exported by `server.js`; it takes a port and a state directory and returns the listening server. `STATE` is a new temporary directory.
 - **Repo.** The harness registers a repo named `qa` with `node cli.js --port PORT --user qa-bot repo register --name qa --description qa --path DIR`. `DIR` is a new temporary directory holding `box.svg`, an SVG 120 by 40 with no text.
 - **Files.** Each cell creates its own file, named for the cell and the pass, with `node cli.js --port PORT --user qa-bot --repo qa create FILE --file SRC`. `SRC` holds the cell's source with the marks removed. No cell sees another cell's bytes.
-- **Browser.** `/usr/bin/chromium` with these flags:
-  - `--headless=new`, `--remote-debugging-port=0`;
-  - `--user-data-dir=PROFILE`, where `PROFILE` is a new empty directory;
-  - `--window-size=1920,1080`, `--force-device-scale-factor=1`;
-  - `--font-render-hinting=none`, `--hide-scrollbars`;
-  - `--no-first-run`, `--no-default-browser-check`, `--disable-extensions`, `--lang=en-US`.
-- **Overrides.** `VIEWMARK_HEADED=1` drops `--headless=new` so a person can watch. `VIEWMARK_KEEP_PROFILE=1` keeps `PROFILE`.
 - **Protocol.** The harness speaks the DevTools protocol over Node's built-in `WebSocket`. It enables `Emulation.setFocusEmulationEnabled` so the page keeps focus while headless. There are no packages.
-- **Firefox.** `VIEWMARK_BROWSER=firefox` runs the same suites in Firefox. `VIEWMARK_FIREFOX` names its binary.
+- **Browser.** Firefox. `VIEWMARK_FIREFOX` names its binary, `firefox` by default. `VIEWMARK_HEADED=1` shows it on the person's display. `VIEWMARK_KEEP_PROFILE=1` keeps the profile. `VIEWMARK_CAGE` names the cage binary, `cage` by default.
   - `browser/firefox.js` drives Firefox over WebDriver BiDi. It takes each DevTools call the harness and the tests make and does it in Firefox.
   - Firefox runs inside `cage` with its headless backend when cage is installed, so Firefox is a real window whose clipboard holds pictures, and the person's screen and clipboard are not touched. Without cage it runs with `--headless`, where the clipboard holds text only.
   - The profile sets a caret that does not blink, the clipboard API without a prompt, and one device pixel per CSS pixel. The viewport is 1920 by 1080.
@@ -222,7 +215,7 @@ Setup: The cases run in Chromium, or in Firefox as described below, against a hu
 - **Page.** The page loads `http://127.0.0.1:PORT/`. Once per run, the harness types `qa-bot` into the login field and presses Enter; a reload keeps that name, because the page stores it in `sessionStorage`. For each file it sets the location hash to `#qa/doc/FILE` (the page's deep-link form, `formatHash` in `src/editor.js`). It then waits until the `file` message for that path has arrived, `document.fonts.ready` has resolved, every `img` is `complete`, and every diagram has its SVG.
 - **Module check.** The harness checks once that `import("/src/editor.js")` in the page returns the module the page runs: the URL it imports equals the `src` of the page's module script, resolved.
 - **Clipboard preflight.** Once per run, in an `about:blank` tab with a textarea, the harness types `abc`, selects it, presses `Control+C`, clicks an empty textarea, and presses `Control+V`. When that pastes `abc`, a clipboard cell that gets no text is FAIL. When it does not, the clipboard cells are BLOCKED with `clipboard`.
-- **What the harness relies on.** In headless Chromium:
+- **What the harness relies on.** In Firefox:
   - these keys produce the browser's own `keydown` and `beforeinput`, with these `inputType`s:
     - Enter → `insertParagraph`
     - Shift+Enter → `insertLineBreak`
@@ -230,10 +223,9 @@ Setup: The cases run in Chromium, or in Firefox as described below, against a hu
     - Delete → `deleteContentForward`
     - Ctrl+Backspace → `deleteWordBackward`
   - a double-click arrives as `click` with `detail` 1, then 2;
-  - composition produces `compositionstart`, `insertCompositionText`, and `compositionend`;
   - `document.caretPositionFromPoint` exists;
   - a paste carries the text a page's `copy` handler set with `clipboardData.setData`, and the editor's handler does that.
-- **Running.** The suite is `node --test browser/*.browser.js`, and `VIEWMARK_BROWSER=firefox node --test browser/*.browser.js` runs it in Firefox. Plain `node --test` does not run it.
+- **Running.** The suite is `node --test browser/*.browser.js`. Plain `node --test` does not run it.
 
 Input:
 - **Keys.** A key is `Input.dispatchKeyEvent` with `keyDown` carrying `text` when the key types text, otherwise `rawKeyDown`, then `keyUp`. Each event carries `key`, `code`, `windowsVirtualKeyCode`, and the modifier bits.
