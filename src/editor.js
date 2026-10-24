@@ -2029,6 +2029,8 @@ function frameUnderPointer(node) {
   if (node.closest(".md-raw")) return null;
   const corner = node.closest(".md-pin-corner");
   if (corner && hasClass(corner.parentElement, "md-pin-frame")) return corner.parentElement;
+  const enlarge = node.closest(".md-image-enlarge");
+  if (enlarge && hasClass(enlarge.parentElement, "md-pin-frame")) return enlarge.parentElement;
   const frame = node.closest(".md-pin-frame");
   if (!frame) return null;
   const host = frame.parentElement;
@@ -3603,8 +3605,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // from before that repaint, so scrollIntoView cannot jump the window to the caret.
   let pinScrollHold = null;
   let cornerFrame = null;
+  // The full-window picture. It lives on the body, so a repaint of the document leaves it up.
+  let imageViewer = null;
+  let imageViewerKey = null;
   // Client point of the last move, so a repaint can put the corner back without another move.
   let pointerAt = null;
+  // Set while the pointer is on the corner or the plus. Those sit outside the picture, so a
+  // repaint cannot find them from the picture box. The start offset finds the host after a repaint.
+  let cornerHoldStart = null;
+  let cornerHoldImage = false;
   // The first press of a multi-click. Later presses reuse it after a render
   // would have moved the text under the pointer.
   let gestureOffset = null;
@@ -6817,9 +6826,171 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (cornerFrame) {
       const pin = findClassChild(cornerFrame, "md-pin-corner");
       if (pin) detachNode(pin);
+      const enlarge = findClassChild(cornerFrame, "md-image-enlarge");
+      if (enlarge) detachNode(enlarge);
     }
     for (const el of elementsWithClass("md-pin-corner")) detachNode(el);
+    for (const el of elementsWithClass("md-image-enlarge")) detachNode(el);
     cornerFrame = null;
+  }
+
+  function viewerImageSrc(img) {
+    if (!img) return "";
+    if (typeof img.getAttribute === "function" && img.hasAttribute && img.hasAttribute("src")) {
+      const attr = img.getAttribute("src");
+      return typeof attr === "string" ? attr : "";
+    }
+    return typeof img.src === "string" ? img.src : "";
+  }
+
+  function viewerImageAlt(img) {
+    if (!img) return "";
+    if (typeof img.getAttribute === "function" && img.hasAttribute && img.hasAttribute("alt")) {
+      const attr = img.getAttribute("alt");
+      return typeof attr === "string" ? attr : "";
+    }
+    return typeof img.alt === "string" ? img.alt : "";
+  }
+
+  function toggleImageViewerZoom(overlay) {
+    if (!overlay || !overlay.classList) return;
+    if (overlay.classList.contains("md-image-fit")) {
+      overlay.classList.remove("md-image-fit");
+      overlay.classList.add("md-image-natural");
+      return;
+    }
+    overlay.classList.remove("md-image-natural");
+    overlay.classList.add("md-image-fit");
+  }
+
+  function unbindImageViewerKey() {
+    const key = imageViewerKey;
+    imageViewerKey = null;
+    const view = typeof window !== "undefined" ? window : null;
+    if (key && view && typeof view.removeEventListener === "function") {
+      view.removeEventListener("keydown", key, { capture: true });
+    }
+  }
+
+  function bindImageViewerKey() {
+    const view = typeof window !== "undefined" ? window : null;
+    if (!view || typeof view.addEventListener !== "function" || imageViewerKey) return;
+    imageViewerKey = (event) => {
+      if (!imageViewer || !event || event.key !== "Escape") return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      if (typeof event.stopPropagation === "function") event.stopPropagation();
+      closeImageViewer();
+    };
+    view.addEventListener("keydown", imageViewerKey, { capture: true, signal: ac.signal });
+  }
+
+  function closeImageViewer() {
+    const overlay = imageViewer;
+    if (!overlay) return;
+    imageViewer = null;
+    unbindImageViewerKey();
+    detachNode(overlay);
+    if (!closed && root && typeof root.focus === "function") root.focus();
+  }
+
+  function imageViewerCloseButton() {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "md-image-view-close icon-btn";
+    if (typeof button.setAttribute === "function") {
+      button.setAttribute("type", "button");
+      button.setAttribute("aria-label", "Close image");
+      button.setAttribute("title", "Close image");
+    }
+    const icon = iconSvg("delete");
+    if (icon) button.appendChild(icon);
+    armGlyphPress(button);
+    button.addEventListener("mousedown", (event) => {
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+    });
+    button.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      closeImageViewer();
+    });
+    return button;
+  }
+
+  function openImageViewer(img) {
+    if (closed) return;
+    const src = viewerImageSrc(img);
+    const host = buttonHost();
+    if (!src || !host) return;
+    closeImageViewer();
+    const overlay = document.createElement("div");
+    overlay.className = "md-image-view md-image-fit";
+    overlay.tabIndex = -1;
+    if (typeof overlay.setAttribute === "function") {
+      overlay.setAttribute("role", "dialog");
+      overlay.setAttribute("aria-label", "Full size image");
+      overlay.setAttribute("tabindex", "-1");
+    }
+    const picture = document.createElement("img");
+    const alt = viewerImageAlt(img);
+    picture.alt = alt;
+    picture.draggable = false;
+    picture.src = src;
+    if (typeof picture.setAttribute === "function") {
+      picture.setAttribute("alt", alt);
+      picture.setAttribute("src", src);
+      picture.setAttribute("draggable", "false");
+    }
+    picture.addEventListener("dblclick", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      toggleImageViewerZoom(overlay);
+    });
+    overlay.addEventListener("keydown", (event) => {
+      if (!event || event.key !== "Escape" || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      if (typeof event.stopPropagation === "function") event.stopPropagation();
+      closeImageViewer();
+    });
+    overlay.appendChild(picture);
+    overlay.appendChild(imageViewerCloseButton());
+    host.appendChild(overlay);
+    imageViewer = overlay;
+    bindImageViewerKey();
+    if (typeof overlay.focus === "function") overlay.focus();
+  }
+
+  function imageEnlargeButton(frame) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "md-image-enlarge icon-btn";
+    button.tabIndex = -1;
+    if (typeof button.setAttribute === "function") {
+      button.setAttribute("type", "button");
+      button.setAttribute("aria-label", "Show full size");
+      button.setAttribute("title", "Show full size");
+      button.setAttribute("tabindex", "-1");
+    }
+    const icon = iconSvg("plus");
+    if (icon) button.appendChild(icon);
+    armGlyphPress(button);
+    button.addEventListener("mousedown", (event) => {
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+    });
+    button.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+      openImageViewer(directChildTag(frame, "img"));
+    });
+    return button;
+  }
+
+  function ensureImageEnlarge(frame) {
+    if (!frame || !hasClass(frame.parentElement, "md-image")) return;
+    if (findClassChild(frame, "md-image-enlarge")) return;
+    frame.appendChild(imageEnlargeButton(frame));
   }
 
   function showCornerPin(frame) {
@@ -6869,13 +7040,47 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       removeCornerPin();
     });
     frame.appendChild(button);
+    ensureImageEnlarge(frame);
     cornerFrame = frame;
     placeCornerOnPicture(frame);
+  }
+
+  function hostOfPinControl(control) {
+    const frame = control && control.parentElement;
+    const host = frame && frame.parentElement;
+    if (!host || !hasClass(frame, "md-pin-frame")) return null;
+    if (!hasClass(host, "md-image") && !hasClass(host, "md-diagram")) return null;
+    return host;
+  }
+
+  function noteCornerHold(event) {
+    cornerHoldStart = null;
+    const node = event && event.target;
+    const el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    if (!el || typeof el.closest !== "function") return;
+    const control = el.closest(".md-image-enlarge") || el.closest(".md-pin-corner");
+    if (!control) return;
+    const host = hostOfPinControl(control);
+    if (!host || !host.dataset) return;
+    const start = Number(host.dataset.start);
+    if (!Number.isFinite(start)) return;
+    cornerHoldStart = start;
+    cornerHoldImage = hasClass(host, "md-image");
+  }
+
+  function hostForCornerHold() {
+    if (cornerHoldStart == null) return null;
+    const kind = cornerHoldImage ? "md-image" : "md-diagram";
+    for (const host of elementsWithClass(kind)) {
+      if (Number(host.dataset && host.dataset.start) === cornerHoldStart) return host;
+    }
+    return null;
   }
 
   function rememberPointer(event) {
     if (!event || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
     pointerAt = { x: event.clientX, y: event.clientY };
+    noteCornerHold(event);
   }
 
   // Same box pictureFraction uses. Outside that box is not a hit: a fraction clamps, this does not.
@@ -6901,26 +7106,38 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // The corner sits on the drawn picture, not on the frame's right edge.
   function placeCornerOnPicture(frame) {
     const button = findClassChild(frame, "md-pin-corner");
+    const enlarge = findClassChild(frame, "md-image-enlarge");
     const picture = drawnPicture(frame && frame.parentElement);
-    if (!button || !picture) return;
+    if ((!button && !enlarge) || !picture) return;
     if (typeof picture.getBoundingClientRect !== "function" || typeof frame.getBoundingClientRect !== "function") return;
     const pic = picture.getBoundingClientRect();
     const box = frame.getBoundingClientRect();
     if (!pic || !box || !(pic.width > 0) || !(pic.height > 0) || !(box.width > 0) || !(box.height > 0)) return;
-    setStyle(button, "top", `${pic.top - box.top}px`);
-    setStyle(button, "right", `${box.right - pic.right}px`);
-    setStyle(button, "left", "auto");
+    const top = `${pic.top - box.top}px`;
+    const inset = box.right - pic.right;
+    if (button) {
+      setStyle(button, "top", top);
+      setStyle(button, "right", `${inset}px`);
+      setStyle(button, "left", "auto");
+    }
+    // The anchor is flush with the picture's right edge. The plus is the next button outward.
+    if (enlarge) {
+      setStyle(enlarge, "top", top);
+      setStyle(enlarge, "right", `calc(${inset}px - 1.75rem - 0.15rem)`);
+      setStyle(enlarge, "left", "auto");
+    }
   }
 
   function restoreCornerPin() {
     if (closed || pinDrag || pinMove || !pointerAt) return;
-    const host = hostForPointer(pointerAt.x, pointerAt.y);
+    const host = hostForCornerHold() || hostForPointer(pointerAt.x, pointerAt.y);
     const frame = host ? pictureFrame(host) : null;
     if (!frame) {
       removeCornerPin();
       return;
     }
     if (frame === cornerFrame && findClassChild(frame, "md-pin-corner")) {
+      ensureImageEnlarge(frame);
       placeCornerOnPicture(frame);
       return;
     }
@@ -7016,6 +7233,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const node = target && target.nodeType === 1 ? target : target && target.parentElement;
     const frame = frameUnderPointer(node);
     if (frame && frame === cornerFrame && findClassChild(frame, "md-pin-corner")) {
+      ensureImageEnlarge(frame);
       placeCornerOnPicture(frame);
       return;
     }
@@ -11984,6 +12202,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   listen("keydown", (event) => {
+    if (imageViewer && event && event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      closeImageViewer();
+      return;
+    }
     strayRestores = 0;
     settleRemoteCaret();
     retainedCaret = null;
@@ -15363,6 +15586,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     },
     destroy() {
       closed = true;
+      closeImageViewer();
       const view = typeof window !== "undefined" ? window : null;
       if (pictureLayoutFrame && view && typeof view.cancelAnimationFrame === "function") {
         view.cancelAnimationFrame(pictureLayoutFrame);

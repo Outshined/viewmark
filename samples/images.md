@@ -33,6 +33,8 @@ One command, `attach <path> --start LINE:OFFSET --end LINE:OFFSET --expect TEXT`
 ## A person
 The document or the ticket is open. The person pastes a picture, drops a file, or picks one with Attach image in the document menu. Pasted text that is a `data:image/…;base64,` address is decoded and sent as bytes. The page sends the bytes. {c9}The hub makes an id the way it makes a ticket id, and that id and the suffix are the file name.{/c9} {c7}The picture follows the block that holds the caret, as its own paragraph, and the caret ends after the image line. A script names a range, and the line follows the block that holds it.{/c7} Clicking the picture selects its image line. Backspace or Delete removes that line.
 
+A pointer over a picture shows the comment anchor, and a plus button to the right of that anchor. The plus opens the picture at the size of the window. A double-click on the open picture switches between fitting the window and the picture's own size. A glyph button at the upper right, or Escape, closes the picture and shows the document again.
+
 The hub reads the kind of picture from the bytes, and the suffix is png, jpg, gif, or webp. Other bytes are 400. A name is one path segment. {c6}If that id is already in the directory, the hub makes another. The person does not choose the name.{/c6} The hub also makes another when the document already names that file, and after eight tries it returns 500.
 
 {c5}A comment note stays text.{/c5} A screenshot goes in the document.
