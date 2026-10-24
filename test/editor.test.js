@@ -8275,6 +8275,222 @@ test("a pin move puts the corner on the picture when the frame is wider than the
   }
 });
 
+test("wecmuvmn: a plus beside an image comment anchor opens the picture to the window", () => {
+  const mounted = mountSheet();
+  const doc = "![shot](photos/shot.png)\n\n```mermaid\nA-->B\n```\n";
+  const pins = () => mounted.findAll((node) => node.classList && node.classList.contains("md-pin-corner"));
+  const enlarges = () => mounted.findAll((node) => node.classList && node.classList.contains("md-image-enlarge"));
+  const viewers = () => mounted.findAll((node) => node.classList && node.classList.contains("md-image-view"));
+  const move = (target, x, y) => {
+    mounted.listeners.mousemove({ target, clientX: x, clientY: y });
+  };
+  const stroke = (button) => {
+    const svg = button && button.childNodes && button.childNodes.find((node) => node.localName === "svg" || node.tagName === "SVG");
+    const paths = svg ? svg.childNodes.filter((node) => node.localName === "path" || node.tagName === "PATH") : [];
+    return {
+      viewBox: svg && svg.getAttribute("viewBox"),
+      hidden: svg && svg.getAttribute("aria-hidden"),
+      fill: paths[0] && paths[0].getAttribute("fill"),
+      stroke: paths[0] && paths[0].getAttribute("stroke"),
+      width: paths[0] && paths[0].getAttribute("stroke-width"),
+      cap: paths[0] && paths[0].getAttribute("stroke-linecap"),
+      join: paths[0] && paths[0].getAttribute("stroke-linejoin"),
+      d: paths.map((path) => path.getAttribute("d")),
+    };
+  };
+  try {
+    const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    assert.match(css, /\.md-image-view\s*\{[^}]*position:\s*fixed/);
+    assert.match(css, /\.md-image-view\s*\{[^}]*inset:\s*0/);
+    assert.match(css, /\.md-image-view\.md-image-fit img\s*\{[^}]*object-fit:\s*contain/);
+    assert.match(css, /\.md-image-view\.md-image-fit img\s*\{[^}]*width:\s*100%/);
+    assert.match(css, /\.md-image-view\.md-image-fit img\s*\{[^}]*height:\s*100%/);
+    assert.match(css, /\.md-image-view\.md-image-natural img\s*\{[^}]*width:\s*auto/);
+    assert.match(css, /\.md-image-view\.md-image-natural img\s*\{[^}]*height:\s*auto/);
+    assert.match(css, /\.md-image-view\.md-image-natural img\s*\{[^}]*max-width:\s*none/);
+    assert.match(css, /\.md-image-view-close\s*\{[^}]*position:\s*fixed/);
+    assert.match(css, /\.md-image-view-close\s*\{[^}]*top:\s*0\.65rem/);
+    assert.match(css, /\.md-image-view-close\s*\{[^}]*right:\s*0\.65rem/);
+
+    const view = createEditor(mounted.root, doc, doc.length);
+    const text = view.getState().doc;
+    const cursor = view.getState().cursor;
+    const host = mounted.findAll((node) => node.classList && node.classList.contains("md-image"))[0];
+    const frame = host.childNodes.find((node) => node.classList && node.classList.contains("md-pin-frame"));
+    const img = frame.childNodes.find((node) => node.tagName === "IMG");
+    const picture = { left: 100, top: 50, right: 300, bottom: 150, width: 200, height: 100 };
+    const wide = { left: 0, top: 40, right: 800, bottom: 400, width: 800, height: 360 };
+    img.getBoundingClientRect = () => picture;
+    frame.getBoundingClientRect = () => wide;
+    assert.equal(enlarges().length, 0);
+    move(img, 150, 80);
+    assert.equal(pins().length, 1);
+    assert.equal(enlarges().length, 1);
+    assert.equal(enlarges()[0].parentElement, frame);
+    assert.equal(pins()[0].parentElement, frame);
+    assert.equal(pins()[0].styleProps.top, "10px");
+    assert.equal(pins()[0].styleProps.right, "500px");
+    assert.equal(enlarges()[0].styleProps.top, "10px");
+    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 1.75rem - 0.15rem)");
+    assert.equal(enlarges()[0].styleProps.left, "auto");
+    assert.equal(enlarges()[0].getAttribute("aria-label"), "Show full size");
+    assert.equal(enlarges()[0].getAttribute("title"), "Show full size");
+    assert.equal(enlarges()[0].getAttribute("tabindex"), "-1");
+    assert.equal(enlarges()[0].textContent.trim(), "");
+    assert.equal(enlarges()[0].classList.contains("md-pin-corner"), false);
+    assert.notEqual(enlarges()[0].draggable, true);
+    assert.deepEqual(stroke(enlarges()[0]), {
+      viewBox: "0 0 24 24",
+      hidden: "true",
+      fill: "none",
+      stroke: "currentColor",
+      width: "2",
+      cap: "round",
+      join: "round",
+      d: ["M12 5v14M5 12h14"],
+    });
+
+    const outside = 320;
+    move(enlarges()[0], outside, 80);
+    assert.equal(enlarges().length, 1);
+    assert.equal(outside > picture.right, true);
+    img.listeners.load();
+    assert.equal(enlarges().length, 1);
+    assert.equal(pins().length, 1);
+    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 1.75rem - 0.15rem)");
+
+    const diagram = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
+    const diagramFrame = diagram.childNodes.find((node) => node.classList && node.classList.contains("md-pin-frame"));
+    const svg = document.createElement("svg");
+    svg.getBoundingClientRect = () => ({ left: 100, top: 50, width: 200, height: 100, right: 300, bottom: 150 });
+    diagramFrame.replaceChildren(svg);
+    move(svg, 180, 80);
+    assert.equal(pins().length, 1);
+    assert.equal(pins()[0].parentElement, diagramFrame);
+    assert.equal(enlarges().length, 0);
+
+    move(img, 150, 80);
+    assert.equal(enlarges().length, 1);
+    let stopped = false;
+    enlarges()[0].listeners.mousedown({ preventDefault() {}, stopPropagation() { stopped = true; }, button: 0 });
+    assert.equal(stopped, true);
+    stopped = false;
+    enlarges()[0].listeners.click({ preventDefault() {}, stopPropagation() { stopped = true; }, button: 0 });
+    assert.equal(stopped, true);
+    assert.equal(view.getState().doc, text);
+    assert.equal(view.getState().cursor, cursor);
+    assert.equal(viewers().length, 1);
+    const overlay = viewers()[0];
+    assert.equal(overlay.classList.contains("md-image-fit"), true);
+    assert.equal(overlay.classList.contains("md-image-natural"), false);
+    assert.equal(overlay.getAttribute("role"), "dialog");
+    assert.equal(overlay.parentElement, mounted.body);
+    const shown = overlay.childNodes.find((node) => node.tagName === "IMG");
+    assert.equal(shown.src, img.src);
+    assert.equal(shown.getAttribute("src"), "photos/shot.png");
+    const close = overlay.childNodes.find((node) => node.classList && node.classList.contains("md-image-view-close"));
+    assert.ok(close);
+    assert.equal(close.getAttribute("aria-label"), "Close image");
+    assert.equal(close.getAttribute("title"), "Close image");
+    assert.equal(close.textContent.trim(), "");
+    assert.deepEqual(stroke(close).d, ["M18 6 6 18M6 6l12 12"]);
+    assert.equal(stroke(close).viewBox, "0 0 24 24");
+    assert.equal(stroke(close).hidden, "true");
+
+    let zoomStopped = false;
+    shown.listeners.dblclick({ preventDefault() {}, stopPropagation() { zoomStopped = true; } });
+    assert.equal(zoomStopped, true);
+    assert.equal(overlay.classList.contains("md-image-natural"), true);
+    assert.equal(overlay.classList.contains("md-image-fit"), false);
+    shown.listeners.dblclick({ preventDefault() {}, stopPropagation() {} });
+    assert.equal(overlay.classList.contains("md-image-fit"), true);
+    assert.equal(overlay.classList.contains("md-image-natural"), false);
+    assert.equal(view.getState().doc, text);
+
+    let escapePrevented = false;
+    overlay.listeners.keydown({
+      key: "Escape",
+      preventDefault() { escapePrevented = true; },
+      stopPropagation() {},
+    });
+    assert.equal(escapePrevented, true);
+    assert.equal(viewers().length, 0);
+    assert.equal(view.getState().doc, text);
+    assert.equal(view.getState().cursor, cursor);
+    assert.equal(mounted.findAll((node) => node.tagName === "IMG").length, 1);
+
+    move(img, 150, 80);
+    enlarges()[0].listeners.click({ preventDefault() {}, stopPropagation() {}, button: 0 });
+    assert.equal(viewers().length, 1);
+    escapePrevented = false;
+    mounted.listeners.keydown({
+      key: "Escape",
+      ctrlKey: true,
+      preventDefault() { escapePrevented = true; },
+    });
+    assert.equal(escapePrevented, false);
+    assert.equal(viewers().length, 1);
+    mounted.listeners.keydown({
+      key: "Escape",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      preventDefault() { escapePrevented = true; },
+    });
+    assert.equal(escapePrevented, true);
+    assert.equal(viewers().length, 0);
+    assert.equal(view.getState().doc, text);
+
+    const keys = [];
+    globalThis.window.addEventListener = (type, fn, options) => {
+      keys.push({ type, fn, options });
+    };
+    globalThis.window.removeEventListener = (type, fn) => {
+      const index = keys.findIndex((item) => item.type === type && item.fn === fn);
+      if (index >= 0) keys.splice(index, 1);
+    };
+    move(img, 150, 80);
+    enlarges()[0].listeners.click({ preventDefault() {}, stopPropagation() {}, button: 0 });
+    assert.equal(keys.length, 1);
+    assert.equal(keys[0].type, "keydown");
+    assert.equal(keys[0].options.capture, true);
+    keys[0].fn({ key: "Escape", ctrlKey: true, preventDefault() {}, stopPropagation() {} });
+    assert.equal(viewers().length, 1);
+    let windowPrevented = false;
+    let windowStopped = false;
+    keys[0].fn({
+      key: "Escape",
+      preventDefault() { windowPrevented = true; },
+      stopPropagation() { windowStopped = true; },
+    });
+    assert.equal(windowPrevented, true);
+    assert.equal(windowStopped, true);
+    assert.equal(viewers().length, 0);
+    assert.equal(keys.length, 0);
+
+    move(img, 150, 80);
+    enlarges()[0].listeners.click({ preventDefault() {}, stopPropagation() {}, button: 0 });
+    const open = viewers()[0];
+    const closeButton = open.childNodes.find((node) => node.classList && node.classList.contains("md-image-view-close"));
+    closeButton.listeners.click({ preventDefault() {}, stopPropagation() {}, button: 0 });
+    assert.equal(viewers().length, 0);
+    assert.equal(view.getState().doc, text);
+    assert.equal(view.getState().cursor, cursor);
+
+    move(mounted.root, 320, 80);
+    assert.equal(enlarges().length, 0);
+    assert.equal(pins().length, 0);
+    move(img, 150, 80);
+    enlarges()[0].listeners.click({ preventDefault() {}, stopPropagation() {}, button: 0 });
+    assert.equal(viewers().length, 1);
+    view.destroy();
+    assert.equal(viewers().length, 0);
+    assert.equal(keys.length, 0);
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("an image address keeps a parenthesis inside it", () => {
   const line = "![NAME.png](Plan (draft)/NAME.png)";
   const doc = `${line}\n`;

@@ -1793,6 +1793,61 @@ a.md-link {
   cursor: grab;
 }
 
+.md-image-enlarge {
+  position: absolute;
+  z-index: 3;
+  margin: 0;
+  color: #e7e2d8;
+  cursor: pointer;
+}
+
+/* Covers the window. Fit scales the picture into that box; natural is the picture's own size. */
+.md-image-view {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  background: rgba(28, 27, 25, 0.92);
+}
+
+.md-image-view.md-image-fit {
+  overflow: hidden;
+}
+
+.md-image-view.md-image-fit img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.md-image-view.md-image-natural {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.md-image-view.md-image-natural img {
+  flex: none;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+}
+
+/* Fixed so it stays at the window's upper right while a large picture scrolls. */
+.md-image-view-close {
+  position: fixed;
+  top: 0.65rem;
+  right: 0.65rem;
+  z-index: 1;
+  margin: 0;
+  color: #e7e2d8;
+  background: rgba(28, 27, 25, 0.72);
+  cursor: pointer;
+}
+
 .md-comment {
   background: #6b5e45;
   color: #e7e2d8;
