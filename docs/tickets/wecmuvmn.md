@@ -1,5 +1,5 @@
 title: Show images full-screen
-state: pending review
+state: closed
 type: task
 priority: medium
 parent:
