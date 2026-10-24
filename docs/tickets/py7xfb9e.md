@@ -1,5 +1,5 @@
 title: Repeat the last vim change with .
-state: pending review
+state: closed
 type: enhancement
 priority: medium
 parent:
