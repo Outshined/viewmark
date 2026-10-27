@@ -633,6 +633,50 @@ test("a pin is the following fence on an image or a diagram", () => {
   assert.equal(again.doc, `${pin.doc}\`\`\`comment c2 0.25,0.5\n\n\`\`\`\n`);
 });
 
+test("a pin on an svg fence follows that fence and its source lines still range", () => {
+  const body = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"20\"><rect width=\"40\" height=\"20\"/></svg>";
+  const svg = `\`\`\`svg\n${body}\n\`\`\`\n`;
+  const pin = addPinComment(svg, svg.indexOf("<svg"), 0.25, 0.5);
+  assert.equal(pin.id, "c1");
+  assert.equal(pin.doc, `${svg}\`\`\`comment c1 0.25,0.5\n\n\`\`\`\n`);
+  assert.equal(pin.doc.startsWith(svg), true);
+  assert.equal(commentThreads(pin.doc)[0].hostKind, "svg");
+  assert.deepEqual(commentThreads(pin.doc)[0].pin, { x: 0.25, y: 0.5 });
+  assert.equal(commentAnchorReason(pin.doc), null);
+  assert.ok(plan(pin.doc, pin.cursor).atoms.some((atom) => atom.type === "svg"));
+
+  const above = `See\n${svg}`;
+  const marked = addPinComment(above, above.indexOf("<svg"), 0.4, 0.7);
+  assert.ok(marked.cursor < above.indexOf("```"));
+  assert.equal(commentThreads(marked.doc)[0].hostKind, "svg");
+  assert.ok(plan(marked.doc, marked.cursor).atoms.some((atom) => atom.type === "svg"));
+
+  const moved = movePinComment(createState(pin.doc, pin.cursor), "c1", 0.2, 0.3);
+  assert.equal(moved.refused, undefined);
+  assert.equal(moved.doc.includes("```comment c1 0.2,0.3\n"), true);
+  assert.equal(moved.doc.startsWith(svg), true);
+  assert.equal(commentAnchorReason(moved.doc), null);
+
+  const lines = `${svg}\`\`\`comment c1 1\n\n\`\`\`\n`;
+  assert.equal(commentAnchorReason(lines), null);
+  assert.equal(commentThreads(lines)[0].hostKind, "svg");
+  assert.equal(commentThreads(lines)[0].pin, null);
+  assert.equal(commentThreads(lines)[0].bodyCount, 1);
+  const cut = lines.indexOf("<svg") + "<svg".length;
+  const grown = editBytes(lines, cut, cut, "\n");
+  assert.equal(grown.refused, undefined);
+  assert.equal(grown.doc.includes("```comment c1 1-2\n"), true);
+  assert.equal(commentThreads(grown.doc)[0].hostKind, "svg");
+  assert.equal(commentAnchorReason(grown.doc), null);
+
+  const plain = "```svg\n<div></div>\n```\n";
+  assert.deepEqual(addPinComment(plain, plain.indexOf("<div"), 0.2, 0.3), { refused: 400, reason: "not in the run" });
+  assert.equal(commentThreads(`${plain}\`\`\`comment c1 1\n\n\`\`\`\n`)[0].hostKind, "fence");
+  const code = "```js\n<svg></svg>\n```\n";
+  assert.deepEqual(addPinComment(code, code.indexOf("<svg"), 0.2, 0.3), { refused: 400, reason: "not in the run" });
+  assert.equal(commentAnchorReason(`${code}\`\`\`comment c1 0.2,0.3\n\n\`\`\`\n`), "not in the run");
+});
+
 test("moving a pin rewrites its fractions and keeps the thread", () => {
   const image = "![alt](sample.svg)\n";
   const note = "```comment c1 0.25,0.5\n:: 0\n@2026-10-16T15:00:00.000Z qa\nA pin.\n:: 1\n@2026-10-16T15:01:00.000Z qa\nStill here.\n```\n";

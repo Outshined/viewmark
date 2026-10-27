@@ -997,12 +997,33 @@ export function codeFenceBodies(doc) {
   return out;
 }
 
+function fenceBodyText(doc, fence) {
+  return bodyLinesOf(doc, fence).map((line) => doc.slice(line.start, line.end)).join("\n");
+}
+
+// A drawn svg fence takes a pin. Its source lines still take a line range.
+function svgPinFence(doc, fence) {
+  if (!fence || fence.lang !== "svg") return false;
+  return svgDocument(fenceBodyText(doc, fence));
+}
+
+function lineAnchorKind(kind) {
+  return kind === "fence" || kind === "svg";
+}
+
+function pinAnchorKind(kind) {
+  return kind === "image" || kind === "diagram" || kind === "svg";
+}
+
 function hostsOf(doc) {
   const hosts = [];
   for (const fence of fenceContentRanges(doc)) {
     if (fence.lang === "comment") continue;
+    let kind = "fence";
+    if (fence.diagram) kind = "diagram";
+    else if (svgPinFence(doc, fence)) kind = "svg";
     hosts.push({
-      kind: fence.diagram ? "diagram" : "fence",
+      kind,
       start: fence.start,
       end: fence.end,
       fence,
@@ -1053,7 +1074,7 @@ function anchorFields(doc, fence) {
     anchorAt: host ? host.start : null,
     hostEnd: host ? host.end : null,
     hostKind: host ? host.kind : null,
-    bodyCount: host && host.kind === "fence" ? bodyLinesOf(doc, host.fence).length : null,
+    bodyCount: host && lineAnchorKind(host.kind) ? bodyLinesOf(doc, host.fence).length : null,
   };
 }
 
@@ -1622,8 +1643,9 @@ function pinHostAt(doc, offset) {
     if (at >= line.start && at < end) return { kind: "image", start: line.start, end };
   }
   for (const fence of fenceContentRanges(doc)) {
-    if (!fence.diagram) continue;
-    if (at >= fence.start && at < fence.end) return { kind: "diagram", start: fence.start, end: fence.end };
+    if (at < fence.start || at >= fence.end) continue;
+    if (fence.diagram) return { kind: "diagram", start: fence.start, end: fence.end };
+    if (svgPinFence(doc, fence)) return { kind: "svg", start: fence.start, end: fence.end };
   }
   return null;
 }
@@ -1679,7 +1701,7 @@ export function movePinComment(state, id, x, y) {
   const fence = fenceContentRanges(text).find((item) => item.lang === "comment" && item.commentId === id);
   if (!fence || !fence.anchor || fence.anchor.kind !== "pin") return { refused: 400, reason: "not in the run" };
   const host = hostAt(text, fence.start, id);
-  if (!host || (host.kind !== "image" && host.kind !== "diagram")) return { refused: 400, reason: "not in the run" };
+  if (!host || !pinAnchorKind(host.kind)) return { refused: 400, reason: "not in the run" };
   const open = lineSpans(text)[fence.openIndex];
   if (!open) return { refused: 400, reason: "not in the run" };
   const nextHead = commentHead(id, { kind: "pin", x: px, y: py }, fence.resolved === true);
@@ -1706,11 +1728,11 @@ export function commentAnchorReason(doc) {
     const anchor = fence.anchor;
     if (!host) return "not in the run";
     if (anchor.kind === "pin") {
-      if (host.kind !== "image" && host.kind !== "diagram") return "not in the run";
+      if (!pinAnchorKind(host.kind)) return "not in the run";
       if (!(anchor.x >= 0 && anchor.x <= 1 && anchor.y >= 0 && anchor.y <= 1)) return "pin is out of range";
       continue;
     }
-    if (host.kind !== "fence") return "not in the run";
+    if (!lineAnchorKind(host.kind)) return "not in the run";
     const body = bodyLinesOf(text, host.fence);
     if (!(anchor.start >= 1 && anchor.end >= anchor.start && anchor.end <= body.length)) {
       return "range is outside the body";
@@ -1804,7 +1826,7 @@ function collectLineAnchors(doc) {
     const open = lines[fence.openIndex];
     if (!open) continue;
     const host = hostAt(doc, fence.start, fence.commentId);
-    const body = host && host.kind === "fence" ? bodyLinesOf(doc, host.fence) : [];
+    const body = host && lineAnchorKind(host.kind) ? bodyLinesOf(doc, host.fence) : [];
     const start = fence.anchor.start;
     const end = fence.anchor.end;
     const first = body[start - 1];
@@ -1893,7 +1915,7 @@ function planAnchorPatch(text, item) {
   if (item.gone || item.touched) return null;
   if (item.fenceStart < 0 || item.fenceEnd > text.length || item.fenceStart >= item.fenceEnd) return null;
   const host = hostAt(text, item.fenceStart, item.id);
-  if (!host || host.kind !== "fence") return null;
+  if (!host || !lineAnchorKind(host.kind)) return null;
   let start = item.start;
   let end = item.end;
   if (start < 1) start = 1;
@@ -6875,7 +6897,7 @@ function sameStoredThread(beforeDoc, before, afterDoc, after) {
 }
 
 function lineAnchorFits(thread) {
-  if (!thread || !thread.lines || thread.hostKind !== "fence" || !Number.isInteger(thread.bodyCount)) return false;
+  if (!thread || !thread.lines || !lineAnchorKind(thread.hostKind) || !Number.isInteger(thread.bodyCount)) return false;
   const { start, end } = thread.lines;
   return start >= 1 && end >= start && end <= thread.bodyCount;
 }

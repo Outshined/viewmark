@@ -2019,12 +2019,16 @@ function pictureFrame(host) {
   return findClassChild(host, "md-pin-frame");
 }
 
+function isDrawnHost(el) {
+  return hasClass(el, "md-image") || hasClass(el, "md-diagram") || hasClass(el, "md-svg");
+}
+
 // The drawn picture, not the line box or the diagram's padding.
 function drawnPicture(host) {
   const frame = pictureFrame(host);
   if (!frame) return null;
   if (hasClass(host, "md-diagram")) return directChildTag(frame, "svg");
-  if (hasClass(host, "md-image")) return directChildTag(frame, "img");
+  if (hasClass(host, "md-image") || hasClass(host, "md-svg")) return directChildTag(frame, "img");
   return null;
 }
 
@@ -2039,7 +2043,7 @@ function frameUnderPointer(node) {
   if (!frame) return null;
   const host = frame.parentElement;
   if (!host || hasClass(host, "md-raw")) return null;
-  if (hasClass(host, "md-image")) {
+  if (hasClass(host, "md-image") || hasClass(host, "md-svg")) {
     const img = directChildTag(frame, "img");
     if (img && (node === img || node.closest("img") === img)) return frame;
     return null;
@@ -2338,6 +2342,8 @@ function renderTable(atom, repo, onSized) {
 
 let mermaidReady = false;
 let diagramSerial = 0;
+// The mermaid string the page svg was drawn from. The window reads it; the page svg stays.
+const drawnSvgSource = new WeakMap();
 
 function mermaidApi() {
   const api = globalThis.mermaid;
@@ -2412,11 +2418,14 @@ function showDiagramSvg(el, source, svg) {
   }
   const pins = keptPins(el);
   const corners = keptClass(el, "md-pin-corner");
+  const enlarges = keptClass(el, "md-image-enlarge");
   const frame = pictureFrame(el) || pinFrameElement();
   frame.replaceChildren(node);
   fitDrawnSvg(frame, node);
+  drawnSvgSource.set(node, svg);
   for (const pin of pins) frame.appendChild(pin);
   for (const corner of corners) frame.appendChild(corner);
+  for (const enlarge of enlarges) frame.appendChild(enlarge);
   if (frame.parentElement !== el) el.replaceChildren(frame);
 }
 
@@ -2483,7 +2492,9 @@ function renderSvg(atom, onSized) {
     img.addEventListener("load", () => onSized());
   }
   if (typeof onSized === "function" && img.complete === true && img.naturalWidth > 0) onSized();
-  el.appendChild(img);
+  const frame = pinFrameElement();
+  frame.appendChild(img);
+  el.appendChild(frame);
   return el;
 }
 
@@ -3686,7 +3697,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // Set while the pointer is on the corner or the plus. Those sit outside the picture, so a
   // repaint cannot find them from the picture box. The start offset finds the host after a repaint.
   let cornerHoldStart = null;
-  let cornerHoldImage = false;
+  let cornerHoldKind = "";
   // The first press of a multi-click. Later presses reuse it after a render
   // would have moved the text under the pointer.
   let gestureOffset = null;
@@ -5653,21 +5664,23 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function paintPinMark(thread) {
     const pin = thread.pin;
     if (!pin) return;
+    const className = thread.hostKind === "diagram" ? "md-diagram"
+      : thread.hostKind === "svg" ? "md-svg"
+      : thread.hostKind === "image" ? "md-image"
+      : "";
+    if (!className) return;
     let host = null;
-    if (thread.hostKind === "diagram") {
-      for (const el of elementsWithClass("md-diagram")) {
-        if (Number(el.dataset && el.dataset.start) === thread.anchorAt) {
-          host = el;
-          break;
-        }
-      }
-    } else if (thread.hostKind === "image") {
-      for (const el of elementsWithClass("md-image")) {
-        const start = Number(el.dataset && el.dataset.start);
+    for (const el of elementsWithClass(className)) {
+      const start = Number(el.dataset && el.dataset.start);
+      if (!Number.isFinite(start)) continue;
+      if (className === "md-image") {
         if (start >= thread.anchorAt && (thread.hostEnd == null || start < thread.hostEnd)) {
           host = el;
           break;
         }
+      } else if (start === thread.anchorAt) {
+        host = el;
+        break;
       }
     }
     if (!host) return;
@@ -5785,7 +5798,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof ResizeObserver !== "function" || typeof Element !== "function") return;
     if (!pictureObserver) pictureObserver = new ResizeObserver(() => layoutAfterPicture());
     pictureObserver.disconnect();
-    for (const host of elementsWithClass("md-image")) {
+    for (const host of [...elementsWithClass("md-image"), ...elementsWithClass("md-svg")]) {
       const img = directChildTag(pictureFrame(host) || host, "img");
       if (!img || !(img instanceof Element)) continue;
       try {
@@ -6835,12 +6848,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     pinMove.point = point;
   }
 
-  // One host for a picture and a diagram. The fraction is of the drawn box.
+  // One host for a picture, a diagram, and an svg fence. The fraction is of the drawn box.
   function pinPictureHost(pin) {
     if (!pin || typeof pin.closest !== "function") return null;
-    const image = pin.closest(".md-image");
-    if (image) return image;
-    return pin.closest(".md-diagram");
+    return pin.closest(".md-image") || pin.closest(".md-svg") || pin.closest(".md-diagram");
   }
 
   function beginPinDrag(event) {
@@ -6925,6 +6936,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return typeof img.alt === "string" ? img.alt : "";
   }
 
+  // An img already has an address. A diagram svg stays in the page; the window gets its markup.
+  function viewerPictureSrc(node) {
+    if (!node) return "";
+    const tag = String(node.tagName || node.nodeName || "").toUpperCase();
+    if (tag === "IMG") return viewerImageSrc(node);
+    if (tag !== "SVG") return "";
+    let text = drawnSvgSource.has(node) ? drawnSvgSource.get(node) || "" : "";
+    if (!text && typeof node.outerHTML === "string") text = node.outerHTML;
+    if (!text && typeof XMLSerializer === "function") {
+      try {
+        text = new XMLSerializer().serializeToString(node);
+      } catch {
+        text = "";
+      }
+    }
+    if (!text) return "";
+    return svgImageUrl(text);
+  }
+
   function toggleImageViewerZoom(overlay) {
     if (!overlay || !overlay.classList) return;
     if (overlay.classList.contains("md-image-fit")) {
@@ -6993,7 +7023,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function openImageViewer(img) {
     if (closed) return;
-    const src = viewerImageSrc(img);
+    const src = viewerPictureSrc(img);
     const host = buttonHost();
     if (!src || !host) return;
     closeImageViewer();
@@ -7055,13 +7085,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     button.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       if (event && typeof event.stopPropagation === "function") event.stopPropagation();
-      openImageViewer(directChildTag(frame, "img"));
+      openImageViewer(drawnPicture(frame && frame.parentElement));
     });
     return button;
   }
 
   function ensureImageEnlarge(frame) {
-    if (!frame || !hasClass(frame.parentElement, "md-image")) return;
+    const host = frame && frame.parentElement;
+    if (!isDrawnHost(host) || !drawnPicture(host)) return;
     if (findClassChild(frame, "md-image-enlarge")) return;
     frame.appendChild(imageEnlargeButton(frame));
   }
@@ -7122,12 +7153,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const frame = control && control.parentElement;
     const host = frame && frame.parentElement;
     if (!host || !hasClass(frame, "md-pin-frame")) return null;
-    if (!hasClass(host, "md-image") && !hasClass(host, "md-diagram")) return null;
+    if (!isDrawnHost(host)) return null;
     return host;
   }
 
   function noteCornerHold(event) {
     cornerHoldStart = null;
+    cornerHoldKind = "";
     const node = event && event.target;
     const el = node && node.nodeType === 1 ? node : node && node.parentElement;
     if (!el || typeof el.closest !== "function") return;
@@ -7138,13 +7170,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const start = Number(host.dataset.start);
     if (!Number.isFinite(start)) return;
     cornerHoldStart = start;
-    cornerHoldImage = hasClass(host, "md-image");
+    if (hasClass(host, "md-image")) cornerHoldKind = "md-image";
+    else if (hasClass(host, "md-diagram")) cornerHoldKind = "md-diagram";
+    else if (hasClass(host, "md-svg")) cornerHoldKind = "md-svg";
   }
 
   function hostForCornerHold() {
-    if (cornerHoldStart == null) return null;
-    const kind = cornerHoldImage ? "md-image" : "md-diagram";
-    for (const host of elementsWithClass(kind)) {
+    if (cornerHoldStart == null || !cornerHoldKind) return null;
+    for (const host of elementsWithClass(cornerHoldKind)) {
       if (Number(host.dataset && host.dataset.start) === cornerHoldStart) return host;
     }
     return null;
@@ -7168,7 +7201,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function hostForPointer(clientX, clientY) {
     let found = null;
-    for (const host of [...elementsWithClass("md-image"), ...elementsWithClass("md-diagram")]) {
+    for (const host of [...elementsWithClass("md-image"), ...elementsWithClass("md-diagram"), ...elementsWithClass("md-svg")]) {
       if (hasClass(host, "md-raw") || (typeof host.closest === "function" && host.closest(".md-raw"))) continue;
       if (pointerOnDrawn(host, clientX, clientY)) found = host;
     }
@@ -11078,7 +11111,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!node || typeof node.closest !== "function") return;
     const image = node.closest(".md-image");
     const diagram = image ? null : node.closest(".md-diagram");
-    const host = image || diagram;
+    const svg = image || diagram ? null : node.closest(".md-svg");
+    const host = image || diagram || svg;
     if (!host) return;
     if (hasClass(host, "md-raw") || (typeof host.closest === "function" && host.closest(".md-raw"))) return;
     const picture = drawnPicture(host);

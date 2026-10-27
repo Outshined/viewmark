@@ -8469,7 +8469,9 @@ test("wecmuvmn: a plus beside an image comment anchor opens the picture to the w
     move(svg, 180, 80);
     assert.equal(pins().length, 1);
     assert.equal(pins()[0].parentElement, diagramFrame);
-    assert.equal(enlarges().length, 0);
+    assert.equal(enlarges().length, 1);
+    assert.equal(enlarges()[0].parentElement, diagramFrame);
+    assert.equal(enlarges()[0].getAttribute("aria-label"), "Show full size");
 
     move(img, 150, 80);
     assert.equal(enlarges().length, 1);
@@ -9230,6 +9232,220 @@ test("a diagram pin move puts the corner on the svg after the frame is fitted", 
     view.destroy();
   } finally {
     globalThis.document.createElement = orig;
+    mounted.restore();
+    if (previousMermaid === undefined) delete globalThis.mermaid;
+    else globalThis.mermaid = previousMermaid;
+    if (previousParser === undefined) delete globalThis.DOMParser;
+    else globalThis.DOMParser = previousParser;
+  }
+});
+
+test("a move over a diagram or an svg fence shows the pin and opens that drawing", async () => {
+  const mounted = mountSheet();
+  const picture = { left: 100, top: 50, right: 300, bottom: 150, width: 200, height: 100 };
+  const wide = { left: 0, top: 40, right: 800, bottom: 400, width: 800, height: 360 };
+  const pins = () => mounted.findAll((node) => node.classList && node.classList.contains("md-pin-corner"));
+  const enlarges = () => mounted.findAll((node) => node.classList && node.classList.contains("md-image-enlarge"));
+  const viewers = () => mounted.findAll((node) => node.classList && node.classList.contains("md-image-view"));
+  const move = (target, x, y) => {
+    mounted.listeners.mousemove({ target, clientX: x, clientY: y });
+  };
+  const box = (frame, node) => {
+    node.getBoundingClientRect = () => picture;
+    frame.getBoundingClientRect = () => wide;
+  };
+  const markup = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"40\"><text>Alpha</text></svg>";
+  const previousMermaid = globalThis.mermaid;
+  const previousParser = globalThis.DOMParser;
+  globalThis.mermaid = {
+    initialize() {},
+    render() {
+      return Promise.resolve({ svg: markup });
+    },
+  };
+  globalThis.DOMParser = class {
+    parseFromString() {
+      return { documentElement: document.createElement("svg") };
+    }
+  };
+  const transfer = () => {
+    const store = new Map();
+    return {
+      types: [],
+      effectAllowed: "",
+      setData(type, value) {
+        store.set(type, value);
+        if (!this.types.includes(type)) this.types.push(type);
+      },
+      getData(type) {
+        return store.has(type) ? store.get(type) : "";
+      },
+    };
+  };
+  const dropAt = (data, target, x, y) => {
+    mounted.listeners.drop({
+      target,
+      clientX: x,
+      clientY: y,
+      dataTransfer: data,
+      preventDefault() {},
+    });
+  };
+  try {
+    const diagramDoc = "See\n```mermaid\nA-->B\n```\n";
+    const diagramView = createEditor(mounted.root, diagramDoc, 0);
+    await new Promise((resolve) => setImmediate(resolve));
+    const host = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
+    const frame = host.childNodes.find((node) => node.classList && node.classList.contains("md-pin-frame"));
+    const svg = frame.childNodes.find((node) => String(node.tagName).toUpperCase() === "SVG");
+    assert.ok(svg);
+    assert.equal(frame.childNodes.some((node) => node.tagName === "IMG"), false);
+    box(frame, svg);
+    assert.equal(pins().length, 0);
+    assert.equal(enlarges().length, 0);
+    move(svg, 180, 80);
+    assert.equal(pins().length, 1);
+    assert.equal(enlarges().length, 1);
+    assert.equal(pins()[0].getAttribute("aria-label"), "Comment pin");
+    assert.equal(enlarges()[0].getAttribute("aria-label"), "Show full size");
+    assert.equal(enlarges()[0].getAttribute("title"), "Show full size");
+    assert.equal(pins()[0].parentElement, frame);
+    assert.equal(enlarges()[0].parentElement, frame);
+    assert.equal(pins()[0].styleProps.top, "10px");
+    assert.equal(pins()[0].styleProps.right, "500px");
+    assert.equal(enlarges()[0].styleProps.top, "10px");
+    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 1.75rem - 0.15rem)");
+    assert.equal(enlarges()[0].styleProps.left, "auto");
+    const text = diagramView.getState().doc;
+    const cursor = diagramView.getState().cursor;
+    enlarges()[0].listeners.click({ preventDefault() {}, stopPropagation() {}, button: 0 });
+    assert.equal(viewers().length, 1);
+    const overlay = viewers()[0];
+    assert.equal(overlay.classList.contains("md-image-fit"), true);
+    assert.equal(overlay.classList.contains("md-image-natural"), false);
+    const shown = overlay.childNodes.find((node) => node.tagName === "IMG");
+    const src = shown.getAttribute("src");
+    assert.match(src, /^data:image\/svg\+xml/);
+    const drawn = decodeURIComponent(src.slice(src.indexOf(",") + 1));
+    assert.ok(drawn.includes("Alpha"));
+    assert.ok(drawn.includes("<text"));
+    assert.equal(frame.childNodes.find((node) => String(node.tagName).toUpperCase() === "SVG"), svg);
+    assert.equal(frame.childNodes.some((node) => node.tagName === "IMG"), false);
+    assert.equal(diagramView.getState().doc, text);
+    assert.equal(diagramView.getState().cursor, cursor);
+    shown.listeners.dblclick({ preventDefault() {}, stopPropagation() {} });
+    assert.equal(overlay.classList.contains("md-image-natural"), true);
+    assert.equal(overlay.classList.contains("md-image-fit"), false);
+    shown.listeners.dblclick({ preventDefault() {}, stopPropagation() {} });
+    assert.equal(overlay.classList.contains("md-image-fit"), true);
+    let escapePrevented = false;
+    overlay.listeners.keydown({
+      key: "Escape",
+      preventDefault() { escapePrevented = true; },
+      stopPropagation() {},
+    });
+    assert.equal(escapePrevented, true);
+    assert.equal(viewers().length, 0);
+    assert.equal(svg.parentElement, frame);
+    assert.equal(diagramView.getState().doc, text);
+    diagramView.destroy();
+
+    const fenceBody = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"20\"><rect width=\"40\" height=\"20\"/></svg>";
+    const fenceDoc = `Above\n\n\`\`\`svg\n${fenceBody}\n\`\`\`\n`;
+    const fenceView = createEditor(mounted.root, fenceDoc, 0);
+    const fenceHost = mounted.findAll((node) => node.classList && node.classList.contains("md-svg"))[0];
+    const fenceFrame = fenceHost.childNodes.find((node) => node.classList && node.classList.contains("md-pin-frame"));
+    const img = fenceFrame.childNodes.find((node) => node.tagName === "IMG");
+    assert.ok(img);
+    const tags = [];
+    const walk = (node) => {
+      if (node && node.tagName) tags.push(node.tagName);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(fenceHost);
+    assert.ok(tags.includes("IMG"));
+    assert.equal(tags.includes("SVG"), false);
+    box(fenceFrame, img);
+    move(img, 150, 80);
+    assert.equal(pins().length, 1);
+    assert.equal(enlarges().length, 1);
+    assert.equal(pins()[0].getAttribute("aria-label"), "Comment pin");
+    assert.equal(enlarges()[0].getAttribute("aria-label"), "Show full size");
+    assert.equal(enlarges()[0].getAttribute("title"), "Show full size");
+    assert.equal(pins()[0].parentElement, fenceFrame);
+    assert.equal(enlarges()[0].parentElement, fenceFrame);
+    assert.equal(pins()[0].styleProps.top, "10px");
+    assert.equal(pins()[0].styleProps.right, "500px");
+    assert.equal(enlarges()[0].styleProps.top, "10px");
+    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 1.75rem - 0.15rem)");
+    assert.equal(enlarges()[0].styleProps.left, "auto");
+    move(enlarges()[0], 320, 80);
+    assert.equal(320 > picture.right, true);
+    assert.equal(pins().length, 1);
+    assert.equal(enlarges().length, 1);
+    const before = fenceView.getState().doc;
+    const beforeCursor = fenceView.getState().cursor;
+    enlarges()[0].listeners.click({ preventDefault() {}, stopPropagation() {}, button: 0 });
+    assert.equal(viewers().length, 1);
+    const fenceOverlay = viewers()[0];
+    assert.equal(fenceOverlay.classList.contains("md-image-fit"), true);
+    const fenceShown = fenceOverlay.childNodes.find((node) => node.tagName === "IMG");
+    assert.equal(fenceShown.getAttribute("src"), img.getAttribute("src"));
+    assert.match(fenceShown.getAttribute("src"), /^data:image\/svg\+xml/);
+    assert.equal(fenceFrame.childNodes.find((node) => node.tagName === "IMG"), img);
+    assert.equal(fenceFrame.childNodes.some((node) => node.tagName === "SVG"), false);
+    assert.equal(fenceView.getState().doc, before);
+    assert.equal(fenceView.getState().cursor, beforeCursor);
+    fenceShown.listeners.dblclick({ preventDefault() {}, stopPropagation() {} });
+    assert.equal(fenceOverlay.classList.contains("md-image-natural"), true);
+    fenceShown.listeners.dblclick({ preventDefault() {}, stopPropagation() {} });
+    assert.equal(fenceOverlay.classList.contains("md-image-fit"), true);
+    const close = fenceOverlay.childNodes.find((node) => node.classList && node.classList.contains("md-image-view-close"));
+    close.listeners.click({ preventDefault() {}, stopPropagation() {}, button: 0 });
+    assert.equal(viewers().length, 0);
+    assert.equal(fenceView.getState().doc, before);
+    assert.equal(img.parentElement, fenceFrame);
+
+    move(img, 160, 70);
+    const data = transfer();
+    pins()[0].listeners.dragstart({ target: pins()[0], dataTransfer: data, stopPropagation() {} });
+    dropAt(data, img, 160, 40);
+    assert.equal(fenceView.getState().doc, fenceDoc);
+    dropAt(data, img, 160, 70);
+    const placed = fenceView.getState();
+    assert.match(placed.doc, /```comment c1 0\.3,0\.2\n/);
+    assert.ok(placed.cursor < fenceDoc.indexOf("```svg"));
+    const hostNow = mounted.findAll((node) => node.classList && node.classList.contains("md-svg"))[0];
+    const frameNow = hostNow.childNodes.find((node) => node.classList && node.classList.contains("md-pin-frame"));
+    const imgNow = frameNow.childNodes.find((node) => node.tagName === "IMG");
+    assert.ok(imgNow);
+    assert.equal(frameNow.childNodes.some((node) => node.tagName === "SVG"), false);
+    const mark = frameNow.childNodes.find((node) => node.classList && node.classList.contains("md-comment-pin"));
+    assert.equal(mark.styleProps.left, "30%");
+    assert.equal(mark.styleProps.top, "20%");
+    imgNow.getBoundingClientRect = () => picture;
+    const press = (target, x, y) => {
+      mounted.listeners.mousedown({ target, clientX: x, clientY: y, button: 0, preventDefault() {} });
+    };
+    const shift = (target, x, y) => {
+      mounted.listeners.mousemove({ target, clientX: x, clientY: y, button: 0, preventDefault() {} });
+    };
+    const release = (target, x, y) => {
+      mounted.listeners.mouseup({ target, clientX: x, clientY: y, button: 0, preventDefault() {} });
+    };
+    press(mark, 160, 70);
+    shift(imgNow, 200, 100);
+    release(imgNow, 200, 100);
+    assert.match(fenceView.getState().doc, /```comment c1 0\.5,0\.5\n/);
+    const movedPin = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-pin"))[0];
+    assert.equal(movedPin.styleProps.left, "50%");
+    assert.equal(movedPin.styleProps.top, "50%");
+    const after = mounted.findAll((node) => node.classList && node.classList.contains("md-svg"))[0];
+    const afterFrame = after.childNodes.find((node) => node.classList && node.classList.contains("md-pin-frame"));
+    assert.ok(afterFrame.childNodes.some((node) => node.tagName === "IMG"));
+    assert.equal(afterFrame.childNodes.some((node) => node.tagName === "SVG"), false);
+    fenceView.destroy();
+  } finally {
     mounted.restore();
     if (previousMermaid === undefined) delete globalThis.mermaid;
     else globalThis.mermaid = previousMermaid;
