@@ -4665,6 +4665,49 @@ test("an svg fence is an image outside the caret and source inside", () => {
   }
 });
 
+// Firefox's caretPositionFromPoint on the picture reports the blank above the fence.
+test("a press in a drawn svg fence opens it when the blank above is reported", () => {
+  const mounted = mountEditor();
+  const svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"20\"><rect width=\"40\" height=\"20\"/></svg>";
+  const doc = `Above\n\n\`\`\`svg\n${svg}\n\`\`\`\n`;
+  const bodyAt = doc.indexOf("<svg");
+  try {
+    const view = createEditor(mounted.root, doc, 0);
+    installGapQuery(mounted);
+    const img = mounted.findAll((node) => node.tagName === "IMG")[0];
+    const gap = editorLines(mounted).find((node) => node.classList.contains("md-paragraph-gap"));
+    assert.ok(img);
+    assert.ok(gap);
+    const br = gap.childNodes.find((node) => String(node.nodeName).toUpperCase() === "BR");
+    assert.ok(br);
+    setBox(gap, 40, 40);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: br, offset: 0 });
+    pressPoint(mounted, img, 20, 58);
+    assert.equal(view.getState().cursor, bodyAt);
+    assert.equal(view.getState().anchor, bodyAt);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-svg")).length, 0);
+    assert.ok(mounted.root.textContent.includes("```svg"));
+    view.destroy();
+
+    const edge = createEditor(mounted.root, doc, 0);
+    installGapQuery(mounted);
+    const edgeImg = mounted.findAll((node) => node.tagName === "IMG")[0];
+    const edgeGap = editorLines(mounted).find((node) => node.classList.contains("md-paragraph-gap"));
+    const edgeBr = edgeGap.childNodes.find((node) => String(node.nodeName).toUpperCase() === "BR");
+    assert.ok(edgeBr);
+    setBox(edgeGap, 40, 40);
+    globalThis.document.caretPositionFromPoint = () => ({ offsetNode: edgeBr, offset: 0 });
+    pressPoint(mounted, edgeImg, 20, 40);
+    assert.equal(edge.getState().cursor, Number(edgeGap.dataset.start));
+    assert.equal(edge.getState().anchor, edge.getState().cursor);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-svg")).length, 1);
+    edge.destroy();
+  } finally {
+    delete globalThis.document.caretPositionFromPoint;
+    mounted.restore();
+  }
+});
+
 test("T-step-over", () => {
   const end = 1 + "![a](b)".length;
   assert.equal(stepOver(C, 1, "forward"), end);

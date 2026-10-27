@@ -13092,9 +13092,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (atom && root.contains(atom)) {
       event.preventDefault();
       if (!keepCurrent) currentCommentId = null;
-      // A press on the collapsed blank's edge hits the picture drawn under it.
-      // The stored offset is that blank.
-      if (stored != null && gapCaretStops(state.doc, state.cursor).includes(stored)) {
+      // A press on the collapsed blank's edge hits the drawing under it.
+      // The stored offset is that blank. A drawn svg fence has no caret mark,
+      // so Firefox reports that blank for a press in the picture. That press
+      // is the fence, and only the edge stays on the blank.
+      const onBlank = stored != null && gapCaretStops(state.doc, state.cursor).includes(stored);
+      if (onBlank && (!hasClass(atom, "md-svg") || gapUnderPoint(event) != null)) {
         if (detail === 1) gestureHold = true;
         state = { ...state, anchor: stored, cursor: stored };
         if (!claimLines(stored, stored)) {
