@@ -9422,6 +9422,18 @@ test("a move over a diagram or an svg fence shows the pin and opens that drawing
     assert.equal(enlarges()[0].styleProps.top, "10px");
     assert.equal(enlarges()[0].styleProps.right, "calc(500px - 1.75rem - 0.15rem)");
     assert.equal(enlarges()[0].styleProps.left, "auto");
+    const small = { left: 100, top: 50, right: 140, bottom: 70, width: 40, height: 20 };
+    img.getBoundingClientRect = () => small;
+    move(img, 120, 60);
+    assert.equal(pins()[0].styleProps.right, "calc(660px - 1.75rem)");
+    assert.equal(enlarges()[0].styleProps.right, "calc(660px - 1.75rem - 1.75rem - 0.15rem)");
+    assert.equal(pins()[0].styleProps.left, "auto");
+    assert.equal(enlarges()[0].styleProps.left, "auto");
+    assert.equal(pins()[0].styleProps.top, "10px");
+    box(fenceFrame, img);
+    move(img, 150, 80);
+    assert.equal(pins()[0].styleProps.right, "500px");
+    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 1.75rem - 0.15rem)");
     move(enlarges()[0], 320, 80);
     assert.equal(320 > picture.right, true);
     assert.equal(pins().length, 1);
