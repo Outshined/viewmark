@@ -1639,6 +1639,10 @@ function atomClickOffset(atom, target, event) {
     return Number(atom.dataset.start);
   }
   if (hasClass(atom, "md-diagram")) return diagramLabelOffset(atom, target);
+  if (hasClass(atom, "md-svg")) {
+    const at = Number(atom.dataset.bodyStart);
+    return Number.isFinite(at) ? at : Number(atom.dataset.start);
+  }
   return Number(atom.dataset.start);
 }
 
@@ -2272,6 +2276,7 @@ function renderCellNode(node, repo, onSized) {
     return el;
   }
   if (node && node.type === "diagram") return renderDiagram(node, null);
+  if (node && node.type === "svg") return renderSvg(node, onSized);
   return renderCellLine(node, repo, onSized);
 }
 
@@ -2413,6 +2418,73 @@ function showDiagramSvg(el, source, svg) {
   for (const pin of pins) frame.appendChild(pin);
   for (const corner of corners) frame.appendChild(corner);
   if (frame.parentElement !== el) el.replaceChildren(frame);
+}
+
+// A data URL with no svg namespace does not paint, so the width stays 0.
+function namespacedSvg(body) {
+  const text = typeof body === "string" ? body : "";
+  let i = 0;
+  if (text.charCodeAt(0) === 0xfeff) i = 1;
+  while (i < text.length) {
+    while (i < text.length && (text[i] === " " || text[i] === "\t" || text[i] === "\n" || text[i] === "\r")) i += 1;
+    if (text.startsWith("<?", i)) {
+      const end = text.indexOf("?>", i + 2);
+      if (end < 0) return text;
+      i = end + 2;
+      continue;
+    }
+    if (text.startsWith("<!--", i)) {
+      const end = text.indexOf("-->", i + 4);
+      if (end < 0) return text;
+      i = end + 3;
+      continue;
+    }
+    if (text.startsWith("<!DOCTYPE", i) || text.startsWith("<!doctype", i)) {
+      const end = text.indexOf(">", i + 2);
+      if (end < 0) return text;
+      i = end + 1;
+      continue;
+    }
+    break;
+  }
+  if (!text.startsWith("<svg", i)) return text;
+  const boundary = text[i + 4];
+  if (boundary && boundary !== ">" && boundary !== "/" && boundary !== " " && boundary !== "\t" && boundary !== "\n" && boundary !== "\r") return text;
+  const tagEnd = text.indexOf(">", i);
+  if (tagEnd < 0) return text;
+  const tag = text.slice(i, tagEnd);
+  if (/(?:^|\s)xmlns\s*=/.test(tag)) return text;
+  return `${text.slice(0, i + 4)} xmlns="http://www.w3.org/2000/svg"${text.slice(i + 4)}`;
+}
+
+function svgImageUrl(body) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(namespacedSvg(body))}`;
+}
+
+// An img does not run a script in the file. An svg element in the page would.
+function renderSvg(atom, onSized) {
+  const el = document.createElement("div");
+  el.className = atomClassName(["md-atom", "md-svg"], atom);
+  el.contentEditable = "false";
+  el.dataset.start = String(atom.start);
+  el.dataset.end = String(atom.end);
+  el.dataset.bodyStart = String(atom.bodyStart);
+  const img = document.createElement("img");
+  img.draggable = false;
+  img.alt = "";
+  const url = svgImageUrl(atom.body);
+  img.src = url;
+  if (typeof img.setAttribute === "function") {
+    img.setAttribute("alt", "");
+    img.setAttribute("draggable", "false");
+    img.setAttribute("src", url);
+  }
+  if (typeof onSized === "function" && typeof img.addEventListener === "function") {
+    img.addEventListener("load", () => onSized());
+  }
+  if (typeof onSized === "function" && img.complete === true && img.naturalWidth > 0) onSized();
+  el.appendChild(img);
+  return el;
 }
 
 function renderDiagram(atom, onFitted, reserveHeight) {
@@ -2585,6 +2657,7 @@ function takeRawMarker(el, marker) {
 
 function renderBlock(block, repo, onSized, onDiagramFitted, reserveHeight) {
   if (block.type === "table") return renderTable(block, repo, onSized);
+  if (block.type === "svg") return renderSvg(block, onSized);
   if (block.type === "diagram") return renderDiagram(block, onDiagramFitted, reserveHeight);
   if (block.collapsed) return renderCollapsed(block);
   const el = document.createElement("div");
@@ -8394,6 +8467,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function searchHostSkipped(el) {
     return hasClass(el, "md-image")
       || hasClass(el, "md-diagram")
+      || hasClass(el, "md-svg")
       || hasClass(el, "md-lock")
       || hasClass(el, "md-image-caret")
       || hasClass(el, "md-raw-hang")

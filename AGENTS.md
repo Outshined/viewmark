@@ -26,7 +26,7 @@ printf 'A correction.\n' | viewmark --user ada --repo notes comment reply welcom
 
 `comment resolve PATH ID` marks that thread resolved. `comment open PATH ID` clears it. `comment delete PATH ID` removes that thread's marks and its fence. The author is note 0's author, the `--user` of the command. Anyone else exits 403 and writes nothing. Already resolved or already open exits 0 and writes nothing. A missing path or thread exits 404. A span held by another socket exits 409 and names that user. `--rev` on those three is rejected.
 
-The markdown is the dialect named in the README. A fence whose info string is exactly `mermaid` is drawn as a diagram. Any other info string is source. Highlighted fences are markup, css, clike, javascript, typescript, python, bash, json, yaml, go, rust, sql, and mermaid. The short names js, ts, py, sh, shell, yml, html, and xml map to those. HTML in the prose is stored as text.
+The markdown is the dialect named in the README. A fence whose info string is exactly `mermaid` is drawn as a diagram. An `svg` fence is drawn as an image. Any other info string is source. Highlighted fences are markup, css, clike, javascript, typescript, python, bash, json, yaml, go, rust, sql, and mermaid. The short names js, ts, py, sh, shell, yml, html, and xml map to those. HTML in the prose is stored as text.
 
 A ticket is `tickets/<id>.md`. `ticket create` reads the body from stdin. `ticket show` writes the body to stdout and the fields to stderr. The state is new, triaged, in progress, blocked, pending review, or closed. Close one with `ticket set ID --state closed`. A field write uses the current body. Later field writes win. `--rev` is rejected. `ticket list` hides closed tickets until `--closed`.
 

@@ -84,7 +84,7 @@ In the block that holds the caret, each marker is drawn as a rounded handle, and
 A thread fence holds notes separated by `:: N` lines. Each note starts with `@<ISO time> <author>`. The hub writes the id and the author line.
 
 ### Code and diagrams
-A fence whose info string is `mermaid` is drawn as a diagram. The page initializes Mermaid once: `startOnLoad` is false, `securityLevel` is `strict`, the theme is dark, flowchart labels are SVG, and Mermaid's own error graphic is suppressed. The fence body is rendered to an SVG. A failed render shows the source and the error text. While the caret is inside the fence, the page shows the source.
+A fence whose info string is `mermaid` is drawn as a diagram. The page initializes Mermaid once: `startOnLoad` is false, `securityLevel` is `strict`, the theme is dark, flowchart labels are SVG, and Mermaid's own error graphic is suppressed. The fence body is rendered to an SVG. A failed render shows the source and the error text. While the caret is inside the fence, the page shows the source. An `svg` fence is drawn as an image.
 
 Every other fence is code. While the caret is outside the fence, each body line is passed to `Prism.tokenize`. The tokens become spans over those same characters, so the caret stays an offset into the document string. The page does not ask Prism to emit HTML. Grammars are included for markup, css, clike, javascript, typescript, python, bash, json, yaml, go, rust, sql, and mermaid. The short names `js`, `ts`, `py`, `sh`, `shell`, and `yml` select those grammars, and `html` and `xml` select markup. An unknown info string, or a tokenize result that does not rejoin into the original line, is left as plain code.
 

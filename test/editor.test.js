@@ -4563,6 +4563,108 @@ test("T-diagram-atom", () => {
   assert.ok(closed.lines.every((line) => line.start >= 20));
 });
 
+test("an svg fence is an image outside the caret and source inside", () => {
+  const svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"20\"><script>window.__svgRan = true</script><rect width=\"40\" height=\"20\"/></svg>";
+  const doc = `Above\n\n\`\`\`svg\n${svg}\n\`\`\`\n`;
+  const inside = doc.indexOf("<svg");
+  const opener = doc.indexOf("```svg");
+  const outside = plan(doc, 0);
+  const atom = outside.blocks.find((block) => block.type === "svg");
+  assert.ok(atom);
+  assert.equal(outside.blocks.filter((block) => block.type === "svg").length, 1);
+  assert.equal(outside.blocks.some((block) => block.type === "diagram"), false);
+  assert.equal(atom.body, svg);
+  assert.ok(atom.classes.includes("md-block-svg"));
+  assert.equal(stepOver(doc, opener, "forward"), atom.end);
+  assert.equal(placeMove(doc, 0, inside, "forward", "character"), opener);
+  const open = plan(doc, inside);
+  assert.equal(open.blocks.some((block) => block.type === "svg"), false);
+  const source = open.lines.filter((line) => line.classes.includes("md-codeblock")).map((line) => line.text).join("\n");
+  assert.ok(source.includes("```svg"));
+  assert.ok(source.includes(svg));
+  assert.equal(plan(doc, atom.end).blocks.some((block) => block.type === "svg"), false);
+  assert.equal(plan(doc, doc.length).blocks.filter((block) => block.type === "svg").length, 1);
+
+  const plainBody = "```svg\n<div></div>\n```\n";
+  const plain = plan(plainBody, plainBody.length);
+  assert.equal(plain.blocks.some((block) => block.type === "svg"), false);
+  assert.ok(plain.lines.some((line) => line.classes.includes("md-codeblock") && line.text === "<div></div>"));
+
+  const broken = "```svg\n<svg width=\"40\"\n```\n";
+  assert.equal(plan(broken, broken.length).blocks.some((block) => block.type === "svg"), false);
+  const upper = "```svg\n<SVG></SVG>\n```\n";
+  assert.equal(plan(upper, upper.length).blocks.some((block) => block.type === "svg"), false);
+  const junk = "```svg\n<svg></svg>\n<div></div>\n```\n";
+  assert.equal(plan(junk, junk.length).blocks.some((block) => block.type === "svg"), false);
+  const lang = "```SVG\n<svg></svg>\n```\n";
+  assert.equal(plan(lang, lang.length).blocks.some((block) => block.type === "svg"), false);
+
+  const js = "```js\n<svg width=\"40\" height=\"20\"></svg>\n```\n";
+  const code = plan(js, js.length);
+  assert.equal(code.blocks.some((block) => block.type === "svg"), false);
+  assert.equal(code.blocks.some((block) => block.type === "diagram"), false);
+  assert.ok(code.lines.some((line) => line.classes.includes("md-codeblock") && line.text.includes("<svg")));
+
+  const prose = plan("<svg width=\"40\" height=\"20\"></svg>\n", 40);
+  assert.equal(prose.blocks.some((block) => block.type === "svg"), false);
+  assert.ok(prose.lines[0].text.includes("<svg width=\"40\" height=\"20\"></svg>"));
+
+  const both = `${doc}\`\`\`mermaid\nA-->B\n\`\`\`\n`;
+  const mixed = plan(both, both.length);
+  assert.equal(mixed.blocks.filter((block) => block.type === "svg").length, 1);
+  assert.equal(mixed.blocks.filter((block) => block.type === "diagram").length, 1);
+
+  for (const rel of ["README.md", "AGENTS.md", "docs/ARCHITECTURE.md", "samples/ARCHITECTURE.md"]) {
+    const text = readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
+    assert.match(text, /An `svg` fence is drawn as an image\./);
+  }
+
+  const mounted = mountEditor();
+  try {
+    const view = createEditor(mounted.root, doc, 0);
+    const host = mounted.findAll((node) => node.classList && node.classList.contains("md-svg"))[0];
+    assert.ok(host);
+    const tags = [];
+    const walk = (node) => {
+      if (node && node.tagName) tags.push(node.tagName);
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(host);
+    assert.ok(tags.includes("IMG"));
+    assert.equal(tags.includes("SVG"), false);
+    assert.equal(tags.includes("SCRIPT"), false);
+    const img = mounted.findAll((node) => node.tagName === "IMG")[0];
+    const src = img.getAttribute("src");
+    assert.match(src, /^data:image\/svg\+xml/);
+    const drawn = decodeURIComponent(src.slice(src.indexOf(",") + 1));
+    assert.ok(drawn.includes("width=\"40\""));
+    assert.ok(drawn.includes("<rect"));
+    assert.ok(drawn.includes("xmlns=\"http://www.w3.org/2000/svg\""));
+    assert.equal(drawn.includes("<script"), true);
+    mounted.listeners.click({ target: img, clientX: 12, clientY: 12, detail: 1, preventDefault() {} });
+    assert.equal(view.getState().cursor, doc.indexOf("<svg"));
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-svg")).length, 0);
+    assert.ok(mounted.root.textContent.includes("```svg"));
+    view.destroy();
+
+    const inner = createEditor(mounted.root, doc, inside);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-svg")).length, 0);
+    assert.equal(mounted.findAll((node) => node.tagName === "IMG").length, 0);
+    assert.ok(mounted.root.textContent.includes("<svg"));
+    assert.ok(mounted.root.textContent.includes("rect"));
+    assert.ok(mounted.root.textContent.includes("```svg"));
+    inner.destroy();
+
+    const jsView = createEditor(mounted.root, js, js.length);
+    assert.equal(mounted.findAll((node) => node.tagName === "IMG").length, 0);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-svg")).length, 0);
+    assert.ok(mounted.root.textContent.includes("<svg"));
+    jsView.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("T-step-over", () => {
   const end = 1 + "![a](b)".length;
   assert.equal(stepOver(C, 1, "forward"), end);

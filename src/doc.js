@@ -755,6 +755,177 @@ function isFenceClose(text, open) {
   return parts.char === open.char && parts.size >= open.size;
 }
 
+function xmlSpace(ch) {
+  return ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
+}
+
+function xmlNameStart(ch) {
+  return (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || ch === "_" || ch === ":";
+}
+
+function xmlNameChar(ch) {
+  return xmlNameStart(ch) || (ch >= "0" && ch <= "9") || ch === "-" || ch === ".";
+}
+
+function skipXmlSpace(text, index) {
+  let i = index;
+  while (i < text.length && xmlSpace(text[i])) i += 1;
+  return i;
+}
+
+function skipXmlName(text, index) {
+  if (!xmlNameStart(text[index])) return -1;
+  let i = index + 1;
+  while (i < text.length && xmlNameChar(text[i])) i += 1;
+  return i;
+}
+
+function skipXmlDoctype(text, index) {
+  let i = index;
+  let quote = "";
+  let depth = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) quote = "";
+      i += 1;
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      quote = ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "[") depth += 1;
+    else if (ch === "]" && depth > 0) depth -= 1;
+    else if (ch === ">" && depth === 0) return i + 1;
+    i += 1;
+  }
+  return -1;
+}
+
+// Prolog, comments, and the doctype sit in front of the root. The bytes stay text.
+function skipXmlMisc(text, index) {
+  let i = index;
+  if (text.charCodeAt(i) === 0xfeff) i += 1;
+  while (i < text.length) {
+    i = skipXmlSpace(text, i);
+    if (text.startsWith("<?", i)) {
+      const end = text.indexOf("?>", i + 2);
+      if (end < 0) return -1;
+      i = end + 2;
+      continue;
+    }
+    if (text.startsWith("<!--", i)) {
+      const end = text.indexOf("-->", i + 4);
+      if (end < 0) return -1;
+      i = end + 3;
+      continue;
+    }
+    if (text.startsWith("<!DOCTYPE", i) || text.startsWith("<!doctype", i)) {
+      const end = skipXmlDoctype(text, i);
+      if (end < 0) return -1;
+      i = end;
+      continue;
+    }
+    return i;
+  }
+  return i;
+}
+
+// One element, from its start tag through its close. A script stays characters.
+function skipXmlElement(text, index) {
+  if (text[index] !== "<" || !xmlNameStart(text[index + 1])) return -1;
+  let i = skipXmlName(text, index + 1);
+  if (i < 0) return -1;
+  const name = text.slice(index + 1, i);
+  i = skipXmlSpace(text, i);
+  while (i < text.length && text[i] !== ">" && text[i] !== "/") {
+    const next = skipXmlName(text, i);
+    if (next < 0) return -1;
+    i = skipXmlSpace(text, next);
+    if (text[i] !== "=") continue;
+    i = skipXmlSpace(text, i + 1);
+    const quote = text[i];
+    if (quote !== "\"" && quote !== "'") {
+      while (i < text.length && !xmlSpace(text[i]) && text[i] !== ">" && text[i] !== "/") i += 1;
+      i = skipXmlSpace(text, i);
+      continue;
+    }
+    i += 1;
+    while (i < text.length && text[i] !== quote) i += 1;
+    if (i >= text.length) return -1;
+    i = skipXmlSpace(text, i + 1);
+  }
+  if (i < text.length && text[i] === "/" && text[i + 1] === ">") return i + 2;
+  if (text[i] !== ">") return -1;
+  i += 1;
+  while (i < text.length) {
+    if (text.startsWith("</", i)) {
+      const close = i + 2;
+      if (!text.startsWith(name, close) || xmlNameChar(text[close + name.length])) return -1;
+      const end = skipXmlSpace(text, close + name.length);
+      if (text[end] !== ">") return -1;
+      return end + 1;
+    }
+    if (text.startsWith("<!--", i)) {
+      const end = text.indexOf("-->", i + 4);
+      if (end < 0) return -1;
+      i = end + 3;
+      continue;
+    }
+    if (text.startsWith("<![CDATA[", i)) {
+      const end = text.indexOf("]]>", i + 9);
+      if (end < 0) return -1;
+      i = end + 3;
+      continue;
+    }
+    if (text.startsWith("<?", i)) {
+      const end = text.indexOf("?>", i + 2);
+      if (end < 0) return -1;
+      i = end + 2;
+      continue;
+    }
+    if (text[i] === "<") {
+      const next = skipXmlElement(text, i);
+      if (next < 0) return -1;
+      i = next;
+      continue;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+// The body's root element is svg, and nothing follows it. Anything else stays source.
+function svgDocument(text) {
+  const body = typeof text === "string" ? text : "";
+  const start = skipXmlMisc(body, 0);
+  if (start < 0 || !body.startsWith("<svg", start)) return false;
+  const boundary = body[start + 4];
+  if (boundary && boundary !== ">" && boundary !== "/" && !xmlSpace(boundary)) return false;
+  const end = skipXmlElement(body, start);
+  if (end < 0) return false;
+  const rest = skipXmlMisc(body, end);
+  return rest === body.length;
+}
+
+function svgFenceAtom(opened, lines, index, last, closed) {
+  if (!opened || opened.lang !== "svg") return null;
+  const bodyLines = lines.slice(index + 1, closed ? last : last + 1);
+  const body = bodyLines.map((line) => line.text).join("\n");
+  if (!svgDocument(body) || bodyLines.length === 0) return null;
+  return {
+    type: "svg",
+    start: lines[index].start,
+    end: lines[last].end,
+    info: opened.lang,
+    body,
+    bodyStart: bodyLines[0].start,
+    indent: opened.indent || 0,
+  };
+}
+
 // contentEnd stops at the closing fence line. end includes that line's newline so
 // deleting a comment thread does not leave the fence row behind.
 function fenceContentRanges(doc) {
@@ -3564,6 +3735,7 @@ function cellBlocks(lines, spans, refs) {
       while (end < lines.length && !isFenceClose(lines[end].text, opened)) end += 1;
       const closed = end < lines.length;
       const last = closed ? end : lines.length - 1;
+      const svg = svgFenceAtom(opened, lines, index, last, closed);
       if (opened.diagram) {
         const bodyLines = lines.slice(index + 1, closed ? last : last + 1);
         blocks.push({
@@ -3574,6 +3746,8 @@ function cellBlocks(lines, spans, refs) {
           body: bodyLines.map((line) => line.text).join("\n"),
           bodyStart: bodyLines.length > 0 ? bodyLines[0].start : lines[index].end,
         });
+      } else if (svg) {
+        blocks.push(svg);
       } else {
         blocks.push(concealCellParts(fenceBlock({
           lang: opened.lang,
@@ -3867,6 +4041,7 @@ function structures(doc) {
         index = last + 1;
         continue;
       }
+      const svg = svgFenceAtom(opened, lines, index, last, closed);
       if (opened.diagram) {
         const bodyLines = lines.slice(index + 1, closed ? last : last + 1);
         const atom = {
@@ -3880,6 +4055,9 @@ function structures(doc) {
         };
         atoms.push(atom);
         slots.push({ kind: "atom", atom });
+      } else if (svg) {
+        atoms.push(svg);
+        slots.push({ kind: "atom", atom: svg });
       } else {
         const fenceLines = [];
         for (let line = index; line <= last; line += 1) {
@@ -4852,11 +5030,16 @@ function indentedBlock(lines, cursor, spans, strip) {
   };
 }
 
+// A diagram or an svg fence. The caret inside either one shows the fence source.
+function drawnFence(block) {
+  return Boolean(block && (block.type === "diagram" || block.type === "svg"));
+}
+
 // end is the newline after the last line. A caret there is inside, so the atom opens.
 function expandAtom(blocks, doc, atom, cursor, spans) {
   const lines = linesBetween(doc, atom.start, atom.end);
   const refs = collectRefs(doc);
-  const code = atom.type === "diagram";
+  const code = drawnFence(atom);
   const mode = code
     ? { kind: "codeblock", marker: 0, indent: 0, plain: "md-codeblock" }
     : { kind: "p", marker: 0, indent: 0, plain: "md-p" };
@@ -4976,7 +5159,7 @@ function apartBlock(block) {
 // the next block, is the same space as the blank between two paragraphs.
 function structuralPadBlock(block) {
   if (!block || block.empty) return false;
-  if (block.type === "table" || block.type === "diagram") return true;
+  if (block.type === "table" || drawnFence(block)) return true;
   if (block.type !== "line") return false;
   return block.fence === true || classHas(block, "md-hr") || imageOnlyLine(block);
 }
@@ -5077,7 +5260,7 @@ function markRun(blocks, member, runClass) {
 function soloGapBlock(block) {
   if (!block || classHas(block, "md-paragraph-gap")) return false;
   if (classHas(block, "md-block-list") || classHas(block, "md-block-quote")) return false;
-  if (block.type === "table" || block.type === "diagram") return true;
+  if (block.type === "table" || drawnFence(block)) return true;
   if (block.type !== "line") return false;
   if (block.fence || headingName(block) || classHas(block, "md-hr") || classHas(block, "md-block-image")) return true;
   return false;
@@ -5094,7 +5277,7 @@ function trailName(block) {
   if (heading) return "md-trail-half";
   if (classHas(block, "md-run-end") && (classHas(block, "md-block-list") || classHas(block, "md-block-quote"))) return "md-trail-p";
   if (classHas(block, "md-block-fence") || classHas(block, "md-block-rule") || classHas(block, "md-block-image")) return "md-trail-p";
-  if (block.type === "table" || block.type === "diagram") return "md-trail-p";
+  if (block.type === "table" || drawnFence(block)) return "md-trail-p";
   return "";
 }
 
@@ -5104,6 +5287,7 @@ function markBlockGaps(blocks) {
     if (block.fence) addClassName(block, "md-block-fence");
     if (block.type === "table") addClassName(block, "md-block-table");
     if (block.type === "diagram") addClassName(block, "md-block-diagram");
+    if (block.type === "svg") addClassName(block, "md-block-svg");
     if (block.type === "line" && classHas(block, "md-hr")) addClassName(block, "md-block-rule");
     if (block.type === "line" && imageOnlyLine(block) && !classHas(block, "md-quote")) addClassName(block, "md-block-image");
   }
@@ -5265,7 +5449,7 @@ export function plan(doc, cursor, revealTail) {
     const slot = slots[index];
     if (slot.kind === "atom") {
       const atom = slot.atom;
-      if ((atom.type === "table" || atom.type === "diagram") && cursor >= atom.start && cursor <= atom.end) {
+      if ((atom.type === "table" || drawnFence(atom)) && cursor >= atom.start && cursor <= atom.end) {
         expandAtom(blocks, doc, atom, cursor, spans);
       } else {
         if (typeof atom.indent === "number") tagInItem(blocks, atom, atom.indent);
@@ -5367,7 +5551,7 @@ export function plan(doc, cursor, revealTail) {
   const lines = blocks.filter((block) => block.type === "line");
   const atoms = [];
   for (const block of blocks) {
-    if (block.type === "table" || block.type === "diagram") atoms.push(block);
+    if (block.type === "table" || drawnFence(block)) atoms.push(block);
     else if (block.type === "line" && !block.raw) {
       for (const part of block.parts || []) {
         if (part.type === "image") atoms.push(part);
@@ -5433,7 +5617,7 @@ function skippedFence(doc, from, landed, forward) {
 // A closed table is not editable, so the caret can land past it. Line granularity
 // still steps over a diagram. Backward entry lands on end, which opens the atom.
 function opensInward(atom, granularity) {
-  return atom.type === "table" || (atom.type === "diagram" && granularity === "character");
+  return atom.type === "table" || (drawnFence(atom) && granularity === "character");
 }
 
 function inwardOffset(atom, forward) {
@@ -5528,7 +5712,7 @@ function lineClearedAtom(doc, cursor, landed, forward) {
   const greater = Math.max(cursor, landed);
   let nearest = null;
   for (const atom of plan(text, cursor).atoms) {
-    if (atom.type !== "diagram" && atom.type !== "image") continue;
+    if (!drawnFence(atom) && atom.type !== "image") continue;
     if (atom.start < lesser || atom.end > greater) continue;
     if (!nearest || (forward ? atom.start < nearest.start : atom.end > nearest.end)) nearest = atom;
   }
