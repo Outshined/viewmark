@@ -29,24 +29,26 @@ test("an svg fence draws an img outside the caret and source inside", { timeout:
   await page.login();
   await page.open(picture);
   const drawn = await page.eval(`(() => {
-    const editor = document.querySelector("#editor");
-    const img = editor && editor.querySelector("img");
-    if (!img) return null;
+    const host = document.querySelector("#editor .md-svg");
+    const img = host && host.querySelector("img");
+    if (!host || !img) return null;
     return {
+      img: host.querySelectorAll("img").length,
       naturalWidth: img.naturalWidth,
       naturalHeight: img.naturalHeight,
-      svg: editor.querySelectorAll("svg").length,
-      script: editor.querySelectorAll("script").length,
+      svg: host.querySelectorAll("svg").length,
+      script: host.querySelectorAll("script").length,
     };
   })()`);
   assert.ok(drawn, "the fence did not draw an img");
+  assert.equal(drawn.img, 1);
   assert.ok(drawn.naturalWidth > 0, `natural width ${drawn.naturalWidth}`);
   assert.equal(drawn.naturalWidth, 40);
   assert.equal(drawn.naturalHeight, 20);
   assert.equal(drawn.svg, 0);
   assert.equal(drawn.script, 0);
   const box = await page.eval(`(() => {
-    const img = document.querySelector("#editor img");
+    const img = document.querySelector("#editor .md-svg img");
     const rect = img.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   })()`);
@@ -54,9 +56,10 @@ test("an svg fence draws an img outside the caret and source inside", { timeout:
   await page.quiet();
   const opened = await page.eval(`(() => {
     const editor = document.querySelector("#editor");
+    const host = editor.querySelector(".md-svg");
     return {
-      img: editor.querySelectorAll("img").length,
-      svg: editor.querySelectorAll("svg").length,
+      img: host ? host.querySelectorAll("img").length : 0,
+      svg: host ? host.querySelectorAll("svg").length : 0,
       text: editor.textContent,
     };
   })()`);
