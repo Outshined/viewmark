@@ -3209,14 +3209,6 @@ function cssPx(value) {
   return Number.isFinite(n) ? n : 0;
 }
 
-// The corner pin is a 1.75rem icon button. rem follows the root font.
-function iconButtonPx() {
-  const root = typeof document !== "undefined" ? document.documentElement : null;
-  const style = readComputedStyle(root);
-  const font = style ? cssPx(style.fontSize) : 0;
-  return 1.75 * (font > 0 ? font : 16);
-}
-
 function fileTreeOf(block) {
   if (!block) return null;
   const direct = findClassChild(block, "file-tree");
@@ -3702,8 +3694,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let imageViewerKey = null;
   // Client point of the last move, so a repaint can put the corner back without another move.
   let pointerAt = null;
-  // Set while the pointer is on the corner or the plus. Those sit outside the picture, so a
-  // repaint cannot find them from the picture box. The start offset finds the host after a repaint.
+  // Set while the pointer is on the corner or the zoom. The zoom ends 0.15rem past the
+  // picture, so a repaint cannot find that point from the picture box. The start offset
+  // finds the host after a repaint.
   let cornerHoldStart = null;
   let cornerHoldKind = "";
   // The first press of a multi-click. Later presses reuse it after a render
@@ -7083,7 +7076,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       button.setAttribute("title", "Show full size");
       button.setAttribute("tabindex", "-1");
     }
-    const icon = iconSvg("plus");
+    const icon = iconSvg("search");
     if (icon) button.appendChild(icon);
     armGlyphPress(button);
     button.addEventListener("mousedown", (event) => {
@@ -7217,9 +7210,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   // The frame is the diagram block, or the source pre, when that is wider than the drawing.
-  // The corner sits on the drawn picture, not on the frame's right edge.
-  // A pin flush with that edge covers the center of a small drawing and takes the press.
-  // That pin sits just outside the picture. The plus stays one gap to its right.
+  // The pin's right edge is one button width in from the picture. The zoom overlaps the
+  // picture and ends 0.15rem past that edge, which keeps the gap between the buttons.
   function placeCornerOnPicture(frame) {
     const button = findClassChild(frame, "md-pin-corner");
     const enlarge = findClassChild(frame, "md-image-enlarge");
@@ -7231,16 +7223,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!pic || !box || !(pic.width > 0) || !(pic.height > 0) || !(box.width > 0) || !(box.height > 0)) return;
     const top = `${pic.top - box.top}px`;
     const inset = box.right - pic.right;
-    const size = iconButtonPx();
-    const centerX = pic.left + pic.width / 2;
-    const centerY = pic.top + pic.height / 2;
-    const coversCenter = !!button
-      && centerX >= pic.right - size && centerX <= pic.right
-      && centerY >= pic.top && centerY <= pic.top + size;
-    const pinRight = coversCenter ? `calc(${inset}px - 1.75rem)` : `${inset}px`;
-    const plusRight = coversCenter
-      ? `calc(${inset}px - 1.75rem - 1.75rem - 0.15rem)`
-      : `calc(${inset}px - 1.75rem - 0.15rem)`;
+    const pinRight = `calc(${inset}px + 1.75rem)`;
+    const zoomRight = `calc(${inset}px - 0.15rem)`;
     if (button) {
       setStyle(button, "top", top);
       setStyle(button, "right", pinRight);
@@ -7248,7 +7232,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (enlarge) {
       setStyle(enlarge, "top", top);
-      setStyle(enlarge, "right", plusRight);
+      setStyle(enlarge, "right", zoomRight);
       setStyle(enlarge, "left", "auto");
     }
   }

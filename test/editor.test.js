@@ -8405,7 +8405,7 @@ test("a pin move puts the corner on the picture when the frame is wider than the
     assert.equal(corner.draggable, true);
     assert.equal(corner.parentElement.classList.contains("md-pin-frame"), true);
     assert.equal(corner.styleProps.top, "10px");
-    assert.equal(corner.styleProps.right, "500px");
+    assert.equal(corner.styleProps.right, "calc(500px + 1.75rem)");
     assert.equal(corner.styleProps.left, "auto");
     assert.equal(corner.styleProps.transform, undefined);
     assert.equal(corner.classList.contains("md-comment-pin-dragging"), false);
@@ -8474,9 +8474,9 @@ test("wecmuvmn: a plus beside an image comment anchor opens the picture to the w
     assert.equal(enlarges()[0].parentElement, frame);
     assert.equal(pins()[0].parentElement, frame);
     assert.equal(pins()[0].styleProps.top, "10px");
-    assert.equal(pins()[0].styleProps.right, "500px");
+    assert.equal(pins()[0].styleProps.right, "calc(500px + 1.75rem)");
     assert.equal(enlarges()[0].styleProps.top, "10px");
-    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 1.75rem - 0.15rem)");
+    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 0.15rem)");
     assert.equal(enlarges()[0].styleProps.left, "auto");
     assert.equal(enlarges()[0].getAttribute("aria-label"), "Show full size");
     assert.equal(enlarges()[0].getAttribute("title"), "Show full size");
@@ -8492,17 +8492,16 @@ test("wecmuvmn: a plus beside an image comment anchor opens the picture to the w
       width: "2",
       cap: "round",
       join: "round",
-      d: ["M12 5v14M5 12h14"],
+      d: ["M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16", "M21 21l-4.3-4.3"],
     });
 
-    const outside = 320;
-    move(enlarges()[0], outside, 80);
+    move(enlarges()[0], 288, 64);
     assert.equal(enlarges().length, 1);
-    assert.equal(outside > picture.right, true);
+    assert.equal(pins().length, 1);
     img.listeners.load();
     assert.equal(enlarges().length, 1);
     assert.equal(pins().length, 1);
-    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 1.75rem - 0.15rem)");
+    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 0.15rem)");
 
     const diagram = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
     const diagramFrame = diagram.childNodes.find((node) => node.classList && node.classList.contains("md-pin-frame"));
@@ -9264,7 +9263,7 @@ test("a diagram pin move puts the corner on the svg after the frame is fitted", 
     assert.equal(corner.parentElement.classList.contains("md-pin-frame"), true);
     assert.equal(corner.parentElement.styleProps.width, "240px");
     assert.equal(corner.styleProps.top, "10px");
-    assert.equal(corner.styleProps.right, "20px");
+    assert.equal(corner.styleProps.right, "calc(20px + 1.75rem)");
     assert.equal(corner.styleProps.left, "auto");
     assert.equal(corner.styleProps.transform, undefined);
     const moved = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-pin"))[0];
@@ -9355,9 +9354,9 @@ test("a move over a diagram or an svg fence shows the pin and opens that drawing
     assert.equal(pins()[0].parentElement, frame);
     assert.equal(enlarges()[0].parentElement, frame);
     assert.equal(pins()[0].styleProps.top, "10px");
-    assert.equal(pins()[0].styleProps.right, "500px");
+    assert.equal(pins()[0].styleProps.right, "calc(500px + 1.75rem)");
     assert.equal(enlarges()[0].styleProps.top, "10px");
-    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 1.75rem - 0.15rem)");
+    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 0.15rem)");
     assert.equal(enlarges()[0].styleProps.left, "auto");
     const text = diagramView.getState().doc;
     const cursor = diagramView.getState().cursor;
@@ -9418,24 +9417,23 @@ test("a move over a diagram or an svg fence shows the pin and opens that drawing
     assert.equal(pins()[0].parentElement, fenceFrame);
     assert.equal(enlarges()[0].parentElement, fenceFrame);
     assert.equal(pins()[0].styleProps.top, "10px");
-    assert.equal(pins()[0].styleProps.right, "500px");
+    assert.equal(pins()[0].styleProps.right, "calc(500px + 1.75rem)");
     assert.equal(enlarges()[0].styleProps.top, "10px");
-    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 1.75rem - 0.15rem)");
+    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 0.15rem)");
     assert.equal(enlarges()[0].styleProps.left, "auto");
     const small = { left: 100, top: 50, right: 140, bottom: 70, width: 40, height: 20 };
     img.getBoundingClientRect = () => small;
     move(img, 120, 60);
-    assert.equal(pins()[0].styleProps.right, "calc(660px - 1.75rem)");
-    assert.equal(enlarges()[0].styleProps.right, "calc(660px - 1.75rem - 1.75rem - 0.15rem)");
+    assert.equal(pins()[0].styleProps.right, "calc(660px + 1.75rem)");
+    assert.equal(enlarges()[0].styleProps.right, "calc(660px - 0.15rem)");
     assert.equal(pins()[0].styleProps.left, "auto");
     assert.equal(enlarges()[0].styleProps.left, "auto");
     assert.equal(pins()[0].styleProps.top, "10px");
     box(fenceFrame, img);
     move(img, 150, 80);
-    assert.equal(pins()[0].styleProps.right, "500px");
-    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 1.75rem - 0.15rem)");
-    move(enlarges()[0], 320, 80);
-    assert.equal(320 > picture.right, true);
+    assert.equal(pins()[0].styleProps.right, "calc(500px + 1.75rem)");
+    assert.equal(enlarges()[0].styleProps.right, "calc(500px - 0.15rem)");
+    move(enlarges()[0], 288, 64);
     assert.equal(pins().length, 1);
     assert.equal(enlarges().length, 1);
     const before = fenceView.getState().doc;

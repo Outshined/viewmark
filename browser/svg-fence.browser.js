@@ -6,7 +6,7 @@ import { launchBrowser, onPath, Page, startHub } from "./harness.js";
 // shows the fence source. A javascript fence that contains an svg tag stays code.
 // The picture is an img, so a script in the file has no element to run in.
 
-const SVG = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"20\"><rect width=\"40\" height=\"20\"/></svg>";
+const SVG = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"80\"><rect width=\"200\" height=\"80\"/></svg>";
 const DOC = `Above\n\n\`\`\`svg\n${SVG}\n\`\`\`\n`;
 const JS = "Above\n\n```js\n<svg width=\"40\" height=\"20\"></svg>\n```\n";
 
@@ -43,8 +43,8 @@ test("an svg fence draws an img outside the caret and source inside", { timeout:
   assert.ok(drawn, "the fence did not draw an img");
   assert.equal(drawn.img, 1);
   assert.ok(drawn.naturalWidth > 0, `natural width ${drawn.naturalWidth}`);
-  assert.equal(drawn.naturalWidth, 40);
-  assert.equal(drawn.naturalHeight, 20);
+  assert.equal(drawn.naturalWidth, 200);
+  assert.equal(drawn.naturalHeight, 80);
   assert.equal(drawn.svg, 0);
   assert.equal(drawn.script, 0);
   const box = await page.eval(`(() => {
