@@ -46,7 +46,7 @@ import {
   searchMatches,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
-import { playVimChange, vimKey, vimMatchStarts, vimNoteArrow, vimSubmit, visualBlockOffset, VIM_SEARCH_LIMIT } from "./vim.js";
+import { playVimChange, vimKey, vimMatchStarts, vimNoteArrow, vimSubmit, visualBlockOffset, visualKeepGlyph, VIM_SEARCH_LIMIT } from "./vim.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES, isTicketToken, parseTicketToken } from "./ticket.js";
 import { MAX_PAYLOAD } from "./ws.js";
 
@@ -11651,6 +11651,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (command === "h" || command === "l") {
       const forward = command === "l";
       for (let n = 0; n < repeat; n += 1) {
+        const oldAnchor = state.anchor;
+        const oldCursor = state.cursor;
         if (sourceMode) moveRawCaret(forward ? "ArrowRight" : "ArrowLeft", extend, false);
         else {
           // Leaving the block puts the next letter on the line under it.
@@ -11670,6 +11672,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
               moveVimCaret(extend ? state.anchor : at, at);
             }
           }
+        }
+        if (!forward && vimMode === "visual") {
+          const kept = visualKeepGlyph(state.doc, oldAnchor, oldCursor, state.cursor, true);
+          if (kept.anchor !== state.anchor || kept.cursor !== state.cursor) moveVimCaret(kept.anchor, kept.cursor);
         }
       }
       return;

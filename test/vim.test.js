@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { playVimChange, vimKey, vimMatchStarts, vimSubmit, visualBlockOffset, VIM_SEARCH_LIMIT } from "../src/vim.js";
+import { playVimChange, vimKey, vimMatchStarts, vimSubmit, visualBlockOffset, visualKeepGlyph, VIM_SEARCH_LIMIT } from "../src/vim.js";
 import { backspace, caretAfterEdit, codeSpanAt, commentStorageReason, createState, deleteForward, insert, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
 
 const CARET = "‸";
@@ -90,6 +90,16 @@ function run(start, keys, opts = {}) {
       doc = doc.slice(0, span.from) + doc.slice(span.to);
       cursor = span.from;
       anchor = cursor;
+      continue;
+    }
+    if (effect && effect.type === "view-motion" && effect.command === "h" && vim.mode === "visual") {
+      const repeat = Number.isInteger(effect.repeat) && effect.repeat > 0 ? effect.repeat : 1;
+      for (let n = 0; n < repeat; n += 1) {
+        const landed = cursor <= 0 ? 0 : cursor - 1;
+        const kept = visualKeepGlyph(doc, anchor, cursor, landed, true);
+        anchor = kept.anchor;
+        cursor = kept.cursor;
+      }
       continue;
     }
     if (opts.type === true && effect && effect.type === "view-motion" && (effect.command === "h" || effect.command === "l")) {
@@ -4207,4 +4217,145 @@ test("other changes repeat, and vim keys off does not consume dot (ticket py7xfb
   assert.equal(off.steps[0].effect, null);
   assert.equal(off.doc, "bc");
   assert.equal(changeKeys(off), "x");
+});
+
+function spanOf(out) {
+  return out.doc.slice(Math.min(out.anchor, out.cursor), Math.max(out.anchor, out.cursor));
+}
+
+function withRegister(mode, text, linewise = false) {
+  return {
+    mode,
+    input: { prefixRepeat: "", operator: null, motionRepeat: "", motion: null, keyBuffer: "" },
+    register: { text, linewise },
+    search: null,
+    find: null,
+    column: null,
+    once: false,
+  };
+}
+
+test("v then b keeps the glyph the selection started on (ticket 8f2pxapr)", () => {
+  const mid = run("hel‸lo", ["v", "b"]);
+  assert.equal(mid.vim.mode, "visual");
+  assert.equal(spanOf(mid), "hell");
+  const last = run("hell‸o", ["v", "b"]);
+  assert.equal(spanOf(last), "hello");
+  const flipped = run("hell‸o", ["v", "b", "~"]);
+  assert.equal(flipped.doc, "HELLO");
+  assert.equal(flipped.vim.mode, "normal");
+  const up = run("ha\nbe‸t\n", ["v", "k"], { raw: true });
+  assert.equal(up.vim.mode, "visual");
+  assert.equal(spanOf(up).endsWith("t"), true);
+  assert.equal(spanOf(up).includes("bet"), true);
+  const forward = run("‸one two three\n", ["v", "e"]);
+  assert.equal(spanOf(forward), "one");
+  const down = run("al‸pha\n\nbeta\n", ["v", "j"]);
+  assert.equal(down.anchor, 2);
+  assert.equal(down.show, "al«pha\n\nbeta‸\n");
+});
+
+test("h after v includes the starting glyph and the letter on its left (ticket 8f2pxapr)", () => {
+  const out = run("ab‸c", ["v", "h"]);
+  assert.equal(out.vim.mode, "visual");
+  assert.equal(spanOf(out), "bc");
+  const shrunk = run("«abcd‸", ["h"], { mode: "visual" });
+  assert.equal(shrunk.anchor, 0);
+  assert.equal(shrunk.cursor, 3);
+  assert.equal(spanOf(shrunk), "abc");
+  const held = run("«a‸bc", ["h"], { mode: "visual" });
+  assert.equal(spanOf(held), "a");
+});
+
+test("visual ~ r D C and J use the highlight (ticket gcpbjp5f)", () => {
+  const marks = ["«abCd Ef‸", "«abCd\nEfGh‸"];
+  for (const mode of ["visual", "visual-line"]) {
+    for (const start of marks) {
+      const toggled = run(start, ["~"], { mode });
+      const swung = run(start, ["g", "~"], { mode });
+      assert.equal(toggled.doc, swung.doc, `${mode} ~ ${start}`);
+      assert.equal(toggled.show, swung.show, `${mode} ~ ${start}`);
+      assert.equal(toggled.vim.mode, "normal", `${mode} ~ ${start}`);
+      const replaced = run(start, ["r", "Z"], { mode });
+      assert.equal(replaced.steps[0].match, "partial", `${mode} r ${start}`);
+      assert.equal(replaced.vim.mode, "normal", `${mode} r ${start}`);
+      assert.equal(replaced.doc.includes("\n"), start.includes("\n"), `${mode} r newline ${start}`);
+      assert.equal(/[^Z\n]/.test(replaced.doc), false, `${mode} r ${start} ${replaced.doc}`);
+      const broken = run(start, ["r", "Enter"], { mode });
+      assert.equal(broken.doc, "\n", `${mode} r Enter ${start}`);
+      assert.equal(broken.vim.mode, "normal");
+      const deleted = run(start, ["D"], { mode });
+      const dee = run(start, ["d"], { mode });
+      assert.equal(deleted.doc, dee.doc, `${mode} D ${start}`);
+      assert.equal(deleted.vim.mode, dee.vim.mode, `${mode} D ${start}`);
+      assert.equal(deleted.vim.register.text, dee.vim.register.text, `${mode} D ${start}`);
+      const changed = run(start, ["C"], { mode });
+      const cee = run(start, ["c"], { mode });
+      assert.equal(changed.doc, cee.doc, `${mode} C ${start}`);
+      assert.equal(changed.vim.mode, cee.vim.mode, `${mode} C ${start}`);
+      assert.equal(changed.vim.register.text, cee.vim.register.text, `${mode} C ${start}`);
+    }
+  }
+  assert.equal(run("«abCd Ef‸", ["~"], { mode: "visual" }).doc, "ABcD eF");
+  assert.equal(run("«abCd\nEfGh‸", ["~"], { mode: "visual" }).doc, "ABcD\neFgH");
+  assert.equal(run("«abCd Ef‸", ["r", "Z"], { mode: "visual" }).doc, "ZZZZZZZ");
+  assert.equal(run("«abCd\nEfGh‸", ["r", "Z"], { mode: "visual" }).doc, "ZZZZ\nZZZZ");
+  const joined = run("«abCd\nEfGh‸", ["J"], { mode: "visual" });
+  assert.equal(joined.doc, "abCd EfGh");
+  assert.equal(joined.vim.mode, "normal");
+  const lineJoined = run("«abCd\nEfGh‸", ["J"], { mode: "visual-line" });
+  assert.equal(lineJoined.doc, "abCd EfGh");
+  assert.equal(lineJoined.vim.mode, "normal");
+  const tight = run("«abCd\nEfGh‸", ["g", "J"], { mode: "visual" });
+  assert.equal(tight.doc, "abCdEfGh");
+  assert.equal(run("«abCd\nEfGh‸", ["g", "J"], { mode: "visual-line" }).doc, "abCdEfGh");
+  const alone = run("«abCd Ef‸", ["J"], { mode: "visual" });
+  assert.equal(alone.doc, "abCd Ef");
+  assert.equal(alone.vim.mode, "visual");
+  assert.equal(alone.show, "«abCd Ef‸");
+  assert.equal(alone.steps[0].effect, null);
+  const lineAlone = run("«abCd Ef‸", ["J"], { mode: "visual-line" });
+  assert.equal(lineAlone.doc, "abCd Ef");
+  assert.equal(lineAlone.vim.mode, "visual-line");
+  assert.equal(lineAlone.show, "«abCd Ef‸");
+  const withNext = run("«abCd Ef‸\nZz\n", ["J"], { mode: "visual" });
+  assert.equal(withNext.doc, "abCd Ef Zz\n");
+  assert.equal(withNext.vim.mode, "normal");
+  assert.equal(run("«abCd Ef‸\nZz\n", ["g", "J"], { mode: "visual" }).doc, "abCd EfZz\n");
+  const lineNext = run("«abCd Ef‸\nZz\n", ["J"], { mode: "visual-line" });
+  assert.equal(lineNext.doc, "abCd Ef Zz\n");
+  assert.equal(lineNext.vim.mode, "normal");
+  const plain = run("al‸pha\nbeta\n", ["J"]);
+  assert.equal(plain.doc, "alpha beta\n");
+  assert.equal(plain.vim.mode, "normal");
+});
+
+test("visual p and P replace the highlight (ticket gcpbjp5f)", () => {
+  for (const mode of ["visual", "visual-line"]) {
+    for (const start of ["«abCd Ef‸", "«abCd\nEfGh‸"]) {
+      for (const key of ["p", "P"]) {
+        const out = run(start, [key], { vim: withRegister(mode, "QQ") });
+        assert.equal(out.doc, "QQ", `${mode} ${key} ${start}`);
+        assert.equal(out.vim.mode, "normal", `${mode} ${key} ${start}`);
+        assert.equal(out.vim.register.text, "QQ");
+      }
+    }
+  }
+  const empty = run("«abCd Ef‸", ["p"], { mode: "visual" });
+  assert.equal(empty.doc, "abCd Ef");
+  assert.equal(empty.vim.mode, "visual");
+  assert.equal(empty.show, "«abCd Ef‸");
+  assert.equal(empty.steps[0].effect, null);
+  const lineEmpty = run("«abCd\nEfGh‸", ["P"], { mode: "visual-line" });
+  assert.equal(lineEmpty.doc, "abCd\nEfGh");
+  assert.equal(lineEmpty.vim.mode, "visual-line");
+  const normal = run("al‸pha\n", ["p"], { vim: withRegister("normal", "Q") });
+  assert.equal(normal.doc, "alpQha\n");
+  assert.equal(normal.vim.mode, "normal");
+  for (const key of ["S", "R"]) {
+    const visual = run("«abCd Ef‸", [key], { mode: "visual" });
+    assert.equal(visual.steps[0].match, "none", key);
+    assert.equal(visual.doc, "abCd Ef", key);
+    assert.equal(visual.vim.mode, "visual", key);
+  }
 });

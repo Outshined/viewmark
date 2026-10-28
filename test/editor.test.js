@@ -24091,7 +24091,8 @@ test("vim gestures enter visual and Ctrl-A deletes with d", () => {
       assert.equal(kept.getState().doc, "alpha\n");
       assert.equal(yanked.edits.length, 0);
       vimType(mounted, "p");
-      assert.equal(kept.getState().doc, "alpha\n\nalpha\n");
+      assert.equal(kept.getState().doc, "alpha\n");
+      assert.equal(status(), "N");
       kept.destroy();
 
       const pointerDoc = "alpha beta\n\ngamma\n";

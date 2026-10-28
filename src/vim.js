@@ -1679,6 +1679,7 @@ function finishMotion(vim, doc, anchor, cursor, raw, motion, operator) {
     // $ already names the exclusive end. A forward word keeps that end even
     // while the landing is still the low end.
     const glyph = at < doc.length && doc[at] !== "\n" && doc[at] !== "\r";
+    let nextAnchor = anchor;
     if (motion.cover && Number.isInteger(motion.end)) {
       landed = motion.end;
     } else if (glyph && motion.word && at > cursor) {
@@ -1688,8 +1689,12 @@ function finishMotion(vim, doc, anchor, cursor, raw, motion, operator) {
       // j and k keep this column. The exclusive end is one unit later, and that
       // unit is not the column the motion stopped on.
       if (next.column == null) next.column = columnOf(doc, at, raw);
+    } else {
+      const kept = visualKeepGlyph(doc, anchor, cursor, at, false);
+      nextAnchor = kept.anchor;
+      landed = kept.cursor;
     }
-    return pack("full", true, leavingOnce(next, vim), { type: "caret", anchor, cursor: landed });
+    return pack("full", true, leavingOnce(next, vim), { type: "caret", anchor: nextAnchor, cursor: landed });
   }
   return pack("full", true, leavingOnce(next, vim), { type: "caret", anchor: at, cursor: at });
 }
@@ -1885,6 +1890,16 @@ function stepBack(doc, index) {
   return index - 1;
 }
 
+// Character visual keeps the glyph it started on. The stored cursor is the
+// exclusive end, so a backward step that lands on the anchor has not left
+// that glyph. A landing still after the anchor only shrinks.
+export function visualKeepGlyph(doc, anchor, cursor, at, exclusiveStep) {
+  const text = typeof doc === "string" ? doc : "";
+  if (!(cursor > anchor) || at > anchor) return { anchor, cursor: at };
+  const landed = exclusiveStep && at === anchor ? stepBack(text, anchor) : at;
+  return { anchor: Math.min(text.length, anchor + unitLen(text, anchor)), cursor: landed };
+}
+
 // Character visual stores the high end one past the last glyph. The block
 // covers that glyph, so the character under the caret is inside the selection.
 export function visualBlockOffset(doc, anchor, cursor, mode) {
@@ -2001,10 +2016,28 @@ function openLine(vim, doc, cursor, raw, below) {
   return openSplice(vim, at, lead + nl + lines, at + lead.length + nl.length + (count - 1) * nl.length);
 }
 
-function putRegister(vim, doc, cursor, raw, after, adjust) {
+function putRegister(vim, doc, anchor, cursor, raw, after, adjust) {
   const next = clearInput(vim);
   const reg = vim.register || { text: "", linewise: false };
   if (!reg.text) return pack("full", true, next, null);
+  if (!adjust && (vim.mode === "visual" || vim.mode === "visual-line")) {
+    const span = selectionSpan(doc, anchor, cursor, raw, vim.mode === "visual-line");
+    let done = clearInput(vim);
+    done.mode = "normal";
+    done.once = false;
+    done = leavingOnce(done, vim);
+    if (span.from === span.to) return pack("full", true, done, null);
+    const text = reg.text;
+    const caret = reg.linewise ? putCaret(span.from, text) : span.from + stepBack(text, text.length);
+    return pack("full", true, done, {
+      type: "splice",
+      from: span.from,
+      to: span.to,
+      text,
+      caret,
+      yank: null,
+    });
+  }
   if (reg.linewise || adjust) {
     const at = putAt(doc, cursor, raw, after);
     const lead = putLead(doc, at);
@@ -2142,10 +2175,56 @@ function buildJoin(doc, lines, glue) {
   return { from, to, text, caret: from + caretAt };
 }
 
-function joinLines(vim, doc, cursor, raw, glue) {
-  const count = Math.max(repeatOf(vim), 2);
-  const units = joinUnits(doc, cursor, raw);
-  const lines = units.length < 2 ? [] : units.slice(0, count);
+function everyJoinUnit(doc, raw, at) {
+  if (raw) return dropPhantom(doc, rawLines(doc));
+  const blocks = [];
+  for (const block of plan(doc, at).blocks) {
+    if (block.classes && block.classes.includes("md-paragraph-gap")) continue;
+    if (typeof block.start !== "number" || typeof block.end !== "number") continue;
+    blocks.push(block);
+  }
+  const units = [];
+  for (const block of blocks) {
+    let head = splitsForJoin(block) ? sourceLinesInside(doc, block) : [block];
+    if (head.length === 0) head = [block];
+    for (const line of head) units.push(line);
+  }
+  return units;
+}
+
+// Highlighted lines join with each other. One highlighted line still joins
+// with the following line. A missing second line writes nothing.
+function visualJoinLines(doc, anchor, cursor, raw, linewise) {
+  const span = selectionSpan(doc, anchor, cursor, raw, linewise);
+  const all = everyJoinUnit(doc, raw, span.from);
+  const hits = [];
+  for (let i = 0; i < all.length; i += 1) {
+    const line = all[i];
+    if (line.start >= span.to || line.end <= span.from) continue;
+    hits.push(i);
+  }
+  if (hits.length === 0) {
+    for (let i = 0; i < all.length; i += 1) {
+      const line = all[i];
+      if (span.from >= line.start && span.from <= line.end) {
+        hits.push(i);
+        break;
+      }
+    }
+  }
+  if (hits.length === 1 && hits[0] + 1 < all.length) hits.push(hits[0] + 1);
+  return hits.map((index) => all[index]);
+}
+
+function joinLines(vim, doc, anchor, cursor, raw, glue) {
+  const visual = vim.mode === "visual" || vim.mode === "visual-line";
+  let lines;
+  if (visual) lines = visualJoinLines(doc, anchor, cursor, raw, vim.mode === "visual-line");
+  else {
+    const count = Math.max(repeatOf(vim), 2);
+    const units = joinUnits(doc, cursor, raw);
+    lines = units.length < 2 ? [] : units.slice(0, count);
+  }
   const built = lines.length < 2 ? null : buildJoin(doc, lines, glue);
   if (!built) return pack("full", true, leavingOnce(clearInput(vim), vim), null);
   let next = clearInput(vim);
@@ -2441,7 +2520,7 @@ function submitEx(vim, doc, cursor, raw, line) {
     return repeatedLine(clearInput(vim), doc, cursor, raw, "d");
   }
   if (matchesEx(name, "join", "j") && rest === "" && range === "") {
-    return joinLines(clearInput(vim), doc, cursor, raw, true);
+    return joinLines(clearInput(vim), doc, cursor, cursor, raw, true);
   }
   if (matchesEx(name, "yank", "y") && rest === "" && range === "") {
     return repeatedLine(clearInput(vim), doc, cursor, raw, "y");
@@ -2523,6 +2602,9 @@ function cutPlainGlyph(vim, prior, doc, cursor) {
 
 function runAction(vim, doc, anchor, cursor, raw, layout, id) {
   if (id === "D" || id === "C") {
+    if (vim.mode === "visual" || vim.mode === "visual-line") {
+      return operateVisual(vim, doc, anchor, cursor, raw, id === "C" ? "c" : "d");
+    }
     const motion = runMotion("$", {
       doc,
       cursor,
@@ -2647,7 +2729,7 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
     return pack("full", true, leavingOnce(next, vim), { type: "history", direction: "redo" });
   }
   if (id === "ctrl-w") return pack("full", true, next, null);
-  if (id === "p" || id === "P") return putRegister(vim, doc, cursor, raw, id === "p");
+  if (id === "p" || id === "P") return putRegister(vim, doc, anchor, cursor, raw, id === "p");
   if (id === ".") return repeatDot(vim);
   if (id === "i" || id === "a" || id === "I" || id === "A") {
     next.mode = "insert";
@@ -2683,13 +2765,12 @@ function runAction(vim, doc, anchor, cursor, raw, layout, id) {
     });
   }
   if (id === "o" || id === "O") return openLine(vim, doc, cursor, raw, id === "o");
-  if (id === "J" || id === "gJ") return joinLines(vim, doc, cursor, raw, id === "J");
+  if (id === "J" || id === "gJ") return joinLines(vim, doc, anchor, cursor, raw, id === "J");
   if (id === "r") {
-    if (vim.mode === "visual" || vim.mode === "visual-line") return pack("none", true, clearInput(vim), null);
     // The count stays in prefixRepeat until the replacement key arrives.
     return pack("partial", true, { ...vim, input: { ...vim.input, keyBuffer: "r" } }, null);
   }
-  if (id === "~") return applyToggle(vim, doc, cursor, raw);
+  if (id === "~") return applyToggle(vim, doc, anchor, cursor, raw);
   if (id === "Y") {
     if (vim.mode === "visual" || vim.mode === "visual-line") return operateVisual(vim, doc, anchor, cursor, raw, "y");
     return repeatedLine(vim, doc, cursor, raw, "y");
@@ -2709,11 +2790,57 @@ function replacementChar(key) {
   return key.key;
 }
 
-function finishReplace(vim, doc, cursor, raw, key) {
+function replaceUnits(doc, from, to, ch) {
+  let text = "";
+  for (let i = from; i < to; ) {
+    const len = unitLen(doc, i);
+    if (doc[i] === "\n" || doc[i] === "\r") text += doc[i];
+    else text += ch;
+    i += len;
+  }
+  return text;
+}
+
+function replacedCaret(from, text) {
+  let at = -1;
+  for (let i = 0; i < text.length; ) {
+    const len = unitLen(text, i);
+    if (text[i] !== "\n" && text[i] !== "\r") at = i;
+    i += len;
+  }
+  return at < 0 ? from : from + at;
+}
+
+function replaceSelection(vim, doc, anchor, cursor, raw, ch) {
+  const span = selectionSpan(doc, anchor, cursor, raw, vim.mode === "visual-line");
+  let done = clearInput(vim);
+  done.mode = "normal";
+  done.once = false;
+  done.column = null;
+  done = leavingOnce(done, vim);
+  if (span.from === span.to) return pack("full", true, done, null);
+  const enter = ch === "\n";
+  const text = enter ? fileBreak(doc) : replaceUnits(doc, span.from, span.to, ch);
+  const caret = enter ? span.from + text.length : replacedCaret(span.from, text);
+  if (text === doc.slice(span.from, span.to)) {
+    return pack("full", true, done, { type: "caret", anchor: caret, cursor: caret });
+  }
+  return pack("full", true, done, {
+    type: "splice",
+    from: span.from,
+    to: span.to,
+    text,
+    caret,
+    yank: null,
+  });
+}
+
+function finishReplace(vim, doc, anchor, cursor, raw, key) {
   const count = repeatOf(vim);
   const ch = replacementChar(key);
   const done = leavingOnce(clearInput(vim), vim);
   if (ch == null) return pack("none", true, done, null);
+  if (vim.mode === "visual" || vim.mode === "visual-line") return replaceSelection(vim, doc, anchor, cursor, raw, ch);
   const span = ordinarySpan(doc, cursor, count, raw);
   if (!span) return pack("full", true, done, null);
   done.column = null;
@@ -2734,8 +2861,8 @@ function finishReplace(vim, doc, cursor, raw, key) {
   });
 }
 
-function applyToggle(vim, doc, cursor, raw) {
-  if (vim.mode === "visual" || vim.mode === "visual-line") return pack("none", true, clearInput(vim), null);
+function applyToggle(vim, doc, anchor, cursor, raw) {
+  if (vim.mode === "visual" || vim.mode === "visual-line") return operateVisual(vim, doc, anchor, cursor, raw, "g~");
   const count = repeatOf(vim);
   const span = ordinarySpan(doc, cursor, count, raw);
   const done = leavingOnce(clearInput(vim), vim);
@@ -2944,7 +3071,7 @@ function finishBracket(vim, doc, anchor, cursor, raw, key) {
   if (key.ctrl || key.meta || key.alt || key.key !== "p" || vim.input.operator) {
     return pack("none", true, clearInput(vim), null);
   }
-  return putRegister(vim, doc, cursor, raw, which === "]", true);
+  return putRegister(vim, doc, anchor, cursor, raw, which === "]", true);
 }
 
 // aw takes the spaces after the word. A word with none, as at the end of a line,
@@ -3225,7 +3352,7 @@ function vimKeyBody(input) {
   if (vim.input.keyBuffer === "f" || vim.input.keyBuffer === "F" || vim.input.keyBuffer === "t" || vim.input.keyBuffer === "T") {
     return finishFind(vim, doc, anchor, cursor, raw, layout, key);
   }
-  if (vim.input.keyBuffer === "r") return finishReplace(vim, doc, cursor, raw, key);
+  if (vim.input.keyBuffer === "r") return finishReplace(vim, doc, anchor, cursor, raw, key);
   if (vim.input.keyBuffer === '"') return finishQuote(vim, doc, anchor, cursor, key);
   if (vim.input.keyBuffer === "g") return finishG(vim, doc, anchor, cursor, raw, layout, key);
   if (vim.input.keyBuffer === "z") return finishZ(vim, doc, anchor, cursor, raw, layout, key);
