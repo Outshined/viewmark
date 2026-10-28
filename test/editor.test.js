@@ -27474,6 +27474,86 @@ test("4wch9t9w vim h and l on a mermaid closer stay on that line", () => {
   });
 });
 
+// Ticket kbjdm4ag. A closed fence's info string is source. h and a left arrow
+// from the body enter it, and the next delete removes those letters.
+test("kbjdm4ag a fence info string is ordinary text", async () => {
+  const doc = "```xml\nlet x\n```\n";
+  const body = doc.indexOf("let");
+  const info = doc.indexOf("m");
+  assert.equal(body, 7);
+  assert.equal(info, 4);
+  const key = (mounted, name) => mounted.listeners.keydown({
+    key: name,
+    shiftKey: false,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    preventDefault() {},
+  });
+  const backspace = (mounted) => mounted.listeners.beforeinput({
+    inputType: "deleteContentBackward",
+    data: null,
+    preventDefault() {},
+  });
+
+  await withVimFlag(true, (mounted) => {
+    const selection = installCharStep(mounted);
+    const press = (name) => vimType(mounted, name);
+    const open = (at) => {
+      selection.step = 1;
+      selection.rangeCount = 0;
+      return createEditor(mounted.root, doc, at);
+    };
+
+    const onInfo = open(info);
+    press("x");
+    assert.equal(onInfo.getState().doc, "```xl\nlet x\n```\n");
+    onInfo.destroy();
+
+    const typed = open(info);
+    press("i");
+    press("Q");
+    assert.equal(typed.getState().doc, "```xQml\nlet x\n```\n");
+    typed.destroy();
+
+    const fromBody = open(body);
+    press("h");
+    assert.ok(fromBody.getState().cursor < body, "h from the body stayed off the opener");
+    press("X");
+    assert.equal(fromBody.getState().doc, "```xm\nlet x\n```\n");
+    fromBody.destroy();
+
+    const inserting = open(body);
+    press("i");
+    press("ArrowLeft");
+    assert.ok(inserting.getState().cursor < body, "insert left stayed off the opener");
+    press("Backspace");
+    assert.equal(inserting.getState().doc, "```xm\nlet x\n```\n");
+    inserting.destroy();
+  });
+
+  await withVimFlag(false, (mounted) => {
+    const selection = installCharStep(mounted);
+    selection.step = 0;
+    selection.rangeCount = 0;
+    const stuck = createEditor(mounted.root, doc, body);
+    key(mounted, "ArrowLeft");
+    assert.ok(stuck.getState().cursor < body, "ArrowLeft stayed in the body");
+    backspace(mounted);
+    assert.equal(stuck.getState().doc, "```xm\nlet x\n```\n");
+    stuck.destroy();
+
+    selection.step = 1;
+    selection.rangeCount = 0;
+    const direct = createEditor(mounted.root, doc, info);
+    backspace(mounted);
+    assert.equal(direct.getState().doc, "```ml\nlet x\n```\n");
+    mounted.listeners.beforeinput({ inputType: "insertText", data: "Q", preventDefault() {} });
+    assert.equal(direct.getState().doc, "```Qml\nlet x\n```\n");
+    direct.destroy();
+  });
+});
+
 test("glyph buttons use one press scale and copy controls show a flyout", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");

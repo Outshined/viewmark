@@ -1847,6 +1847,20 @@ function markerCaretUnboxed(doc, offset) {
   return true;
 }
 
+// A list marker shares the lock and stays out of h and l. The opener and the
+// closer are their own source lines in that lock, so a step onto them is text.
+function onFenceMarker(doc, offset) {
+  if (!Number.isFinite(offset)) return false;
+  const blocks = plan(doc, offset).blocks;
+  let fence = null;
+  for (const block of blocks) {
+    if (block && block.fence === true && offset >= block.start && offset <= block.end) fence = block;
+  }
+  if (!fence) return false;
+  const [start, end] = blockSpan(doc, offset);
+  return offset < start || offset > end;
+}
+
 // The drawn selection uses the visible text. Endpoints that only cover a
 // glyph-less marker still belong to the source selection.
 function visibleSelectionOffset(doc, offset, other) {
@@ -10529,6 +10543,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
               : neighbor > atom.start && neighbor <= atom.end));
             if (into) next = placeMove(state.doc, beforeCursor, neighbor, direction, granularity);
           }
+          // The opener and the closer are drawn while the caret is in the fence.
+          // A character step the browser does not take still enters that line.
+          if (next === beforeCursor && granularity === "character" && onFenceMarker(state.doc, neighbor)) {
+            const [bodyStart, bodyEnd] = blockSpan(state.doc, beforeCursor);
+            if (beforeCursor >= bodyStart && beforeCursor <= bodyEnd) {
+              next = placeMove(state.doc, beforeCursor, neighbor, direction, granularity);
+            }
+          }
         }
       }
       // The DOM step stayed on the marker's end, which is also the item's start.
@@ -11657,7 +11679,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         else {
           // Leaving the block puts the next letter on the line under it.
           // A step that started before the content and is still in that lock has not left.
-          // The closer is past that content, so the same snap would pull h and l onto the body.
+          // The opener and the closer are source lines in that lock, so a step onto them stays.
+          // The closer is past the body, so the same snap would pull h and l onto the body.
           const before = state.cursor;
           moveCaret(forward ? "forward" : "backward", "character", extend);
           const [start, end] = blockSpan(state.doc, before);
@@ -11667,7 +11690,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
             if (state.cursor <= end || !inLock(state.cursor)) moveVimCaret(extend ? state.anchor : before, before);
           } else if (state.cursor < start || state.cursor > end) {
             const held = before < start && inLock(state.cursor);
-            if (!held) {
+            // One character enters the opener or the closer. A jump past that still stops on the body.
+            const ontoMarker = Math.abs(state.cursor - before) === 1 && onFenceMarker(state.doc, state.cursor);
+            if (!held && !ontoMarker) {
               const at = forward ? end : start;
               moveVimCaret(extend ? state.anchor : at, at);
             }
