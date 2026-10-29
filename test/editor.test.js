@@ -8637,6 +8637,206 @@ test("wecmuvmn: a plus beside an image comment anchor opens the picture to the w
   }
 });
 
+test("v4h66e2a: scrolling zooms the open picture and dragging pans it", () => {
+  const mounted = mountSheet();
+  const doc = "![shot](photos/shot.png)\n";
+  const viewers = () => mounted.findAll((node) => node.classList && node.classList.contains("md-image-view"));
+  const motion = (node) => {
+    const text = node && node.styleProps ? node.styleProps.transform : "";
+    if (!text) return { x: 0, y: 0, scale: 1, raw: "" };
+    const match = text.match(/^translate\((-?\d+(?:\.\d+)?)px, (-?\d+(?:\.\d+)?)px\) scale\((-?\d+(?:\.\d+)?)\)$/);
+    assert.ok(match, text);
+    return { x: Number(match[1]), y: Number(match[2]), scale: Number(match[3]), raw: text };
+  };
+  try {
+    const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    assert.match(css, /\.md-image-view\s*\{[^}]*overflow:\s*hidden/);
+    assert.match(css, /\.md-image-view\s*\{[^}]*cursor:\s*grab/);
+    assert.match(css, /\.md-image-view\.md-image-view-panning\s*\{[^}]*cursor:\s*grabbing/);
+    assert.match(css, /\.md-image-view-close\s*\{[^}]*position:\s*fixed/);
+    assert.match(css, /\.md-image-view-close\s*\{[^}]*top:\s*0\.65rem/);
+    assert.match(css, /\.md-image-view-close\s*\{[^}]*right:\s*0\.65rem/);
+
+    const view = createEditor(mounted.root, doc, doc.length);
+    const text = view.getState().doc;
+    const cursor = view.getState().cursor;
+    const host = mounted.findAll((node) => node.classList && node.classList.contains("md-image"))[0];
+    const frame = host.childNodes.find((node) => node.classList && node.classList.contains("md-pin-frame"));
+    const img = frame.childNodes.find((node) => node.tagName === "IMG");
+    img.getBoundingClientRect = () => ({ left: 100, top: 50, right: 300, bottom: 150, width: 200, height: 100 });
+    frame.getBoundingClientRect = () => ({ left: 0, top: 40, right: 800, bottom: 400, width: 800, height: 360 });
+    mounted.listeners.mousemove({ target: img, clientX: 150, clientY: 80 });
+    const enlarge = mounted.findAll((node) => node.classList && node.classList.contains("md-image-enlarge"))[0];
+    enlarge.listeners.click({ preventDefault() {}, stopPropagation() {}, button: 0 });
+    const overlay = viewers()[0];
+    const shown = overlay.childNodes.find((node) => node.tagName === "IMG");
+    const close = overlay.childNodes.find((node) => node.classList && node.classList.contains("md-image-view-close"));
+    overlay.getBoundingClientRect = () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 });
+    assert.equal(motion(shown).raw, "");
+    assert.equal(motion(close).raw, "");
+    assert.equal(motion(overlay).raw, "");
+    assert.equal(close.styleProps.top, undefined);
+    assert.equal(close.styleProps.right, undefined);
+
+    let ignored = false;
+    overlay.listeners.wheel({
+      deltaY: 0,
+      clientX: 400,
+      clientY: 300,
+      target: shown,
+      preventDefault() { ignored = true; },
+      stopPropagation() {},
+    });
+    assert.equal(ignored, false);
+    assert.equal(motion(shown).raw, "");
+
+    let zoomed = false;
+    let zoomStopped = false;
+    overlay.listeners.wheel({
+      deltaY: -100,
+      clientX: 600,
+      clientY: 300,
+      target: close,
+      preventDefault() { zoomed = true; },
+      stopPropagation() { zoomStopped = true; },
+    });
+    assert.equal(zoomed, true);
+    assert.equal(zoomStopped, true);
+    assert.equal(motion(shown).raw, "translate(-50px, 0px) scale(1.25)");
+    assert.equal(motion(close).raw, "");
+    assert.equal(close.styleProps.top, undefined);
+    assert.equal(close.styleProps.right, undefined);
+    assert.equal(close.parentElement, overlay);
+    assert.equal(view.getState().doc, text);
+    assert.equal(view.getState().cursor, cursor);
+
+    overlay.listeners.wheel({
+      deltaY: 100,
+      clientX: 600,
+      clientY: 300,
+      target: shown,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    assert.equal(motion(shown).raw, "");
+
+    overlay.listeners.wheel({
+      deltaMode: 1,
+      deltaY: -1,
+      clientX: 400,
+      clientY: 300,
+      target: shown,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    assert.equal(motion(shown).raw, "translate(0px, 0px) scale(1.25)");
+
+    let dragged = false;
+    overlay.listeners.pointerdown({
+      button: 0,
+      clientX: 100,
+      clientY: 100,
+      target: shown,
+      pointerId: 1,
+    });
+    assert.equal(overlay.classList.contains("md-image-view-panning"), true);
+    assert.equal(motion(shown).raw, "translate(0px, 0px) scale(1.25)");
+    overlay.listeners.pointermove({
+      clientX: 130,
+      clientY: 80,
+      target: shown,
+      pointerId: 1,
+      preventDefault() { dragged = true; },
+    });
+    assert.equal(dragged, true);
+    assert.equal(motion(shown).raw, "translate(30px, -20px) scale(1.25)");
+    assert.equal(motion(close).raw, "");
+    assert.equal(close.styleProps.transform, undefined);
+    assert.equal(close.parentElement, overlay);
+    overlay.listeners.pointerup({ pointerId: 1, target: shown });
+    assert.equal(overlay.classList.contains("md-image-view-panning"), false);
+    assert.equal(motion(shown).raw, "translate(30px, -20px) scale(1.25)");
+    assert.equal(view.getState().doc, text);
+    assert.equal(view.getState().cursor, cursor);
+
+    overlay.listeners.pointerdown({ button: 2, clientX: 10, clientY: 10, target: shown });
+    assert.equal(overlay.classList.contains("md-image-view-panning"), false);
+    close.listeners.pointerdown({
+      button: 0,
+      clientX: 700,
+      clientY: 20,
+      target: close,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    overlay.listeners.pointermove({ clientX: 720, clientY: 40, target: overlay, preventDefault() {} });
+    assert.equal(overlay.classList.contains("md-image-view-panning"), false);
+    assert.equal(motion(shown).raw, "translate(30px, -20px) scale(1.25)");
+    assert.equal(viewers().length, 1);
+
+    shown.listeners.dblclick({ preventDefault() {}, stopPropagation() {} });
+    assert.equal(overlay.classList.contains("md-image-natural"), true);
+    assert.equal(overlay.classList.contains("md-image-fit"), false);
+    assert.equal(motion(shown).raw, "");
+    assert.equal(close.parentElement, overlay);
+    overlay.listeners.wheel({
+      deltaY: -100,
+      clientX: 400,
+      clientY: 300,
+      target: shown,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    assert.equal(motion(shown).raw, "translate(0px, 0px) scale(1.25)");
+    assert.equal(motion(close).raw, "");
+    shown.listeners.dblclick({ preventDefault() {}, stopPropagation() {} });
+    assert.equal(overlay.classList.contains("md-image-fit"), true);
+    assert.equal(motion(shown).raw, "");
+
+    for (let i = 0; i < 40; i += 1) {
+      overlay.listeners.wheel({
+        deltaY: -100,
+        clientX: 400,
+        clientY: 300,
+        target: shown,
+        preventDefault() {},
+        stopPropagation() {},
+      });
+    }
+    assert.equal(motion(shown).scale, 16);
+    let held = false;
+    overlay.listeners.wheel({
+      deltaY: -100,
+      clientX: 400,
+      clientY: 300,
+      target: shown,
+      preventDefault() { held = true; },
+      stopPropagation() {},
+    });
+    assert.equal(held, true);
+    assert.equal(motion(shown).scale, 16);
+    for (let i = 0; i < 80; i += 1) {
+      overlay.listeners.wheel({
+        deltaY: 100,
+        clientX: 400,
+        clientY: 300,
+        target: shown,
+        preventDefault() {},
+        stopPropagation() {},
+      });
+    }
+    assert.equal(motion(shown).scale, 0.05);
+    assert.equal(motion(close).raw, "");
+    assert.equal(close.styleProps.top, undefined);
+    assert.equal(view.getState().doc, text);
+    assert.equal(view.getState().cursor, cursor);
+    view.destroy();
+    assert.equal(viewers().length, 0);
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("an image address keeps a parenthesis inside it", () => {
   const line = "![NAME.png](Plan (draft)/NAME.png)";
   const doc = `${line}\n`;

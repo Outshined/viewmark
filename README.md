@@ -54,7 +54,7 @@ The Viewmark source tree cannot be registered as a repo.
 
 The left side lists the files in the selected repo and the tickets for that repo. The center is the open document. A mermaid diagram is drawn while the caret is outside the fence. Click the diagram, or move into it, and the fence becomes source again. An svg fence is drawn as an image while the caret is outside it. Click the image, or move into the fence, and the source is shown. Any other fence stays source. The opener, including its info string, edits as ordinary text with vim keys off and with vim keys on.
 
-A pointer over a picture, a mermaid diagram, or an svg fence shows that drawing's comment pin and a Show full size button. The button is a magnifying glass. Zoom opens fitted to the window. Double-click toggles that fit and the drawing's own size. Escape or the close glyph closes the zoom and leaves the caret where it was.
+A pointer over a picture, a mermaid diagram, or an svg fence shows that drawing's comment pin and a Show full size button. The button is a magnifying glass. Zoom opens fitted to the window. Double-click toggles that fit and the drawing's own size. Scrolling zooms the picture in and out, and dragging pans it. The close glyph stays at the upper right. Escape or the close glyph closes the zoom and leaves the caret where it was.
 
 Tickets are files under `tickets/` in the repo. The page can create one, edit its fields, and open it like any other document.
 

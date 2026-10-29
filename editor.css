@@ -1801,15 +1801,24 @@ a.md-link {
   cursor: pointer;
 }
 
-/* Covers the window. Fit scales the picture into that box; natural is the picture's own size. */
+/* Covers the window. Fit scales the picture into that box; natural is the picture's own size.
+   Wheel zoom and drag pan change the picture only, so this box does not scroll. */
 .md-image-view {
   position: fixed;
   inset: 0;
   z-index: 40;
   display: grid;
   place-items: center;
-  overflow: auto;
+  overflow: hidden;
   background: rgba(28, 27, 25, 0.92);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  overscroll-behavior: none;
+}
+
+.md-image-view.md-image-view-panning {
+  cursor: grabbing;
 }
 
 .md-image-view.md-image-fit {
@@ -1836,7 +1845,7 @@ a.md-link {
   max-height: none;
 }
 
-/* Fixed so it stays at the window's upper right while a large picture scrolls. */
+/* Fixed so a zoom or a pan of the picture leaves this control at the window's upper right. */
 .md-image-view-close {
   position: fixed;
   top: 0.65rem;

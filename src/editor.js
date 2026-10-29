@@ -6970,8 +6970,181 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return svgImageUrl(text);
   }
 
+  // One mouse notch. A line-mode wheel is already in notches; pixel mode uses 100 units.
+  const IMAGE_VIEW_ZOOM = 1.25;
+  const IMAGE_VIEW_SCALE_MIN = 0.05;
+  const IMAGE_VIEW_SCALE_MAX = 16;
+  let imageViewScale = 1;
+  let imageViewPanX = 0;
+  let imageViewPanY = 0;
+  let imageViewDrag = null;
+
+  function imageViewerPicture(overlay) {
+    const host = overlay || imageViewer;
+    if (!host || !host.childNodes) return null;
+    for (const child of host.childNodes) {
+      if (String(child.tagName || child.nodeName || "").toUpperCase() === "IMG") return child;
+    }
+    return null;
+  }
+
+  function roundViewMeasure(n) {
+    if (!Number.isFinite(n)) return 0;
+    const rounded = Math.round(n * 10000) / 10000;
+    return Object.is(rounded, -0) ? 0 : rounded;
+  }
+
+  function formatViewMeasure(n) {
+    const text = roundViewMeasure(n).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+    if (text === "-0" || text === "") return "0";
+    return text;
+  }
+
+  function clearViewStyle(el, name) {
+    if (!el) return;
+    if (el.style && typeof el.style.removeProperty === "function") el.style.removeProperty(name);
+    if (el.styleProps && Object.prototype.hasOwnProperty.call(el.styleProps, name)) delete el.styleProps[name];
+  }
+
+  // The transform is on the picture. translate() follows scale(), so the pan is screen pixels.
+  function paintImageViewerMotion(overlay) {
+    const picture = imageViewerPicture(overlay);
+    if (!picture) return;
+    if (imageViewScale === 1 && imageViewPanX === 0 && imageViewPanY === 0) {
+      clearViewStyle(picture, "transform");
+      clearViewStyle(picture, "transform-origin");
+      return;
+    }
+    setStyle(picture, "transform-origin", "center center");
+    setStyle(
+      picture,
+      "transform",
+      `translate(${formatViewMeasure(imageViewPanX)}px, ${formatViewMeasure(imageViewPanY)}px) scale(${formatViewMeasure(imageViewScale)})`,
+    );
+  }
+
+  function resetImageViewerMotion(overlay) {
+    imageViewScale = 1;
+    imageViewPanX = 0;
+    imageViewPanY = 0;
+    imageViewDrag = null;
+    if (overlay && overlay.classList) overlay.classList.remove("md-image-view-panning");
+    paintImageViewerMotion(overlay);
+  }
+
+  function imageViewerWheelNotches(event) {
+    const dy = event && event.deltaY;
+    if (typeof dy !== "number" || !Number.isFinite(dy) || dy === 0) return 0;
+    if (event.deltaMode === 1) return dy;
+    if (event.deltaMode === 2) return dy * 10;
+    return dy / 100;
+  }
+
+  function imageViewerCursorOffset(overlay, event) {
+    if (!overlay || typeof overlay.getBoundingClientRect !== "function") return null;
+    const x = event.clientX;
+    const y = event.clientY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    let rect = null;
+    try {
+      rect = overlay.getBoundingClientRect();
+    } catch {
+      return null;
+    }
+    if (!rect || !(rect.width > 0) || !(rect.height > 0)) return null;
+    const left = Number.isFinite(rect.left) ? rect.left : 0;
+    const top = Number.isFinite(rect.top) ? rect.top : 0;
+    return { x: x - (left + rect.width / 2), y: y - (top + rect.height / 2) };
+  }
+
+  function onImageViewerWheel(event) {
+    if (!imageViewer || !event) return;
+    const notches = imageViewerWheelNotches(event);
+    if (!notches) return;
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    if (typeof event.stopPropagation === "function") event.stopPropagation();
+    const prev = imageViewScale;
+    let next = prev * Math.pow(IMAGE_VIEW_ZOOM, -notches);
+    if (next < IMAGE_VIEW_SCALE_MIN) next = IMAGE_VIEW_SCALE_MIN;
+    if (next > IMAGE_VIEW_SCALE_MAX) next = IMAGE_VIEW_SCALE_MAX;
+    next = roundViewMeasure(next);
+    if (next === prev) return;
+    const ratio = next / prev;
+    const point = imageViewerCursorOffset(imageViewer, event);
+    if (point) {
+      imageViewPanX = roundViewMeasure(imageViewPanX * ratio + point.x * (1 - ratio));
+      imageViewPanY = roundViewMeasure(imageViewPanY * ratio + point.y * (1 - ratio));
+    }
+    imageViewScale = next;
+    paintImageViewerMotion(imageViewer);
+  }
+
+  function imageViewerOnClose(event) {
+    let node = event && event.target;
+    if (node && node.nodeType !== 1) node = node.parentElement;
+    while (node && node !== imageViewer) {
+      if (node.classList && node.classList.contains("md-image-view-close")) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function onImageViewerPointerDown(event) {
+    if (!imageViewer || !event || imageViewDrag) return;
+    if (event.button != null && event.button !== 0) return;
+    if (imageViewerOnClose(event)) return;
+    const x = event.clientX;
+    const y = event.clientY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    imageViewDrag = { x, y };
+    imageViewer.classList.add("md-image-view-panning");
+    if (typeof imageViewer.setPointerCapture === "function" && event.pointerId != null) {
+      try {
+        imageViewer.setPointerCapture(event.pointerId);
+      } catch {
+        // The pointer can end before capture.
+      }
+    }
+  }
+
+  function onImageViewerPointerMove(event) {
+    if (!imageViewDrag || !imageViewer || !event) return;
+    const x = event.clientX;
+    const y = event.clientY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    const dx = x - imageViewDrag.x;
+    const dy = y - imageViewDrag.y;
+    if (dx === 0 && dy === 0) return;
+    imageViewDrag.x = x;
+    imageViewDrag.y = y;
+    imageViewPanX = roundViewMeasure(imageViewPanX + dx);
+    imageViewPanY = roundViewMeasure(imageViewPanY + dy);
+    paintImageViewerMotion(imageViewer);
+    if (typeof event.preventDefault === "function") event.preventDefault();
+  }
+
+  function onImageViewerPointerUp(event) {
+    if (!imageViewDrag || !imageViewer) return;
+    imageViewDrag = null;
+    imageViewer.classList.remove("md-image-view-panning");
+    if (
+      event
+      && event.pointerId != null
+      && typeof imageViewer.hasPointerCapture === "function"
+      && typeof imageViewer.releasePointerCapture === "function"
+    ) {
+      try {
+        if (imageViewer.hasPointerCapture(event.pointerId)) imageViewer.releasePointerCapture(event.pointerId);
+      } catch {
+        // Capture already ended with the pointer.
+      }
+    }
+  }
+
   function toggleImageViewerZoom(overlay) {
     if (!overlay || !overlay.classList) return;
+    // Fit and natural are the picture's own sizes. A wheel zoom on top of either would stack.
+    resetImageViewerMotion(overlay);
     if (overlay.classList.contains("md-image-fit")) {
       overlay.classList.remove("md-image-fit");
       overlay.classList.add("md-image-natural");
@@ -7007,6 +7180,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const overlay = imageViewer;
     if (!overlay) return;
     imageViewer = null;
+    imageViewDrag = null;
+    imageViewScale = 1;
+    imageViewPanX = 0;
+    imageViewPanY = 0;
+    if (overlay.classList) overlay.classList.remove("md-image-view-panning");
     unbindImageViewerKey();
     detachNode(overlay);
     if (!closed && root && typeof root.focus === "function") root.focus();
@@ -7024,10 +7202,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const icon = iconSvg("delete");
     if (icon) button.appendChild(icon);
     armGlyphPress(button);
-    button.addEventListener("mousedown", (event) => {
+    const keepClose = (event) => {
       if (event && typeof event.stopPropagation === "function") event.stopPropagation();
       if (event && typeof event.preventDefault === "function") event.preventDefault();
-    });
+    };
+    button.addEventListener("mousedown", keepClose);
+    button.addEventListener("pointerdown", keepClose);
     button.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
       if (event && typeof event.stopPropagation === "function") event.stopPropagation();
@@ -7075,6 +7255,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     overlay.appendChild(imageViewerCloseButton());
     host.appendChild(overlay);
     imageViewer = overlay;
+    imageViewScale = 1;
+    imageViewPanX = 0;
+    imageViewPanY = 0;
+    imageViewDrag = null;
+    overlay.addEventListener("wheel", onImageViewerWheel, { passive: false, signal: ac.signal });
+    overlay.addEventListener("pointerdown", onImageViewerPointerDown, { signal: ac.signal });
+    overlay.addEventListener("pointermove", onImageViewerPointerMove, { signal: ac.signal });
+    overlay.addEventListener("pointerup", onImageViewerPointerUp, { signal: ac.signal });
+    overlay.addEventListener("pointercancel", onImageViewerPointerUp, { signal: ac.signal });
     bindImageViewerKey();
     if (typeof overlay.focus === "function") overlay.focus();
   }
