@@ -1,5 +1,5 @@
 title: visual selection fencepost error
-state: pending review
+state: closed
 type: bug
 priority: medium
 parent:
