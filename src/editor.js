@@ -2004,6 +2004,15 @@ function renderRun(part, tag) {
   return el;
 }
 
+// The destination stored on the picture. Angle brackets are not part of the url.
+function imageDestination(text) {
+  const core = String(text || "").trim();
+  const wrapped = /^!\[[^\]]*\]\(<([^>\n]+)>/.exec(core);
+  if (wrapped) return wrapped[1];
+  const bare = /^!\[[^\]]*\]\(([^)\s]+)/.exec(core);
+  return bare ? bare[1] : "";
+}
+
 // https stays an address. A data URL is not a file, so it is not requested.
 function imageSrc(url, repo) {
   if (typeof url !== "string" || url.length === 0) return "";
@@ -2084,6 +2093,7 @@ function renderImage(image, repo, onSized) {
   const img = document.createElement("img");
   img.alt = image.alt;
   img.draggable = false;
+  img.pictureUrl = typeof image.url === "string" ? image.url : "";
   // A pin fraction is of the picture's box. That box has no height until load,
   // so the cards from the first layout sit on the frame's top.
   if (typeof onSized === "function" && typeof img.addEventListener === "function") {
@@ -3539,6 +3549,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let pictureObserver = null;
   let diagramObserver = null;
   const diagramHeights = new Map();
+  // A new img has no box until its file loads. The fitted size is what the column
+  // showed, so the next paint does not collapse the page or scroll to the origin.
+  const pictureSizes = new Map();
   const repoStorage = storage || null;
   // Raw is not stored. It applies only to the document that was open when it was turned on.
   let sourceMode = false;
@@ -4601,13 +4614,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   // priorTop is the caret before this render replaced the line. A rebuild that
   // keeps the same visual line, or a caret already in view, stays put.
-  function placeCaret(priorTop) {
+  // shot is the window scroll from before the picture nodes were replaced.
+  function placeCaret(priorTop, shot) {
     placingCaret = true;
     let node = null;
     try {
       node = placeCaretFromState();
       // The range can scroll the caret into view before scrollCaret runs.
       if (pinScrollHold) restoreScroll(pinScrollHold);
+      else if (shot && originJump(shot) && !vimKeepScroll && caretAfterPicture()) restoreScroll(shot);
       if (!node || vimKeepScroll || pinScrollHold) return;
       // An in-view rect can be the caret Firefox refused to move. Scrolling that
       // is not a reason to keep it.
@@ -4667,10 +4682,40 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     bringRectIntoView(rect);
   }
 
+  // Replacing a picture can drop the window to the origin while the caret is
+  // still below it. A move that starts there, or a caret at the document start, stays.
+  function originJump(shot) {
+    if (!shot || typeof shot.y !== "number" || !(shot.y > 80)) return false;
+    const view = typeof window !== "undefined" ? window : null;
+    if (!view || typeof view.scrollY !== "number") return false;
+    if (!(view.scrollY < 2) || !(view.scrollY + 1 < shot.y)) return false;
+    return !(state.cursor <= 0 && state.anchor <= 0);
+  }
+
+  function caretAfterPicture() {
+    const cursor = state.cursor;
+    for (const el of elementsWithClass("md-image")) {
+      const end = Number(el.dataset && el.dataset.end);
+      if (Number.isFinite(end) && end < cursor) return true;
+    }
+    return false;
+  }
+
   function scrollCaret(node) {
     const host = (node && node.parentElement) || root;
-    if (host && typeof host.scrollIntoView === "function") {
+    const line = lineBox(node) || host;
+    const view = typeof window !== "undefined" ? window : null;
+    const viewHeight = view && view.innerHeight;
+    // The picture line is taller than the window. scrollIntoView aligns its top,
+    // which is the top of the page when the picture is the first large block.
+    const tall = viewHeight > 0 && lineBoxHeight(line) > viewHeight;
+    if (!tall && host && typeof host.scrollIntoView === "function") {
       host.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+    const caret = caretRect();
+    if (tall) {
+      if (caret && caret.height > 0 && caret.height <= viewHeight) bringRectIntoView(caret);
+      return;
     }
     // scrollIntoView leaves a line that overflows a fixed grid row where it was.
     bringRectIntoView(elementBox(host));
@@ -5791,10 +5836,133 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return found;
   }
 
+  // Wider than the column. A picture that already fits is not stretched.
+  function fittedPicture(naturalWidth, naturalHeight, column) {
+    if (!(naturalWidth > 0) || !(naturalHeight > 0) || !(column > 0)) return null;
+    if (!(naturalWidth > column)) return null;
+    const width = Math.max(1, Math.round(column));
+    return { width, height: Math.max(1, Math.round(naturalHeight * width / naturalWidth)) };
+  }
+
+  // The line is a block box, so its width is the column. The picture atom's
+  // width is the image itself. Root covers a picture that is not inserted yet.
+  function pictureColumn(img) {
+    const widths = [];
+    const take = (node) => {
+      if (!node) return;
+      const width = node.clientWidth;
+      if (typeof width === "number" && Number.isFinite(width) && width > 0) widths.push(width);
+    };
+    let node = img ? img.parentElement : null;
+    while (node) {
+      if (node.classList && node.classList.contains("md-line")) take(node);
+      if (node === root) break;
+      node = node.parentElement;
+    }
+    take(root);
+    if (widths.length === 0) return 0;
+    let column = widths[0];
+    for (let i = 1; i < widths.length; i += 1) if (widths[i] < column) column = widths[i];
+    return column;
+  }
+
+  function pictureFitLocked(img, fit) {
+    const width = `${fit.width}px`;
+    const height = `${fit.height}px`;
+    if (inlineStyle(img, "width").value !== width || inlineStyle(img, "height").value !== height) return false;
+    if (typeof img.getAttribute !== "function") return true;
+    return img.getAttribute("width") === String(fit.width) && img.getAttribute("height") === String(fit.height);
+  }
+
+  function applyPictureFit(img, fit) {
+    if (!img || !fit || pictureFitLocked(img, fit)) return;
+    setStyle(img, "width", `${fit.width}px`);
+    setStyle(img, "height", `${fit.height}px`);
+    if (typeof img.setAttribute === "function") {
+      img.setAttribute("width", String(fit.width));
+      img.setAttribute("height", String(fit.height));
+    }
+  }
+
+  function clearPictureFit(img) {
+    if (!img) return;
+    restoreInline(img, "width", { had: false, value: "" });
+    restoreInline(img, "height", { had: false, value: "" });
+    if (typeof img.removeAttribute === "function") {
+      img.removeAttribute("width");
+      img.removeAttribute("height");
+    }
+  }
+
+  function rememberPicture(img, fit) {
+    if (img.pictureUrl) pictureSizes.set(img.pictureUrl, fit);
+    if (img.src) pictureSizes.set(img.src, fit);
+  }
+
+  function forgetPicture(img) {
+    if (img.pictureUrl) pictureSizes.delete(img.pictureUrl);
+    if (img.src) pictureSizes.delete(img.src);
+    clearPictureFit(img);
+  }
+
+  function rememberedPicture(img) {
+    if (!img) return null;
+    if (img.pictureUrl && pictureSizes.has(img.pictureUrl)) return pictureSizes.get(img.pictureUrl);
+    if (img.src && pictureSizes.has(img.src)) return pictureSizes.get(img.src);
+    return null;
+  }
+
+  function fitOne(img) {
+    if (!img) return;
+    const naturalWidth = img.naturalWidth;
+    const naturalHeight = img.naturalHeight;
+    const column = pictureColumn(img);
+    if (naturalWidth > 0 && naturalHeight > 0 && column > 0) {
+      const fit = fittedPicture(naturalWidth, naturalHeight, column);
+      if (!fit) {
+        forgetPicture(img);
+        return;
+      }
+      rememberPicture(img, fit);
+      applyPictureFit(img, fit);
+      return;
+    }
+    const remembered = rememberedPicture(img);
+    if (remembered) applyPictureFit(img, remembered);
+  }
+
+  function fitPictureNode(node) {
+    if (!node || node.nodeType !== 1) return;
+    if (hasClass(node, "md-image")) fitOne(directChildTag(pictureFrame(node) || node, "img"));
+    for (const child of node.childNodes || []) fitPictureNode(child);
+  }
+
+  function fitPictures(nodes) {
+    const list = nodes || root.childNodes || [];
+    for (const node of list) fitPictureNode(node);
+  }
+
+  // A scaled picture that opens as source collapses to one line. Keep the drawn
+  // block when this editor has already fitted that url.
+  function drawnFittedImage(block) {
+    if (!block || block.type !== "line" || !block.raw || block.empty) return null;
+    const text = typeof block.text === "string" ? block.text : "";
+    if (!imageLine(text)) return null;
+    const url = imageDestination(text);
+    if (!url || !pictureSizes.has(url)) return null;
+    const doc = state.doc;
+    let off = block.end + 1;
+    if (off > doc.length) off = block.start - 1;
+    if (off < 0 || (off >= block.start && off <= block.end)) return null;
+    const drawn = plan(doc, off).blocks.find((item) => item && item.type === "line" && item.start === block.start && !item.raw);
+    return drawn || null;
+  }
+
   // A measurement in the load handler can still see the empty frame. The next
   // frame has the picture's height, and so does a later change of that box.
   function layoutAfterPicture() {
     if (closed) return;
+    fitPictures();
     layoutComments();
     restoreCornerPin();
     const view = typeof window !== "undefined" ? window : null;
@@ -5816,8 +5984,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     for (const host of [...elementsWithClass("md-image"), ...elementsWithClass("md-svg")]) {
       const img = directChildTag(pictureFrame(host) || host, "img");
       if (!img || !(img instanceof Element)) continue;
+      const line = lineBox(img);
       try {
         pictureObserver.observe(img);
+        // The column change is the line's box. The img's box is the fitted picture.
+        if (line && line !== img && line instanceof Element) pictureObserver.observe(line);
       } catch {
         pictureObserver.disconnect();
         pictureObserver = null;
@@ -7684,19 +7855,30 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // A fence's trail would leave this row a half line below the letter that lands here.
   function blocksForCaret(blocks) {
     const doc = state.doc;
-    if (state.cursor !== doc.length || !doc.endsWith("\n")) return blocks;
-    return blocks.concat([{
-      type: "line",
-      raw: true,
-      empty: true,
-      start: doc.length,
-      end: doc.length,
-      text: "",
-      classes: ["md-raw", "md-p", "md-caret-row"],
-      runs: [],
-      parts: [],
-      indent: 0,
-    }]);
+    let next = blocks;
+    if (state.cursor === doc.length && doc.endsWith("\n")) {
+      next = blocks.concat([{
+        type: "line",
+        raw: true,
+        empty: true,
+        start: doc.length,
+        end: doc.length,
+        text: "",
+        classes: ["md-raw", "md-p", "md-caret-row"],
+        runs: [],
+        parts: [],
+        indent: 0,
+      }]);
+    }
+    if (pictureSizes.size === 0) return next;
+    let changed = false;
+    const kept = next.map((block) => {
+      const drawn = drawnFittedImage(block);
+      if (!drawn) return block;
+      changed = true;
+      return drawn;
+    });
+    return changed ? kept : next;
   }
 
   // Canvas measureText ignores tab-size, so a nested marker would hang short of the gutter.
@@ -8959,6 +9141,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const notes = renderFootnotes(planned.footnotes);
       if (notes) nodes.push(notes);
       const priorTop = caretTop();
+      const scrollShot = captureScroll();
+      fitPictures(nodes);
       root.replaceChildren(...nodes);
       settleBlankBreaks();
       settleRawMarkers();
@@ -8975,7 +9159,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (commentFocus) {
         restoreEditorFocus = false;
         focusComment(commentFocus.id, commentFocus.start, commentFocus.end, commentFocus.note);
-      } else placeCaret(priorTop);
+      } else placeCaret(priorTop, scrollShot);
       revealFirstSearchHit();
       updateCommentButton();
       if (scrollCommentId) {

@@ -7789,6 +7789,192 @@ test("an image line has a caret mark at its start and through its newline", () =
   }
 });
 
+// A picture wider than the column keeps the fitted box across a keystroke, so
+// the window does not jump to the origin and an arrow onto the picture does not
+// open it as source.
+test("n3994vh3 a scaled picture keeps its box, the caret, and the scroll position", () => {
+  const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+  assert.match(css, /\.md-image > \.md-pin-frame \{[^}]*width:\s*fit-content/);
+  assert.match(css, /\.md-line\.md-block-image:not\(\.md-raw\) > \.md-image-caret \{[^}]*height:\s*1\.55em/);
+  assert.match(css, /\.md-image-caret\[data-edge="start"\]/);
+  assert.match(css, /\.md-image-caret\[data-edge="end"\]/);
+
+  const mounted = mountEditor();
+  const doc = "Above.\n\n![5ehdd44t.png](tickets/n3994vh3/5ehdd44t.png)\n\nBelow.\n";
+  const belowAt = doc.indexOf("Below.") + 2;
+  let naturalWidth = 1400;
+  let naturalHeight = 900;
+  let scrollX = 0;
+  let scrollY = 900;
+  let placed = false;
+  const scrolled = [];
+  const orig = document.createElement;
+  document.createElement = (tag) => {
+    const el = orig(tag);
+    if (String(tag).toUpperCase() === "IMG") {
+      Object.defineProperty(el, "naturalWidth", { get() { return naturalWidth; } });
+      Object.defineProperty(el, "naturalHeight", { get() { return naturalHeight; } });
+    }
+    el.getBoundingClientRect = () => {
+      let node = el;
+      while (node) {
+        if (node.classList && node.classList.contains("md-block-image") && !node.classList.contains("md-raw")) {
+          return { top: 0, left: 0, right: 700, bottom: 2000, width: 700, height: 2000 };
+        }
+        node = node.parentElement;
+      }
+      return { top: 120, left: 8, right: 80, bottom: 140, width: 72, height: 20 };
+    };
+    el.scrollIntoView = () => { scrolled.push(el); };
+    return el;
+  };
+  document.createTreeWalker = () => {
+    const list = [];
+    const walk = (node) => {
+      for (const child of node.childNodes || []) {
+        if (child.nodeType === 3) list.push(child);
+        else walk(child);
+      }
+    };
+    walk(mounted.root);
+    let index = 0;
+    return { nextNode: () => (index < list.length ? list[index++] : null) };
+  };
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const sel = {
+    rangeCount: 0,
+    anchorNode: null,
+    anchorOffset: 0,
+    focusNode: null,
+    focusOffset: 0,
+    setBaseAndExtent(node, offset) {
+      this.anchorNode = node;
+      this.anchorOffset = offset || 0;
+      this.focusNode = node;
+      this.focusOffset = offset || 0;
+      this.rangeCount = 1;
+      placed = true;
+      scrollY = 0;
+    },
+    collapse(node, offset) { this.setBaseAndExtent(node, offset); },
+    modify() {
+      const mark = mounted.findAll((node) => node.classList && node.classList.contains("md-image-caret") && node.dataset.edge === "start")[0];
+      const text = mark && mark.childNodes && mark.childNodes[0];
+      this.anchorNode = text;
+      this.focusNode = text;
+      this.anchorOffset = 0;
+      this.focusOffset = 0;
+      this.rangeCount = text ? 1 : 0;
+    },
+    getRangeAt() {
+      return {
+        startContainer: this.focusNode,
+        startOffset: this.focusOffset,
+        endContainer: this.focusNode,
+        endOffset: this.focusOffset,
+        collapsed: true,
+      };
+    },
+    removeAllRanges() { this.rangeCount = 0; },
+    addRange(range) {
+      this.setBaseAndExtent(range.startContainer, range.startOffset);
+    },
+  };
+  const viewWindow = {
+    innerHeight: 800,
+    innerWidth: 700,
+    get scrollX() { return scrollX; },
+    set scrollX(value) { scrollX = value; },
+    get scrollY() { return scrollY; },
+    set scrollY(value) { scrollY = value; },
+    scrollTo(x, y) { scrollX = x; scrollY = y; },
+    scrollBy(x, y) { scrollX += x || 0; scrollY += y || 0; },
+    getSelection: () => sel,
+  };
+  globalThis.window = viewWindow;
+  mounted.root.clientWidth = 700;
+  const picture = () => mounted.findAll((node) => node.tagName === "IMG").find((img) => img.pictureUrl);
+  try {
+    const view = createEditor(mounted.root, doc, belowAt);
+    const fitted = picture();
+    assert.ok(fitted);
+    assert.equal(fitted.styleProps.width, "700px");
+    assert.equal(fitted.styleProps.height, "450px");
+    assert.equal(fitted.getAttribute("width"), "700");
+    assert.equal(fitted.getAttribute("height"), "450");
+    assert.equal(scrollY, 900);
+
+    naturalWidth = 0;
+    naturalHeight = 0;
+    placed = false;
+    scrollY = 900;
+    input(mounted, "insertText", "Z");
+    const again = picture();
+    assert.ok(again);
+    assert.notEqual(again, fitted);
+    assert.equal(again.naturalWidth, 0);
+    assert.equal(again.styleProps.width, "700px");
+    assert.equal(again.styleProps.height, "450px");
+    assert.equal(again.getAttribute("width"), "700");
+    assert.equal(again.getAttribute("height"), "450");
+    assert.equal(placed, true);
+    assert.equal(scrollY, 900);
+    assert.equal(view.getState().doc.includes("BeZlow."), true);
+
+    naturalWidth = 1400;
+    naturalHeight = 900;
+    mounted.root.clientWidth = 2000;
+    input(mounted, "insertText", "Q");
+    const fittedColumn = picture();
+    assert.ok(fittedColumn);
+    assert.equal(fittedColumn.styleProps.width, undefined);
+    assert.equal(fittedColumn.getAttribute("width"), null);
+
+    mounted.root.clientWidth = 700;
+    input(mounted, "insertText", "W");
+    const relocked = picture();
+    assert.equal(relocked.styleProps.width, "700px");
+    assert.equal(relocked.styleProps.height, "450px");
+
+    scrolled.length = 0;
+    view.moveCaret("backward", "line", false);
+    const held = picture();
+    assert.ok(held);
+    const host = held.parentElement && held.parentElement.parentElement;
+    const line = host && host.parentElement;
+    assert.ok(host && host.classList.contains("md-image"));
+    assert.equal(line.classList.contains("md-raw"), false);
+    const start = Number(host.dataset.start);
+    const end = Number(host.dataset.end);
+    const cursor = view.getState().cursor;
+    assert.ok(cursor >= start && cursor <= end);
+    assert.equal(held.styleProps.width, "700px");
+    assert.equal(scrolled.some((el) => {
+      let node = el;
+      while (node) {
+        if (node.classList && node.classList.contains("md-block-image")) return true;
+        node = node.parentElement;
+      }
+      return false;
+    }), false);
+    view.destroy();
+
+    naturalWidth = 40;
+    naturalHeight = 40;
+    mounted.root.clientWidth = 700;
+    const smallDoc = "Above.\n\n![s](s.png)\n\nBelow.\n";
+    const small = createEditor(mounted.root, smallDoc, smallDoc.indexOf("Below.") + 1);
+    const tiny = picture();
+    assert.ok(tiny);
+    assert.equal(tiny.naturalWidth, 40);
+    assert.equal(tiny.styleProps.width, undefined);
+    assert.equal(tiny.getAttribute("width"), null);
+    small.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 // The click's fraction of the picture box, as pictureClickOffset maps it.
 function pictureFraction(start, end, left, right, x) {
   if (!(right > left) || !Number.isFinite(x)) return start;

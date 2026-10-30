@@ -1457,6 +1457,35 @@ a.md-link {
   height: auto;
 }
 
+/* Diagrams share .md-pin-frame. Only a picture shrinks to the fitted image. */
+.md-image > .md-pin-frame {
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* In flow the caret mark is as tall as the picture, so the caret sits in the
+   image and the line's top is what scrollIntoView aligns. */
+.md-line.md-block-image:not(.md-raw) {
+  position: relative;
+}
+
+.md-line.md-block-image:not(.md-raw) > .md-image-caret {
+  position: absolute;
+  left: 0;
+  width: 1px;
+  height: 1.55em;
+  line-height: 1.55em;
+  overflow: hidden;
+}
+
+.md-line.md-block-image:not(.md-raw) > .md-image-caret[data-edge="start"] {
+  top: 0;
+}
+
+.md-line.md-block-image:not(.md-raw) > .md-image-caret[data-edge="end"] {
+  bottom: 0;
+}
+
 .md-table {
   margin: 0;
 }
