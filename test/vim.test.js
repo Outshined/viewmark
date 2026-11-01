@@ -4101,6 +4101,76 @@ test("f. finds a period, and r. replaces with a period (ticket py7xfb9e)", () =>
   assert.equal(changeKeys(replaced), "r.");
 });
 
+test("dot repeats r at the caret, and the count stays on that command (ticket 5tgzpnk3)", () => {
+  const one = run("‸abcdef", ["r", "x", "l", "."], { type: true });
+  assert.equal(one.doc, "xxcdef");
+  assert.equal(one.show, "x‸xcdef");
+  assert.equal(changeKeys(one), "rx");
+  assert.equal(one.vim.change.count, null);
+  const alphabet = "‸abcdefghijklmnopqrstuvwxyz";
+  const ten = run(alphabet, ["1", "0", "r", "x", "l", "."], { type: true });
+  assert.equal(ten.doc, "xxxxxxxxxxxxxxxxxxxxuvwxyz");
+  assert.equal(ten.show, "xxxxxxxxxxxxxxxxxxx‸xuvwxyz");
+  assert.equal(changeKeys(ten), "rx");
+  assert.equal(ten.vim.change.count, 10);
+  const overridden = run(alphabet, ["1", "0", "r", "x", "3", ".", "."], { type: true });
+  assert.equal(overridden.doc, "xxxxxxxxxxxxxxopqrstuvwxyz");
+  assert.equal(overridden.vim.change.count, 3);
+  assert.equal(changeKeys(overridden), "rx");
+  const widened = run(alphabet, ["r", "x", "5", "."], { type: true });
+  assert.equal(widened.doc, "xxxxxfghijklmnopqrstuvwxyz");
+  assert.equal(widened.show, "xxxx‸xfghijklmnopqrstuvwxyz");
+  assert.equal(widened.vim.change.count, 5);
+  const broken = run("‸abcdefgh", ["3", "r", "Enter", "."], { raw: true });
+  assert.equal(broken.doc, "\n\ngh");
+  assert.equal(changeKeys(broken), "rEnter");
+  assert.equal(broken.vim.change.count, 3);
+  const visual = run("«abc‸xyz", ["r", "5", "."], { mode: "visual" });
+  assert.equal(visual.doc, "55555z");
+  assert.equal(changeKeys(visual), "r5");
+  assert.equal(visual.vim.change.visual.chars, 3);
+});
+
+test("a digit given to r, f, t, F, or T is part of the repeated command (ticket 5tgzpnk3)", () => {
+  const replaced = run("‸abcdef", ["r", "5", "l", "."], { type: true });
+  assert.equal(replaced.doc, "55cdef");
+  assert.equal(replaced.show, "5‸5cdef");
+  assert.equal(changeKeys(replaced), "r5");
+  assert.equal(replaced.vim.change.count, null);
+  const counted = run("‸abcdefghijklmnopqrstuvwxyz", ["1", "0", "r", "5", "l", "."], { type: true });
+  assert.equal(counted.doc, "55555555555555555555uvwxyz");
+  assert.equal(changeKeys(counted), "r5");
+  assert.equal(counted.vim.change.count, 10);
+  const zero = run("‸abcdef", ["r", "0", "l", "."], { type: true });
+  assert.equal(zero.doc, "00cdef");
+  assert.equal(changeKeys(zero), "r0");
+  const through = run("‸a5b5c", ["d", "f", "5", "."]);
+  assert.equal(through.doc, "c");
+  assert.equal(changeKeys(through), "df5");
+  const second = run("‸a3b3c3d3e3f", ["d", "2", "f", "3", "."]);
+  assert.equal(second.doc, "e3f");
+  assert.equal(changeKeys(second), "df3");
+  assert.equal(second.vim.change.count, 2);
+  const till = run("‸xx5yy5zz", ["d", "t", "5", "l", "l", "."], { type: true });
+  assert.equal(till.doc, "x5y5zz");
+  assert.equal(changeKeys(till), "dt5");
+  const back = run("ab5cd5e‸f", ["d", "F", "5", "."], { raw: true });
+  assert.equal(changeKeys(back), "dF5");
+  assert.equal(back.doc, "abf");
+  const tillBack = run("x5ab‸x5cd", ["d", "T", "5"]);
+  assert.equal(tillBack.doc, "x5ax5cd");
+  assert.equal(changeKeys(tillBack), "dT5");
+  const changed = run("‸ab5X ab5X", ["c", "f", "5", "Q", "Escape", "."], { type: true });
+  assert.equal(changed.doc, "QX");
+  assert.equal(changeKeys(changed), "cf5");
+  assert.deepEqual(changed.vim.change.log, [{ t: "text", text: "Q" }]);
+  const column = run("ab‸c\nde\n", ["d", "0"], { raw: true });
+  assert.equal(changeKeys(column), "d0");
+  const again = run("xy‸z\n", ["."], { vim: column.vim, raw: true });
+  assert.equal(again.doc, "z\n");
+  assert.equal(changeKeys(again), "d0");
+});
+
 test("an operator waiting on dot clears and does not play the change (ticket py7xfb9e)", () => {
   const prior = run("‸abcd", ["x"]);
   const out = run(prior.show, ["d", "."], { vim: prior.vim });
