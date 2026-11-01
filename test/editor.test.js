@@ -21693,6 +21693,105 @@ test("raw End at a soft wrap asks for the line boundary and keeps that offset", 
   }
 });
 
+test("raw toggle press does not replay on a later keystroke or document", () => {
+  const mounted = mountEditor();
+  const watch = { button: null, menu: null };
+  const paints = [];
+  const original = mounted.root.replaceChildren.bind(mounted.root);
+  mounted.root.replaceChildren = (...nodes) => {
+    paints.push({
+      raw: !!(watch.button && watch.button.classList.contains("md-glyph-press")),
+      menu: !!(watch.menu && watch.menu.classList.contains("md-glyph-press")),
+    });
+    return original(...nodes);
+  };
+  const directChild = (className) => mounted.root.childNodes.find((node) => node.classList && node.classList.contains(className));
+  try {
+    const view = createEditor(mounted.root, "hello\n", 5);
+    watch.button = viewToggleOf(mounted.root);
+    watch.menu = directChild("md-doc-menu");
+    assert.ok(watch.button);
+    assert.ok(watch.menu);
+    paints.length = 0;
+    pressViewToggle(mounted.root);
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    assert.equal(watch.button.classList.contains("md-glyph-press"), true);
+    assert.ok(paints.length > 0);
+    assert.equal(paints.every((paint) => paint.raw === false), true);
+
+    paints.length = 0;
+    input(mounted, "insertText", "Z");
+    assert.equal(view.getState().doc, "helloZ\n");
+    assert.ok(paints.length > 0);
+    assert.equal(paints.every((paint) => paint.raw === false && paint.menu === false), true);
+    assert.equal(watch.button.classList.contains("md-glyph-press"), false);
+
+    paints.length = 0;
+    pressViewToggle(mounted.root);
+    assert.equal(mounted.root.classList.contains("md-source"), false);
+    assert.equal(watch.button.getAttribute("aria-pressed"), "false");
+    assert.equal(watch.button.classList.contains("md-glyph-press"), true);
+    assert.equal(paints.every((paint) => paint.raw === false), true);
+    assert.equal(viewToggleOf(mounted.root), watch.button);
+
+    paints.length = 0;
+    input(mounted, "insertText", "Q");
+    assert.equal(view.getState().doc, "helloZQ\n");
+    assert.ok(paints.length > 0);
+    assert.equal(paints.every((paint) => paint.raw === false), true);
+    assert.equal(watch.button.classList.contains("md-glyph-press"), false);
+
+    paints.length = 0;
+    watch.menu.listeners.click({ button: 0, preventDefault() {}, stopPropagation() {} });
+    assert.equal(watch.menu.classList.contains("md-glyph-press"), true);
+    assert.equal(paints.length, 0);
+    input(mounted, "insertText", "!");
+    assert.equal(view.getState().doc, "helloZQ!\n");
+    assert.ok(paints.length > 0);
+    assert.equal(paints.every((paint) => paint.raw === false && paint.menu === false), true);
+    assert.equal(watch.button.classList.contains("md-glyph-press"), false);
+    assert.equal(watch.menu.classList.contains("md-glyph-press"), false);
+    view.destroy();
+
+    paints.length = 0;
+    const transport = holdingTransport();
+    const again = createEditor(mounted.root, "hello\n", 0, transport);
+    watch.button = viewToggleOf(mounted.root);
+    watch.menu = directChild("md-doc-menu");
+    const button = watch.button;
+    transport.deliver({ type: "file", path: "a.md", rev: 1, text: "alpha\n", cursor: 0, anchor: 0, locks: [] });
+    paints.length = 0;
+    pressViewToggle(mounted.root);
+    pressViewToggle(mounted.root);
+    assert.equal(mounted.root.classList.contains("md-source"), false);
+    assert.equal(button.classList.contains("md-glyph-press"), true);
+    assert.equal(paints.every((paint) => paint.raw === false), true);
+    paints.length = 0;
+    transport.deliver({ type: "file", path: "b.md", rev: 1, text: "beta\n", cursor: 0, anchor: 0, locks: [] });
+    assert.equal(viewToggleOf(mounted.root), button);
+    assert.equal(again.getState().doc, "beta\n");
+    assert.ok(paints.length > 0);
+    assert.equal(paints.every((paint) => paint.raw === false && paint.menu === false), true);
+    assert.equal(button.classList.contains("md-glyph-press"), false);
+    paints.length = 0;
+    transport.deliver({
+      type: "doc",
+      rev: 2,
+      text: "betaZ\n",
+      cursor: 5,
+      anchor: 5,
+    });
+    assert.equal(again.getState().doc, "betaZ\n");
+    assert.ok(paints.length > 0);
+    assert.equal(paints.every((paint) => paint.raw === false), true);
+    assert.equal(button.classList.contains("md-glyph-press"), false);
+    again.destroy();
+  } finally {
+    mounted.root.replaceChildren = original;
+    mounted.restore();
+  }
+});
+
 test("raw mode is a view and Enter stores one newline", () => {
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
   assert.match(css, /#editor\.md-source\s*\{[^}]*font-family:\s*ui-monospace,\s*SFMono-Regular,\s*Menlo,\s*Consolas,\s*monospace;/);
