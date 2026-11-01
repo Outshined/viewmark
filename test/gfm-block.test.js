@@ -195,3 +195,69 @@ test("note and warning are styled boxes", () => {
   assert.match(css, /\.md-task\s*\{[^}]*width:\s*1em;/);
   assert.match(css, /\.md-footnotes\s*\{/);
 });
+
+function orderedMarkers(doc, cursor = -1) {
+  return plan(doc, cursor).blocks
+    .filter((block) => block.type === "line" && block.classes && block.classes.includes("md-ol"))
+    .map((block) => (block.raw ? null : block.marker));
+}
+
+test("df3gaq8m ordered lists render sequential numbers", () => {
+  const ticket = "1. should have number 1 when rendered\n1. should have number 2 when rendered\n3. should be number 3 when rendered\n1. this is number four when rendered\n";
+  assert.deepEqual(orderedMarkers(ticket), ["1. ", "2. ", "3. ", "4. "]);
+  const drawn = plan(ticket, -1).blocks.filter((block) => block.classes && block.classes.includes("md-ol"));
+  assert.deepEqual(drawn.map((block) => shown(block)), [
+    "should have number 1 when rendered",
+    "should have number 2 when rendered",
+    "should be number 3 when rendered",
+    "this is number four when rendered",
+  ]);
+
+  assert.deepEqual(orderedMarkers("3. a\n1. b\n8. c\n"), ["3. ", "4. ", "5. "]);
+  assert.deepEqual(orderedMarkers("5. a\n6. b\n"), ["5. ", "6. "]);
+  assert.deepEqual(orderedMarkers("0. a\n5. b\n"), ["0. ", "1. "]);
+  assert.deepEqual(orderedMarkers("01. a\n02. b\n"), ["1. ", "2. "]);
+  assert.deepEqual(orderedMarkers("9. a\n1.    b\n"), ["9. ", "10.    "]);
+  assert.deepEqual(orderedMarkers("1. a\n1.\tb\n"), ["1. ", "2.\t"]);
+  assert.deepEqual(orderedMarkers("4) a\n1) b\n"), ["4) ", "5) "]);
+  assert.deepEqual(orderedMarkers("1. a\n1) b\n2) c\n"), ["1. ", "1) ", "2) "]);
+  assert.deepEqual(orderedMarkers("1. [ ] a\n1. [x] b\n"), ["1. ", "2. "]);
+  assert.deepEqual(orderedMarkers("1. a\n\n1. b\n"), ["1. ", "2. "]);
+  assert.deepEqual(orderedMarkers("1. a\n\n\n1. b\n"), ["1. ", "2. "]);
+  assert.deepEqual(orderedMarkers("1. a\n\npara\n\n1. b\n"), ["1. ", "1. "]);
+  assert.deepEqual(orderedMarkers("1. a\n1. b\n# h\n1. c\n"), ["1. ", "2. ", "1. "]);
+  assert.deepEqual(orderedMarkers("1. a\n1. b\n---\n1. c\n"), ["1. ", "2. ", "1. "]);
+  assert.deepEqual(orderedMarkers("1. a\n1. b\n- c\n1. d\n"), ["1. ", "2. ", "1. "]);
+  assert.deepEqual(orderedMarkers("1. a\n   - b\n1. c\n"), ["1. ", "2. "]);
+  assert.deepEqual(orderedMarkers("1. a\n   1. b\n   1. c\n1. d\n"), ["1. ", "1. ", "2. ", "2. "]);
+  assert.deepEqual(orderedMarkers("1. a\n   1. b\n\n   para\n   1. c\n1. d\n"), ["1. ", "1. ", "1. ", "2. "]);
+  assert.deepEqual(orderedMarkers("1. a\n   ```\n   x\n   ```\n1. b\n"), ["1. ", "2. "]);
+  assert.deepEqual(orderedMarkers("1. a\n```\nx\n```\n1. b\n"), ["1. ", "1. "]);
+  assert.deepEqual(orderedMarkers("> 1. a\n> 1. b\n"), ["1. ", "2. "]);
+  assert.deepEqual(orderedMarkers("> 1. a\n>\n> 1. b\n"), ["1. ", "2. "]);
+  assert.deepEqual(orderedMarkers("> 1. a\n\n> 1. b\n"), ["1. ", "1. "]);
+  assert.deepEqual(orderedMarkers("1. a\n>\n1. b\n"), ["1. ", "1. "]);
+  assert.deepEqual(orderedMarkers("> 1. a\n> > 1. b\n> > 1. c\n> 1. d\n"), ["1. ", "1. ", "2. ", "2. "]);
+  assert.deepEqual(orderedMarkers("> 1. a\n> 1. b\n1. c\n"), ["1. ", "2. ", "1. "]);
+  assert.deepEqual(orderedMarkers("123456789. a\n1. b\n"), ["123456789. ", "123456790. "]);
+
+  const mixed = "1. one\n1. two\n3. three\n1. four\n";
+  const at = mixed.indexOf("two");
+  const lines = plan(mixed, at).blocks.filter((block) => block.classes && block.classes.includes("md-ol"));
+  assert.equal(lines[0].marker, "1. ");
+  assert.equal(lines[1].raw, true);
+  assert.equal(Object.hasOwn(lines[1], "marker"), false);
+  assert.equal(lines[1].text.startsWith("1. two"), true);
+  assert.equal(lines[2].marker, "3. ");
+  assert.equal(lines[3].marker, "4. ");
+
+  const table = plan("| h |\n| --- |\n| 1. a<br>1. b<br>3. c |\n", -1).blocks.find((block) => block.type === "table");
+  const found = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (node.type === "quote") { walk(node.child); return; }
+    if (node.classes && node.classes.includes("md-ol")) found.push(node.marker);
+  };
+  for (const node of table.rows[0][0].blocks) walk(node);
+  assert.deepEqual(found, ["1. ", "2. ", "3. "]);
+});
