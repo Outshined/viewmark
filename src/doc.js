@@ -3802,7 +3802,9 @@ function paintCell(cell, doc, refs) {
   if (only && cellIsPlainParagraph(only.text) && (only.text !== "" || !broke)) {
     return { ...cell, parts: paintInline(only, doc, refs) };
   }
-  return { ...cell, blocks: cellBlocks(lines, findSpans(doc), refs) };
+  const blocks = cellBlocks(lines, findSpans(doc), refs);
+  numberOrderedMarkers(doc, blocks, true);
+  return { ...cell, blocks };
 }
 
 // A link reference definition is a block. The first label wins. A later copy stays text.
@@ -4507,6 +4509,182 @@ function orderedMarker(line, mode) {
   let text = line.text.slice(0, mode.marker || 0);
   if (mode.quoted) text = text.slice(mode.quote || 0);
   return text.replace(/^[ \t]+/, "");
+}
+
+function columnWidth(text) {
+  let column = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    column += text[i] === "\t" ? 4 - (column % 4) : 1;
+  }
+  return column;
+}
+
+// After `depth` quote markers. Null when the line is no longer inside that quote.
+function bodyColumn(text, depth) {
+  let rest = text;
+  let consumed = 0;
+  let got = 0;
+  while (got < depth) {
+    const size = quoteMarkerSize(rest);
+    if (size === 0) return null;
+    rest = rest.slice(size);
+    consumed += size;
+    got += 1;
+  }
+  return columnWidth(text.slice(0, consumed + indentColumns(rest).index));
+}
+
+function lineOrigin(doc, block) {
+  if (!block || typeof block.start !== "number") return null;
+  if (block.start > 0 && doc[block.start - 1] !== "\n") return null;
+  return sourceLine(doc, block.start);
+}
+
+function exposeBlock(node) {
+  let quote = 0;
+  let current = node;
+  while (current && current.type === "quote" && current.child) {
+    quote += 1;
+    current = current.child;
+  }
+  return { block: current, quote };
+}
+
+function decimalValue(digits) {
+  let value = 0;
+  for (let i = 0; i < digits.length; i += 1) value = value * 10 + (digits.charCodeAt(i) - 48);
+  return value;
+}
+
+function readOrderedMarker(doc, block, embedded) {
+  if (!embedded) {
+    const origin = lineOrigin(doc, block);
+    if (origin) {
+      const mode = classify(origin.text);
+      if (mode.kind === "ol") return orderedMarker(origin, mode);
+    }
+  }
+  return typeof block.marker === "string" ? block.marker : "";
+}
+
+function listPlace(doc, block, embedded, wrapQuote) {
+  let quote = wrapQuote;
+  if (!embedded) {
+    const origin = lineOrigin(doc, block);
+    if (origin) quote = peelCellQuotes(origin.text).depth;
+    else if (classHas(block, "md-quote")) quote = block.quoteDepth > 1 ? block.quoteDepth : 1;
+  } else if (classHas(block, "md-quote")) {
+    quote += block.quoteDepth > 1 ? block.quoteDepth : 1;
+  }
+  return { indent: typeof block.indent === "number" ? block.indent : 0, quote };
+}
+
+function orderedIdentity(doc, block, embedded, wrapQuote) {
+  const marker = readOrderedMarker(doc, block, embedded);
+  const match = /^(\d{1,9})([.)])([ \t]*)$/.exec(marker);
+  if (!match) return null;
+  const place = listPlace(doc, block, embedded, wrapQuote);
+  return {
+    indent: place.indent,
+    quote: place.quote,
+    delim: match[2],
+    sep: match[3],
+    num: decimalValue(match[1]),
+    contentColumn: typeof block.contentColumn === "number" ? block.contentColumn : place.indent + marker.length,
+    raw: block.raw === true,
+  };
+}
+
+// A blank keeps a list open. A quote marker alone is a blank at that depth, and a real blank ends a quote.
+function gapQuote(doc, block, embedded) {
+  if (!block || block.type !== "line") return null;
+  if (block.empty) return 0;
+  if (embedded) return null;
+  const origin = lineOrigin(doc, block);
+  if (!origin) return null;
+  const peeled = peelCellQuotes(origin.text);
+  if (peeled.rest.trim() !== "") return null;
+  return peeled.depth;
+}
+
+function listHolds(list, doc, block, embedded, wrapQuote) {
+  if (!embedded) {
+    const origin = lineOrigin(doc, block);
+    if (origin) {
+      const column = bodyColumn(origin.text, list.quote);
+      if (column === null) return false;
+      return column >= list.contentColumn;
+    }
+  }
+  const place = listPlace(doc, block, embedded, wrapQuote);
+  if (place.quote < list.quote) return false;
+  return place.indent >= list.contentColumn;
+}
+
+function popOutside(stack, doc, block, embedded, wrapQuote) {
+  while (stack.length && !listHolds(stack[stack.length - 1], doc, block, embedded, wrapQuote)) stack.pop();
+}
+
+// GFM draws an ordered list from the first item's number. Later markers are not the rendered numbers.
+function numberOrderedMarkers(doc, blocks, embedded) {
+  const text = typeof doc === "string" ? doc : "";
+  const stack = [];
+  for (const node of blocks || []) {
+    const exposed = exposeBlock(node);
+    const block = exposed.block;
+    if (!block) continue;
+    const gap = block.type === "line" ? gapQuote(text, block, embedded) : null;
+    if (gap !== null) {
+      while (stack.length && stack[stack.length - 1].quote > gap) stack.pop();
+      if (gap > 0) {
+        while (stack.length && stack[stack.length - 1].quote < gap) {
+          if (listHolds(stack[stack.length - 1], text, block, embedded, exposed.quote)) break;
+          stack.pop();
+        }
+      }
+      continue;
+    }
+    if (block.type === "line" && classHas(block, "md-ol") && !block.empty) {
+      const item = orderedIdentity(text, block, embedded, exposed.quote);
+      if (item) {
+        while (stack.length) {
+          const top = stack[stack.length - 1];
+          if (top.quote > item.quote) { stack.pop(); continue; }
+          if (top.quote === item.quote && top.indent > item.indent) { stack.pop(); continue; }
+          if (top.quote === item.quote && top.indent === item.indent && top.delim !== item.delim) { stack.pop(); continue; }
+          break;
+        }
+        const top = stack[stack.length - 1];
+        let number = item.num;
+        if (top && top.quote === item.quote && top.indent === item.indent && top.delim === item.delim) {
+          number = top.next;
+          top.next += 1;
+          top.contentColumn = item.contentColumn;
+        } else {
+          stack.push({
+            indent: item.indent,
+            quote: item.quote,
+            delim: item.delim,
+            next: number + 1,
+            contentColumn: item.contentColumn,
+          });
+        }
+        if (!item.raw) block.marker = String(number) + item.delim + item.sep;
+        continue;
+      }
+    }
+    if (block.type === "line" && classHas(block, "md-li") && !block.empty) {
+      const place = listPlace(text, block, embedded, exposed.quote);
+      while (stack.length) {
+        const top = stack[stack.length - 1];
+        if (top.quote > place.quote) { stack.pop(); continue; }
+        if (top.quote === place.quote && top.indent >= place.indent) { stack.pop(); continue; }
+        break;
+      }
+      continue;
+    }
+    popOutside(stack, text, block, embedded, exposed.quote);
+  }
 }
 
 // The cursor line draws the source. A strike class would line through the tildes.
@@ -5570,6 +5748,7 @@ export function plan(doc, cursor, revealTail) {
   continueQuoteBars(blocks);
   markAlerts(text, blocks);
   markParagraphSpace(blocks);
+  numberOrderedMarkers(text, blocks, false);
   const lines = blocks.filter((block) => block.type === "line");
   const atoms = [];
   for (const block of blocks) {
