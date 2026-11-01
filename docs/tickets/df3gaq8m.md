@@ -13,3 +13,5 @@ Numbered lists need to be rendered with sequential numbers, even if the numbers 
 1. should have number 2 when rendered
 3. should be number 3 when rendered
 1. this is number four when rendered
+
+Checked on 2026-11-01. An ordered list renders from the first item's number and counts from there. The list in this ticket draws as 1, 2, 3, and 4. A list that starts at another number keeps that start. The caret line still shows the source marker. A nested list, a different delimiter, or a paragraph ends the count.
