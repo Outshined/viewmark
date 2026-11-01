@@ -16281,11 +16281,11 @@ test("T-ticket-fields", () => {
     const dependRow = (id) => byClass(byClass(form, "md-ticket-depends")[0], "md-ticket-link").find((node) => node.dataset.id === id);
     assert.deepEqual(
       state().childNodes.map((option) => option.textContent),
-      ["new", "triaged", "in progress", "blocked", "pending review", "closed"],
+      ["new", "triaged", "in progress", "blocked", "pending review", "reviewed", "closed"],
     );
     assert.deepEqual(
       state().childNodes.map((option) => option.value),
-      ["new", "triaged", "in progress", "blocked", "pending review", "closed"],
+      ["new", "triaged", "in progress", "blocked", "pending review", "reviewed", "closed"],
     );
     assert.equal(byClass(parent(), "md-ticket-match")[0].value, "Bravo");
     assert.equal(dependRow("bbbbbbbb").textContent, "Bravo");

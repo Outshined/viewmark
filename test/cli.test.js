@@ -95,7 +95,7 @@ const HELP_NEEDLES = [
   "--priority",
   "--parent",
   "low, medium, or high",
-  "--state is new, triaged, in progress, blocked, pending review, or closed.",
+  "--state is new, triaged, in progress, blocked, pending review, reviewed, or closed.",
   "An omitted create stores medium",
   "--depends",
   "--assignee",
@@ -2302,6 +2302,22 @@ test("T-cli-ticket-blocked-pending", async () => {
     const unknownCreate = await runFast(ticketArgs(port, ["ticket", "create", "--title", "Nope", "--state", "waiting"]));
     assert.equal(unknownCreate.code, 2);
     assert.equal(unknownCreate.stdout, "");
+
+    const reviewed = await runFast(ticketArgs(port, ["ticket", "create", "--title", "Accepted", "--state", "reviewed"]));
+    assert.equal(reviewed.code, 0);
+    const reviewedId = reviewed.stdout.trim();
+    const reviewedPath = path.join(dir, "tickets", `${reviewedId}.md`);
+    assert.equal(parseTicket(reviewedId, await fs.readFile(reviewedPath, "utf8")).state, "reviewed");
+    const toReviewed = await runFast(ticketArgs(port, ["ticket", "set", pendingId, "--state", "reviewed"]));
+    assert.equal(toReviewed.code, 0);
+    assert.equal(parseTicket(pendingId, await fs.readFile(pendingPath, "utf8")).state, "reviewed");
+    const titled = await runFast(ticketArgs(port, ["ticket", "set", reviewedId, "--state", "Reviewed"]));
+    assert.equal(titled.code, 2);
+    assert.equal(parseTicket(reviewedId, await fs.readFile(reviewedPath, "utf8")).state, "reviewed");
+    const shown = await runFast(ticketArgs(port, ["ticket", "list"]));
+    assert.equal(shown.code, 0);
+    assert.equal(row(shown.stdout, reviewedId).split("\t")[2], "reviewed");
+    assert.equal(row(shown.stdout, pendingId).split("\t")[2], "reviewed");
   });
 });
 
