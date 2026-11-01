@@ -521,6 +521,7 @@ const TICKET_COLUMNS = [
   { key: "assignee", label: "Assignee", className: "md-ticket-assignee" },
   { key: "state", label: "State", className: "md-ticket-state" },
   { key: "type", label: "Type", className: "md-ticket-type" },
+  { key: "created", label: "Created date", className: "md-ticket-created-date" },
 ];
 
 function filterBoxes(menu) {
@@ -712,6 +713,18 @@ function compareTickets(a, b) {
 function columnText(ticket, key) {
   const value = ticket && ticket[key];
   return typeof value === "string" ? value : "";
+}
+
+// The cell is the UTC day. A sort on this column still compares the full timestamp.
+function createdDateLabel(value) {
+  if (typeof value !== "string" || value.length === 0) return "";
+  const day = /^(\d{4}-\d{2}-\d{2})(?:T|$)/.exec(value);
+  return day ? day[1] : value;
+}
+
+function ticketColumnValue(ticket, key) {
+  if (key === "created") return createdDateLabel(ticket && ticket.created);
+  return columnText(ticket, key);
 }
 
 function orderSiblings(list, order) {
@@ -13708,14 +13721,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (typeof open.setAttribute === "function") open.setAttribute("type", "button");
     const path = `tickets/${ticket.id}.md`;
     open.dataset.path = path;
-    const fields = [
-      ["md-ticket-id", ticket.id],
-      ["md-ticket-title", ticket.title],
-      ["md-ticket-priority", ticket.priority],
-      ["md-ticket-assignee", ticket.assignee || ""],
-      ["md-ticket-state", ticket.state],
-      ["md-ticket-type", ticket.type],
-    ];
+    const fields = TICKET_COLUMNS.map((column) => [column.className, ticketColumnValue(ticket, column.key)]);
     const titleQuery = ticketSearch && typeof ticketSearch.query === "string" ? ticketSearch.query : "";
     for (const [className, text] of fields) {
       const span = document.createElement("span");

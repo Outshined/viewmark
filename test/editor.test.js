@@ -15019,6 +15019,11 @@ function ticketFixture(id, title, state, created, parent = "", depends = [], rep
   return { id, title, state, type, priority, parent, depends: depends.slice(), reporter, created };
 }
 
+function createdDay(value) {
+  const day = /^(\d{4}-\d{2}-\d{2})(?:T|$)/.exec(typeof value === "string" ? value : "");
+  return day ? day[1] : (typeof value === "string" ? value : "");
+}
+
 function mountTicketPage() {
   const mounted = mountSheet();
   const nav = document.createElement("nav");
@@ -15117,6 +15122,7 @@ test("T-ticket-rows", () => {
   assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.md-ticket-priority[^{]*\{[^}]*display:\s*none/);
   assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.md-ticket-state[^{]*\{[^}]*display:\s*none/);
   assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.md-ticket-type[^{]*\{[^}]*display:\s*none/);
+  assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)[^{]*\.md-ticket-created-date[^{]*\{[^}]*display:\s*none/);
   const sortButtonRule = css.match(/\.ticket-tree \.md-ticket-columns button\s*\{[^}]*\}/);
   assert.ok(sortButtonRule);
   assert.match(sortButtonRule[0], /font-weight:\s*bold/);
@@ -15131,8 +15137,8 @@ test("T-ticket-rows", () => {
   assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)\s+\.ticket-tree\s*\{[^}]*border:\s*0/);
   assert.match(css, /\.md-ticket-wide\s+\.ticket-tree\s*\{[^}]*border:\s*1px solid #4a463f/);
   assert.match(css, /\.md-ticket-drawer:not\(\.md-ticket-wide\)\s+\.md-ticket-columns\s*\{[^}]*display:\s*none/);
-  const gutterTracks = /grid-template-columns:\s*1\.1em 8rem minmax\(0,\s*1fr\) 5\.5rem 7rem 7\.5rem 8\.5rem/;
-  const fieldTracks = /grid-template-columns:\s*8rem minmax\(0,\s*1fr\) 5\.5rem 7rem 7\.5rem 8\.5rem/;
+  const gutterTracks = /grid-template-columns:\s*1\.1em 8rem minmax\(0,\s*1fr\) 5\.5rem 7rem 7\.5rem 8\.5rem 9\.5rem/;
+  const fieldTracks = /grid-template-columns:\s*8rem minmax\(0,\s*1fr\) 5\.5rem 7rem 7\.5rem 8\.5rem 9\.5rem/;
   assert.match(css.match(/\.ticket-tree \.md-ticket-row\s*\{[^}]*\}/)[0], gutterTracks);
   assert.match(css.match(/\.ticket-tree \.md-ticket-row\s*\{[^}]*\}/)[0], /column-gap:\s*0\.75rem/);
   assert.match(css.match(/\.ticket-tree \.md-ticket-columns\s*\{[^}]*\}/)[0], gutterTracks);
@@ -15145,6 +15151,7 @@ test("T-ticket-rows", () => {
   assert.match(idRule[0], /\.md-ticket-assignee/);
   assert.match(idRule[0], /\.md-ticket-state/);
   assert.match(idRule[0], /\.md-ticket-type/);
+  assert.match(idRule[0], /\.md-ticket-created-date/);
   assert.match(idRule[0], /min-width:\s*0/);
   assert.match(idRule[0], /overflow:\s*hidden/);
   assert.match(idRule[0], /text-overflow:\s*ellipsis/);
@@ -15235,9 +15242,10 @@ test("T-ticket-rows", () => {
         ["BUTTON", "Assignee"],
         ["BUTTON", "State"],
         ["BUTTON", "Type"],
+        ["BUTTON", "Created date"],
       ],
     );
-    for (const label of ["ID", "Title", "Priority", "Assignee", "State", "Type"]) {
+    for (const label of ["ID", "Title", "Priority", "Assignee", "State", "Type", "Created date"]) {
       const button = columns.childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === label);
       assert.equal(button.getAttribute("aria-label"), `Sort by ${label}`);
       assert.equal(button.type, "button");
@@ -15284,6 +15292,7 @@ test("T-ticket-rows", () => {
         "md-ticket-assignee",
         "md-ticket-state",
         "md-ticket-type",
+        "md-ticket-created-date",
       ]);
       assert.deepEqual(spans.map((span) => span.textContent), [
         ticket.id,
@@ -15292,6 +15301,7 @@ test("T-ticket-rows", () => {
         ticket.assignee || "",
         ticket.state,
         ticket.type,
+        createdDay(ticket.created),
       ]);
       assert.equal(row.textContent.includes(ticket.title), true);
       assert.equal(row.textContent.includes(ticket.state), true);
@@ -15306,6 +15316,7 @@ test("T-ticket-rows", () => {
       "",
       "new",
       "enhancement",
+      "2026-10-01",
     ]);
     assert.equal(ticketSpans(mounted.nav, "cccccccc").find((span) => span.classList.contains("md-ticket-type")).textContent, "bug");
     assert.deepEqual(ticketSpans(mounted.nav, "bbbbbbbb").map((span) => span.textContent), [
@@ -15315,6 +15326,7 @@ test("T-ticket-rows", () => {
       "",
       "new",
       "task",
+      "2026-10-02",
     ]);
     const open = byClass(ticketNode(mounted.nav, "bbbbbbbb"), "md-ticket").find((node) => node.tagName === "BUTTON");
     open.listeners.click({ preventDefault() {} });
@@ -15587,6 +15599,57 @@ test("T-file-drawer", () => {
   }
 });
 
+test("uwgvern2 created date column", () => {
+  const mounted = mountTicketPage();
+  const transport = holdingTransport();
+  try {
+    const view = createEditor(mounted.root, "notes", 0, transport);
+    const later = ticketFixture("aaaaaaaa", "A", "new", "2026-10-01T18:00:00.000Z");
+    const earlier = ticketFixture("bbbbbbbb", "B", "new", "2026-10-01T08:00:00.000Z");
+    const older = ticketFixture("cccccccc", "C", "new", "2026-09-15T23:59:59.999Z");
+    const blank = ticketFixture("dddddddd", "D", "new", "");
+    const raw = ticketFixture("eeeeeeee", "E", "new", "not-a-date");
+    transport.deliver({ type: "tickets", tickets: [later, earlier, older, blank, raw] });
+    const columns = byClass(mounted.nav, "md-ticket-columns")[0];
+    const heading = (label) => columns.childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === label);
+    const created = heading("Created date");
+    assert.equal(created.getAttribute("data-sort"), "created");
+    assert.equal(created.getAttribute("aria-label"), "Sort by Created date");
+    assert.deepEqual(
+      columns.childNodes.filter((node) => node.tagName === "BUTTON").map((node) => node.textContent),
+      ["ID", "Title", "Priority", "Assignee", "State", "Type", "Created date"],
+    );
+    const cell = (id) => ticketSpans(mounted.nav, id).find((span) => span.classList.contains("md-ticket-created-date")).textContent;
+    assert.equal(cell("aaaaaaaa"), "2026-10-01");
+    assert.equal(cell("bbbbbbbb"), "2026-10-01");
+    assert.equal(cell("cccccccc"), "2026-09-15");
+    assert.equal(cell("dddddddd"), "");
+    assert.equal(cell("eeeeeeee"), "not-a-date");
+    assert.equal(ticketSpans(mounted.nav, "aaaaaaaa").at(-1).className, "md-ticket-created-date");
+    // Title order puts the later same-day ticket first. A day-only sort would leave it there.
+    heading("Title").listeners.click({ preventDefault() {} });
+    assert.deepEqual(rootTicketIds(mounted.nav), ["aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd", "eeeeeeee"]);
+    heading("Created date").listeners.click({ preventDefault() {} });
+    assert.deepEqual(rootTicketIds(mounted.nav), ["dddddddd", "cccccccc", "bbbbbbbb", "aaaaaaaa", "eeeeeeee"]);
+    const asc = heading("Created date").childNodes.find((node) => String(node.tagName || "").toLowerCase() === "svg");
+    const ascPath = asc.childNodes.find((node) => String(node.tagName || "").toLowerCase() === "path");
+    assert.equal(asc.getAttribute("viewBox"), "0 0 24 24");
+    assert.equal(asc.getAttribute("aria-hidden"), "true");
+    assert.equal(ascPath.getAttribute("d"), "M12 19V5M5 12l7-7 7 7");
+    heading("Created date").listeners.click({ preventDefault() {} });
+    assert.deepEqual(rootTicketIds(mounted.nav), ["eeeeeeee", "aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd"]);
+    const desc = heading("Created date").childNodes.find((node) => String(node.tagName || "").toLowerCase() === "svg");
+    const descPath = desc.childNodes.find((node) => String(node.tagName || "").toLowerCase() === "path");
+    assert.equal(descPath.getAttribute("d"), "M12 5v14M19 12l-7 7-7-7");
+    heading("Created date").listeners.click({ preventDefault() {} });
+    assert.deepEqual(rootTicketIds(mounted.nav), ["dddddddd", "cccccccc", "bbbbbbbb", "aaaaaaaa", "eeeeeeee"]);
+    assert.equal(heading("Created date").childNodes.some((node) => String(node.tagName || "").toLowerCase() === "svg"), false);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("T-ticket-drawer", () => {
   const mounted = mountTicketPage();
   const transport = holdingTransport();
@@ -15632,9 +15695,9 @@ test("T-ticket-drawer", () => {
     const idHead = heading("ID");
     assert.deepEqual(
       columns.childNodes.filter((node) => node.tagName === "BUTTON").map((node) => node.textContent),
-      ["ID", "Title", "Priority", "Assignee", "State", "Type"],
+      ["ID", "Title", "Priority", "Assignee", "State", "Type", "Created date"],
     );
-    for (const label of ["ID", "Title", "Priority", "Assignee", "State", "Type"]) {
+    for (const label of ["ID", "Title", "Priority", "Assignee", "State", "Type", "Created date"]) {
       assert.equal(heading(label).getAttribute("aria-label"), `Sort by ${label}`);
     }
     title.listeners.click({ preventDefault() {} });
@@ -22477,7 +22540,7 @@ test("glyph button title is the browser tooltip", () => {
     words(cancels[0]);
 
     const columns = byClass(mounted.nav, "md-ticket-columns")[0];
-    for (const label of ["ID", "Title", "Priority", "Assignee", "State", "Type"]) {
+    for (const label of ["ID", "Title", "Priority", "Assignee", "State", "Type", "Created date"]) {
       const button = columns.childNodes.find((node) => node.tagName === "BUTTON" && node.textContent === label);
       words(button);
       assert.equal(button.getAttribute("aria-label"), `Sort by ${label}`);

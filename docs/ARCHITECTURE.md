@@ -137,7 +137,7 @@ The states are `new`, `triaged`, `in progress`, `blocked`, `pending review`, `re
 
 Reporter is the username that created the ticket. Created is the hub's clock, in ISO-8601 UTC with milliseconds. Neither field can be changed. A `ticket.set` that includes either one is 400 and writes nothing.
 
-A row in the narrow list shows the title. Hovering the ticket box widens the list to show the id, title, priority, assignee, state, and type. The title, state, type, priority, assignee, parent, and depends are edited in a form above the editor, and a changed field is saved when it changes. The id is shown with a copy button. The page does not send a type or a priority on create, so the hub stores `task` and `medium`.
+A row in the narrow list shows the title. Hovering the ticket box widens the list to show the id, title, priority, assignee, state, type, and created date. The created date is the UTC calendar day of the stored created time. The title, state, type, priority, assignee, parent, and depends are edited in a form above the editor, and a changed field is saved when it changes. The id is shown with a copy button. The page does not send a type or a priority on create, so the hub stores `task` and `medium`.
 
 The ticket box has a filter menu. The checkboxes are closed, low, medium, high, task, enhancement, and defect, in that order. Defect is the label for type `bug`. The value stored in the file remains `bug`. A checkbox that is off hides every ticket of that kind, including a ticket that is open in the editor. Closed starts off, so closed tickets stay hidden until that box is turned on. The other boxes start on. Show all, the last item in the menu, turns every box on. When a parent is hidden, its children are listed at the top level.
 

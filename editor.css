@@ -317,7 +317,7 @@ nav.files .md-ticket-filter-menu input {
 
 .ticket-tree .md-ticket-row {
   display: grid;
-  grid-template-columns: 1.1em 8rem minmax(0, 1fr) 5.5rem 7rem 7.5rem 8.5rem;
+  grid-template-columns: 1.1em 8rem minmax(0, 1fr) 5.5rem 7rem 7.5rem 8.5rem 9.5rem;
   column-gap: 0.75rem;
   align-items: center;
   min-width: 0;
@@ -362,7 +362,7 @@ nav.files .md-ticket-filter-menu input {
   display: grid;
   grid-column: 2 / -1;
   grid-row: 1;
-  grid-template-columns: 8rem minmax(0, 1fr) 5.5rem 7rem 7.5rem 8.5rem;
+  grid-template-columns: 8rem minmax(0, 1fr) 5.5rem 7rem 7.5rem 8.5rem 9.5rem;
   column-gap: 0.75rem;
   align-items: center;
   min-width: 0;
@@ -391,7 +391,8 @@ nav.files .md-ticket-filter-menu input {
 .ticket-tree .md-ticket-priority,
 .ticket-tree .md-ticket-assignee,
 .ticket-tree .md-ticket-state,
-.ticket-tree .md-ticket-type {
+.ticket-tree .md-ticket-type,
+.ticket-tree .md-ticket-created-date {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -409,7 +410,7 @@ nav.files .md-ticket-filter-menu input {
   top: 0;
   z-index: 1;
   display: grid;
-  grid-template-columns: 1.1em 8rem minmax(0, 1fr) 5.5rem 7rem 7.5rem 8.5rem;
+  grid-template-columns: 1.1em 8rem minmax(0, 1fr) 5.5rem 7rem 7.5rem 8.5rem 9.5rem;
   column-gap: 0.75rem;
   background: #1c1b19;
   white-space: nowrap;
@@ -489,7 +490,8 @@ nav.files .md-ticket-filter-menu input {
 .md-ticket-drawer:not(.md-ticket-wide) .md-ticket-priority,
 .md-ticket-drawer:not(.md-ticket-wide) .md-ticket-assignee,
 .md-ticket-drawer:not(.md-ticket-wide) .md-ticket-state,
-.md-ticket-drawer:not(.md-ticket-wide) .md-ticket-type {
+.md-ticket-drawer:not(.md-ticket-wide) .md-ticket-type,
+.md-ticket-drawer:not(.md-ticket-wide) .md-ticket-created-date {
   display: none;
 }
 
