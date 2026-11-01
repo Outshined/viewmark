@@ -3557,6 +3557,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let sourceMode = false;
   let rawPath = "";
   let viewToggle = null;
+  // This paint is the toggle's press. A later paint must not play it again.
+  let viewTogglePressed = false;
   let pathStrip = null;
   let pathStripLine = null;
   let fileMenu = null;
@@ -8827,6 +8829,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (sourceMode) rawPath = openPath;
     const anchor = state.anchor;
     const cursor = state.cursor;
+    viewTogglePressed = true;
     render();
     state = { ...state, anchor, cursor };
     placingCaret = true;
@@ -9100,7 +9103,25 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
+  // Putting a pressed glyph back on the editor restarts its scale.
+  function releaseMovedPress() {
+    for (const node of childArray(root)) {
+      if (!node || !node.classList || typeof node.classList.contains !== "function") continue;
+      if (!node.classList.contains("md-glyph-press")) continue;
+      node.classList.remove("md-glyph-press");
+    }
+  }
+
+  function armViewTogglePress() {
+    const button = viewToggle;
+    if (!button || !button.classList || typeof button.classList.add !== "function") return;
+    if (!button.classList.contains("md-glyph-press")) button.classList.add("md-glyph-press");
+  }
+
   function render() {
+    const viewPressed = viewTogglePressed;
+    viewTogglePressed = false;
+    releaseMovedPress();
     if (gestureTimer != null) {
       clearTimeout(gestureTimer);
       gestureTimer = null;
@@ -9172,6 +9193,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       restoreCornerPin();
       if (!commentFocus) revealCaretBelowStrip();
     } finally {
+      if (viewPressed) armViewTogglePress();
       if (gestureHeld) gestureHold = false;
       syncVimMatchPaint();
     }
