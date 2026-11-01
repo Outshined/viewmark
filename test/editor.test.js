@@ -28997,3 +28997,19 @@ test("a file switch and a remote edit keep the remembered change (ticket py7xfb9
     view.destroy();
   });
 });
+
+test("dot repeats r, including a count and a digit (ticket 5tgzpnk3)", () => {
+  return withVimFlag(true, (mounted) => {
+    const counted = createEditor(mounted.root, "abcdefghijKLMNOPQRST\n", 0);
+    for (const key of ["1", "0", "r", "x", "."]) vimType(mounted, key);
+    assert.equal(counted.getState().doc, "xxxxxxxxxxxxxxxxxxxT\n");
+    assert.equal(counted.getState().cursor, 18);
+    counted.destroy();
+
+    const digit = createEditor(mounted.root, "ab cd ef\n", 0);
+    for (const key of ["r", "5", "w", "."]) vimType(mounted, key);
+    assert.equal(digit.getState().doc, "5b 5d ef\n");
+    assert.equal(digit.getState().cursor, 3);
+    digit.destroy();
+  });
+});

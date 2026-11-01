@@ -3433,10 +3433,24 @@ function explicitCount(vim) {
   return repeatOf({ input: { prefixRepeat: prefix, motionRepeat: motion } });
 }
 
+// r, f, F, t, and T take the next key as a character. A digit there is not a count,
+// and stripping it would replay the command with no character.
+function charArgument(key) {
+  if (!key || key.ctrl || key.meta || key.alt) return false;
+  return key.key === "r" || key.key === "f" || key.key === "F" || key.key === "t" || key.key === "T";
+}
+
 function stripCounts(keys) {
   const out = [];
   let open = false;
+  let literal = false;
   for (const key of keys || []) {
+    if (literal) {
+      out.push(copyKey(key));
+      literal = false;
+      open = false;
+      continue;
+    }
     const digit = !key.ctrl && !key.meta && !key.alt && /^[0-9]$/.test(key.key);
     if (digit && !(key.key === "0" && !open)) {
       open = true;
@@ -3444,6 +3458,7 @@ function stripCounts(keys) {
     }
     open = false;
     out.push(copyKey(key));
+    literal = charArgument(key);
   }
   return out;
 }
