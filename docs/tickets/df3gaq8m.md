@@ -1,5 +1,5 @@
 title: Numbered lists not rendering properly
-state: pending review
+state: closed
 type: bug
 priority: medium
 parent:

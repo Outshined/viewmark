@@ -1,5 +1,5 @@
 title: Raw markdown toggle button misbehaving
-state: pending review
+state: closed
 type: bug
 priority: medium
 parent:

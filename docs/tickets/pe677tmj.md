@@ -1,5 +1,5 @@
 title: Add a new ticket state
-state: pending review
+state: closed
 type: task
 priority: medium
 parent:

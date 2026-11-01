@@ -1,5 +1,5 @@
 title: in vim keys '.' does not repeat a replace operation
-state: pending review
+state: closed
 type: bug
 priority: medium
 parent:

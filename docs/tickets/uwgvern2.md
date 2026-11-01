@@ -1,5 +1,5 @@
 title: Add 'created date' as a column in the ticket table.
-state: pending review
+state: closed
 type: enhancement
 priority: low
 parent:
