@@ -505,6 +505,13 @@ function pathBesideLabel(filePath, label, query) {
 
 // Defect is the label for ticket type bug. The form select still uses TICKET_TYPES.
 const TICKET_FILTERS = [
+  { label: "backlog", filter: "backlog", checked: true },
+  { label: "new", filter: "new", checked: true },
+  { label: "triaged", filter: "triaged", checked: true },
+  { label: "in progress", filter: "in progress", checked: true },
+  { label: "blocked", filter: "blocked", checked: true },
+  { label: "pending review", filter: "pending review", checked: true },
+  { label: "reviewed", filter: "reviewed", checked: true },
   { label: "closed", filter: "closed", checked: false },
   { label: "low", filter: "low", checked: true },
   { label: "medium", filter: "medium", checked: true },
@@ -13708,7 +13715,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function visibleTicketList() {
     const on = enabledFilters(filesNav());
     const filtered = ticketList.filter((ticket) => {
-      if (ticket.state === "closed" && !on.has("closed")) return false;
+      if (!on.has(ticket.state)) return false;
       if (!on.has(ticket.priority)) return false;
       if (!on.has(ticket.type)) return false;
       return true;

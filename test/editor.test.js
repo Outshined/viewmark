@@ -16114,14 +16114,14 @@ test("T-ticket-filter", () => {
     assert.equal(byClass(mounted.nav, "md-new-ticket-name").length, 0);
     assert.ok(block.childNodes.indexOf(menu) < block.childNodes.indexOf(drawer));
     const labels = menu.childNodes.filter((node) => node.tagName === "LABEL");
-    assert.deepEqual(labels.map((label) => label.textContent), ["closed", "low", "medium", "high", "task", "enhancement", "defect"]);
+    assert.deepEqual(labels.map((label) => label.textContent), ["backlog", "new", "triaged", "in progress", "blocked", "pending review", "reviewed", "closed", "low", "medium", "high", "task", "enhancement", "defect"]);
     assert.deepEqual(
       labels.map((label) => label.childNodes.find((node) => node.tagName === "INPUT").dataset.filter),
-      ["closed", "low", "medium", "high", "task", "enhancement", "bug"],
+      ["backlog", "new", "triaged", "in progress", "blocked", "pending review", "reviewed", "closed", "low", "medium", "high", "task", "enhancement", "bug"],
     );
     const box = (key) => filterBox(menu, key);
     assert.equal(box("closed").checked, false);
-    for (const key of ["low", "medium", "high", "task", "enhancement", "bug"]) assert.equal(box(key).checked, true);
+    for (const key of ["backlog", "new", "triaged", "in progress", "blocked", "pending review", "reviewed", "low", "medium", "high", "task", "enhancement", "bug"]) assert.equal(box(key).checked, true);
     const beforeOpen = transport.sent.length;
     drawer.classList.add("md-ticket-wide");
     filter.listeners.click({ preventDefault() {} });
@@ -16134,6 +16134,18 @@ test("T-ticket-filter", () => {
     assert.equal(drawer.classList.contains("md-ticket-wide"), true);
     assert.equal(ticketNode(mounted.nav, "dddddddd").parentElement.classList.contains("ticket-tree"), true);
     assert.equal(byClass(ticketNode(mounted.nav, "cccccccc"), "md-ticket-expand").length, 0);
+    box("new").checked = false;
+    box("new").listeners.change();
+    assert.equal(ticketNode(mounted.nav, "aaaaaaaa"), undefined);
+    assert.equal(ticketNode(mounted.nav, "bbbbbbbb"), undefined);
+    assert.equal(ticketNode(mounted.nav, "cccccccc"), undefined);
+    assert.equal(ticketNode(mounted.nav, "dddddddd"), undefined);
+    box("new").checked = true;
+    box("new").listeners.change();
+    assert.ok(ticketNode(mounted.nav, "aaaaaaaa"));
+    assert.ok(ticketNode(mounted.nav, "bbbbbbbb"));
+    assert.ok(ticketNode(mounted.nav, "cccccccc"));
+    assert.ok(ticketNode(mounted.nav, "dddddddd"));
     const beforeLow = transport.sent.length;
     box("low").checked = false;
     box("low").listeners.change();
@@ -16153,7 +16165,7 @@ test("T-ticket-filter", () => {
     all.listeners.click({ preventDefault() {} });
     assert.equal(transport.sent.length, beforeAll);
     assert.equal(menu.hidden, false);
-    for (const key of ["closed", "low", "medium", "high", "task", "enhancement", "bug"]) assert.equal(box(key).checked, true);
+    for (const key of ["backlog", "new", "triaged", "in progress", "blocked", "pending review", "reviewed", "closed", "low", "medium", "high", "task", "enhancement", "bug"]) assert.equal(box(key).checked, true);
     assert.ok(ticketNode(mounted.nav, "aaaaaaaa"));
     assert.ok(ticketNode(mounted.nav, "bbbbbbbb"));
     assert.ok(ticketNode(mounted.nav, "cccccccc"));
@@ -19486,7 +19498,7 @@ test("a ticket pane menu shows relation fields and Blocks writes the other ticke
     assignee().listeners.blur();
     assert.deepEqual(assigneeSets().at(-1).assignee, "");
     const filterLabels = byClass(mounted.nav, "md-ticket-filter-menu")[0].childNodes.filter((node) => node.tagName === "LABEL").map((node) => node.textContent);
-    assert.deepEqual(filterLabels, ["closed", "low", "medium", "high", "task", "enhancement", "defect"]);
+    assert.deepEqual(filterLabels, ["backlog", "new", "triaged", "in progress", "blocked", "pending review", "reviewed", "closed", "low", "medium", "high", "task", "enhancement", "defect"]);
     assert.equal(filterLabels.includes("assignee"), false);
     assert.equal(filterLabels.includes("Assignee"), false);
     view.destroy();
