@@ -95,7 +95,7 @@ const HELP_NEEDLES = [
   "--priority",
   "--parent",
   "low, medium, or high",
-  "--state is new, triaged, in progress, blocked, pending review, reviewed, or closed.",
+  "--state is backlog, new, triaged, in progress, blocked, pending review, reviewed, or closed.",
   "An omitted create stores medium",
   "--depends",
   "--assignee",
@@ -2318,6 +2318,28 @@ test("T-cli-ticket-blocked-pending", async () => {
     assert.equal(shown.code, 0);
     assert.equal(row(shown.stdout, reviewedId).split("\t")[2], "reviewed");
     assert.equal(row(shown.stdout, pendingId).split("\t")[2], "reviewed");
+
+    const backlog = await runFast(ticketArgs(port, ["ticket", "create", "--title", "Later", "--state", "backlog"]));
+    assert.equal(backlog.code, 0);
+    const backlogId = backlog.stdout.trim();
+    const backlogPath = path.join(dir, "tickets", `${backlogId}.md`);
+    assert.equal(parseTicket(backlogId, await fs.readFile(backlogPath, "utf8")).state, "backlog");
+    const toBacklog = await runFast(ticketArgs(port, ["ticket", "set", blockedId, "--state", "backlog"]));
+    assert.equal(toBacklog.code, 0);
+    assert.equal(parseTicket(blockedId, await fs.readFile(blockedPath, "utf8")).state, "backlog");
+    const titledBacklog = await runFast(ticketArgs(port, ["ticket", "set", backlogId, "--state", "Backlog"]));
+    assert.equal(titledBacklog.code, 2);
+    assert.equal(titledBacklog.stdout, "");
+    assert.equal(parseTicket(backlogId, await fs.readFile(backlogPath, "utf8")).state, "backlog");
+    const hyphen = await runFast(ticketArgs(port, ["ticket", "set", backlogId, "--state", "back-log"]));
+    assert.equal(hyphen.code, 2);
+    assert.equal(parseTicket(backlogId, await fs.readFile(backlogPath, "utf8")).state, "backlog");
+    const withBacklog = await runFast(ticketArgs(port, ["ticket", "list"]));
+    assert.equal(withBacklog.code, 0);
+    assert.equal(row(withBacklog.stdout, backlogId).split("\t")[2], "backlog");
+    assert.equal(row(withBacklog.stdout, blockedId).split("\t")[2], "backlog");
+    assert.equal(row(withBacklog.stdout, reviewedId).split("\t")[2], "reviewed");
+    assert.equal(row(withBacklog.stdout, pendingId).split("\t")[2], "reviewed");
   });
 });
 

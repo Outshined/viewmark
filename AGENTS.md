@@ -28,13 +28,13 @@ printf 'A correction.\n' | viewmark --user ada --repo notes comment reply welcom
 
 The markdown is the dialect named in the README. A fence whose info string is exactly `mermaid` is drawn as a diagram. An `svg` fence is drawn as an image. Any other info string is source. Highlighted fences are markup, css, clike, javascript, typescript, python, bash, json, yaml, go, rust, sql, and mermaid. The short names js, ts, py, sh, shell, yml, html, and xml map to those. HTML in the prose is stored as text.
 
-A ticket is `tickets/<id>.md`. `ticket create` reads the body from stdin. `ticket show` writes the body to stdout and the fields to stderr. The state is new, triaged, in progress, blocked, pending review, reviewed, or closed. Close one with `ticket set ID --state closed`. A field write uses the current body. Later field writes win. `--rev` is rejected. `ticket list` hides closed tickets until `--closed`.
+A ticket is `tickets/<id>.md`. `ticket create` reads the body from stdin. `ticket show` writes the body to stdout and the fields to stderr. The state is backlog, new, triaged, in progress, blocked, pending review, reviewed, or closed. Close one with `ticket set ID --state closed`. A field write uses the current body. Later field writes win. `--rev` is rejected. `ticket list` hides closed tickets until `--closed`.
 
 ## Ticket lifecycle
 
 `ticket show ID` prints the state on stderr. Read that line, then change the state in a later command. `ticket set ID --state STATE` takes one of the states above as one argument.
 
-A filed ticket is `new`. Work that is ready, and work that review sends back, is `triaged`. An agent that is implementing a ticket sets `in progress` when the work starts. Work that cannot proceed is `blocked`, and the body says what it is waiting on. Finished implementation is `pending review`. Review checks the acceptance. The reviewer sets `reviewed` when the acceptance is met. The agent then merges the code and sets the ticket `closed`. An agent does not set `reviewed` and does not close a ticket that is still `pending review`. A ticket that names a browser test is closed only after that test passes in Firefox. A closed ticket stays closed. A fault found later is a new ticket.
+Work that is recorded and not yet ready is `backlog`. A filed ticket is `new`. Work that is ready, and work that review sends back, is `triaged`. An agent that is implementing a ticket sets `in progress` when the work starts. Work that cannot proceed is `blocked`, and the body says what it is waiting on. Finished implementation is `pending review`. Review checks the acceptance. The reviewer sets `reviewed` when the acceptance is met. The agent then merges the code and sets the ticket `closed`. An agent does not set `reviewed` and does not close a ticket that is still `pending review`. A ticket that names a browser test is closed only after that test passes in Firefox. A closed ticket stays closed. A fault found later is a new ticket.
 
 ## Changing this source
 

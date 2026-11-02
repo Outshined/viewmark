@@ -1967,6 +1967,8 @@ test("T-ticket-create", async () => {
       { type: "ticket.create", username: "A", title: "bad\ttitle" },
       { type: "ticket.create", username: "A", title: "bad\ntitle" },
       { type: "ticket.create", username: "A", title: "Ok", state: "done" },
+      { type: "ticket.create", username: "A", title: "Ok", state: "Backlog" },
+      { type: "ticket.create", username: "A", title: "Ok", state: "back-log" },
       { type: "ticket.create", username: "A", title: "Ok", state: "" },
       { type: "ticket.create", username: "A", title: "Ok", state: " new" },
       { type: "ticket.create", username: "A", title: "Ok", ticketType: "nope" },
@@ -2028,6 +2030,14 @@ test("T-ticket-create", async () => {
     assert.equal(second.listed.tickets.find((ticket) => ticket.id === second.file.ticket.id).state, "triaged");
     assert.deepEqual(second.listed.tickets, sortedTickets(second.listed.tickets));
     assert.equal(a.all.some((msg) => msg.type === "docs"), false);
+
+    const parked = await createTicket(a, "A", "Parked", "backlog");
+    await b.next((msg) => msg.type === "tickets");
+    assert.equal(parked.file.ticket.state, "backlog");
+    assert.equal(parked.listed.tickets.find((ticket) => ticket.id === created.id).state, "new");
+    assert.equal(parked.listed.tickets.find((ticket) => ticket.id === second.file.ticket.id).state, "triaged");
+    assert.equal(parked.listed.tickets.find((ticket) => ticket.id === parked.file.ticket.id).state, "backlog");
+    assert.equal(parseTicket(parked.file.ticket.id, await readDoc(dir, parked.file.path)).state, "backlog");
 
     const bug = await createTicket(a, "A", "Bug", undefined, "bug");
     await b.next((msg) => msg.type === "tickets");

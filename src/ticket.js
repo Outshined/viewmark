@@ -1,6 +1,6 @@
 export const TICKET_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz";
 
-export const TICKET_STATES = Object.freeze(["new", "triaged", "in progress", "blocked", "pending review", "reviewed", "closed"]);
+export const TICKET_STATES = Object.freeze(["backlog", "new", "triaged", "in progress", "blocked", "pending review", "reviewed", "closed"]);
 
 export const TICKET_TYPES = Object.freeze(["bug", "enhancement", "task"]);
 
