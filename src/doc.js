@@ -4967,6 +4967,67 @@ function bareBreakLine(line, doc) {
   return hide > 0 && hide === line.text.length;
 }
 
+function pushSyntax(text, spans, from, to) {
+  let index = Math.max(0, from);
+  const end = Math.min(text.length, to);
+  while (index < end) {
+    if (/\s/.test(text[index])) {
+      index += 1;
+      continue;
+    }
+    const start = index;
+    while (index < end && !/\s/.test(text[index])) index += 1;
+    spans.push({ start, end: index });
+  }
+}
+
+// The cursor line folds a marker into the styled run. Off the line, the marker
+// is the gap around the text, which is the syntax an edit has to stop on.
+export function syntaxSpans(doc) {
+  const text = typeof doc === "string" ? doc : "";
+  const covered = [];
+  const regions = [];
+  const takePart = (part) => {
+    if (!part || typeof part.start !== "number" || typeof part.end !== "number") return;
+    if (Array.isArray(part.parts) && part.parts.length > 0) {
+      for (const child of part.parts) takePart(child);
+      return;
+    }
+    if (part.end > part.start) covered.push([part.start, part.end]);
+  };
+  const takeCell = (cell) => {
+    if (!cell) return;
+    for (const part of cell.parts || []) takePart(part);
+    for (const child of cell.blocks || []) takeBlock(child);
+  };
+  const takeBlock = (block) => {
+    if (!block || typeof block.start !== "number" || typeof block.end !== "number") return;
+    if (block.end > block.start) regions.push([block.start, block.end]);
+    for (const part of block.parts || []) takePart(part);
+    for (const run of block.runs || []) takePart(run);
+    for (const cell of block.header || []) takeCell(cell);
+    for (const row of block.rows || []) {
+      for (const cell of row || []) takeCell(cell);
+    }
+    for (const child of block.blocks || []) takeBlock(child);
+  };
+  for (const block of plan(text, -1).blocks || []) takeBlock(block);
+  const open = mergeRanges(covered);
+  const spans = [];
+  for (const [from, to] of mergeRanges(regions)) {
+    let at = from;
+    for (const [start, end] of open) {
+      if (end <= at) continue;
+      if (start >= to) break;
+      if (start > at) pushSyntax(text, spans, at, Math.min(start, to));
+      at = Math.max(at, end);
+      if (at >= to) break;
+    }
+    if (at < to) pushSyntax(text, spans, at, to);
+  }
+  return spans;
+}
+
 // Spaces separate words, the way a person reads them, so a marker or a comma
 // stays on the word it touches. The same offsets hold in raw and rendered text.
 // Forward lands on the next word, or at the end of the last one when none follows.

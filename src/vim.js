@@ -1,5 +1,5 @@
 // Pure key match. The page applies the effect. This module does not touch the editor.
-import { backspace, codeFenceBodies, codeSpanAt, commentStorageReason, commentThreads, createState, deleteForward, endBeforeTail, findSpans, imageLine, insert, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, wordStop } from "./doc.js";
+import { backspace, codeFenceBodies, codeSpanAt, commentStorageReason, commentThreads, createState, deleteForward, endBeforeTail, findSpans, imageLine, insert, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, syntaxSpans, wordStop } from "./doc.js";
 
 const REPEAT_CAP = 10000;
 const PAGE = 20;
@@ -654,8 +654,58 @@ function words(doc) {
   return found;
 }
 
-function moveEnd(doc, cursor, count, forward) {
-  const list = words(doc);
+// A motion keeps punctuation on the word. An operator stops where markdown
+// syntax starts, and that syntax is its own word, so cw leaves the marks.
+function editWords(doc) {
+  const text = typeof doc === "string" ? doc : "";
+  const spans = syntaxSpans(text);
+  const found = [];
+  let index = 0;
+  let spanIndex = 0;
+  const covering = (at) => {
+    while (spanIndex < spans.length && spans[spanIndex].end <= at) spanIndex += 1;
+    const span = spans[spanIndex];
+    if (!span || span.start > at) return null;
+    return span;
+  };
+  while (index < text.length) {
+    if (/\s/.test(text[index])) {
+      index += 1;
+      continue;
+    }
+    const span = covering(index);
+    const start = index;
+    if (span) {
+      while (index < span.end && !/\s/.test(text[index])) index += 1;
+    } else {
+      while (index < text.length && !/\s/.test(text[index])) {
+        if (covering(index)) break;
+        index += 1;
+      }
+    }
+    if (index > start) found.push({ start, end: index });
+  }
+  return found;
+}
+
+function stopIn(list, at, direction) {
+  if (direction < 0) {
+    const containing = list.find((word) => word.start < at && at <= word.end);
+    if (containing) return containing.start;
+    for (let n = list.length - 1; n >= 0; n -= 1) {
+      if (list[n].end <= at) return list[n].start;
+    }
+    return at;
+  }
+  const next = list.find((word) => word.start > at);
+  if (next) return next.start;
+  const inside = list.find((word) => word.start <= at && at < word.end);
+  if (inside) return inside.end;
+  return at;
+}
+
+function moveEnd(doc, cursor, count, forward, editing) {
+  const list = editing ? editWords(doc) : words(doc);
   let at = cursor;
   for (let n = 0; n < count; n += 1) {
     let land = null;
@@ -680,11 +730,12 @@ function moveEnd(doc, cursor, count, forward) {
   return at;
 }
 
-function moveWord(doc, cursor, count, forward) {
+function moveWord(doc, cursor, count, forward, editing) {
   let at = cursor;
   const dir = forward ? 1 : -1;
+  const list = editing ? editWords(doc) : null;
   for (let n = 0; n < count; n += 1) {
-    const next = wordStop(doc, at, dir);
+    const next = list ? stopIn(list, at, dir) : wordStop(doc, at, dir);
     if (next === at) break;
     at = next;
   }
@@ -1004,12 +1055,14 @@ function runMotion(id, spec) {
   }
   if (id === "w" || id === "W" || id === "b" || id === "B") {
     const forward = id === "w" || id === "W";
-    const at = legal(doc, moveWord(doc, cursor, count, forward), forward ? 1 : -1, raw);
+    const editing = Boolean(spec.vim && spec.vim.input && spec.vim.input.operator);
+    const at = legal(doc, moveWord(doc, cursor, count, forward, editing), forward ? 1 : -1, raw);
     return { kind: "caret", cursor: at, column: null, linewise: false, inclusive: false, past: false, word: true };
   }
   if (id === "e" || id === "E" || id === "ge" || id === "gE") {
     const forward = id === "e" || id === "E";
-    const at = legal(doc, moveEnd(doc, cursor, count, forward), forward ? 1 : -1, raw);
+    const editing = Boolean(spec.vim && spec.vim.input && spec.vim.input.operator);
+    const at = legal(doc, moveEnd(doc, cursor, count, forward, editing), forward ? 1 : -1, raw);
     return { kind: "caret", cursor: at, column: null, linewise: false, inclusive: true, past: false, word: true };
   }
   if (id === "%" ) {
@@ -3077,7 +3130,7 @@ function finishBracket(vim, doc, anchor, cursor, raw, key) {
 // aw takes the spaces after the word. A word with none, as at the end of a line,
 // takes the spaces before it instead. The range starts at the word, not the caret.
 function wordObject(doc, cursor, around) {
-  const runs = words(doc);
+  const runs = editWords(doc);
   let word = null;
   for (const item of runs) {
     if (cursor >= item.start && cursor < item.end) {
