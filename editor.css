@@ -310,6 +310,13 @@ button.md-ticket-filter-all {
   margin: 0 0 0.25rem;
 }
 
+.md-ticket-filter-sep {
+  height: 0;
+  margin: 0.35rem 0;
+  border: 0;
+  border-top: 1px solid #9c968c;
+}
+
 nav.files .md-ticket-filter-menu input {
   width: auto;
   margin: 0;

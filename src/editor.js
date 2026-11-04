@@ -505,20 +505,20 @@ function pathBesideLabel(filePath, label, query) {
 
 // Defect is the label for ticket type bug. The form select still uses TICKET_TYPES.
 const TICKET_FILTERS = [
-  { label: "backlog", filter: "backlog", checked: true },
-  { label: "new", filter: "new", checked: true },
-  { label: "triaged", filter: "triaged", checked: true },
-  { label: "in progress", filter: "in progress", checked: true },
-  { label: "blocked", filter: "blocked", checked: true },
-  { label: "pending review", filter: "pending review", checked: true },
-  { label: "reviewed", filter: "reviewed", checked: true },
-  { label: "closed", filter: "closed", checked: false },
-  { label: "low", filter: "low", checked: true },
-  { label: "medium", filter: "medium", checked: true },
-  { label: "high", filter: "high", checked: true },
-  { label: "task", filter: "task", checked: true },
-  { label: "enhancement", filter: "enhancement", checked: true },
-  { label: "defect", filter: "bug", checked: true },
+  { label: "backlog", filter: "backlog", checked: true, group: "state" },
+  { label: "new", filter: "new", checked: true, group: "state" },
+  { label: "triaged", filter: "triaged", checked: true, group: "state" },
+  { label: "in progress", filter: "in progress", checked: true, group: "state" },
+  { label: "blocked", filter: "blocked", checked: true, group: "state" },
+  { label: "pending review", filter: "pending review", checked: true, group: "state" },
+  { label: "reviewed", filter: "reviewed", checked: true, group: "state" },
+  { label: "closed", filter: "closed", checked: false, group: "state" },
+  { label: "low", filter: "low", checked: true, group: "priority" },
+  { label: "medium", filter: "medium", checked: true, group: "priority" },
+  { label: "high", filter: "high", checked: true, group: "priority" },
+  { label: "task", filter: "task", checked: true, group: "type" },
+  { label: "enhancement", filter: "enhancement", checked: true, group: "type" },
+  { label: "defect", filter: "bug", checked: true, group: "type" },
 ];
 
 const TICKET_COLUMNS = [
@@ -566,7 +566,15 @@ function applyFilterDefaults(menu) {
 
 function buildFilterMenu(menu) {
   if (filterBoxes(menu).length > 0) return;
+  let group = "";
   for (const row of TICKET_FILTERS) {
+    if (group && row.group !== group) {
+      const rule = document.createElement("div");
+      rule.className = "md-ticket-filter-sep";
+      if (typeof rule.setAttribute === "function") rule.setAttribute("role", "separator");
+      menu.appendChild(rule);
+    }
+    group = row.group;
     const label = document.createElement("label");
     const box = document.createElement("input");
     box.type = "checkbox";

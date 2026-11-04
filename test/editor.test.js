@@ -16059,9 +16059,15 @@ test("T-ticket-filter", () => {
   const mounted = mountTicketPage();
   const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
   const menuRule = css.match(/\.md-ticket-filter-menu\s*\{[^}]*\}/);
+  const sepRule = css.match(/\.md-ticket-filter-sep\s*\{[^}]*\}/);
   assert.ok(menuRule);
+  assert.ok(sepRule);
   assert.match(menuRule[0], /position:\s*absolute/);
   assert.match(menuRule[0], /z-index:\s*5/);
+  assert.match(sepRule[0], /height:\s*0/);
+  assert.match(sepRule[0], /margin:\s*0\.35rem 0/);
+  assert.match(sepRule[0], /border:\s*0/);
+  assert.match(sepRule[0], /border-top:\s*1px solid #9c968c/);
   assert.equal(/button\.md-ticket-filter\s*\{[^}]*width:\s*100%/.test(css), false);
   const transport = holdingTransport();
   try {
@@ -16115,6 +16121,27 @@ test("T-ticket-filter", () => {
     assert.ok(block.childNodes.indexOf(menu) < block.childNodes.indexOf(drawer));
     const labels = menu.childNodes.filter((node) => node.tagName === "LABEL");
     assert.deepEqual(labels.map((label) => label.textContent), ["backlog", "new", "triaged", "in progress", "blocked", "pending review", "reviewed", "closed", "low", "medium", "high", "task", "enhancement", "defect"]);
+    const order = menu.childNodes.filter((node) => node.tagName).map((node) => {
+      if (node.classList.contains("md-ticket-filter-sep")) return "separator";
+      if (node.classList.contains("md-ticket-filter-all")) return "show all";
+      return node.textContent;
+    });
+    assert.deepEqual(order, [
+      "backlog", "new", "triaged", "in progress", "blocked", "pending review", "reviewed", "closed",
+      "separator",
+      "low", "medium", "high",
+      "separator",
+      "task", "enhancement", "defect",
+      "show all",
+    ]);
+    const rules = menu.childNodes.filter((node) => node.classList && node.classList.contains("md-ticket-filter-sep"));
+    assert.equal(rules.length, 2);
+    for (const rule of rules) {
+      assert.equal(rule.getAttribute("role"), "separator");
+      assert.equal(rule.childNodes.length, 0);
+    }
+    assert.equal(order.at(-1), "show all");
+    assert.equal(order.at(-2), "defect");
     assert.deepEqual(
       labels.map((label) => label.childNodes.find((node) => node.tagName === "INPUT").dataset.filter),
       ["backlog", "new", "triaged", "in progress", "blocked", "pending review", "reviewed", "closed", "low", "medium", "high", "task", "enhancement", "bug"],
