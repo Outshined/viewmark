@@ -3476,6 +3476,173 @@ function readPageBuild() {
   return found == null ? "" : found;
 }
 
+// Absolute offsets become distances from the block, so a later insert compares equal.
+function blockKey(block) {
+  if (!block || typeof block !== "object") return null;
+  const base = typeof block.start === "number" ? block.start : 0;
+  const norm = (value) => {
+    if (Array.isArray(value)) return value.map(norm);
+    if (!value || typeof value !== "object") return value;
+    const out = {};
+    const keys = Object.keys(value);
+    keys.sort();
+    for (const key of keys) {
+      const item = value[key];
+      if (typeof item === "function") continue;
+      if ((key === "start" || key === "end" || key === "bodyStart" || key === "slot") && typeof item === "number") {
+        out[key] = item - base;
+        continue;
+      }
+      out[key] = norm(item);
+    }
+    return out;
+  };
+  try {
+    return JSON.stringify(norm(block));
+  } catch {
+    return null;
+  }
+}
+
+function spliceRange(before, after) {
+  if (before === after) return { from: 0, to: 0, inserted: 0, same: true };
+  const prev = typeof before === "string" ? before : "";
+  const next = typeof after === "string" ? after : "";
+  let prefix = 0;
+  const max = Math.min(prev.length, next.length);
+  while (prefix < max && prev[prefix] === next[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < prev.length - prefix
+    && suffix < next.length - prefix
+    && prev[prev.length - 1 - suffix] === next[next.length - 1 - suffix]
+  ) suffix += 1;
+  return {
+    from: prefix,
+    to: prev.length - suffix,
+    inserted: next.length - suffix - prefix,
+    same: false,
+  };
+}
+
+// The terminating newline is outside [start, end) and still belongs to the block.
+function spliceTouches(start, end, splice) {
+  if (!splice || splice.same) return false;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return true;
+  return splice.from <= end && splice.to >= start;
+}
+
+function mapIndex(index, splice) {
+  if (!splice || splice.same || !Number.isFinite(index)) return index;
+  if (index <= splice.from) return index;
+  if (index >= splice.to) return index + splice.inserted - (splice.to - splice.from);
+  return index;
+}
+
+function blockHoldsCaret(block, cursor) {
+  if (!block || !Number.isFinite(cursor)) return false;
+  const start = block.start;
+  const end = block.end;
+  return Number.isFinite(start) && Number.isFinite(end) && cursor >= start && cursor <= end;
+}
+
+function keptBlockNodes(painted, doc, blocks, cursor) {
+  const reused = new Array(blocks.length).fill(null);
+  if (!painted || typeof painted.doc !== "string" || !Array.isArray(painted.entries)) return reused;
+  const splice = spliceRange(painted.doc, doc);
+  const used = new Set();
+  for (const entry of painted.entries) {
+    if (!entry || !entry.el || entry.key == null) continue;
+    if (spliceTouches(entry.start, entry.end, splice)) continue;
+    const start = mapIndex(entry.start, splice);
+    const end = mapIndex(entry.end, splice);
+    for (let i = 0; i < blocks.length; i += 1) {
+      if (used.has(i)) continue;
+      const block = blocks[i];
+      if (!block || block.start !== start || block.end !== end) continue;
+      if (blockHoldsCaret(block, cursor)) continue;
+      if (blockKey(block) !== entry.key) continue;
+      used.add(i);
+      reused[i] = { el: entry.el, delta: start - entry.start };
+      break;
+    }
+  }
+  return reused;
+}
+
+function liftSearchPieces(node) {
+  if (!node || node.nodeType !== 1) return;
+  for (const child of childArray(node)) liftSearchPieces(child);
+  const pieces = childArray(node).filter((child) => child && child.nodeType === 1 && child.searchPiece === true);
+  if (pieces.length === 0) return;
+  const text = pieces.map((piece) => (piece.textContent == null ? "" : String(piece.textContent))).join("");
+  const textNode = document.createTextNode(text);
+  placeNodeBefore(node, textNode, pieces[0]);
+  for (const piece of pieces) detachNode(piece);
+}
+
+// Locks, hits, and comment chrome are painted after the block. Leaving them on
+// a kept node would stack a second copy on the next paint.
+function stripKeptDecorations(el) {
+  liftSearchPieces(el);
+  const drop = [];
+  const walk = (node) => {
+    if (!node || node.nodeType !== 1) return;
+    if (hasClass(node, "md-lock") || hasClass(node, "md-comment-bar") || hasClass(node, "md-comment-pin")) {
+      drop.push(node);
+      return;
+    }
+    if (node.classList) {
+      node.classList.remove("md-comment-editing");
+      node.classList.remove("md-comment-current");
+      node.classList.remove("md-flash");
+      if (hasClass(node, "md-list-cont")) {
+        node.classList.remove("md-list-cont");
+        if (node.style) node.style.marginLeft = "";
+      }
+      // Resolved threads drop the class after paint. A kept run still has the id.
+      if (
+        node.dataset
+        && node.dataset.comment
+        && !hasClass(node, "md-comment-marker")
+        && !hasClass(node, "md-comment-handle")
+      ) node.classList.add("md-comment");
+    }
+    for (const child of childArray(node)) walk(child);
+  };
+  walk(el);
+  for (const node of drop) detachNode(node);
+}
+
+const KEPT_OFFSET_DATA = ["start", "end", "bodyStart", "fenceStart"];
+const KEPT_OFFSET_PROP = ["sourceStart", "sourceEnd", "imageStart", "imageEnd"];
+
+function shiftKeptOffsets(el, delta) {
+  if (!el || !delta) return;
+  const walk = (node) => {
+    if (!node || node.nodeType !== 1) return;
+    const data = node.dataset;
+    if (data) {
+      for (const key of KEPT_OFFSET_DATA) {
+        if (data[key] == null || data[key] === "") continue;
+        const value = Number(data[key]);
+        if (!Number.isFinite(value)) continue;
+        data[key] = String(value + delta);
+      }
+    }
+    for (const key of KEPT_OFFSET_PROP) {
+      if (typeof node[key] === "number" && Number.isFinite(node[key])) node[key] += delta;
+    }
+    for (const child of childArray(node)) walk(child);
+  };
+  walk(el);
+}
+
+function prepareKept(el, delta) {
+  stripKeptDecorations(el);
+  shiftKeptOffsets(el, delta);
+}
+
 export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   const external = arguments.length >= 4 && transport != null;
   const active = external ? transport : createMemoryTransport(doc, cursor);
@@ -3576,6 +3743,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let pictureLayoutFrame = 0;
   let pictureObserver = null;
   let diagramObserver = null;
+  // The last rich paint. Source view detaches these nodes; the next rich paint reuses them.
+  let painted = null;
   const diagramHeights = new Map();
   // A new img has no box until its file loads. The fitted size is what the column
   // showed, so the next paint does not collapse the page or scroll to the origin.
@@ -8954,6 +9123,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     for (const piece of pieces) {
       const span = document.createElement("span");
       if (piece.hit) span.className = "md-search-hit";
+      span.searchPiece = true;
       span.dataset.start = String(piece.start);
       span.dataset.end = String(piece.end);
       span.appendChild(document.createTextNode(piece.text));
@@ -9176,7 +9346,17 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       blocks = blocksForCaret(blocks);
       const flashBlock = refusal && !refusal.name ? tightestBlock(blocks, refusal.offset) : null;
-      const nodes = blocks.map((block) => {
+      // The caret block and any block the splice touches are built again. The
+      // rest keep their elements; an earlier insert only moves their offsets.
+      const reused = keptBlockNodes(painted, state.doc, blocks, state.cursor);
+      const nodes = blocks.map((block, index) => {
+        const keep = reused[index];
+        if (keep) {
+          prepareKept(keep.el, keep.delta);
+          appendLockMarks(keep.el, block);
+          if (block === flashBlock) keep.el.classList.add("md-flash");
+          return keep.el;
+        }
         const reserve = block && block.type === "diagram" && typeof block.body === "string"
           ? (diagramHeights.get(block.body) || 0)
           : 0;
@@ -9187,6 +9367,15 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         if (block === flashBlock) el.classList.add("md-flash");
         return el;
       });
+      painted = {
+        doc: state.doc,
+        entries: blocks.map((block, index) => ({
+          start: block.start,
+          end: block.end,
+          key: blockKey(block),
+          el: nodes[index],
+        })),
+      };
       const notes = renderFootnotes(planned.footnotes);
       if (notes) nodes.push(notes);
       const priorTop = caretTop();

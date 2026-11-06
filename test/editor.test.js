@@ -7911,7 +7911,8 @@ test("n3994vh3 a scaled picture keeps its box, the caret, and the scroll positio
     input(mounted, "insertText", "Z");
     const again = picture();
     assert.ok(again);
-    assert.notEqual(again, fitted);
+    // The picture bytes did not change, so the img stays and the fit is reapplied.
+    assert.equal(again, fitted);
     assert.equal(again.naturalWidth, 0);
     assert.equal(again.styleProps.width, "700px");
     assert.equal(again.styleProps.height, "450px");
@@ -9521,15 +9522,18 @@ test("t8c7f4ha fitted diagram keeps the caret in the window", async () => {
 
         const scrolled = moves.length;
         const parked = caretBox().top;
+        const drawn = diagrams()[0];
         vimPress(mounted, "j");
         assert.equal(lineAt(view.getState().cursor), "Tail.");
         assert.equal(diagrams().length, 1);
-        assert.equal(hasPre(), true);
+        assert.equal(diagrams()[0], drawn);
+        assert.equal(hasPre(), false);
         assert.equal(frameOf().styleProps["min-height"], "400px");
         const afterJump = moves.length;
         const tailTop = caretBox().top;
         assert.equal(caretInWindow(), true);
-        await settle();
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(pending.length, 0);
         assert.equal(lineAt(view.getState().cursor), "Tail.");
         assert.equal(moves.length, afterJump);
         assert.equal(caretBox().top, tailTop);
@@ -9556,12 +9560,14 @@ test("t8c7f4ha fitted diagram keeps the caret in the window", async () => {
         vimPress(mounted, "k");
         assert.equal(lineAt(view.getState().cursor), "Above.");
         assert.equal(diagrams().length, 1);
-        assert.equal(hasPre(), true);
+        assert.equal(diagrams()[0], drawn);
+        assert.equal(hasPre(), false);
         assert.equal(frameOf().styleProps["min-height"], "800px");
         assert.equal(caretInWindow(), true);
         const past = moves.length;
         const aboveTop = caretBox().top;
-        await settle();
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(pending.length, 0);
         assert.equal(lineAt(view.getState().cursor), "Above.");
         assert.equal(diagrams().length, 1);
         assert.equal(moves.length, past);
@@ -29213,4 +29219,173 @@ test("dot repeats r, including a count and a digit (ticket 5tgzpnk3)", () => {
     assert.equal(digit.getState().cursor, 3);
     digit.destroy();
   });
+});
+
+test("a table cell paints a comment mark", () => {
+  const doc = [
+    "| {c1}h{/c1} |",
+    "| --- |",
+    "| {c2}a<br>b{/c2} |",
+    "",
+    "```comment c1",
+    "head",
+    "```",
+    "```comment c2",
+    "body",
+    "```",
+    "",
+  ].join("\n");
+  const table = plan(doc, doc.length).blocks.find((block) => block.type === "table");
+  assert.ok(table);
+  const head = table.header[0].parts.find((part) => part.comment === "c1");
+  assert.ok(head);
+  assert.equal(head.text, "h");
+  assert.ok(head.classes.includes("md-comment"));
+  assert.equal(table.header[0].parts.some((part) => String(part.text || "").includes("{")), false);
+  const marked = [];
+  const walk = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (node.comment) marked.push(node);
+    for (const part of node.parts || []) walk(part);
+    for (const child of node.blocks || []) walk(child);
+    if (node.child) walk(node.child);
+  };
+  walk(table.rows[0][0]);
+  assert.deepEqual(marked.map((part) => part.text), ["a", "b"]);
+  assert.ok(marked.every((part) => part.classes.includes("md-comment") && part.comment === "c2"));
+});
+
+function paintedOffsets(el) {
+  const found = [];
+  const walk = (node) => {
+    if (!node || node.nodeType !== 1) return;
+    const data = node.dataset || {};
+    if (data.start != null && data.start !== "") found.push(["start", data.start, data.end || "", data.bodyStart || "", data.fenceStart || ""]);
+    if (typeof node.sourceStart === "number") found.push(["source", node.sourceStart, node.sourceEnd]);
+    if (typeof node.imageStart === "number") found.push(["image", node.imageStart, node.imageEnd]);
+    for (const child of node.childNodes || []) walk(child);
+  };
+  walk(el);
+  return found;
+}
+
+test("an insert keeps a later block and shifts its offsets", () => {
+  const mounted = mountEditor();
+  try {
+    const doc = "Alpha\n\nBeta\n";
+    const view = createEditor(mounted.root, doc, 0);
+    const beta = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "Beta")[0];
+    const alpha = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "Alpha")[0];
+    assert.ok(beta);
+    assert.ok(alpha);
+    const line = beta.parentElement.parentElement;
+    assert.equal(line.classList.contains("md-line"), true);
+    const before = Number(beta.parentElement.dataset.start);
+    mounted.listeners.beforeinput({
+      inputType: "insertText",
+      data: "QQ",
+      preventDefault() {},
+    });
+    assert.equal(view.getState().doc, "QQAlpha\n\nBeta\n");
+    assert.equal(view.getState().cursor, 2);
+    assert.equal(beta.textContent, "Beta");
+    assert.equal(beta.parentElement.parentElement, line);
+    assert.equal(mounted.root.contains(beta), true);
+    assert.equal(mounted.root.contains(alpha), false);
+    assert.equal(Number(beta.parentElement.dataset.start), before + 2);
+    assert.equal(Number(beta.parentElement.dataset.end), before + 2 + 4);
+    const kept = paintedOffsets(line);
+    const cursor = view.getState().cursor;
+    const nextDoc = view.getState().doc;
+    view.destroy();
+    mounted.restore();
+    const fresh = mountEditor();
+    try {
+      const other = createEditor(fresh.root, nextDoc, cursor);
+      const freshBeta = fresh.findAll((node) => node.nodeType === 3 && node.textContent === "Beta")[0];
+      assert.ok(freshBeta);
+      assert.deepEqual(kept, paintedOffsets(freshBeta.parentElement.parentElement));
+      other.destroy();
+    } finally {
+      fresh.restore();
+    }
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("an unchanged diagram is not rendered again", async () => {
+  const previousMermaid = globalThis.mermaid;
+  const previousParser = globalThis.DOMParser;
+  const calls = [];
+  globalThis.mermaid = {
+    initialize() {},
+    render(_id, source) {
+      calls.push(source);
+      return Promise.resolve({ svg: "<svg></svg>" });
+    },
+  };
+  globalThis.DOMParser = class {
+    parseFromString() {
+      return {
+        documentElement: {
+          nodeType: 1,
+          tagName: "SVG",
+          nodeName: "svg",
+          localName: "svg",
+          className: "",
+          dataset: {},
+          childNodes: [],
+          parentElement: null,
+          classList: { contains() { return false; }, add() {}, remove() {} },
+          getAttribute() { return null; },
+          textContent: "",
+        },
+      };
+    }
+  };
+  const mounted = mountEditor();
+  let deliver = null;
+  const transport = {
+    memory: true,
+    username: "",
+    send() {},
+    subscribe(fn) {
+      deliver = fn;
+      return () => {};
+    },
+  };
+  try {
+    const doc = "Keep\n\n```mermaid\nA-->B\n```\n";
+    const view = createEditor(mounted.root, doc, 0, transport);
+    const box = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
+    assert.ok(box);
+    const start = Number(box.dataset.start);
+    const end = Number(box.dataset.end);
+    const bodyStart = Number(box.dataset.bodyStart);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(calls, ["A-->B"]);
+    const shifted = `QQ${doc}`;
+    deliver({ type: "doc", rev: 1, text: shifted, cursor: 2, anchor: 2, actor: "" });
+    assert.equal(view.getState().doc, shifted);
+    assert.equal(view.getState().cursor, 2);
+    const again = mounted.findAll((node) => node.classList && node.classList.contains("md-diagram"))[0];
+    assert.equal(again, box);
+    assert.equal(Number(box.dataset.start), start + 2);
+    assert.equal(Number(box.dataset.end), end + 2);
+    assert.equal(Number(box.dataset.bodyStart), bodyStart + 2);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(calls, ["A-->B"]);
+    const changed = "Keep\n\n```mermaid\nA-->C\n```\n";
+    deliver({ type: "doc", rev: 2, text: changed, cursor: 0, anchor: 0, actor: "" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(calls, ["A-->B", "A-->C"]);
+    view.destroy();
+  } finally {
+    mounted.restore();
+    if (previousMermaid === undefined) delete globalThis.mermaid;
+    else globalThis.mermaid = previousMermaid;
+    if (previousParser === undefined) delete globalThis.DOMParser;
+    else globalThis.DOMParser = previousParser;
+  }
 });

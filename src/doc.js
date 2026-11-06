@@ -3788,21 +3788,21 @@ function cellBlocks(lines, spans, refs) {
   return blocks;
 }
 
-function paintInline(line, doc, refs) {
+function paintInline(line, refs, spans) {
   const parsed = parseInlines(line.text, line.start, "md-p", true, refs);
-  return paintParts(parsed.parts, findSpans(doc)).map(hidePipeEscape);
+  return paintParts(parsed.parts, spans).map(hidePipeEscape);
 }
 
-function paintCell(cell, doc, refs) {
+function paintCell(cell, doc, refs, spans) {
   const lines = cellLines(cell);
   const broke = cellHasBreak(cell.text);
   const only = lines.length === 1 ? lines[0] : null;
   // One paragraph of inlines stays on the run path. A blank kept from <br><br>
   // is not that paragraph.
   if (only && cellIsPlainParagraph(only.text) && (only.text !== "" || !broke)) {
-    return { ...cell, parts: paintInline(only, doc, refs) };
+    return { ...cell, parts: paintInline(only, refs, spans) };
   }
-  const blocks = cellBlocks(lines, findSpans(doc), refs);
+  const blocks = cellBlocks(lines, spans, refs);
   numberOrderedMarkers(doc, blocks, true);
   return { ...cell, blocks };
 }
@@ -4049,6 +4049,9 @@ function reparseJoined(doc, slots, atoms, refs) {
 function structures(doc) {
   // lineSpans adds an empty row at length. It is not a block, same as lockLines.
   const lines = lockLines(doc);
+  // One list for every cell. Scanning again inside each cell repeated the comment
+  // and fence walk once per cell, then plan scanned once more.
+  const spans = findSpans(doc);
   const atoms = [];
   const slots = [];
   const refs = [];
@@ -4110,8 +4113,8 @@ function structures(doc) {
         type: "table",
         start: lines[index].start,
         end: lines[last].end,
-        header: cellRanges(lines[index]).map((cell) => paintCell(cell, doc, refs)),
-        rows: rows.map((row) => row.map((cell) => paintCell(cell, doc, refs))),
+        header: cellRanges(lines[index]).map((cell) => paintCell(cell, doc, refs, spans)),
+        rows: rows.map((row) => row.map((cell) => paintCell(cell, doc, refs, spans))),
       };
       atoms.push(atom);
       slots.push({ kind: "atom", atom });
@@ -4149,7 +4152,7 @@ function structures(doc) {
     index += 1;
   }
   reparseJoined(doc, slots, atoms, refs);
-  return { atoms, slots, comments: commentThreads(doc), refs, footnotes };
+  return { atoms, slots, comments: commentThreads(doc), refs, footnotes, spans };
 }
 
 function gapRun(line, start, end) {
@@ -5702,7 +5705,7 @@ export function plan(doc, cursor, revealTail) {
   const built = structures(text);
   const { slots } = built;
   const comments = built.comments || [];
-  const spans = findSpans(text);
+  const spans = built.spans;
   const locks = lockSpans(text);
   const blocks = [];
   let index = 0;
