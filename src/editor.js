@@ -3581,8 +3581,22 @@ function liftSearchPieces(node) {
   for (const piece of pieces) detachNode(piece);
 }
 
-// Locks, hits, and comment chrome are painted after the block. Leaving them on
-// a kept node would stack a second copy on the next paint.
+function removeClassIfPresent(node, name) {
+  if (!hasClass(node, name)) return;
+  node.classList.remove(name);
+}
+
+function findMarkedChild(host, className, id) {
+  if (!host) return null;
+  for (const child of childArray(host)) {
+    if (!child || child.nodeType !== 1) continue;
+    if (hasClass(child, className) && child.dataset && child.dataset.comment === id) return child;
+  }
+  return null;
+}
+
+// A later paint adds these marks again. Removing one that is not there is
+// what makes typing at the end of a long document walk every element.
 function stripKeptDecorations(el) {
   liftSearchPieces(el);
   const drop = [];
@@ -3593,9 +3607,9 @@ function stripKeptDecorations(el) {
       return;
     }
     if (node.classList) {
-      node.classList.remove("md-comment-editing");
-      node.classList.remove("md-comment-current");
-      node.classList.remove("md-flash");
+      removeClassIfPresent(node, "md-comment-editing");
+      removeClassIfPresent(node, "md-comment-current");
+      removeClassIfPresent(node, "md-flash");
       if (hasClass(node, "md-list-cont")) {
         node.classList.remove("md-list-cont");
         if (node.style) node.style.marginLeft = "";
@@ -3606,6 +3620,7 @@ function stripKeptDecorations(el) {
         && node.dataset.comment
         && !hasClass(node, "md-comment-marker")
         && !hasClass(node, "md-comment-handle")
+        && !hasClass(node, "md-comment")
       ) node.classList.add("md-comment");
     }
     for (const child of childArray(node)) walk(child);
@@ -3639,6 +3654,9 @@ function shiftKeptOffsets(el, delta) {
 }
 
 function prepareKept(el, delta) {
+  // The splice did not move this block. Its marks and offsets are already right,
+  // and walking it to clear classes is the cost of a key at the end of the file.
+  if (!delta) return;
   stripKeptDecorations(el);
   shiftKeptOffsets(el, delta);
 }
@@ -3745,10 +3763,24 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let diagramObserver = null;
   // The last rich paint. Source view detaches these nodes; the next rich paint reuses them.
   let painted = null;
+  // Blocks this paint left in place. A later pass must not walk them or add a second mark.
+  let keptUntouched = new Set();
+  let skipUntouchedMarks = false;
+  let paintedEditingKey = "";
+  let paintedHiddenKey = null;
+  let paintedCurrentKey = null;
+  let paintedVisualKey = "";
+  let paintedAnchorKey = null;
+  let paintedHitQuery = "";
+  let searchEpoch = 0;
+  const searchPainted = new WeakMap();
   const diagramHeights = new Map();
   // A new img has no box until its file loads. The fitted size is what the column
   // showed, so the next paint does not collapse the page or scroll to the origin.
   const pictureSizes = new Map();
+  // Blocks that contain a picture. A keystroke still refits those and skips the rest.
+  const pictureHosts = new WeakSet();
+  let paintedLockKey = "";
   const repoStorage = storage || null;
   // Raw is not stored. It applies only to the document that was open when it was turned on.
   let sourceMode = false;
@@ -4789,16 +4821,20 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   // The caret range stops on the glyphs. Visual line paints the line box.
   function markVisualLines() {
+    const on = vimOn && vimMode === "visual-line";
+    const lo = on ? Math.min(state.anchor, state.cursor) : 0;
+    const hi = on ? Math.max(state.anchor, state.cursor) : 0;
+    const key = on ? `${lo}\0${hi}` : "";
+    // The selection did not change. A block left in place already has the right line class.
+    const unchanged = key === paintedVisualKey;
     const hosts = [];
     const walk = (node) => {
       if (!node || node.nodeType !== 1) return;
+      if (unchanged && keptUntouched.has(node)) return;
       if (visualLineHost(node)) hosts.push(node);
       for (const child of childArray(node)) walk(child);
     };
     for (const child of childArray(root)) walk(child);
-    const on = vimOn && vimMode === "visual-line";
-    const lo = on ? Math.min(state.anchor, state.cursor) : 0;
-    const hi = on ? Math.max(state.anchor, state.cursor) : 0;
     for (const el of hosts) {
       if (!el.classList) continue;
       let selected = false;
@@ -4806,9 +4842,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         const span = visualSourceLine(el);
         selected = !!span && sourceLineSelected(span[0], span[1], lo, hi);
       }
-      if (selected) el.classList.add("md-line-selected");
-      else el.classList.remove("md-line-selected");
+      if (selected) {
+        if (!hasClass(el, "md-line-selected")) el.classList.add("md-line-selected");
+      } else removeClassIfPresent(el, "md-line-selected");
     }
+    paintedVisualKey = key;
   }
 
   // priorTop is the caret before this render replaced the line. A rebuild that
@@ -5902,8 +5940,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function paintLineBar(thread) {
     const count = thread.bodyCount;
     const lines = thread.lines;
-    if (!Number.isInteger(count) || count < 1 || !lines) return;
-    if (!(lines.start >= 1 && lines.end >= lines.start && lines.end <= count)) return;
+    if (!Number.isInteger(count) || count < 1 || !lines) return false;
+    if (!(lines.start >= 1 && lines.end >= lines.start && lines.end <= count)) return false;
     let host = null;
     for (const el of elementsWithClass("md-block-fence")) {
       if (hasClass(el, "md-raw")) continue;
@@ -5913,21 +5951,30 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         break;
       }
     }
-    if (!host) return;
+    if (!host) return false;
+    const top = `${((lines.start - 1) / count) * 100}%`;
+    const height = `${((lines.end - lines.start + 1) / count) * 100}%`;
+    const existing = findMarkedChild(host, "md-comment-bar", thread.id);
+    if (existing) {
+      if (inlineStyle(existing, "top").value !== top) setStyle(existing, "top", top);
+      if (inlineStyle(existing, "height").value !== height) setStyle(existing, "height", height);
+      return true;
+    }
     const button = anchorMarkButton(thread, "md-comment-bar md-comment");
-    setStyle(button, "top", `${((lines.start - 1) / count) * 100}%`);
-    setStyle(button, "height", `${((lines.end - lines.start + 1) / count) * 100}%`);
+    setStyle(button, "top", top);
+    setStyle(button, "height", height);
     host.appendChild(button);
+    return true;
   }
 
   function paintPinMark(thread) {
     const pin = thread.pin;
-    if (!pin) return;
+    if (!pin) return false;
     const className = thread.hostKind === "diagram" ? "md-diagram"
       : thread.hostKind === "svg" ? "md-svg"
       : thread.hostKind === "image" ? "md-image"
       : "";
-    if (!className) return;
+    if (!className) return false;
     let host = null;
     for (const el of elementsWithClass(className)) {
       const start = Number(el.dataset && el.dataset.start);
@@ -5942,23 +5989,64 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         break;
       }
     }
-    if (!host) return;
+    if (!host) return false;
     const frame = pictureFrame(host) || host;
+    const left = `${pin.x * 100}%`;
+    const top = `${pin.y * 100}%`;
+    const existing = findMarkedChild(frame, "md-comment-pin", thread.id);
+    if (existing) {
+      if (inlineStyle(existing, "left").value !== left) setStyle(existing, "left", left);
+      if (inlineStyle(existing, "top").value !== top) setStyle(existing, "top", top);
+      return true;
+    }
     const button = anchorMarkButton(thread, "md-comment-pin md-comment");
-    setStyle(button, "left", `${pin.x * 100}%`);
-    setStyle(button, "top", `${pin.y * 100}%`);
+    setStyle(button, "left", left);
+    setStyle(button, "top", top);
     const icon = strokeIcon(COMMENT_BALLOON);
     if (icon) button.appendChild(icon);
     frame.appendChild(button);
+    return true;
+  }
+
+  function dropStaleAnchors(live) {
+    const stale = [];
+    const walk = (node) => {
+      if (!node || node.nodeType !== 1) return;
+      if ((hasClass(node, "md-comment-bar") || hasClass(node, "md-comment-pin")) && node.dataset) {
+        if (!live.has(node.dataset.comment)) stale.push(node);
+        return;
+      }
+      for (const child of childArray(node)) walk(child);
+    };
+    walk(root);
+    for (const node of stale) detachNode(node);
   }
 
   // Bars and pins are their own elements. The code runs stay unmarked, so the
-  // comment color does not cover the tokens.
+  // comment color does not cover the tokens. A block left in place already has
+  // its mark; painting it again would stack a second one.
   function paintAnchorMarks() {
+    const threads = [];
     for (const thread of commentThreads(state.doc)) {
       if (!thread || (thread.resolved && !showResolved)) continue;
-      if (thread.lines) paintLineBar(thread);
-      else if (thread.pin) paintPinMark(thread);
+      if (thread.lines || thread.pin) threads.push(thread);
+    }
+    if (threads.length === 0) {
+      if (paintedAnchorKey) {
+        dropStaleAnchors(new Set());
+        paintedAnchorKey = "";
+      }
+      return;
+    }
+    const live = new Set();
+    for (const thread of threads) {
+      const paintedMark = thread.lines ? paintLineBar(thread) : paintPinMark(thread);
+      if (paintedMark) live.add(thread.id);
+    }
+    const key = [...live].sort().join("\0");
+    if (key !== paintedAnchorKey) {
+      dropStaleAnchors(live);
+      paintedAnchorKey = key;
     }
   }
 
@@ -6130,15 +6218,22 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (remembered) applyPictureFit(img, remembered);
   }
 
-  function fitPictureNode(node) {
+  function fitPictureNode(node, host) {
     if (!node || node.nodeType !== 1) return;
-    if (hasClass(node, "md-image")) fitOne(directChildTag(pictureFrame(node) || node, "img"));
-    for (const child of node.childNodes || []) fitPictureNode(child);
+    if (hasClass(node, "md-image")) {
+      if (host) pictureHosts.add(host);
+      fitOne(directChildTag(pictureFrame(node) || node, "img"));
+    }
+    for (const child of node.childNodes || []) fitPictureNode(child, host);
   }
 
   function fitPictures(nodes) {
     const list = nodes || root.childNodes || [];
-    for (const node of list) fitPictureNode(node);
+    for (const node of list) {
+      // A block with no picture has nothing to measure. Entering it is a walk.
+      if (keptUntouched.has(node) && !pictureHosts.has(node)) continue;
+      fitPictureNode(node, node);
+    }
   }
 
   // A scaled picture that opens as source collapses to one line. Keep the drawn
@@ -6568,15 +6663,22 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function markEditingHighlights() {
     const ids = editingCommentIds();
-    if (ids.size === 0) return;
+    const key = [...ids].sort().join("\0");
+    const unchanged = key === paintedEditingKey;
+    if (ids.size === 0 && unchanged) return;
+    const skipFrozen = skipUntouchedMarks && unchanged;
     const walk = (node) => {
       if (!node) return;
-      if (node.nodeType === 1 && node.classList && node.classList.contains("md-comment") && node.dataset && ids.has(node.dataset.comment)) {
-        node.classList.add("md-comment-editing");
+      if (skipFrozen && node.nodeType === 1 && keptUntouched.has(node)) return;
+      if (node.nodeType === 1 && hasClass(node, "md-comment") && node.dataset) {
+        if (ids.has(node.dataset.comment)) {
+          if (!hasClass(node, "md-comment-editing")) node.classList.add("md-comment-editing");
+        } else removeClassIfPresent(node, "md-comment-editing");
       }
       for (const child of node.childNodes || []) walk(child);
     };
     walk(root);
+    paintedEditingKey = key;
   }
 
   function findCommentCard(id) {
@@ -6806,35 +6908,63 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     return names;
   }
 
+  function restoreCommentClass(node) {
+    if (!node || node.nodeType !== 1) return;
+    if (
+      node.dataset
+      && node.dataset.comment
+      && !hasClass(node, "md-comment-marker")
+      && !hasClass(node, "md-comment-handle")
+      && !hasClass(node, "md-comment")
+    ) node.classList.add("md-comment");
+    for (const child of childArray(node)) restoreCommentClass(child);
+  }
+
   // plan paints every comment span. The checkbox decides whether a resolved thread keeps that paint.
   function hideResolvedHighlights() {
-    if (showResolved) return;
+    if (showResolved) {
+      if (paintedHiddenKey === "*") return;
+      restoreCommentClass(root);
+      paintedHiddenKey = "*";
+      return;
+    }
     const hidden = new Set();
     for (const comment of commentThreads(state.doc)) {
       if (comment && comment.resolved) hidden.add(comment.id);
     }
-    if (hidden.size === 0) return;
+    const key = [...hidden].sort().join("\0");
+    const unchanged = key === paintedHiddenKey;
+    if (hidden.size === 0 && unchanged) return;
+    const skipFrozen = unchanged;
     const walk = (node) => {
       if (!node) return;
-      if (node.nodeType === 1 && node.classList && node.classList.contains("md-comment") && node.dataset && hidden.has(node.dataset.comment)) {
+      if (skipFrozen && node.nodeType === 1 && keptUntouched.has(node)) return;
+      if (node.nodeType === 1 && hasClass(node, "md-comment") && node.dataset && hidden.has(node.dataset.comment)) {
         node.classList.remove("md-comment");
       }
       for (const child of node.childNodes || []) walk(child);
     };
     walk(root);
+    paintedHiddenKey = key;
   }
 
   function markCurrentHighlights() {
+    const key = currentCommentId || "";
+    const unchanged = key === paintedCurrentKey;
+    const skipFrozen = skipUntouchedMarks && unchanged;
     const walk = (node) => {
       if (!node) return;
-      if (node.nodeType === 1 && node.classList && node.classList.contains("md-comment")) {
+      if (skipFrozen && node.nodeType === 1 && keptUntouched.has(node)) return;
+      if (node.nodeType === 1 && hasClass(node, "md-comment")) {
         const id = node.dataset && node.dataset.comment;
-        if (currentCommentId && id === currentCommentId) node.classList.add("md-comment-current");
-        else node.classList.remove("md-comment-current");
+        if (key && id === key) {
+          if (!hasClass(node, "md-comment-current")) node.classList.add("md-comment-current");
+        } else removeClassIfPresent(node, "md-comment-current");
       }
       for (const child of node.childNodes || []) walk(child);
     };
     walk(root);
+    paintedCurrentKey = key;
   }
 
   function clearCommentHandles() {
@@ -8015,6 +8145,41 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
+  function lockPaintKey() {
+    const parts = [];
+    for (const line of lockTable) {
+      if (!line || typeof line.username !== "string" || line.username === "") continue;
+      const token = typeof line.token === "string" ? line.token : "";
+      parts.push(`${line.index}\0${line.username}\0${token}`);
+    }
+    return parts.join("\n");
+  }
+
+  // The marks are already on the line. Replace them only when the holders changed,
+  // and flash a refusal on the mark that is already there.
+  function syncKeptLocks(el, block) {
+    const names = lockNames(block);
+    const marks = [];
+    for (const child of childArray(el)) {
+      if (child && hasClass(child, "md-lock")) marks.push(child);
+    }
+    let same = marks.length === names.length;
+    for (let i = 0; same && i < marks.length; i += 1) {
+      if (marks[i].textContent !== names[i]) same = false;
+    }
+    if (!same) {
+      for (const mark of marks) detachNode(mark);
+      appendLockMarks(el, block);
+      return;
+    }
+    if (!refusal || !refusal.name) return;
+    for (const mark of marks) {
+      if (mark.textContent === refusal.name) {
+        if (!hasClass(mark, "md-flash")) mark.classList.add("md-flash");
+      } else removeClassIfPresent(mark, "md-flash");
+    }
+  }
+
   function stripLockMarks(el) {
     const doomed = [];
     for (const child of el.childNodes || []) {
@@ -8212,6 +8377,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // gutter from the used font and a 1ch probe, and the slack from the marker's laid-out width.
   function settleRawMarkers() {
     for (const line of childArray(root)) {
+      if (keptUntouched.has(line)) continue;
       if (!line || !line.classList || !line.classList.contains("md-raw") || line.classList.contains("md-quote")) continue;
       if (!line.classList.contains("md-li") && !line.classList.contains("md-ol")) continue;
       const hang = findClassChild(line, "md-raw-hang");
@@ -8275,6 +8441,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (indentAt.size === 0) return;
     for (const line of childArray(root)) {
+      if (keptUntouched.has(line)) continue;
       if (!line || !line.classList || !line.classList.contains("md-line") || !line.style) continue;
       const start = Number(line.dataset && line.dataset.start);
       if (!indentAt.has(start)) continue;
@@ -9060,6 +9227,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function settleBlankBreaks() {
     const doc = state.doc;
     for (const line of childArray(root)) {
+      // This line did not move, so the break margin from the previous paint still matches.
+      if (keptUntouched.has(line)) continue;
       if (!hasClass(line, "md-line")) continue;
       const brk = findClassChild(line, "md-break");
       if (!brk || inlineStyle(brk, "margin-top").value !== "-1lh") continue;
@@ -9133,10 +9302,26 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function paintSearchHits() {
+    const query = activeHitQuery();
+    if (query !== paintedHitQuery) {
+      liftSearchPieces(root);
+      if (painted && Array.isArray(painted.entries)) {
+        for (const entry of painted.entries) {
+          if (entry && entry.el && entry.el.parentElement !== root) liftSearchPieces(entry.el);
+        }
+      }
+      paintedHitQuery = query;
+      searchEpoch += 1;
+    }
     const ranges = openSearchRanges();
     if (ranges.length === 0) return;
     const texts = [];
-    for (const child of childArray(root)) collectSearchText(child, texts);
+    for (const child of childArray(root)) {
+      // This block was not rebuilt and already shows this query.
+      if (keptUntouched.has(child) && searchPainted.get(child) === searchEpoch) continue;
+      collectSearchText(child, texts);
+      searchPainted.set(child, searchEpoch);
+    }
     for (const text of texts) paintSearchText(text, ranges);
   }
 
@@ -9319,6 +9504,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function render() {
     const viewPressed = viewTogglePressed;
     viewTogglePressed = false;
+    keptUntouched = new Set();
     releaseMovedPress();
     if (gestureTimer != null) {
       clearTimeout(gestureTimer);
@@ -9346,12 +9532,21 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       blocks = blocksForCaret(blocks);
       const flashBlock = refusal && !refusal.name ? tightestBlock(blocks, refusal.offset) : null;
+      const nextLockKey = lockPaintKey();
+      const locksChanged = nextLockKey !== paintedLockKey;
       // The caret block and any block the splice touches are built again. The
       // rest keep their elements; an earlier insert only moves their offsets.
       const reused = keptBlockNodes(painted, state.doc, blocks, state.cursor);
       const nodes = blocks.map((block, index) => {
         const keep = reused[index];
         if (keep) {
+          if (!keep.delta) {
+            keptUntouched.add(keep.el);
+            if (locksChanged || (refusal && refusal.name && lockNames(block).includes(refusal.name))) {
+              syncKeptLocks(keep.el, block);
+            }
+            return keep.el;
+          }
           prepareKept(keep.el, keep.delta);
           appendLockMarks(keep.el, block);
           if (block === flashBlock) keep.el.classList.add("md-flash");
@@ -9376,6 +9571,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           el: nodes[index],
         })),
       };
+      paintedLockKey = nextLockKey;
       const notes = renderFootnotes(planned.footnotes);
       if (notes) nodes.push(notes);
       const priorTop = caretTop();
@@ -9385,9 +9581,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       settleBlankBreaks();
       settleRawMarkers();
       settleListContinuations(blocks);
-      markEditingHighlights();
-      hideResolvedHighlights();
-      markCurrentHighlights();
+      skipUntouchedMarks = true;
+      try {
+        markEditingHighlights();
+        hideResolvedHighlights();
+        markCurrentHighlights();
+      } finally {
+        skipUntouchedMarks = false;
+      }
       paintAnchorMarks();
       paintSearchHits();
       renderCommentAside(planned.comments);

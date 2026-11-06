@@ -29389,3 +29389,308 @@ test("an unchanged diagram is not rendered again", async () => {
     else globalThis.DOMParser = previousParser;
   }
 });
+
+function armClassRemoves(node, calls) {
+  if (!node || node.nodeType !== 1 || !node.classList) return;
+  const list = node.classList;
+  const orig = list.remove.bind(list);
+  list.remove = (name) => {
+    calls.push({ name, present: list.contains(name) });
+    orig(name);
+  };
+  for (const child of node.childNodes || []) armClassRemoves(child, calls);
+}
+
+function armChildReads(node, counter) {
+  if (!node || node.nodeType !== 1) return;
+  const kids = node.childNodes;
+  Object.defineProperty(node, "childNodes", {
+    configurable: true,
+    get() {
+      counter.count += 1;
+      return kids;
+    },
+  });
+  for (const child of kids) armChildReads(child, counter);
+}
+
+function lineOfText(mounted, text) {
+  const node = mounted.findAll((item) => item.nodeType === 3 && item.textContent === text)[0];
+  if (!node) return null;
+  let line = node.parentElement;
+  while (line && !(line.classList && line.classList.contains("md-line"))) line = line.parentElement;
+  return { node, line };
+}
+
+test("a kept block with no offset change is not walked", () => {
+  const mounted = mountEditor();
+  try {
+    const doc = "Alpha\n\nTail\n";
+    const cursor = doc.lastIndexOf("Tail");
+    const view = createEditor(mounted.root, doc, cursor);
+    const alpha = lineOfText(mounted, "Alpha");
+    const blank = mounted.root.childNodes.find((node) => node.classList && node.classList.contains("md-line") && node.textContent === "");
+    assert.ok(alpha && alpha.line);
+    assert.ok(blank);
+    const start = alpha.node.parentElement.dataset.start;
+    const end = alpha.node.parentElement.dataset.end;
+    alpha.line.classList.add("md-flash");
+    alpha.node.parentElement.classList.add("md-flash");
+    const removes = [];
+    armClassRemoves(alpha.line, removes);
+    armClassRemoves(blank, removes);
+    const counter = { count: 0 };
+    armChildReads(alpha.line, counter);
+    armChildReads(blank, counter);
+    counter.count = 0;
+    mounted.listeners.beforeinput({
+      inputType: "insertText",
+      data: "Z",
+      preventDefault() {},
+    });
+    assert.equal(view.getState().doc, "Alpha\n\nZTail\n");
+    assert.equal(removes.length, 0);
+    assert.equal(counter.count, 0);
+    assert.equal(alpha.line.classList.contains("md-flash"), true);
+    assert.equal(alpha.node.parentElement.classList.contains("md-flash"), true);
+    assert.equal(alpha.node.parentElement.dataset.start, start);
+    assert.equal(alpha.node.parentElement.dataset.end, end);
+    assert.equal(mounted.root.contains(alpha.node), true);
+    assert.equal(alpha.node.parentElement.parentElement, alpha.line);
+    assert.equal(mounted.root.contains(blank), true);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a shifted block drops a class only when it is present", () => {
+  const mounted = mountEditor();
+  try {
+    const doc = "Alpha\n\nBeta cat\n";
+    const view = createEditor(mounted.root, doc, 0);
+    const beta = lineOfText(mounted, "Beta cat");
+    assert.ok(beta && beta.line);
+    const run = beta.node.parentElement;
+    const before = Number(run.dataset.start);
+    beta.line.classList.add("md-flash");
+    run.classList.add("md-flash");
+    const removes = [];
+    armClassRemoves(beta.line, removes);
+    mounted.listeners.beforeinput({
+      inputType: "insertText",
+      data: "QQ",
+      preventDefault() {},
+    });
+    assert.equal(view.getState().doc, "QQAlpha\n\nBeta cat\n");
+    assert.ok(removes.length > 0);
+    assert.equal(removes.every((call) => call.present === true), true);
+    assert.equal(removes.some((call) => call.name === "md-comment-editing"), false);
+    assert.equal(removes.some((call) => call.name === "md-comment-current"), false);
+    assert.equal(beta.line.classList.contains("md-flash"), false);
+    assert.equal(run.classList.contains("md-flash"), false);
+    assert.equal(mounted.root.contains(beta.node), true);
+    assert.equal(run.parentElement, beta.line);
+    assert.equal(Number(run.dataset.start), before + 2);
+    assert.equal(Number(run.dataset.end), before + 2 + "Beta cat".length);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+function deliverableMemory(doc, cursor) {
+  const inner = createMemoryTransport(doc, cursor);
+  const listeners = new Set();
+  return {
+    memory: true,
+    username: "",
+    send(message) {
+      inner.send(message);
+    },
+    subscribe(fn) {
+      listeners.add(fn);
+      const off = inner.subscribe(fn);
+      return () => {
+        listeners.delete(fn);
+        off();
+      };
+    },
+    deliver(message) {
+      for (const fn of listeners) fn(message);
+    },
+  };
+}
+
+function editorNodes(root, predicate) {
+  return walkNodes(root, (node) => {
+    if (!predicate(node)) return false;
+    let current = node;
+    while (current) {
+      if (current === root) return true;
+      current = current.parentElement;
+    }
+    return false;
+  });
+}
+
+test("a later pass does not stack marks on a block left in place", () => {
+  const mounted = mountTicketPage();
+  const doc = [
+    "Alpha cat {c1}word{/c1}",
+    "",
+    "```comment c1",
+    ":: 0",
+    "note",
+    "```",
+    "```js",
+    "one",
+    "two",
+    "```",
+    "```comment c2 1-2",
+    ":: 0",
+    "line",
+    "```",
+    "",
+    "Tail",
+    "",
+  ].join("\n");
+  const type = (data) => {
+    mounted.listeners.beforeinput({
+      inputType: "insertText",
+      data,
+      preventDefault() {},
+    });
+  };
+  const openFileSearch = (query) => {
+    const fileBlock = byClass(mounted.nav, "file-block")[0];
+    const head = byClass(fileBlock, "md-pane-head")[0];
+    head.childNodes[3].listeners.click({ preventDefault() {} });
+    const input = byClass(fileBlock, "md-search-input")[0];
+    input.value = query;
+    input.listeners.input();
+  };
+  try {
+    const cursor = doc.lastIndexOf("Tail");
+    const transport = deliverableMemory(doc, cursor);
+    const view = createEditor(mounted.root, doc, cursor, transport);
+    openFileSearch("cat");
+    transport.deliver({
+      type: "locks",
+      lines: [{ index: lockIndexAt(doc, doc.indexOf("Alpha")), username: "remote" }],
+    });
+    const commentMark = (node) => node.classList && node.classList.contains("md-comment") && node.dataset && node.dataset.comment === "c1" && !node.classList.contains("md-comment-bar") && !node.classList.contains("md-comment-marker") && !node.classList.contains("md-comment-handle");
+    const lock = editorNodes(mounted.root, (node) => node.classList && node.classList.contains("md-lock"));
+    const hits = editorNodes(mounted.root, (node) => node.classList && node.classList.contains("md-search-hit"));
+    const word = editorNodes(mounted.root, commentMark);
+    const bar = editorNodes(mounted.root, (node) => node.classList && node.classList.contains("md-comment-bar") && node.dataset && node.dataset.comment === "c2");
+    assert.equal(lock.length, 1);
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].textContent, "cat");
+    assert.equal(word.length, 1);
+    assert.equal(word[0].textContent, "word");
+    assert.equal(bar.length, 1);
+    type("Z");
+    assert.equal(view.getState().doc, doc.replace("Tail", "ZTail"));
+    assert.deepEqual(editorNodes(mounted.root, (node) => node.classList && node.classList.contains("md-lock")), lock);
+    assert.deepEqual(editorNodes(mounted.root, (node) => node.classList && node.classList.contains("md-search-hit")), hits);
+    assert.deepEqual(editorNodes(mounted.root, commentMark), word);
+    assert.deepEqual(editorNodes(mounted.root, (node) => node.classList && node.classList.contains("md-comment-bar")), bar);
+    view.destroy();
+
+    const shiftedDoc = "Alpha\n\nBeta cat\n";
+    const shifted = deliverableMemory(shiftedDoc, 0);
+    const again = createEditor(mounted.root, shiftedDoc, 0, shifted);
+    openFileSearch("cat");
+    shifted.deliver({
+      type: "locks",
+      lines: [{ index: lockIndexAt(shiftedDoc, shiftedDoc.indexOf("Beta")), username: "remote" }],
+    });
+    type("QQ");
+    assert.equal(again.getState().doc, "QQAlpha\n\nBeta cat\n");
+    assert.equal(editorNodes(mounted.root, (node) => node.classList && node.classList.contains("md-lock")).length, 1);
+    const shiftedHits = editorNodes(mounted.root, (node) => node.classList && node.classList.contains("md-search-hit"));
+    assert.equal(shiftedHits.length, 1);
+    assert.equal(shiftedHits[0].textContent, "cat");
+    again.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
+test("a block left in place still follows comment controls", () => {
+  const mounted = mountSheet();
+  const stamp = "@2026-10-04T20:30:22.000Z remote";
+  const editingDoc = [
+    "Say {c1}one{/c1}.",
+    "",
+    "```comment c1",
+    stamp,
+    "hi",
+    "```",
+    "",
+    "Tail",
+    "",
+  ].join("\n");
+  const resolvedDoc = [
+    "Say {c1}one{/c1}.",
+    "",
+    "```comment c1 resolved",
+    stamp,
+    "hi",
+    "```",
+    "",
+    "Tail",
+    "",
+  ].join("\n");
+  const wordSpan = () => {
+    const text = mounted.findAll((node) => node.nodeType === 3 && node.textContent === "one")[0];
+    return text && text.parentElement;
+  };
+  const press = (parent, label) => {
+    const button = walkNodes(parent, (node) => node.tagName === "BUTTON" && (
+      node.textContent === label || (node.getAttribute && node.getAttribute("aria-label") === label)
+    ))[0];
+    assert.ok(button, label);
+    button.listeners.click({ target: button, preventDefault() {} });
+  };
+  try {
+    const transport = createMemoryTransport(editingDoc, editingDoc.lastIndexOf("Tail"));
+    transport.username = "remote";
+    const editing = createEditor(mounted.root, editingDoc, editingDoc.lastIndexOf("Tail"), transport);
+    const span = wordSpan();
+    assert.ok(span);
+    assert.equal(span.classList.contains("md-comment"), true);
+    assert.equal(span.classList.contains("md-comment-editing"), false);
+    const note = mounted.findAll((node) => node.classList && node.classList.contains("md-comment-text"))[0];
+    mounted.aside.listeners.click({ target: note, preventDefault() {} });
+    assert.equal(wordSpan(), span);
+    assert.equal(span.classList.contains("md-comment-editing"), true);
+    assert.equal(span.classList.contains("md-comment-current"), true);
+    press(mounted.aside, "Cancel");
+    assert.equal(editing.getState().doc, editingDoc);
+    assert.equal(wordSpan(), span);
+    assert.equal(span.classList.contains("md-comment-editing"), false);
+    assert.equal(span.classList.contains("md-comment"), true);
+    editing.destroy();
+
+    const resolved = createEditor(mounted.root, resolvedDoc, resolvedDoc.lastIndexOf("Tail"));
+    const hidden = wordSpan();
+    assert.ok(hidden);
+    assert.equal(hidden.classList.contains("md-comment"), false);
+    assert.equal(hidden.dataset.comment, "c1");
+    const shown = docMenuOf(mounted.aside).checkbox;
+    shown.checked = true;
+    shown.listeners.change();
+    assert.equal(wordSpan(), hidden);
+    assert.equal(hidden.classList.contains("md-comment"), true);
+    const hiddenAgain = docMenuOf(mounted.aside).checkbox;
+    hiddenAgain.checked = false;
+    hiddenAgain.listeners.change();
+    assert.equal(wordSpan(), hidden);
+    assert.equal(hidden.classList.contains("md-comment"), false);
+    resolved.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
