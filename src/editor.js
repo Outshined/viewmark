@@ -46,7 +46,7 @@ import {
   searchMatches,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
-import { playVimChange, vimKey, vimMatchStarts, vimNoteArrow, vimNumberLines, vimSubmit, visualBlockOffset, visualKeepGlyph, VIM_SEARCH_LIMIT } from "./vim.js";
+import { gLines, playVimChange, vimKey, vimMatchStarts, vimNoteArrow, vimSubmit, visualBlockOffset, visualKeepGlyph, VIM_SEARCH_LIMIT } from "./vim.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES, isTicketToken, parseTicketToken } from "./ticket.js";
 import { MAX_PAYLOAD } from "./ws.js";
 
@@ -9567,67 +9567,13 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (kept.textContent !== text) kept.textContent = text;
   }
 
-  function fenceBodyAnchors(el) {
-    const groups = [];
-    let group = [];
-    const flush = (brk) => {
-      let start = null;
-      let anchor = group[0] || brk;
-      for (const child of group) {
-        if (!child || !child.dataset || child.dataset.start == null || child.dataset.start === "") continue;
-        start = Number(child.dataset.start);
-        anchor = child;
-        break;
-      }
-      if (start == null && group.length === 0 && brk && brk.dataset && brk.dataset.start != null && brk.dataset.start !== "") {
-        start = Number(brk.dataset.start);
-        anchor = brk;
-      }
-      if (anchor && Number.isFinite(start)) groups.push({ start, anchor });
-      group = [];
-    };
-    for (const child of childArray(el)) {
-      if (hasClass(child, "md-vim-number") || hasClass(child, "md-lock")) continue;
-      if (hasClass(child, "md-break")) {
-        flush(child);
-        continue;
-      }
-      group.push(child);
-    }
-    if (group.length) flush(null);
-    return groups;
-  }
-
-  function syncBodyNumbers(el, numberAt) {
-    const used = new Set();
-    for (const group of fenceBodyAnchors(el)) {
-      const text = numberAt.get(group.start);
-      if (!text) continue;
-      used.add(group.start);
-      let node = null;
-      for (const child of directVimNumbers(el)) {
-        if (child.lineStart === group.start) {
-          node = child;
-          break;
-        }
-      }
-      if (!node) {
-        placeNodeBefore(el, makeVimNumber(text, group.start), group.anchor);
-        continue;
-      }
-      if (node.textContent !== text) node.textContent = text;
-    }
-    for (const node of directVimNumbers(el)) {
-      if (!used.has(node.lineStart)) detachNode(node);
-    }
-  }
-
   function paintVimGutter(blocks, nodes, raw) {
     if (vimOn !== true || vimNumber !== true) {
       hideVimNumbers();
       return;
     }
-    const lines = vimNumberLines(state.doc, state.cursor, raw === true);
+    // Same lines G counts. A fence is one number, including while the caret is inside it.
+    const lines = gLines(state.doc, state.cursor, raw === true);
     const numberAt = new Map();
     for (let i = 0; i < lines.length; i += 1) numberAt.set(lines[i].start, String(i + 1));
     const list = nodes || [];
@@ -9638,11 +9584,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const start = block && typeof block.start === "number"
         ? block.start
         : (node.dataset && node.dataset.start != null && node.dataset.start !== "" ? Number(node.dataset.start) : NaN);
-      const openFence = block && block.fence === true && !numberAt.has(block.start);
-      if (openFence) {
-        syncBodyNumbers(node, numberAt);
-        continue;
-      }
       if (numberAt.has(start)) syncSoloNumber(node, numberAt.get(start), start);
       else clearDirectVimNumbers(node);
     }

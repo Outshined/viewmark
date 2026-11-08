@@ -29,7 +29,7 @@ import {
 } from "../src/editor.js";
 import { splitCommentNote, lockSpans, lockIndexAt, blockSpan, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, shiftBreak, moveText, endBeforeTail, endBeforeTrailingCommentFence, ruleLineStop, gapCaretStops } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
-import { gLines, vimNumberLines } from "../src/vim.js";
+import { gLines } from "../src/vim.js";
 
 const A = "**hello**\nnext\n";
 const B = "# Title\n\n";
@@ -24691,17 +24691,13 @@ test("vim line numbers match gLines while the flag is on and are absent while it
     const cursor = open.indexOf("one");
     const openView = createEditor(mounted.root, open, cursor);
     submitLine("set nu");
-    const bodyLines = vimNumberLines(open, cursor, false);
     const whole = gLines(open, cursor, false);
-    assert.ok(bodyLines.length > whole.length);
+    assertNumbers(open, cursor, false);
     const openNodes = numbers();
-    assert.equal(openNodes.length, bodyLines.length);
-    for (let i = 0; i < bodyLines.length; i += 1) {
-      assert.equal(openNodes[i].textContent, String(i + 1));
-      assert.equal(openNodes[i].lineStart, bodyLines[i].start);
-    }
-    assert.equal(openNodes.some((node) => open.slice(node.lineStart, node.lineStart + 3) === "one"), true);
-    assert.equal(openNodes.some((node) => open.slice(node.lineStart, node.lineStart + 3) === "two"), true);
+    assert.equal(openNodes.filter((node) => open.slice(node.lineStart, node.lineStart + 3) === "```").length, 1);
+    assert.equal(whole.filter((line) => open.slice(line.start, line.start + 3) === "```").length, 1);
+    assert.equal(openNodes.some((node) => node.lineStart === open.indexOf("one")), false);
+    assert.equal(openNodes.some((node) => node.lineStart === open.indexOf("two")), false);
     assert.equal(openView.getState().doc, open);
     assert.equal(openView.getState().cursor, cursor);
     openView.destroy();

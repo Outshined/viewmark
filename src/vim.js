@@ -366,28 +366,6 @@ export function gLines(doc, cursor, raw) {
   return lines;
 }
 
-// G counts a closed fence as one line. Inside a code fence, j and k count each body line.
-export function vimNumberLines(doc, cursor, raw) {
-  const lines = gLines(doc, cursor, raw);
-  if (raw) return lines;
-  let fence = null;
-  for (const item of codeFenceBodies(doc)) {
-    if (cursor >= item.start && cursor <= item.end) {
-      fence = item;
-      break;
-    }
-  }
-  if (!fence || fence.lines.length === 0) return lines;
-  const bodyEnd = fence.lines[fence.lines.length - 1].end;
-  const out = [];
-  for (const line of lines) {
-    if (line.start <= fence.start && line.end >= bodyEnd) {
-      for (const body of fence.lines) out.push({ start: body.start, end: body.end });
-    } else out.push(line);
-  }
-  return out;
-}
-
 // A rendered caret past the last block is the empty row after a final newline.
 // j does not step onto that row. k from it returns to the last block.
 function lineIndex(lines, doc, cursor, raw) {
