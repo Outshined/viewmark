@@ -24594,6 +24594,11 @@ test("vim line numbers match gLines while the flag is on and are absent while it
     assert.ok(rule);
     assert.match(rule[0], /color:\s*#9c968c/);
     assert.match(rule[0], /pointer-events:\s*none/);
+    assert.match(rule[0], /width:\s*0/);
+    assert.match(rule[0], /direction:\s*rtl/);
+    assert.match(rule[0], /transform:\s*translateX\(-0\.45rem\)/);
+    assert.equal(/-100%/.test(rule[0]), false);
+    assert.match(css, /#editor\.md-vim-nu\s*\{[^}]*padding-left:\s*calc\(4ch \+ 0\.45rem\)/);
     assert.match(css, /\.md-syntax\s*\{[^}]*color:\s*#9c968c/);
     const writes = [];
     const store = globalThis.localStorage;

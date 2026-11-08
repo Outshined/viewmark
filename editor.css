@@ -1245,15 +1245,19 @@ button.md-ticket-filter-all:hover,
   width: 0;
   overflow: visible;
   white-space: nowrap;
+  /* Width stays 0 so the line text does not move. Right-to-left overflow hangs the glyphs in the gutter. */
+  direction: rtl;
+  font-size: 17px;
+  font-weight: 400;
   color: #9c968c;
   pointer-events: none;
   user-select: none;
   vertical-align: top;
-  transform: translateX(calc(-100% - 0.45rem));
+  transform: translateX(-0.45rem);
 }
 
 #editor.md-vim-nu {
-  padding-left: 2.6rem;
+  padding-left: calc(4ch + 0.45rem);
 }
 
 .md-strong {
