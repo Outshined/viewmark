@@ -46,7 +46,7 @@ import {
   searchMatches,
 } from "./doc.js";
 import { createMemoryTransport, createSocketTransport } from "./session.js";
-import { playVimChange, vimKey, vimMatchStarts, vimNoteArrow, vimSubmit, visualBlockOffset, visualKeepGlyph, VIM_SEARCH_LIMIT } from "./vim.js";
+import { playVimChange, vimKey, vimMatchStarts, vimNoteArrow, vimNumberLines, vimSubmit, visualBlockOffset, visualKeepGlyph, VIM_SEARCH_LIMIT } from "./vim.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES, isTicketToken, parseTicketToken } from "./ticket.js";
 import { MAX_PAYLOAD } from "./ws.js";
 
@@ -1770,6 +1770,10 @@ export function mapOffset(startOrNode, offset) {
   if (!node) return index;
   if (node.nodeType === 3) {
     const parent = node.parentElement;
+    // The digits are not a caret offset. A hit on them is the line they decorate.
+    if (parent && parent.classList && parent.classList.contains("md-vim-number")) {
+      return Number.isFinite(parent.lineStart) ? parent.lineStart : 0;
+    }
     if (parent && parent.classList && parent.classList.contains("md-lock")) {
       const tagged = nearestTagged(parent);
       return tagged ? Number(tagged.dataset.start) : 0;
@@ -1792,6 +1796,9 @@ export function mapOffset(startOrNode, offset) {
     if (index < children.length) {
       const child = children[index];
       if (hasClass(child, "md-atom")) return Number(child.dataset.start);
+      if (hasClass(child, "md-vim-number")) {
+        return Number.isFinite(child.lineStart) ? child.lineStart : index;
+      }
       if (child.nodeType === 3) return mapOffset(child, 0);
       if (isBreak(child)) {
         const tagged = nearestTagged(child);
@@ -1803,6 +1810,9 @@ export function mapOffset(startOrNode, offset) {
     } else if (children.length > 0) {
       const last = children[children.length - 1];
       if (hasClass(last, "md-atom")) return Number(last.dataset.end);
+      if (hasClass(last, "md-vim-number")) {
+        return Number.isFinite(last.lineStart) ? last.lineStart : index;
+      }
       if (last.nodeType === 3) return mapOffset(last, last.length || 0);
       if (isBreak(last)) {
         const tagged = nearestTagged(last);
@@ -3648,6 +3658,7 @@ function shiftKeptOffsets(el, delta) {
     for (const key of KEPT_OFFSET_PROP) {
       if (typeof node[key] === "number" && Number.isFinite(node[key])) node[key] += delta;
     }
+    if (typeof node.lineStart === "number" && Number.isFinite(node.lineStart)) node.lineStart += delta;
     for (const child of childArray(node)) walk(child);
   };
   walk(el);
@@ -3840,6 +3851,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let vimInsertRejected = false;
   // The flag is this page's memory. Storage is read once here and written on toggle.
   let vimOn = readVimOn();
+  // With the search pattern: this page only. Default off.
+  let vimNumber = false;
+  let vimNumbersPainted = false;
   // A screen page is the rows already drawn. Pulling the caret into view would
   // add the next row to that count.
   let vimKeepScroll = false;
@@ -4657,7 +4671,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     let rawGap = null;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (node.parentElement?.closest(".md-atom") || node.parentElement?.closest(".md-lock")) continue;
+      if (node.parentElement?.closest(".md-atom") || node.parentElement?.closest(".md-lock") || node.parentElement?.closest(".md-vim-number")) continue;
       const tagged = nearestTagged(node);
       if (!tagged) continue;
       const start = Number(tagged.dataset.start);
@@ -5070,7 +5084,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (walker) {
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
         const parent = node.parentElement;
-        if (parent && typeof parent.closest === "function" && (parent.closest(".md-atom") || parent.closest(".md-lock"))) continue;
+        if (parent && typeof parent.closest === "function" && (parent.closest(".md-atom") || parent.closest(".md-lock") || parent.closest(".md-vim-number"))) continue;
         const tagged = nearestTagged(node);
         if (!tagged) continue;
         const start = Number(tagged.dataset.start);
@@ -7107,7 +7121,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       || hasClass(node, "md-view-toggle")
       || hasClass(node, "md-doc-menu")
       || hasClass(node, "md-doc-menu-panel")
-      || hasClass(node, "md-lock");
+      || hasClass(node, "md-lock")
+      || hasClass(node, "md-vim-number");
     const walk = (node) => {
       if (!node || node.nodeType !== 1 || skip(node)) return;
       if (hasClass(node, "md-atom")) {
@@ -8777,6 +8792,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     vimRecording = null;
     vimStrokes = [];
     vimReplaying = false;
+    vimNumber = false;
     vimInsertRejected = false;
     vimInsertOpen = false;
     typingRun = null;
@@ -8816,6 +8832,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     layoutComments();
     hideCommentButton();
     paintSearchHits();
+    paintVimGutter(null, nodes, true);
     placeCaret(priorTop);
     revealFirstSearchHit();
   }
@@ -9259,6 +9276,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       || hasClass(el, "md-diagram")
       || hasClass(el, "md-svg")
       || hasClass(el, "md-lock")
+      || hasClass(el, "md-vim-number")
       || hasClass(el, "md-image-caret")
       || hasClass(el, "md-raw-hang")
       || hasClass(el, "md-raw-gap")
@@ -9501,6 +9519,137 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!button.classList.contains("md-glyph-press")) button.classList.add("md-glyph-press");
   }
 
+  function makeVimNumber(text, lineStart) {
+    const node = document.createElement("span");
+    node.className = "md-vim-number";
+    node.contentEditable = "false";
+    if (typeof node.setAttribute === "function") {
+      node.setAttribute("contenteditable", "false");
+      node.setAttribute("aria-hidden", "true");
+    }
+    node.lineStart = lineStart;
+    node.textContent = text;
+    return node;
+  }
+
+  function directVimNumbers(el) {
+    const found = [];
+    for (const child of childArray(el)) {
+      if (hasClass(child, "md-vim-number")) found.push(child);
+    }
+    return found;
+  }
+
+  function clearDirectVimNumbers(el) {
+    for (const node of directVimNumbers(el)) detachNode(node);
+  }
+
+  // Off creates nothing and does not read the vim lines. Turning it off only drops nodes already painted.
+  function hideVimNumbers() {
+    if (vimNumbersPainted !== true) return;
+    detachClass(root, "md-vim-number");
+    if (root && root.classList) root.classList.remove("md-vim-nu");
+    vimNumbersPainted = false;
+  }
+
+  function syncSoloNumber(el, text, lineStart) {
+    const existing = directVimNumbers(el);
+    let kept = null;
+    for (const node of existing) {
+      if (!kept) kept = node;
+      else detachNode(node);
+    }
+    if (!kept) {
+      placeFirst(el, makeVimNumber(text, lineStart));
+      return;
+    }
+    kept.lineStart = lineStart;
+    if (kept.textContent !== text) kept.textContent = text;
+  }
+
+  function fenceBodyAnchors(el) {
+    const groups = [];
+    let group = [];
+    const flush = (brk) => {
+      let start = null;
+      let anchor = group[0] || brk;
+      for (const child of group) {
+        if (!child || !child.dataset || child.dataset.start == null || child.dataset.start === "") continue;
+        start = Number(child.dataset.start);
+        anchor = child;
+        break;
+      }
+      if (start == null && group.length === 0 && brk && brk.dataset && brk.dataset.start != null && brk.dataset.start !== "") {
+        start = Number(brk.dataset.start);
+        anchor = brk;
+      }
+      if (anchor && Number.isFinite(start)) groups.push({ start, anchor });
+      group = [];
+    };
+    for (const child of childArray(el)) {
+      if (hasClass(child, "md-vim-number") || hasClass(child, "md-lock")) continue;
+      if (hasClass(child, "md-break")) {
+        flush(child);
+        continue;
+      }
+      group.push(child);
+    }
+    if (group.length) flush(null);
+    return groups;
+  }
+
+  function syncBodyNumbers(el, numberAt) {
+    const used = new Set();
+    for (const group of fenceBodyAnchors(el)) {
+      const text = numberAt.get(group.start);
+      if (!text) continue;
+      used.add(group.start);
+      let node = null;
+      for (const child of directVimNumbers(el)) {
+        if (child.lineStart === group.start) {
+          node = child;
+          break;
+        }
+      }
+      if (!node) {
+        placeNodeBefore(el, makeVimNumber(text, group.start), group.anchor);
+        continue;
+      }
+      if (node.textContent !== text) node.textContent = text;
+    }
+    for (const node of directVimNumbers(el)) {
+      if (!used.has(node.lineStart)) detachNode(node);
+    }
+  }
+
+  function paintVimGutter(blocks, nodes, raw) {
+    if (vimOn !== true || vimNumber !== true) {
+      hideVimNumbers();
+      return;
+    }
+    const lines = vimNumberLines(state.doc, state.cursor, raw === true);
+    const numberAt = new Map();
+    for (let i = 0; i < lines.length; i += 1) numberAt.set(lines[i].start, String(i + 1));
+    const list = nodes || [];
+    for (let i = 0; i < list.length; i += 1) {
+      const node = list[i];
+      const block = blocks ? blocks[i] : null;
+      if (!node) continue;
+      const start = block && typeof block.start === "number"
+        ? block.start
+        : (node.dataset && node.dataset.start != null && node.dataset.start !== "" ? Number(node.dataset.start) : NaN);
+      const openFence = block && block.fence === true && !numberAt.has(block.start);
+      if (openFence) {
+        syncBodyNumbers(node, numberAt);
+        continue;
+      }
+      if (numberAt.has(start)) syncSoloNumber(node, numberAt.get(start), start);
+      else clearDirectVimNumbers(node);
+    }
+    vimNumbersPainted = true;
+    if (root && root.classList && !root.classList.contains("md-vim-nu")) root.classList.add("md-vim-nu");
+  }
+
   function render() {
     const viewPressed = viewTogglePressed;
     viewTogglePressed = false;
@@ -9610,6 +9759,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (hoverCommentId && !handleDrag) showCommentHandles(hoverCommentId);
       restoreCornerPin();
       if (!commentFocus) revealCaretBelowStrip();
+      paintVimGutter(blocks, nodes, false);
     } finally {
       if (viewPressed) armViewTogglePress();
       if (gestureHeld) gestureHold = false;
@@ -11627,7 +11777,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       return [];
     }
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (node.parentElement?.closest?.(".md-atom") || node.parentElement?.closest?.(".md-lock")) continue;
+      if (node.parentElement?.closest?.(".md-atom") || node.parentElement?.closest?.(".md-lock") || node.parentElement?.closest?.(".md-vim-number")) continue;
       const tagged = nearestTagged(node);
       if (!tagged) continue;
       const start = Number(tagged.dataset.start);
@@ -12047,6 +12197,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         linewise: !!(vimRegister && vimRegister.linewise),
       },
       search: vimSearch,
+      number: vimNumber === true,
       find: vimFind,
       column: vimColumn,
       once: vimOnce === true,
@@ -12084,6 +12235,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       linewise: register.linewise === true,
     };
     vimSearch = next.search || null;
+    vimNumber = next.number === true;
     // A star or hash search replaces the pattern. The prompt paint would be the old one.
     if (!vimPrompt && vimPaintHold && (!vimSearch || vimSearch.pattern !== vimPaintHold.pattern)) {
       vimPaintHold = null;
@@ -12209,9 +12361,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (!walker) return glyphs;
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const parent = node.parentElement;
-      if (parent && typeof parent.closest === "function" && (parent.closest(".md-atom") || parent.closest(".md-lock"))) continue;
+      if (parent && typeof parent.closest === "function" && (parent.closest(".md-atom") || parent.closest(".md-lock") || parent.closest(".md-vim-number"))) continue;
       const tagged = nearestTagged(node);
-      if (!tagged || (typeof tagged.closest === "function" && tagged.closest(".md-lock"))) continue;
+      if (!tagged || (typeof tagged.closest === "function" && (tagged.closest(".md-lock") || tagged.closest(".md-vim-number")))) continue;
       const start = Number(tagged.dataset.start);
       const end = Number(tagged.dataset.end);
       const len = textLength(node);
@@ -12715,7 +12867,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (!walker || typeof walker.nextNode !== "function") return rects;
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (node.parentElement?.closest?.(".md-atom") || node.parentElement?.closest?.(".md-lock")) continue;
+      if (node.parentElement?.closest?.(".md-atom") || node.parentElement?.closest?.(".md-lock") || node.parentElement?.closest?.(".md-vim-number")) continue;
       const tagged = nearestTagged(node);
       if (!tagged || !tagged.dataset) continue;
       const nodeStart = Number(tagged.dataset.start);
@@ -13066,6 +13218,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   // rememberVim stores the yank before the hub answers. The prior is kept only
   // when that command's splice is actually sent.
   function applyRememberedVim(vim, effect) {
+    const numberWas = vimNumber === true;
     if (effectSendsEdit(effect)) {
       vimChangeRollback = vimChange;
       vimChangeArmed = true;
@@ -13080,6 +13233,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     } finally {
       vimSplicePrior = null;
     }
+    if ((vimNumber === true) !== numberWas) render();
   }
 
   function vimLineShift(operator) {

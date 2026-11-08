@@ -332,6 +332,7 @@ test("modifier key keeps a pending operator", () => {
     input: { prefixRepeat: "2", operator: "d", motionRepeat: "4", motion: null, keyBuffer: "g" },
     register: { text: "kept", linewise: true },
     search: { pattern: "a", forward: false, whole: true },
+    number: false,
     find: { ch: "x", forward: false, till: true },
     column: 4,
     once: true,
@@ -1233,12 +1234,149 @@ test("pn4hbr22 k from below a table lands on the last row and steps up", () => {
 
 test("pn4hbr22 dk from below a table deletes that table line", () => {
   const doc = "Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nAfter.\n";
-  // k from After is the last row. The closed table is one line, so dk takes it and After.
-  const after = run(doc.replace("After.", "‸After."), ["d", "k"]);
-  assert.equal(after.doc, "Top.\n\n");
-  // j from Top is the table. dj takes Top, the table, and the gap under the table.
-  const into = run(doc.replace("Top.", "‸Top."), ["d", "j"]);
-  assert.equal(into.doc, "After.\n");
+  const below = doc.replace("After.", "‸After.");
+  const above = doc.replace("Top.", "‸Top.");
+  // The table and the paragraph are more than one vim line. The change writes nothing.
+  const after = run(below, ["d", "k"]);
+  assert.equal(after.doc, doc);
+  assert.equal(after.show, below);
+  assert.equal(after.cursor, doc.indexOf("After."));
+  assert.equal(after.vim.input.operator, null);
+  const into = run(above, ["d", "j"]);
+  assert.equal(into.doc, doc);
+  assert.equal(into.show, above);
+  assert.equal(into.cursor, doc.indexOf("Top."));
+  assert.equal(into.vim.input.operator, null);
+});
+
+test("a colon count moves like G, and a change across a fence or a table writes nothing", () => {
+  const lines = "one\n\ntwo\n\nthree\n";
+  const at = (doc, needle) => {
+    const index = doc.indexOf(needle);
+    return doc.slice(0, index) + "‸" + doc.slice(index);
+  };
+  const gone = run(at(lines, "one"), ["2", "G"]);
+  const asked = ex(at(lines, "one"), "2");
+  assert.equal(asked.show, gone.show);
+  assert.equal(asked.cursor, gone.cursor);
+  assert.equal(asked.vim.column, gone.vim.column);
+  assert.equal(asked.doc, lines);
+  assert.equal(asked.effect.type, "caret");
+  const mid = run(lines.replace("one", "on‸e"), ["2", "G"]);
+  const midEx = ex(lines.replace("one", "on‸e"), "2");
+  assert.equal(midEx.show, mid.show);
+  assert.equal(midEx.cursor, mid.cursor);
+  assert.equal(midEx.vim.column, mid.vim.column);
+  const fromThree = at(lines, "three");
+  assert.equal(ex(fromThree, "0").show, run(fromThree, ["1", "G"]).show);
+  assert.equal(ex(fromThree, "1").show, run(fromThree, ["1", "G"]).show);
+  assert.equal(ex(at(lines, "one"), "9").show, run(at(lines, "one"), ["9", "G"]).show);
+  assert.equal(ex(at(lines, "one"), "02").show, gone.show);
+  for (const line of ["3d", ".,$", ".,$d", "1,2d"]) {
+    const refused = ex(at(lines, "one"), line);
+    assert.equal(refused.effect, null, line);
+    assert.equal(refused.doc, lines, line);
+    assert.equal(refused.show, at(lines, "one"), line);
+    assert.equal(refused.vim.mode, "normal", line);
+  }
+
+  const armed = (number = false) => ({
+    mode: "normal",
+    input: { prefixRepeat: "", operator: null, motionRepeat: "", motion: null, keyBuffer: "" },
+    register: { text: "OLD", linewise: true },
+    search: null,
+    find: null,
+    column: null,
+    once: false,
+    number,
+  });
+  const numbered = ex("‸alpha\n", "set nu", { vim: armed(false) });
+  assert.equal(numbered.vim.number, true);
+  assert.equal(numbered.effect, null);
+  assert.equal(numbered.doc, "alpha\n");
+  assert.equal(numbered.show, "‸alpha\n");
+  assert.equal(numbered.vim.register.text, "OLD");
+  assert.equal(ex("‸alpha\n", "set number", { vim: armed(false) }).vim.number, true);
+  const cleared = ex(numbered.show, "set nonu", { vim: numbered.vim });
+  assert.equal(cleared.vim.number, false);
+  assert.equal(cleared.effect, null);
+  assert.equal(cleared.doc, "alpha\n");
+  assert.equal(ex("‸alpha\n", "set nonumber", { vim: armed(true) }).vim.number, false);
+  assert.equal(ex("‸alpha\n", "set", { vim: armed(true) }).vim.number, true);
+  assert.equal(ex("‸alpha\n", "set foo", { vim: armed(true) }).vim.number, true);
+  assert.equal(ex("‸alpha\n", "se nu", { vim: armed(false) }).vim.number, false);
+  const kept = run(numbered.show, ["j"], { vim: numbered.vim });
+  assert.equal(kept.vim.number, true);
+  assert.equal(kept.doc, "alpha\n");
+
+  const table = "Top.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nAfter.\n";
+  const stayed = (start, keys) => {
+    const out = run(start, keys, { vim: armed() });
+    assert.equal(out.doc, table, keys.join(""));
+    assert.equal(out.show, start, keys.join(""));
+    assert.equal(out.vim.register.text, "OLD", keys.join(""));
+    assert.equal(out.vim.input.operator, null, keys.join(""));
+    assert.equal(out.steps.some((step) => step.effect && step.effect.type === "splice"), false, keys.join(""));
+    return out;
+  };
+  stayed(table.replace("After.", "‸After."), ["d", "k"]);
+  stayed(table.replace("Top.", "‸Top."), ["d", "j"]);
+  stayed(table.replace("After.", "‸After."), ["y", "k"]);
+  stayed(table.replace("After.", "‸After."), ["c", "k"]);
+  stayed(table.replace("Top.", "‸Top."), ["g", "U", "j"]);
+  stayed(table.replace("Top.", "‸Top."), ["J"]);
+  const visual = run(table.replace("Top.", "‸Top."), ["V", "j", "d"], { vim: armed() });
+  assert.equal(visual.doc, table);
+  assert.equal(visual.vim.mode, "visual-line");
+  assert.equal(visual.vim.register.text, "OLD");
+  assert.equal(visual.vim.input.operator, null);
+  assert.equal(run(table.replace("After.", "‸After."), ["j"]).doc, table);
+  assert.equal(lineAtCaret(run(table.replace("After.", "‸After."), ["k"])), "| 3 | 4 |");
+  assert.equal(lineAtCaret(run(table.replace("After.", "‸After."), ["2", "G"])), "| a | b |");
+  const row = table.indexOf("| 1 | 2 |");
+  const removed = run(table.slice(0, row) + "‸" + table.slice(row), ["d", "d"], { vim: armed() });
+  assert.equal(removed.doc.includes("|"), false);
+  assert.equal(removed.doc.includes("Top."), true);
+  assert.equal(removed.doc.includes("After."), true);
+  assert.equal(removed.doc, "Top.\n\n\nAfter.\n");
+  assert.notEqual(removed.vim.register.text, "OLD");
+  const wider = run(table.slice(0, row) + "‸" + table.slice(row), ["2", "d", "d"], { vim: armed() });
+  assert.equal(wider.doc, table);
+  assert.equal(wider.vim.register.text, "OLD");
+  assert.equal(wider.vim.input.operator, null);
+
+  const fence = "Above.\n\n```js\none\ntwo\n```\n\nAfter.\n";
+  const held = (start, keys) => {
+    const out = run(start, keys, { vim: armed() });
+    assert.equal(out.doc, fence, keys.join(""));
+    assert.equal(out.show, start, keys.join(""));
+    assert.equal(out.vim.register.text, "OLD", keys.join(""));
+    assert.equal(out.vim.input.operator, null, keys.join(""));
+    return out;
+  };
+  held(fence.replace("Above.", "‸Above."), ["d", "j"]);
+  held(fence.replace("After.", "‸After."), ["d", "k"]);
+  held(fence.replace("Above.", "‸Above."), ["J"]);
+  held(fence.replace("Above.", "‸Above."), ["3", ">", ">"]);
+  const opener = fence.indexOf("```js");
+  const closed = run(fence.slice(0, opener) + "‸" + fence.slice(opener), ["d", "d"], { vim: armed() });
+  assert.equal(closed.doc.includes("```"), false);
+  assert.equal(closed.doc.includes("Above."), true);
+  assert.equal(closed.doc.includes("After."), true);
+  const body = fence.indexOf("one");
+  const inside = run(fence.slice(0, body) + "‸" + fence.slice(body), ["d", "j"], { vim: armed() });
+  assert.equal(inside.doc, "Above.\n\n```js\n```\n\nAfter.\n");
+  assert.equal(inside.vim.register.text, "one\ntwo\n");
+  const above = run(fence.replace("Above.", "‸Above."), ["d", "d"], { vim: armed() });
+  assert.equal(above.doc, "\n```js\none\ntwo\n```\n\nAfter.\n");
+  assert.equal(ex("‸" + fence, "%d", { vim: armed() }).doc, fence);
+  assert.equal(ex("‸" + fence, "%d", { vim: armed() }).effect, null);
+  assert.equal(ex("‸" + fence, "%d", { vim: armed() }).vim.register.text, "OLD");
+  assert.equal(ex("‸" + fence, "%s/one/ONE/g", { vim: armed() }).doc, fence);
+  assert.equal(ex("‸" + fence, "%s/one/ONE/g", { vim: armed() }).effect, null);
+  assert.equal(ex("‸alpha\nbeta\ngamma\n", "%d").doc, "");
+  const substituted = ex(fence.slice(0, body) + "‸" + fence.slice(body), "s/one/ONE/");
+  assert.equal(substituted.doc, "Above.\n\n```js\nONE\ntwo\n```\n\nAfter.\n");
 });
 
 test("x5fxzp58 j and k skip the blank after a heading", () => {

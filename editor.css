@@ -1240,6 +1240,22 @@ button.md-ticket-filter-all:hover,
   color: #9c968c;
 }
 
+.md-vim-number {
+  display: inline-block;
+  width: 0;
+  overflow: visible;
+  white-space: nowrap;
+  color: #9c968c;
+  pointer-events: none;
+  user-select: none;
+  vertical-align: top;
+  transform: translateX(calc(-100% - 0.45rem));
+}
+
+#editor.md-vim-nu {
+  padding-left: 2.6rem;
+}
+
 .md-strong {
   font-weight: 700;
 }

@@ -29,6 +29,7 @@ import {
 } from "../src/editor.js";
 import { splitCommentNote, lockSpans, lockIndexAt, blockSpan, commentRangeReason, skipHidden, lineCaret, enterInsert, enterBreak, shiftBreak, moveText, endBeforeTail, endBeforeTrailingCommentFence, ruleLineStop, gapCaretStops } from "../src/doc.js";
 import { createMemoryTransport, createSocketTransport, retryDelay } from "../src/session.js";
+import { gLines, vimNumberLines } from "../src/vim.js";
 
 const A = "**hello**\nnext\n";
 const B = "# Title\n\n";
@@ -24582,6 +24583,128 @@ test("flag off, a slash inserts and draws no vim line", () => {
     assert.equal(vimLineNode(), null);
     assert.equal(byClass(mounted.root, "md-vim-status").length, 0);
     view.destroy();
+  });
+});
+
+test("vim line numbers match gLines while the flag is on and are absent while it is off", () => {
+  return withVimFlag(true, (mounted) => {
+    document.body = document.createElement("body");
+    const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    const rule = css.match(/\.md-vim-number\s*\{[^}]*\}/);
+    assert.ok(rule);
+    assert.match(rule[0], /color:\s*#9c968c/);
+    assert.match(rule[0], /pointer-events:\s*none/);
+    assert.match(css, /\.md-syntax\s*\{[^}]*color:\s*#9c968c/);
+    const writes = [];
+    const store = globalThis.localStorage;
+    const setItem = store.setItem.bind(store);
+    store.setItem = (key, value) => {
+      writes.push(key);
+      setItem(key, value);
+    };
+    const submitLine = (line) => {
+      vimType(mounted, ":");
+      const field = vimLineNode();
+      assert.ok(field);
+      field.value = `:${line}`;
+      assert.equal(vimFieldKey(field, "Enter"), true);
+      assert.equal(vimLineNode(), null);
+    };
+    const numbers = () => byClass(mounted.root, "md-vim-number");
+    const assertNumbers = (doc, cursor, raw) => {
+      const lines = gLines(doc, cursor, raw);
+      const nodes = numbers();
+      assert.equal(nodes.length, lines.length);
+      for (let i = 0; i < lines.length; i += 1) {
+        assert.equal(nodes[i].textContent, String(i + 1));
+        assert.equal(nodes[i].lineStart, lines[i].start);
+        assert.equal(nodes[i].getAttribute("aria-hidden"), "true");
+        assert.equal(nodes[i].getAttribute("contenteditable"), "false");
+      }
+      return nodes;
+    };
+
+    const doc = "one\n\ntwo\n\nthree\n";
+    const watched = watchVimEdits(doc, 0);
+    const view = createEditor(mounted.root, doc, 0, watched.transport);
+    assert.equal(numbers().length, 0);
+    assert.equal(mounted.root.classList.contains("md-vim-nu"), false);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, 0);
+    submitLine("set nu");
+    assert.equal(watched.edits.length, 0);
+    assert.deepEqual(writes, []);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, 0);
+    assert.equal(mounted.root.classList.contains("md-vim-nu"), true);
+    const painted = assertNumbers(doc, 0, false);
+    for (const gap of byClass(mounted.root, "md-paragraph-gap")) {
+      assert.equal(byClass(gap, "md-vim-number").length, 0);
+    }
+    const three = painted.find((node) => node.textContent === "3");
+    assert.ok(three);
+    const digit = three.childNodes[0];
+    assert.equal(digit.nodeType, 3);
+    assert.equal(mapOffset(digit, 1), three.lineStart);
+    assert.equal(mapOffset(digit, 0), three.lineStart);
+    assert.notEqual(three.lineStart, 0);
+    const host = three.parentElement;
+    assert.equal(mapOffset(host, 0), three.lineStart);
+    vimType(mounted, "j");
+    assert.equal(view.getState().doc, doc);
+    assert.equal(view.getState().cursor, doc.indexOf("two"));
+    const again = numbers().find((node) => node.textContent === "3");
+    assert.equal(again, three);
+    assert.equal(again.childNodes[0], digit);
+    assert.equal(again.textContent, "3");
+    submitLine("set nonu");
+    assert.equal(numbers().length, 0);
+    assert.equal(mounted.root.classList.contains("md-vim-nu"), false);
+    assert.equal(view.getState().doc, doc);
+    assert.equal(watched.edits.length, 0);
+    submitLine("set number");
+    assertNumbers(doc, view.getState().cursor, false);
+    pressViewToggle(mounted.root);
+    assert.equal(mounted.root.classList.contains("md-source"), true);
+    assertNumbers(doc, view.getState().cursor, true);
+    const rawLines = gLines(doc, view.getState().cursor, true);
+    assert.ok(rawLines.length > gLines(doc, view.getState().cursor, false).length);
+    pressViewToggle(mounted.root);
+    assert.equal(mounted.root.classList.contains("md-source"), false);
+    assertNumbers(doc, view.getState().cursor, false);
+    submitLine("set nonumber");
+    assert.equal(numbers().length, 0);
+    view.destroy();
+
+    const closed = "one\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```js\ncode\n```\n\ntwo\n";
+    const closedView = createEditor(mounted.root, closed, 0);
+    submitLine("set nu");
+    const closedLines = gLines(closed, 0, false);
+    assertNumbers(closed, 0, false);
+    assert.equal(closedLines.some((line) => closed.slice(line.start, line.end).includes("| a |")), true);
+    assert.equal(closedLines.some((line) => closed.slice(line.start, line.end).startsWith("```")), true);
+    assert.equal(closedView.getState().doc, closed);
+    assert.equal(closedView.getState().cursor, 0);
+    closedView.destroy();
+
+    const open = "Above.\n\n```js\none\ntwo\n```\n\nAfter.\n";
+    const cursor = open.indexOf("one");
+    const openView = createEditor(mounted.root, open, cursor);
+    submitLine("set nu");
+    const bodyLines = vimNumberLines(open, cursor, false);
+    const whole = gLines(open, cursor, false);
+    assert.ok(bodyLines.length > whole.length);
+    const openNodes = numbers();
+    assert.equal(openNodes.length, bodyLines.length);
+    for (let i = 0; i < bodyLines.length; i += 1) {
+      assert.equal(openNodes[i].textContent, String(i + 1));
+      assert.equal(openNodes[i].lineStart, bodyLines[i].start);
+    }
+    assert.equal(openNodes.some((node) => open.slice(node.lineStart, node.lineStart + 3) === "one"), true);
+    assert.equal(openNodes.some((node) => open.slice(node.lineStart, node.lineStart + 3) === "two"), true);
+    assert.equal(openView.getState().doc, open);
+    assert.equal(openView.getState().cursor, cursor);
+    openView.destroy();
   });
 });
 

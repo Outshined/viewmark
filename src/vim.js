@@ -99,6 +99,8 @@ function cloneVim(vim) {
     search: src.search && typeof src.search.pattern === "string"
       ? { pattern: src.search.pattern, forward: src.search.forward !== false, whole: src.search.whole === true }
       : null,
+    // Page memory, with the search pattern. Not stored with the file and not sent to the hub.
+    number: src.number === true,
     find: src.find ? { ch: src.find.ch, forward: src.find.forward !== false, till: src.find.till === true } : null,
     column: Number.isInteger(src.column) ? src.column : null,
     once: src.once === true,
@@ -357,11 +359,33 @@ function vimLines(doc, cursor, raw) {
 }
 
 // A final newline ends the last line. The empty row at length is not one.
-function gLines(doc, cursor, raw) {
+export function gLines(doc, cursor, raw) {
   const lines = vimLines(doc, cursor, raw);
   const last = lines[lines.length - 1];
   if (lines.length > 1 && last.start === doc.length && doc.endsWith("\n")) return lines.slice(0, -1);
   return lines;
+}
+
+// G counts a closed fence as one line. Inside a code fence, j and k count each body line.
+export function vimNumberLines(doc, cursor, raw) {
+  const lines = gLines(doc, cursor, raw);
+  if (raw) return lines;
+  let fence = null;
+  for (const item of codeFenceBodies(doc)) {
+    if (cursor >= item.start && cursor <= item.end) {
+      fence = item;
+      break;
+    }
+  }
+  if (!fence || fence.lines.length === 0) return lines;
+  const bodyEnd = fence.lines[fence.lines.length - 1].end;
+  const out = [];
+  for (const line of lines) {
+    if (line.start <= fence.start && line.end >= bodyEnd) {
+      for (const body of fence.lines) out.push({ start: body.start, end: body.end });
+    } else out.push(line);
+  }
+  return out;
 }
 
 // A rendered caret past the last block is the empty row after a final newline.
@@ -1133,7 +1157,8 @@ function pastLastCommentFence(doc, cursor) {
 // The last drawn row there is the blank between fences, and deleting it
 // would leave the caret with no line.
 function countedLines(doc, origin, count, raw) {
-  const lines = vimLines(doc, origin, raw);
+  // A caret on a row opens the table. dd still names the closed table, one vim line.
+  const lines = !raw && opensTable(doc, origin) ? renderedLines(doc, -1) : vimLines(doc, origin, raw);
   let index = lineIndex(lines, doc, origin, raw);
   if (index >= lines.length) {
     if (!raw && pastLastCommentFence(doc, origin)) return { from: origin, to: origin };
@@ -2278,6 +2303,10 @@ function joinLines(vim, doc, anchor, cursor, raw, glue) {
     const units = joinUnits(doc, cursor, raw);
     lines = units.length < 2 ? [] : units.slice(0, count);
   }
+  const joinedEnd = lines.length < 2 ? 0 : endPast(doc, lines[lines.length - 1]);
+  if (lines.length >= 2 && crossesFenceOrTable(doc, cursor, raw, lines[0].start, joinedEnd)) {
+    return pack("full", true, leavingOnce(clearInput(vim), vim), null);
+  }
   const built = lines.length < 2 ? null : buildJoin(doc, lines, glue);
   if (!built) return pack("full", true, leavingOnce(clearInput(vim), vim), null);
   let next = clearInput(vim);
@@ -2552,9 +2581,38 @@ function applySubstitute(doc, from, to, pattern, replacement, all) {
   return { from, to, text: built, caret: from + lineNonBlank(built, touch < 0 ? 0 : touch) };
 }
 
+function gotoExLine(vim, doc, cursor, raw, text) {
+  const lines = gLines(doc, cursor, raw);
+  const numbered = Number(text);
+  const index = lines.length === 0 ? 0 : Math.max(0, Math.min(lines.length - 1, numbered - 1));
+  const keep = Number.isInteger(vim.column) ? vim.column : columnOf(doc, cursor, raw);
+  const line = lines[index] || { start: 0, end: 0 };
+  const moved = placeColumn(doc, line, keep, raw, 1, visualMode(vim));
+  return finishMotion(vim, doc, cursor, cursor, raw, {
+    kind: "caret",
+    cursor: moved,
+    column: keep,
+    linewise: true,
+    inclusive: false,
+    past: false,
+    word: false,
+  }, null);
+}
+
+function setNumberFlag(vim, on) {
+  const next = clearInput(vim);
+  next.number = on === true;
+  if (vim.once) {
+    next.once = false;
+    next.mode = "insert";
+  } else next.mode = "normal";
+  return pack("full", true, next, null);
+}
+
 function submitEx(vim, doc, cursor, raw, line) {
   const text = String(line || "").replace(/^\s+/, "").replace(/\s+$/, "");
   if (text === "") return exIdle(vim);
+  if (/^[0-9]+$/.test(text)) return gotoExLine(vim, doc, cursor, raw, text);
   let i = 0;
   let range = "";
   if (text[0] === "%") {
@@ -2609,6 +2667,12 @@ function submitEx(vim, doc, cursor, raw, line) {
       caret: applied.caret,
       yank: null,
     });
+  }
+  if (matchesEx(name, "set", "set") && range === "") {
+    const arg = rest.replace(/^\s+/, "").replace(/\s+$/, "");
+    if (arg === "nu" || arg === "number") return setNumberFlag(vim, true);
+    if (arg === "nonu" || arg === "nonumber") return setNumberFlag(vim, false);
+    return exIdle(vim);
   }
   return exIdle(vim);
 }
@@ -3367,6 +3431,61 @@ function insertKey(vim, doc, cursor, key) {
   return pack("none", false, clearInput(vim), null);
 }
 
+// The blank under a fence or a table belongs to that one vim line.
+function structureEnd(doc, start, end) {
+  let at = end;
+  if (at < doc.length && doc[at] === "\r") at += 1;
+  if (at < doc.length && doc[at] === "\n") at += 1;
+  return pastVimLine(doc, at);
+}
+
+function structureList(doc) {
+  const spans = [];
+  for (const block of plan(doc, -1).blocks) {
+    if (!block || typeof block.start !== "number" || typeof block.end !== "number") continue;
+    const fence = block.fence === true || block.type === "diagram" || block.type === "svg";
+    if (!fence && block.type !== "table") continue;
+    spans.push({ start: block.start, end: structureEnd(doc, block.start, block.end) });
+  }
+  for (const thread of commentThreads(doc)) {
+    if (typeof thread.start !== "number" || typeof thread.end !== "number") continue;
+    spans.push({ start: thread.start, end: pastVimLine(doc, thread.end) });
+  }
+  return spans;
+}
+
+function vimLinesCovered(doc, cursor, raw, from, to) {
+  const lines = gLines(doc, cursor, raw);
+  let count = 0;
+  for (const line of lines) {
+    const end = endPast(doc, line);
+    if (line.start < to && end > from) count += 1;
+  }
+  return count;
+}
+
+// More than one vim line, and the bytes are not inside one fence or one table.
+function crossesFenceOrTable(doc, cursor, raw, from, to) {
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from >= to) return false;
+  if (vimLinesCovered(doc, cursor, raw, from, to) < 2) return false;
+  const spans = structureList(doc);
+  let hit = null;
+  for (const span of spans) {
+    if (from >= span.end || to <= span.start) continue;
+    if (hit) return true;
+    hit = span;
+  }
+  if (!hit) return false;
+  return from < hit.start || to > hit.end;
+}
+
+function refuseCross(prior, doc, cursor, raw, result) {
+  const effect = result && result.effect;
+  if (!effect || effect.type !== "splice") return result;
+  if (!crossesFenceOrTable(doc, cursor, raw, effect.from, effect.to)) return result;
+  return pack("full", true, clearInput(prior), null);
+}
+
 function startPrefix(vim, key) {
   if (key === '"' && vim.input.operator) return pack("none", true, clearInput(vim), null);
   if (key === "i" || key === "a") {
@@ -3379,7 +3498,7 @@ function startPrefix(vim, key) {
   return pack("partial", true, next, null);
 }
 
-function vimKeyBody(input) {
+function vimKeyRun(input) {
   const src = input || {};
   if (src.flag === false) return pack("none", false, cloneVim(src.vim), null);
   const vim = cloneVim(src.vim);
@@ -3421,6 +3540,15 @@ function vimKeyBody(input) {
   return pack("none", true, leavingOnce(clearInput(ready), ready), null);
 }
 
+function vimKeyBody(input) {
+  const result = vimKeyRun(input);
+  const src = input || {};
+  if (src.flag === false) return result;
+  const doc = typeof src.doc === "string" ? src.doc : "";
+  const cursor = clamp(src.cursor, doc.length);
+  return refuseCross(cloneVim(src.vim), doc, cursor, src.raw === true, result);
+}
+
 export function vimSubmit(input) {
   const src = input || {};
   if (src.flag === false) return pack("none", false, cloneVim(src.vim), null);
@@ -3429,9 +3557,10 @@ export function vimSubmit(input) {
   const cursor = clamp(src.cursor, doc.length);
   const raw = src.raw === true;
   const line = typeof src.line === "string" ? src.line : "";
-  if (src.kind === "search") return submitSearch(vim, doc, cursor, line, src.forward !== false);
-  if (src.kind === "ex") return submitEx(vim, doc, cursor, raw, line);
-  return pack("none", true, vim, null);
+  let result = pack("none", true, vim, null);
+  if (src.kind === "search") result = submitSearch(vim, doc, cursor, line, src.forward !== false);
+  else if (src.kind === "ex") result = submitEx(vim, doc, cursor, raw, line);
+  return refuseCross(cloneVim(src.vim), doc, cursor, raw, result);
 }
 
 // A repeat plays the stored command through these same keys. The play is not a new change.
