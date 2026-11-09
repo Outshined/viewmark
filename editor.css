@@ -96,7 +96,7 @@ html {
 body {
   background: #1c1b19;
   color: #e7e2d8;
-  font: 17px/1.55 "URW Gothic", sans-serif;
+  font: medium/1.55 sans-serif;
   --p: calc(1.55em / 2);
 }
 
@@ -1247,7 +1247,7 @@ button.md-ticket-filter-all:hover,
   white-space: nowrap;
   /* Width stays 0 so the line text does not move. Right-to-left overflow hangs the glyphs in the gutter. */
   direction: rtl;
-  font-size: 17px;
+  font-size: medium;
   font-weight: 400;
   color: #9c968c;
   pointer-events: none;

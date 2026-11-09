@@ -24597,6 +24597,8 @@ test("vim line numbers match gLines while the flag is on and are absent while it
     assert.match(rule[0], /width:\s*0/);
     assert.match(rule[0], /direction:\s*rtl/);
     assert.match(rule[0], /transform:\s*translateX\(-0\.45rem\)/);
+    assert.match(rule[0], /font-size:\s*medium/);
+    assert.match(css, /(?:^|\n)body\s*\{[^}]*font:\s*medium\/1\.55 sans-serif/);
     assert.equal(/-100%/.test(rule[0]), false);
     assert.match(css, /#editor\.md-vim-nu\s*\{[^}]*padding-left:\s*calc\(4ch \+ 0\.45rem\)/);
     assert.match(css, /\.md-syntax\s*\{[^}]*color:\s*#9c968c/);
