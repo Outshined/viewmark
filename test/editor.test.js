@@ -25562,6 +25562,208 @@ test("moving focus from a ticket body to a ticket field drops the caret and rele
   }
 });
 
+test("a blur or a hidden tab drops the line lock and leaves the caret", () => {
+  const mounted = mountTicketPage();
+  const windowListeners = {};
+  globalThis.window.addEventListener = (type, fn) => {
+    windowListeners[type] = fn;
+  };
+  const transport = holdingTransport();
+  transport.username = "Ada";
+  const body = "one\n\ntwo\n";
+  const atOne = 1;
+  const atTwo = body.indexOf("two") + 1;
+  try {
+    const view = createEditor(mounted.root, "x", 0, transport);
+    const alpha = ticketFixture("aaaaaaaa", "Alpha", "new", T3);
+    transport.deliver({
+      type: "file",
+      path: "tickets/aaaaaaaa.md",
+      rev: 1,
+      text: body,
+      cursor: atOne,
+      anchor: 0,
+      locks: [],
+      ticket: alpha,
+    });
+    const locks = () => transport.sent.filter((message) => message.type === "lock");
+    assert.equal(locks().length, 1);
+    const held = locks()[0];
+    assert.equal(held.release, undefined);
+    assert.equal(held.anchor, 0);
+    assert.equal(held.cursor, atOne);
+    assert.equal(held.path, "tickets/aaaaaaaa.md");
+    assert.equal(held.username, "Ada");
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, atOne);
+    const one = textNode(mounted.root, "one");
+    const two = textNode(mounted.root, "two");
+    assert.ok(one && two);
+    const selection = {
+      rangeCount: 1,
+      anchorNode: one,
+      anchorOffset: 1,
+      focusNode: one,
+      focusOffset: 1,
+      cleared: false,
+      added: 0,
+      removeAllRanges() {
+        this.cleared = true;
+        this.rangeCount = 0;
+        this.anchorNode = null;
+        this.focusNode = null;
+      },
+      addRange() {
+        this.added += 1;
+        this.rangeCount = 1;
+      },
+      getRangeAt() {
+        return {
+          startContainer: this.anchorNode,
+          startOffset: this.anchorOffset,
+          endContainer: this.focusNode,
+          endOffset: this.focusOffset,
+          collapsed: this.anchorNode === this.focusNode && this.anchorOffset === this.focusOffset,
+          commonAncestorContainer: this.anchorNode,
+        };
+      },
+    };
+    mounted.setSelection(selection);
+    assert.equal(typeof windowListeners.blur, "function");
+    assert.equal(typeof windowListeners.focus, "function");
+    assert.equal(typeof mounted.listeners.visibilitychange, "function");
+    assert.equal(globalThis.document.visibilityState, undefined);
+    const before = locks().length;
+    mounted.listeners.visibilitychange();
+    assert.equal(locks().length, before);
+    windowListeners.blur();
+    assert.equal(locks().length, before + 1);
+    const release = locks().at(-1);
+    assert.equal(release.type, "lock");
+    assert.equal(release.release, true);
+    assert.equal(release.path, "tickets/aaaaaaaa.md");
+    assert.equal(release.username, "Ada");
+    assert.equal(Object.hasOwn(release, "anchor"), false);
+    assert.equal(Object.hasOwn(release, "cursor"), false);
+    assert.equal(view.getState().anchor, 0);
+    assert.equal(view.getState().cursor, atOne);
+    assert.equal(selection.cleared, false);
+    assert.equal(selection.rangeCount, 1);
+    windowListeners.blur();
+    globalThis.document.visibilityState = "hidden";
+    mounted.listeners.visibilitychange();
+    assert.equal(locks().length, before + 1);
+    selection.anchorNode = two;
+    selection.focusNode = two;
+    selection.anchorOffset = 1;
+    selection.focusOffset = 1;
+    mounted.listeners.selectionchange();
+    assert.equal(view.getState().anchor, atTwo);
+    assert.equal(view.getState().cursor, atTwo);
+    mounted.listeners.keyup();
+    assert.equal(locks().length, before + 1);
+    assert.equal(view.getState().cursor, atTwo);
+    assert.equal(view.getState().anchor, atTwo);
+    mounted.setSelection(null);
+    const sent = transport.sent.length;
+    transport.deliver({
+      type: "doc",
+      path: "tickets/aaaaaaaa.md",
+      rev: 2,
+      text: "one\n\ntwo!\n",
+      from: body.length - 1,
+      to: body.length - 1,
+      inserted: "!",
+      actor: "Ada",
+      cursor: atTwo,
+      anchor: atTwo,
+    });
+    assert.equal(view.getState().doc, "one\n\ntwo!\n");
+    assert.equal(view.getState().anchor, atTwo);
+    assert.equal(view.getState().cursor, atTwo);
+    assert.equal(transport.sent.slice(sent).some((message) => message.type === "lock"), false);
+    globalThis.document.visibilityState = "visible";
+    mounted.listeners.visibilitychange();
+    assert.equal(locks().length, before + 1);
+    windowListeners.focus();
+    assert.equal(locks().length, before + 2);
+    const claim = locks().at(-1);
+    assert.equal(claim.release, undefined);
+    assert.equal(claim.anchor, atTwo);
+    assert.equal(claim.cursor, atTwo);
+    assert.equal(view.getState().anchor, atTwo);
+    assert.equal(view.getState().cursor, atTwo);
+    const afterClaim = locks().length;
+    globalThis.document.visibilityState = "hidden";
+    mounted.listeners.visibilitychange();
+    assert.equal(locks().length, afterClaim + 1);
+    assert.equal(locks().at(-1).release, true);
+    assert.equal(locks().at(-1).path, "tickets/aaaaaaaa.md");
+    assert.equal(view.getState().anchor, atTwo);
+    assert.equal(view.getState().cursor, atTwo);
+    windowListeners.blur();
+    assert.equal(locks().length, afterClaim + 1);
+    globalThis.document.visibilityState = "visible";
+    mounted.listeners.visibilitychange();
+    assert.equal(locks().length, afterClaim + 1);
+    windowListeners.focus();
+    assert.equal(locks().length, afterClaim + 2);
+    const again = locks().at(-1);
+    assert.equal(again.release, undefined);
+    assert.equal(again.anchor, atTwo);
+    assert.equal(again.cursor, atTwo);
+    const form = byClass(mounted.root.parentElement, "ticket-form")[0];
+    const field = byClass(form, "md-ticket-assignee")[0];
+    const fresh = textNode(mounted.root, "one");
+    assert.ok(field && fresh);
+    selection.cleared = false;
+    selection.rangeCount = 1;
+    selection.anchorNode = fresh;
+    selection.focusNode = fresh;
+    selection.anchorOffset = 1;
+    selection.focusOffset = 1;
+    selection.added = 0;
+    mounted.setSelection(selection);
+    document.activeElement = field;
+    const beforeDismiss = locks().length;
+    form.listeners.focusin({ target: field });
+    assert.equal(selection.cleared, true);
+    assert.equal(selection.rangeCount, 0);
+    assert.equal(locks().length, beforeDismiss + 1);
+    assert.equal(locks().at(-1).release, true);
+    const frozen = locks().length;
+    const added = selection.added;
+    windowListeners.blur();
+    windowListeners.focus();
+    assert.equal(locks().length, frozen);
+    assert.equal(selection.rangeCount, 0);
+    assert.equal(selection.added, added);
+    assert.equal(view.getState().anchor, atTwo);
+    assert.equal(view.getState().cursor, atTwo);
+    mounted.setSelection(null);
+    const beforeDoc = transport.sent.length;
+    transport.deliver({
+      type: "doc",
+      path: "tickets/aaaaaaaa.md",
+      rev: 3,
+      text: "one\n\ntwo!!\n",
+      from: 8,
+      to: 8,
+      inserted: "!",
+      changes: [{ from: 8, to: 8, inserted: "!" }],
+      actor: "Bea",
+      cursor: 0,
+      anchor: 0,
+    });
+    assert.equal(view.getState().doc, "one\n\ntwo!!\n");
+    assert.equal(view.getState().cursor, atTwo);
+    assert.equal(transport.sent.slice(beforeDoc).some((message) => message.type === "lock"), false);
+    view.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 test("gc on a comment runs that thread from the keyboard", () => {
   const previousLocal = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   Object.defineProperty(globalThis, "localStorage", {

@@ -3903,6 +3903,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let sentLines = [];
   // Focus moved from the body to a ticket field. Snapshots must not lock those lines again.
   let bodyCaretReleased = false;
+  // Blur and a hidden tab are separate. The page is away when either one is set.
+  let windowBlurred = false;
+  let pageIsAway = false;
   const ac = new AbortController();
   const listen = (type, fn, options = {}) => {
     root.addEventListener(type, fn, { ...options, signal: ac.signal });
@@ -4587,6 +4590,28 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     emit({ type: "lock", release: true }, false);
   }
 
+  // An undefined visibility state is not hidden.
+  function documentHidden() {
+    return typeof document !== "undefined" && document != null && document.visibilityState === "hidden";
+  }
+
+  // Someone else can edit the lines. This page's caret stays where it is.
+  function releaseHeldLock() {
+    if (sentLines.length === 0 && !outstandingLock) return;
+    outstandingLock = null;
+    sentLines = [];
+    if (!live || !openPath) return;
+    emit({ type: "lock", release: true }, false);
+  }
+
+  function syncPagePresence() {
+    const nextAway = windowBlurred || documentHidden();
+    if (nextAway === pageIsAway) return;
+    pageIsAway = nextAway;
+    if (pageIsAway) releaseHeldLock();
+    else if (!bodyCaretReleased) claimLines(state.anchor, state.cursor);
+  }
+
   // The caret left the empty line a Shift+Enter break opened. The slash would
   // end the block, so another viewer draws it. The line and the slash go.
   function dropEmptyBreak(anchor, cursor) {
@@ -4634,6 +4659,12 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       sentLines = lines;
       granted = { anchor, cursor };
       outstandingLock = null;
+      return true;
+    }
+    if (pageIsAway) {
+      granted = { anchor, cursor };
+      outstandingLock = null;
+      sentLines = [];
       return true;
     }
     if (sameLines(lines, sentLines) && !outstandingLock) {
@@ -10825,7 +10856,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     granted = { anchor: state.anchor, cursor: state.cursor };
     noteTypedTail(message);
     const lines = lineSet(state.anchor, state.cursor);
-    sentLines = bodyCaretReleased ? [] : lines;
+    sentLines = bodyCaretReleased || pageIsAway ? [] : lines;
     noteFreshComment(previousDoc, message);
     if (message.type === "file") focusHashedComment(message.path, text);
     const ownDoc = message.type === "doc" && ownActor(message);
@@ -10839,7 +10870,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (message.type === "file") publishHash();
     const claim = vimForceClaim;
     vimForceClaim = false;
-    if (!live || bodyCaretReleased) return;
+    if (!live || bodyCaretReleased || pageIsAway) return;
     if (message.type === "file" || claim || !sameLines(lines, previousLines)) {
       emit({ type: "lock", anchor: state.anchor, cursor: state.cursor }, false);
     }
@@ -11041,7 +11072,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     if (message.type === "locks") {
       lockTable = Array.isArray(message.lines) ? message.lines : [];
-      if (outstandingLock && active.memory !== true) {
+      if (outstandingLock && active.memory !== true && !pageIsAway) {
         const held = new Set();
         for (const line of lockTable) {
           if (line && ownLock(line) && Number.isFinite(line.index)) held.add(line.index);
@@ -11055,8 +11086,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
           const index = conflictWaiters.indexOf("lock");
           if (index >= 0) conflictWaiters.splice(index, 1);
         }
-      } else if (bodyCaretReleased) {
-        // The claim was dropped when the caret left. Its reply must not stay in front of a field write.
+      } else if (bodyCaretReleased || pageIsAway) {
+        // The claim was dropped. Its reply must not stay in front of a field write.
         const index = conflictWaiters.indexOf("lock");
         if (index >= 0) conflictWaiters.splice(index, 1);
       }
@@ -11160,7 +11191,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         }
         expectNewComment = false;
         // The caret has already left the body, so this refused claim must not put it back.
-        if (waiter === "lock" && bodyCaretReleased) return;
+        if (waiter === "lock" && (bodyCaretReleased || pageIsAway)) return;
         restoreGrantedCaret();
       }
       return;
@@ -14120,6 +14151,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
     document.addEventListener("selectionchange", onSelectionChange, { signal: ac.signal });
     document.addEventListener("focusin", syncVimBlockMark, { signal: ac.signal });
+    document.addEventListener("visibilitychange", () => {
+      syncPagePresence();
+    }, { signal: ac.signal });
   }
   // The sheet tests store root and document listeners in one map. Window keeps
   // a release outside the editor from replacing the root mouseup handler.
@@ -14127,6 +14161,14 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     window.addEventListener("mousemove", onDocumentMouseMove, { signal: ac.signal });
     window.addEventListener("mouseup", onDocumentMouseUp, { signal: ac.signal });
     window.addEventListener("scroll", syncVimBlockMark, { capture: true, signal: ac.signal });
+    window.addEventListener("blur", () => {
+      windowBlurred = true;
+      syncPagePresence();
+    }, { signal: ac.signal });
+    window.addEventListener("focus", () => {
+      windowBlurred = false;
+      syncPagePresence();
+    }, { signal: ac.signal });
   }
   listen("scroll", syncVimBlockMark);
 

@@ -9,7 +9,7 @@ When an operation leaves the text unchanged, the hub answers it with `{type:"noo
 The page clears the edit waiter on `noop` the same way it clears it on its own `doc`. It does not send a backspace at offset 0 or a delete at the end of the text. When no `doc`, `noop`, or error has arrived for an edit after 2 seconds, the page drops the waiter, drops the queued edits, and opens the file again.
 
 ## The hub {c14}decides what a key changes{/c14}
-The page sends the key, such as a letter, Backspace, or Delete, and the hub works out which text changes. A paragraph, a list item, a blank line, and the other parts of a document can each be held by one person at a time, while that person edits there.
+The page sends the key, such as a letter, Backspace, or Delete, and the hub works out which text changes. A paragraph, a list item, a blank line, and the other parts of a document can each be held by one person at a time, while that person edits there. That hold ends when the window loses focus or the tab is hidden, and the page takes it again when the window is focused and the tab is visible.
 
 A key is accepted when the text it changes is in a part this person holds, or in a part nobody holds. That stays true when the change reaches past the caret's own part into a free neighbor, for example when Backspace at the start of a line joins it to the line above. A key that would change a part another person holds is refused, the text stays as it was, and that person's name flashes on the part (D26).
 
