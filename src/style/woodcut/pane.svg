@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+<defs><symbol id="corner" viewBox="0 0 20 20"><g fill="none" stroke="#1f1a15" stroke-linecap="round" stroke-linejoin="round">
+<path d="M3.5,3.5 L3.5,7 M3.5,3.5 L7,3.5" stroke-width="1.6"/>
+<path d="M7.5,2 L12,6.5 L7.5,11 L3,6.5 Z" transform="translate(0.5 0.5)" fill="#fbf6ea" stroke-width="1.1"/>
+<path d="M12.5,7 C15,7 15.5,4.5 18,4.5 M7,12.5 C7,15 4.5,15.5 4.5,18" stroke-width="1.1"/>
+<circle cx="8" cy="7" r="1.1" fill="#1f1a15" stroke="none"/></g></symbol></defs>
+<rect x="0.8" y="0.8" width="62.4" height="62.4" fill="none" stroke="#1f1a15" stroke-width="1.6"/>
+<rect x="3.5" y="3.5" width="57" height="57" fill="none" stroke="#1f1a15" stroke-width="0.7"/>
+<use href="#corner" width="24" height="24"/>
+<use href="#corner" width="24" height="24" transform="translate(64 0) scale(-1 1)"/>
+<use href="#corner" width="24" height="24" transform="translate(0 64) scale(1 -1)"/>
+<use href="#corner" width="24" height="24" transform="translate(64 64) scale(-1 -1)"/>
+</svg>

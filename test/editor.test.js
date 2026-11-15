@@ -30045,7 +30045,19 @@ test("the page menu holds Vim keys and the theme", () => {
   const appButton = () => walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-app-menu"))[0];
   const appPanel = () => walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-app-menu-panel"))[0];
   const svgOf = (button) => [...button.childNodes].find((node) => node && node.localName === "svg");
-  const strokes = (button) => [...svgOf(button).childNodes].filter((node) => node && node.localName === "path").map((node) => node.getAttribute("stroke"));
+  const paints = (button) => {
+    const found = [];
+    const walk = (node) => {
+      if (!node || node.nodeType !== 1 || typeof node.getAttribute !== "function") return;
+      for (const name of ["stroke", "fill", "stop-color"]) {
+        const value = node.getAttribute(name);
+        if (value) found.push(value);
+      }
+      for (const child of node.childNodes || []) walk(child);
+    };
+    walk(svgOf(button));
+    return found;
+  };
   try {
     const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
     assert.match(css, /button\.md-app-menu\s*\{[^}]*position:\s*fixed/);
@@ -30054,6 +30066,12 @@ test("the page menu holds Vim keys and the theme", () => {
     assert.match(css, /button\.md-app-menu\s*\{[^}]*z-index:\s*8/);
     assert.match(css, /html\[data-theme="woodcut"\]/);
     assert.match(css, /html\[data-theme="glass"\]/);
+    assert.match(css, /src\/style\/woodcut\/clouds\.svg/);
+    assert.match(css, /src\/style\/woodcut\/edges\.svg/);
+    assert.match(css, /src\/style\/woodcut\/pane\.svg/);
+    assert.match(css, /src\/style\/glass\/pane\.svg/);
+    assert.match(css, /html\[data-theme="woodcut"\] #editor::after/);
+    assert.match(css, /html\[data-theme="glass"\] #editor::after/);
     const view = createEditor(mounted.root, "alpha\n", 0, null, store);
     const docPanel = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-doc-menu-panel"))[0];
     assert.deepEqual(docPanel.childNodes.map((node) => node.textContent), ["Attach image", "Rename", "Delete file"]);
@@ -30075,14 +30093,15 @@ test("the page menu holds Vim keys and the theme", () => {
     assert.equal(named("Original").getAttribute("aria-checked"), "false");
     assert.equal(svgOf(appButton()).getAttribute("data-themed"), "1");
     assert.equal(svgOf(appButton()).getAttribute("data-theme"), "woodcut");
-    assert.ok(strokes(appButton()).includes("#1f1a15"));
-    assert.ok(strokes(appButton()).includes("#fbf6ea"));
+    assert.ok(paints(appButton()).includes("#1f1a15"));
+    assert.ok(paints(appButton()).includes("#f4ead2"));
     click(named("Stained glass"));
     assert.equal(store.getItem("viewmark.theme"), "glass");
     assert.equal(named("Stained glass").getAttribute("aria-checked"), "true");
     assert.equal(svgOf(appButton()).getAttribute("data-theme"), "glass");
-    assert.ok(strokes(appButton()).includes("#f0c860"));
-    assert.ok(strokes(appButton()).includes("#15100c"));
+    assert.ok(paints(appButton()).includes("#15100c"));
+    assert.ok(paints(appButton()).includes("#ffe46a"));
+    assert.ok(paints(appButton()).includes("#c08a00"));
     click(named("Original"));
     assert.equal(store.getItem("viewmark.theme"), null);
     assert.equal(named("Original").getAttribute("aria-checked"), "true");

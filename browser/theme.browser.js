@@ -72,12 +72,23 @@ function readPage(page) {
       stored: localStorage.getItem("viewmark.theme"),
       themed: svg && svg.getAttribute("data-themed"),
       glyphTheme: svg && svg.getAttribute("data-theme"),
-      strokes: svg ? [...svg.querySelectorAll("path")].map((path) => path.getAttribute("stroke")) : [],
+      paints: svg ? [...svg.querySelectorAll("path,rect,circle,stop")].flatMap((node) => [node.getAttribute("stroke"), node.getAttribute("fill"), node.getAttribute("stop-color")].filter(Boolean)) : [],
       appItems: [...app.querySelectorAll("button")].map((el) => el.textContent.trim()),
       radios,
       body: body.backgroundColor,
+      bodyImage: body.backgroundImage,
       strip: strip.backgroundColor,
       heading: getComputedStyle(document.querySelector(".md-h1")).color,
+      editor: getComputedStyle(document.querySelector("#editor")).backgroundColor,
+      editorImage: getComputedStyle(document.querySelector("#editor")).backgroundImage,
+      frame: getComputedStyle(document.querySelector("#editor"), "::after").borderImageSource,
+      corner: (() => {
+        const toggle = document.querySelector("button.md-view-toggle");
+        const rect = toggle.getBoundingClientRect();
+        const hit = document.elementFromPoint((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+        const button = hit && hit.closest ? hit.closest("button") : null;
+        return button ? button.className : "";
+      })(),
     };
   })()`);
 }
@@ -103,10 +114,16 @@ test("the page menu switches Original, Wood cut, and Stained glass", async (t) =
   assert.equal(wood.stored, "woodcut");
   assert.equal(wood.themed, "1");
   assert.equal(wood.glyphTheme, "woodcut");
-  assert.ok(wood.strokes.includes("#1f1a15"));
-  assert.ok(wood.strokes.includes("#fbf6ea"));
+  assert.ok(wood.paints.includes("#1f1a15"));
+  assert.ok(wood.paints.includes("#f4ead2"));
   assert.equal(wood.body, rgb("#e8dbbd"));
+  assert.equal(wood.bodyImage, "none");
   assert.equal(wood.strip, rgb("#f4ead2"));
+  assert.equal(wood.editor, rgb("#fbf6ea"));
+  assert.ok(wood.editorImage.includes("clouds.svg"), wood.editorImage);
+  assert.ok(wood.editorImage.includes("edges.svg"), wood.editorImage);
+  assert.ok(wood.frame.includes("woodcut/pane.svg"), wood.frame);
+  assert.ok(wood.corner.includes("md-view-toggle"), wood.corner);
   assert.equal(wood.radios.find((item) => item.text === "Wood cut").checked, "true");
   assert.equal(wood.radios.find((item) => item.text === "Original").checked, "false");
 
@@ -116,10 +133,13 @@ test("the page menu switches Original, Wood cut, and Stained glass", async (t) =
   assert.equal(glass.theme, "glass");
   assert.equal(glass.stored, "glass");
   assert.equal(glass.glyphTheme, "glass");
-  assert.ok(glass.strokes.includes("#f0c860"));
-  assert.ok(glass.strokes.includes("#15100c"));
+  assert.ok(glass.paints.includes("#15100c"));
+  assert.ok(glass.paints.includes("#ffe46a"));
+  assert.ok(glass.paints.includes("#c08a00"));
   assert.equal(glass.body, rgb("#0f0b09"));
   assert.equal(glass.strip, rgb("#231b15"));
+  assert.ok(glass.frame.includes("glass/pane.svg"), glass.frame);
+  assert.ok(glass.corner.includes("md-view-toggle"), glass.corner);
   assert.equal(glass.heading, rgb("#f0c860"));
   assert.equal(glass.radios.find((item) => item.text === "Stained glass").checked, "true");
 

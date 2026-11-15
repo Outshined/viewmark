@@ -2307,7 +2307,7 @@ html[data-theme="woodcut"] {
 
 html[data-theme="woodcut"] body {
   background-color: #e8dbbd;
-  background-image: radial-gradient(ellipse at center, transparent 55%, rgba(43, 36, 29, 0.18) 100%);
+  background-image: none;
   color: #1f1a15;
   font-family: "IM FELL English", "IM FELL English SC", "Liberation Serif", Georgia, serif;
   font-size: 16.5px;
@@ -2315,21 +2315,23 @@ html[data-theme="woodcut"] body {
 
 html[data-theme="woodcut"] nav.files,
 html[data-theme="woodcut"] aside.comments,
-html[data-theme="woodcut"] #editor {
-  background: #fbf6ea;
+html[data-theme="woodcut"] #editor,
+html[data-theme="woodcut"] .ticket-form,
+html[data-theme="woodcut"] .md-file-drawer,
+html[data-theme="woodcut"] .md-file-wide,
+html[data-theme="woodcut"] .md-ticket-drawer,
+html[data-theme="woodcut"] .ticket-tree,
+html[data-theme="woodcut"] dialog.md-login,
+html[data-theme="woodcut"] dialog.md-confirm,
+html[data-theme="woodcut"] dialog.md-name,
+html[data-theme="woodcut"] .md-comment-card {
+  background: url("src/style/woodcut/clouds.svg") 0 0 / 360px 360px, url("src/style/woodcut/edges.svg") 0 0 / 100% 100% no-repeat, #fbf6ea;
   color: #1f1a15;
 }
 
 html[data-theme="woodcut"] .md-path-strip,
-html[data-theme="woodcut"] button.md-view-toggle,
-html[data-theme="woodcut"] button[class~="md-doc-menu"],
-html[data-theme="woodcut"] button.md-app-menu,
 html[data-theme="woodcut"] span.md-vim-status,
-html[data-theme="woodcut"] .ticket-tree,
 html[data-theme="woodcut"] .ticket-tree .md-ticket-columns,
-html[data-theme="woodcut"] .md-ticket-drawer,
-html[data-theme="woodcut"] .md-file-drawer,
-html[data-theme="woodcut"] .md-file-wide,
 html[data-theme="woodcut"] select.md-repo,
 html[data-theme="woodcut"] dialog.md-login input,
 html[data-theme="woodcut"] dialog.md-name input,
@@ -2353,10 +2355,6 @@ html[data-theme="woodcut"] div.md-app-menu-panel,
 html[data-theme="woodcut"] div.md-file-menu,
 html[data-theme="woodcut"] div.md-ticket-pane-panel,
 html[data-theme="woodcut"] .md-ticket-filter-menu,
-html[data-theme="woodcut"] dialog.md-login,
-html[data-theme="woodcut"] dialog.md-confirm,
-html[data-theme="woodcut"] dialog.md-name,
-html[data-theme="woodcut"] .md-comment-card,
 html[data-theme="woodcut"] .md-copy-flyout {
   background: #fbf6ea;
   color: #1f1a15;
@@ -2429,10 +2427,51 @@ html[data-theme="woodcut"] button.md-file-menu-item.md-menu-delete {
   color: #9e2519;
 }
 
+html[data-theme="woodcut"] button[class~="md-doc-menu"],
+html[data-theme="woodcut"] button.md-app-menu,
+html[data-theme="woodcut"] button.md-view-toggle,
+html[data-theme="woodcut"] button.icon-btn {
+  background: #fbf6ea;
+  color: #1f1a15;
+  border-color: #2b241d;
+}
+
 html[data-theme="woodcut"] .md-comment-card button {
   background: #f4ead2;
   color: #1f1a15;
   border-color: #2b241d;
+}
+
+html[data-theme="woodcut"] nav.files,
+html[data-theme="woodcut"] aside.comments,
+html[data-theme="woodcut"] #editor,
+html[data-theme="woodcut"] .ticket-form,
+html[data-theme="woodcut"] dialog.md-login,
+html[data-theme="woodcut"] dialog.md-confirm,
+html[data-theme="woodcut"] dialog.md-name {
+  position: relative;
+}
+
+html[data-theme="woodcut"] nav.files::after,
+html[data-theme="woodcut"] aside.comments::after,
+html[data-theme="woodcut"] #editor::after,
+html[data-theme="woodcut"] .ticket-form::after,
+html[data-theme="woodcut"] dialog.md-login::after,
+html[data-theme="woodcut"] dialog.md-confirm::after,
+html[data-theme="woodcut"] dialog.md-name::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  border: 4px solid #2b241d;
+  border-image: url("src/style/woodcut/pane.svg") 24 / 24px stretch;
+}
+
+html[data-theme="woodcut"] .file-block,
+html[data-theme="woodcut"] .ticket-block,
+html[data-theme="woodcut"] .md-ticket-wide .ticket-tree {
+  border-color: transparent;
 }
 
 html[data-theme="glass"] {
@@ -2449,7 +2488,9 @@ html[data-theme="glass"] body {
 
 html[data-theme="glass"] nav.files,
 html[data-theme="glass"] aside.comments,
-html[data-theme="glass"] #editor {
+html[data-theme="glass"] #editor,
+html[data-theme="glass"] .ticket-form {
+  position: relative;
   background: #231b15;
   color: #f1e6cf;
 }
@@ -2550,7 +2591,9 @@ html[data-theme="glass"] button.md-view-toggle,
 html[data-theme="glass"] button[class~="md-doc-menu"],
 html[data-theme="glass"] button.md-app-menu,
 html[data-theme="glass"] button.icon-btn {
+  background: #15100c;
   border-color: #c08a00;
+  color: #f0c860;
 }
 
 html[data-theme="glass"] button[class~="md-doc-menu-item"]:hover,
@@ -2567,4 +2610,33 @@ html[data-theme="glass"] .md-comment-card button {
   background: #15100c;
   color: #f1e6cf;
   border-color: #c08a00;
+}
+
+html[data-theme="glass"] dialog.md-login,
+html[data-theme="glass"] dialog.md-confirm,
+html[data-theme="glass"] dialog.md-name {
+  position: relative;
+  border-radius: 0;
+}
+
+html[data-theme="glass"] nav.files::after,
+html[data-theme="glass"] aside.comments::after,
+html[data-theme="glass"] #editor::after,
+html[data-theme="glass"] .ticket-form::after,
+html[data-theme="glass"] dialog.md-login::after,
+html[data-theme="glass"] dialog.md-confirm::after,
+html[data-theme="glass"] dialog.md-name::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  border: 7px solid #15100c;
+  border-image: url("src/style/glass/pane.svg") 15 / 15px stretch;
+}
+
+html[data-theme="glass"] .file-block,
+html[data-theme="glass"] .ticket-block,
+html[data-theme="glass"] .md-ticket-wide .ticket-tree {
+  border-color: transparent;
 }
