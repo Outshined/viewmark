@@ -82,14 +82,25 @@ function assertStatus(probe, text) {
 }
 
 const MENU_OPEN = `(() => {
-  const el = document.querySelector(".md-doc-menu-panel");
+  const el = document.querySelector(".md-app-menu-panel");
   return !!el && !el.hidden && el.getClientRects().length > 0;
 })()`;
 
 async function openMenu(page) {
   if (await page.eval(MENU_OPEN)) return;
+  await clickSelector(page, "button.md-app-menu");
+  await page.until(() => page.eval(MENU_OPEN), "page menu");
+}
+
+const DOC_MENU_OPEN = `(() => {
+  const el = document.querySelector(".md-doc-menu-panel");
+  return !!el && !el.hidden && el.getClientRects().length > 0;
+})()`;
+
+async function openDocumentMenu(page) {
+  if (await page.eval(DOC_MENU_OPEN)) return;
   await clickSelector(page, "button.md-doc-menu");
-  await page.until(() => page.eval(MENU_OPEN), "document menu");
+  await page.until(() => page.eval(DOC_MENU_OPEN), "document menu");
 }
 
 async function clickVimItem(page) {
@@ -205,7 +216,7 @@ function assertCorner(label, row) {
 test("VC.1 (ticket 7vdep2z4)", async (t) => {
   const { hub, page } = await setup(t, { vim: false });
   const read = () => page.eval(`(() => {
-    const panel = document.querySelector(".md-doc-menu-panel");
+    const panel = document.querySelector(".md-app-menu-panel");
     const boxes = panel ? [...panel.querySelectorAll("[role='menuitemcheckbox']")] : [];
     const named = panel ? [...panel.querySelectorAll("button")].filter((button) => (button.textContent || "").trim() === "Vim keys") : [];
     const item = named[0] || null;
@@ -311,15 +322,17 @@ test("VC.1 (ticket 7vdep2z4)", async (t) => {
   await page.quiet();
   await openMenu(page);
   const ticket = await read();
+  await openDocumentMenu(page);
   const shown = await page.eval(`(() => {
     const panel = document.querySelector(".md-doc-menu-panel");
     return panel ? [...panel.querySelectorAll("button")].filter((el) => !el.hidden && el.getClientRects().length > 0).map((el) => el.textContent.trim()) : [];
   })()`);
-  assert.deepEqual(shown, ["Attach image", "Vim keys"]);
+  assert.deepEqual(shown, ["Attach image"]);
   assert.equal(ticket.checked, "true");
   assert.equal(ticket.svgs, 1);
   assert.equal(ticket.text, "Vim keys");
   assertCheckGlyph(ticket.glyph);
+  await openMenu(page);
   await clickVimItem(page);
   await openMenu(page);
   const ticketOff = await read();

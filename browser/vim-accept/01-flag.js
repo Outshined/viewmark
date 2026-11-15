@@ -6,7 +6,7 @@ import { launchBrowser, Page, startHub } from "../harness.js";
 const FILE = "a.md";
 const VIM = "viewmark.vim";
 const ALPHA = "alpha\n";
-const MENU_OPEN = `(() => { const el = document.querySelector(".md-doc-menu-panel"); return !!el && !el.hidden && el.getClientRects().length > 0; })()`;
+const MENU_OPEN = `(() => { const el = document.querySelector(".md-app-menu-panel"); return !!el && !el.hidden && el.getClientRects().length > 0; })()`;
 
 // sessionStorage holds the login. Only localStorage throws, so a reload cannot see the flag.
 const DENY_STORAGE = `(() => {
@@ -71,14 +71,14 @@ async function place(page, offset) {
 async function openDocMenu(page) {
   if (!(await page.eval(MENU_OPEN))) {
     const point = await page.eval(`(() => {
-      const el = document.querySelector("button.md-doc-menu");
+      const el = document.querySelector("button.md-app-menu");
       if (!el) return null;
       const r = el.getBoundingClientRect();
       return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
     })()`);
-    assert.ok(point, "document menu button");
+    assert.ok(point, "page menu button");
     await page.click(point.x, point.y);
-    await page.until(() => page.eval(MENU_OPEN), "document menu open");
+    await page.until(() => page.eval(MENU_OPEN), "page menu open");
   }
 }
 

@@ -49,6 +49,7 @@ import { createMemoryTransport, createSocketTransport } from "./session.js";
 import { gLines, playVimChange, vimKey, vimMatchStarts, vimNoteArrow, vimSubmit, visualBlockOffset, visualKeepGlyph, VIM_SEARCH_LIMIT } from "./vim.js";
 import { TICKET_PRIORITIES, TICKET_STATES, TICKET_TYPES, isTicketToken, parseTicketToken } from "./ticket.js";
 import { MAX_PAYLOAD } from "./ws.js";
+import { themeGlyph } from "./theme-glyphs.js";
 
 export {
   sampleDocument,
@@ -865,6 +866,44 @@ function selectChromeGap(selects) {
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+let activeTheme = "original";
+const glyphHosts = new Set();
+
+function themedGlyph(action) {
+  if (typeof document === "undefined" || typeof document.createElementNS !== "function") return null;
+  return themeGlyph(activeTheme, action, (_ns, name) => document.createElementNS(SVG_NS, name));
+}
+
+function tagGlyph(host, action) {
+  if (!host || typeof host.setAttribute !== "function") return;
+  host.setAttribute("data-glyph", action);
+  glyphHosts.add(host);
+}
+
+function glyphHostLive(host) {
+  return !!(host && (host.parentNode || host.parentElement));
+}
+
+function refreshThemeIcons() {
+  for (const host of glyphHosts) {
+    if (!glyphHostLive(host) || typeof host.getAttribute !== "function" || typeof host.replaceChildren !== "function") continue;
+    const action = host.getAttribute("data-glyph");
+    if (!action) continue;
+    const svg = action === "copy" ? copyGlyph()
+      : action === "eye" || action === "eye-off" ? viewIcon(action === "eye-off")
+      : iconSvg(action);
+    if (!svg) continue;
+    const kids = childArray(host);
+    if (kids.length === 1 && kids[0] && kids[0].localName === "svg") host.replaceChildren(svg);
+  }
+}
+
+function applyThemeMark() {
+  const page = typeof document !== "undefined" ? document.documentElement : null;
+  if (!page || !page.dataset) return;
+  if (activeTheme === "original") delete page.dataset.theme;
+  else page.dataset.theme = activeTheme;
+}
 
 const ICON_PATHS = {
   plus: ["M12 5v14M5 12h14"],
@@ -902,6 +941,8 @@ function strokePath(d) {
 
 function iconSvg(action) {
   if (typeof document === "undefined" || typeof document.createElementNS !== "function") return null;
+  const themed = themedGlyph(action);
+  if (themed) return themed;
   const paths = ICON_PATHS[action];
   if (!paths) return null;
   const svg = document.createElementNS(SVG_NS, "svg");
@@ -914,6 +955,7 @@ function iconSvg(action) {
 function checkGlyph() {
   const svg = iconSvg("check");
   if (!svg || typeof svg.setAttribute !== "function") return svg;
+  if (svg.getAttribute("data-themed") === "1") return svg;
   svg.setAttribute("fill", "none");
   svg.setAttribute("stroke", "currentColor");
   svg.setAttribute("stroke-width", "2");
@@ -941,6 +983,8 @@ function linkIcon() {
 
 function copyGlyph() {
   if (typeof document === "undefined" || typeof document.createElementNS !== "function") return null;
+  const themed = themedGlyph("copy");
+  if (themed) return themed;
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
@@ -976,6 +1020,7 @@ function iconButton(action, className) {
   }
   const svg = iconSvg(action);
   if (svg) button.appendChild(svg);
+  tagGlyph(button, action);
   armGlyphPress(button);
   return button;
 }
@@ -1003,6 +1048,8 @@ function fileBreak(doc) {
 
 function viewIcon(raw) {
   if (typeof document === "undefined" || typeof document.createElementNS !== "function") return null;
+  const themed = themedGlyph(raw ? "eye-off" : "eye");
+  if (themed) return themed;
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("fill", "none");
@@ -3440,6 +3487,7 @@ function metaBuild(node) {
 }
 
 const VIM_KEY = "viewmark.vim";
+  const THEME_KEY = "viewmark.theme";
 
 function vimField(value) {
   return typeof value === "string" ? value : "";
@@ -3753,7 +3801,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let docMenuPanel = null;
   let docMenuDelete = null;
   let docMenuRename = null;
-  let docMenuVim = null;
+  let appMenuButton = null;
+  let appMenuPanel = null;
+  let appMenuVim = null;
   let docLinkButton = null;
   let docAttachInput = null;
   let docLinkOnClick = null;
@@ -3851,6 +3901,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let vimInsertRejected = false;
   // The flag is this page's memory. Storage is read once here and written on toggle.
   let vimOn = readVimOn();
+  activeTheme = readStoredTheme();
+  applyThemeMark();
   // With the search pattern: this page only. Default off.
   let vimNumber = false;
   let vimNumbersPainted = false;
@@ -5647,6 +5699,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
 
   function strokeIcon(d) {
     if (typeof document === "undefined" || typeof document.createElementNS !== "function") return null;
+    if (d === COMMENT_BALLOON) {
+      const themed = themedGlyph("comment");
+      if (themed) return themed;
+    }
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
     svg.setAttribute("aria-hidden", "true");
@@ -5672,6 +5728,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const icon = strokeIcon(d);
     if (icon) button.appendChild(icon);
+    if (d === COMMENT_BALLOON) tagGlyph(button, "comment");
     armGlyphPress(button);
     // Delete sits outside the editor. Taking focus there drops the caret, and
     // the key that follows (undo) never reaches the document.
@@ -6049,6 +6106,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     setStyle(button, "top", top);
     const icon = strokeIcon(COMMENT_BALLOON);
     if (icon) button.appendChild(icon);
+    tagGlyph(button, "comment");
     frame.appendChild(button);
     return true;
   }
@@ -6664,6 +6722,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       const icon = strokeIcon(COMMENT_BALLOON);
       if (icon) addCommentButton.appendChild(icon);
+      tagGlyph(addCommentButton, "comment");
       addCommentButton.hidden = true;
       host.appendChild(addCommentButton);
       armGlyphPress(addCommentButton);
@@ -7152,6 +7211,8 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       || hasClass(node, "md-view-toggle")
       || hasClass(node, "md-doc-menu")
       || hasClass(node, "md-doc-menu-panel")
+      || hasClass(node, "md-app-menu")
+      || hasClass(node, "md-app-menu-panel")
       || hasClass(node, "md-lock")
       || hasClass(node, "md-vim-number");
     const walk = (node) => {
@@ -7747,6 +7808,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const icon = iconSvg("delete");
     if (icon) button.appendChild(icon);
+    tagGlyph(button, "delete");
     armGlyphPress(button);
     const keepClose = (event) => {
       if (event && typeof event.stopPropagation === "function") event.stopPropagation();
@@ -7863,6 +7925,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const icon = strokeIcon(COMMENT_BALLOON);
     if (icon) button.appendChild(icon);
+    tagGlyph(button, "comment");
     armGlyphPress(button);
     // A press here is a drag, not a caret move. preventDefault would cancel the drag.
     button.addEventListener("mousedown", (event) => {
@@ -8791,6 +8854,43 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
+  function readStoredTheme() {
+    const store = vimStore();
+    if (!store) return "original";
+    try {
+      const value = store.getItem(THEME_KEY);
+      if (value === "woodcut" || value === "glass") return value;
+      return "original";
+    } catch {
+      return "original";
+    }
+  }
+
+  function writeStoredTheme(theme) {
+    const store = vimStore();
+    if (!store) return;
+    try {
+      if (theme === "original") {
+        if (typeof store.removeItem === "function") store.removeItem(THEME_KEY);
+      } else if (typeof store.setItem === "function") {
+        store.setItem(THEME_KEY, theme);
+      }
+    } catch {
+      // The page already shows the theme. The next load starts on Original.
+    }
+  }
+
+  function setTheme(next) {
+    const theme = next === "woodcut" || next === "glass" ? next : "original";
+    activeTheme = theme;
+    writeStoredTheme(theme);
+    applyThemeMark();
+    syncThemeItems();
+    syncVimItem();
+    render();
+    refreshThemeIcons();
+  }
+
   function writeVimOn(on) {
     const store = vimStore();
     if (!store) return;
@@ -8899,6 +8999,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function replaceButtonIcon(button) {
+    tagGlyph(button, sourceMode ? "eye-off" : "eye");
     const icon = viewIcon(sourceMode);
     if (!icon) return;
     if (typeof button.replaceChildren === "function") {
@@ -8980,24 +9081,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         const path = openPath;
         showConfirm(pathBase(path), () => emit({ type: "delete", path }));
       });
-      const vimItem = plainButton("md-doc-menu-item md-vim-keys", "Vim keys");
-      docMenuVim = vimItem;
-      if (typeof vimItem.setAttribute === "function") vimItem.setAttribute("role", "menuitemcheckbox");
-      const vimLabel = document.createElement("span");
-      vimLabel.className = "md-vim-label";
-      vimLabel.textContent = "Vim keys";
-      const vimCheck = document.createElement("span");
-      vimCheck.className = "md-vim-check";
-      // The slot keeps its box while the mark is absent, so the label does not move.
-      if (typeof vimItem.replaceChildren === "function") vimItem.replaceChildren(vimLabel, vimCheck);
-      onItem(vimItem, () => {
-        setVimOn(!vimOn);
-      });
       if (typeof panel.appendChild === "function") {
         panel.appendChild(attach);
         panel.appendChild(rename);
         panel.appendChild(remove);
-        panel.appendChild(vimItem);
       }
       syncDocMenuDelete();
       docMenuPanel = panel;
@@ -9021,22 +9108,35 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function syncVimItem() {
-    if (!docMenuVim || typeof docMenuVim.setAttribute !== "function") return;
-    docMenuVim.setAttribute("aria-checked", vimOn ? "true" : "false");
-    const slot = findClassChild(docMenuVim, "md-vim-check");
+    if (!appMenuVim || typeof appMenuVim.setAttribute !== "function") return;
+    appMenuVim.setAttribute("aria-checked", vimOn ? "true" : "false");
+    const slot = findClassChild(appMenuVim, "md-vim-check");
     if (!slot || typeof slot.appendChild !== "function") return;
     const mark = childArray(slot).find((node) => node && node.localName === "svg");
-    if (vimOn) {
-      if (mark) return;
-      const svg = checkGlyph();
-      if (svg) slot.appendChild(svg);
+    if (!vimOn) {
+      if (mark) detachNode(mark);
       return;
     }
+    const svg = checkGlyph();
+    if (!svg) return;
+    const nextTheme = typeof svg.getAttribute === "function" ? svg.getAttribute("data-theme") : null;
+    const heldTheme = mark && typeof mark.getAttribute === "function" ? mark.getAttribute("data-theme") : null;
+    if (mark && nextTheme === heldTheme) return;
     if (mark) detachNode(mark);
+    slot.appendChild(svg);
+  }
+
+  function syncThemeItems() {
+    if (!appMenuPanel) return;
+    for (const item of childArray(appMenuPanel)) {
+      if (!hasClass(item, "md-theme-item") || typeof item.getAttribute !== "function" || typeof item.setAttribute !== "function") continue;
+      item.setAttribute("aria-checked", item.getAttribute("data-theme-value") === activeTheme ? "true" : "false");
+    }
   }
 
   function openDocMenu() {
     if (!docMenuPanel) return;
+    closeAppMenu();
     syncDocMenuDelete();
     showElement(docMenuPanel);
     if (docMenuButton && typeof docMenuButton.setAttribute === "function") docMenuButton.setAttribute("aria-expanded", "true");
@@ -9046,6 +9146,111 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function closeDocMenu() {
     if (docMenuPanel) hideElement(docMenuPanel);
     if (docMenuButton && typeof docMenuButton.setAttribute === "function") docMenuButton.setAttribute("aria-expanded", "false");
+  }
+
+  function themeChoice(value, label) {
+    const button = plainButton("md-app-menu-item md-theme-item", label);
+    if (typeof button.setAttribute === "function") {
+      button.setAttribute("role", "menuitemradio");
+      button.setAttribute("data-theme-value", value);
+      button.setAttribute("aria-checked", activeTheme === value ? "true" : "false");
+    }
+    return button;
+  }
+
+  // The window corner, after the lines, so a line's child index stays the block it paints.
+  function mountAppMenu() {
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return;
+    if (!appMenuButton) {
+      const button = iconButton("menu", "md-app-menu");
+      button.contentEditable = "false";
+      if (typeof button.setAttribute === "function") {
+        button.setAttribute("aria-label", "Page menu");
+        button.setAttribute("title", "Open the page menu");
+        button.setAttribute("aria-haspopup", "menu");
+        button.setAttribute("aria-expanded", "false");
+        button.setAttribute("contenteditable", "false");
+      }
+      if (typeof button.addEventListener === "function") {
+        button.addEventListener("mousedown", stopViewEvent, { signal: ac.signal });
+        button.addEventListener("pointerdown", stopViewEvent, { signal: ac.signal });
+        button.addEventListener("click", (event) => {
+          stopViewEvent(event);
+          if (appMenuPanel && !appMenuPanel.hidden) closeAppMenu();
+          else openAppMenu();
+        }, { signal: ac.signal });
+      }
+      appMenuButton = button;
+    }
+    if (!appMenuPanel) {
+      const panel = document.createElement("div");
+      panel.className = "md-app-menu-panel";
+      panel.contentEditable = "false";
+      if (typeof panel.setAttribute === "function") {
+        panel.setAttribute("role", "menu");
+        panel.setAttribute("contenteditable", "false");
+      }
+      hideElement(panel);
+      if (typeof panel.addEventListener === "function") {
+        panel.addEventListener("mousedown", stopViewEvent, { signal: ac.signal });
+        panel.addEventListener("pointerdown", stopViewEvent, { signal: ac.signal });
+      }
+      const vimItem = plainButton("md-app-menu-item md-vim-keys", "Vim keys");
+      appMenuVim = vimItem;
+      if (typeof vimItem.setAttribute === "function") vimItem.setAttribute("role", "menuitemcheckbox");
+      const vimLabel = document.createElement("span");
+      vimLabel.className = "md-vim-label";
+      vimLabel.textContent = "Vim keys";
+      const vimCheck = document.createElement("span");
+      vimCheck.className = "md-vim-check";
+      // The slot keeps its box while the mark is absent, so the label does not move.
+      if (typeof vimItem.replaceChildren === "function") vimItem.replaceChildren(vimLabel, vimCheck);
+      const themeLabel = document.createElement("div");
+      themeLabel.className = "md-app-menu-label";
+      themeLabel.textContent = "Theme";
+      const original = themeChoice("original", "Original");
+      const woodcut = themeChoice("woodcut", "Wood cut");
+      const glass = themeChoice("glass", "Stained glass");
+      const onItem = (button, run) => {
+        if (!button || typeof button.addEventListener !== "function") return;
+        button.addEventListener("click", (event) => {
+          stopViewEvent(event);
+          closeAppMenu();
+          run();
+        }, { signal: ac.signal });
+      };
+      onItem(vimItem, () => {
+        setVimOn(!vimOn);
+      });
+      onItem(original, () => setTheme("original"));
+      onItem(woodcut, () => setTheme("woodcut"));
+      onItem(glass, () => setTheme("glass"));
+      if (typeof panel.appendChild === "function") {
+        panel.appendChild(vimItem);
+        panel.appendChild(themeLabel);
+        panel.appendChild(original);
+        panel.appendChild(woodcut);
+        panel.appendChild(glass);
+      }
+      appMenuPanel = panel;
+    }
+    syncVimItem();
+    syncThemeItems();
+    appendEditorChrome(appMenuButton);
+    appendEditorChrome(appMenuPanel);
+  }
+
+  function openAppMenu() {
+    if (!appMenuPanel) return;
+    closeDocMenu();
+    syncThemeItems();
+    showElement(appMenuPanel);
+    if (appMenuButton && typeof appMenuButton.setAttribute === "function") appMenuButton.setAttribute("aria-expanded", "true");
+  }
+
+  function closeAppMenu() {
+    if (appMenuPanel) hideElement(appMenuPanel);
+    if (appMenuButton && typeof appMenuButton.setAttribute === "function") appMenuButton.setAttribute("aria-expanded", "false");
   }
 
   // The toggle owns the visible corner. The menu is one button-width to its left, same top.
@@ -9116,6 +9321,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   function mountViewToggle() {
     mountPathStrip();
     mountDocMenu();
+    mountAppMenu();
     const button = ensureViewToggle();
     if (typeof button.setAttribute === "function") button.setAttribute("aria-pressed", sourceMode ? "true" : "false");
     replaceButtonIcon(button);
@@ -9196,6 +9402,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (typeof span.addEventListener === "function") {
         span.addEventListener("mousedown", stopViewEvent, { signal: ac.signal });
         span.addEventListener("pointerdown", stopViewEvent, { signal: ac.signal });
+        span.addEventListener("click", stopViewEvent, { signal: ac.signal });
       }
       vimStatus = span;
     }
@@ -10480,7 +10687,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
     const glyph = copyGlyph();
     if (glyph) {
-      if (typeof glyph.setAttribute === "function") {
+      if (glyph.getAttribute("data-themed") !== "1" && typeof glyph.setAttribute === "function") {
         glyph.setAttribute("fill", "none");
         glyph.setAttribute("stroke", "currentColor");
         glyph.setAttribute("stroke-width", "2");
@@ -10489,6 +10696,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       copy.appendChild(glyph);
     }
+    tagGlyph(copy, "copy");
     armGlyphPress(copy);
     if (typeof copy.addEventListener === "function") {
       copy.addEventListener("click", (event) => {
@@ -14730,6 +14938,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const button = ticketForm && findClassChild(ticketForm, "md-ticket-pane-menu");
     if (panel && !panel.hidden && !nodeWithin(panel, target) && !nodeWithin(button, target)) closeTicketMenu();
     if (docMenuPanel && !docMenuPanel.hidden && !nodeWithin(docMenuPanel, target) && !nodeWithin(docMenuButton, target)) closeDocMenu();
+    if (appMenuPanel && !appMenuPanel.hidden && !nodeWithin(appMenuPanel, target) && !nodeWithin(appMenuButton, target)) closeAppMenu();
     closePopupOutside(fileMenu, null, target);
   }
 
@@ -15448,6 +15657,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       }
       const glyph = copyGlyph();
       if (glyph) copy.appendChild(glyph);
+      tagGlyph(copy, "copy");
       armGlyphPress(copy);
       copy.addEventListener("click", (event) => {
         if (event && typeof event.preventDefault === "function") event.preventDefault();
@@ -16020,8 +16230,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         remove.setAttribute("aria-label", "Delete file");
         remove.setAttribute("title", "Delete file");
       }
-      const icon = strokeIcon(ICON_PATHS.delete[0]);
+      const icon = iconSvg("delete");
       if (icon) remove.appendChild(icon);
+      tagGlyph(remove, "delete");
     }
     armGlyphPress(remove);
     placeAfter(head, button, remove);

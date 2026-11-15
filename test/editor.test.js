@@ -5880,7 +5880,7 @@ function mountEditor(options = {}) {
         const list = nodeList ? el._kids : el.childNodes;
         // The menu and the path strip are pinned on the editor. Their labels are not the document.
         return list.map((child) => {
-          if (child.classList && (child.classList.contains("md-doc-menu-panel") || child.classList.contains("md-path-strip"))) return "";
+          if (child.classList && (child.classList.contains("md-doc-menu-panel") || child.classList.contains("md-app-menu-panel") || child.classList.contains("md-path-strip"))) return "";
           return child.textContent == null ? "" : child.textContent;
         }).join("");
       },
@@ -14670,7 +14670,7 @@ test("document menu offers Attach image and Delete file", () => {
     assert.deepEqual(iconPaths(button), ["M4 6h16M4 12h16M4 18h16"]);
     assert.equal(panel.getAttribute("role"), "menu");
     assert.equal(panel.hidden, true);
-    assert.deepEqual(panel.childNodes.map((node) => node.textContent), ["Attach image", "Rename", "Delete file", "Vim keys"]);
+    assert.deepEqual(panel.childNodes.map((node) => node.textContent), ["Attach image", "Rename", "Delete file"]);
     const deleteItem = () => panel.childNodes.find((node) => node.textContent === "Delete file");
     const renameItem = () => panel.childNodes.find((node) => node.textContent === "Rename");
     assert.equal(renameItem().hidden, true);
@@ -18909,7 +18909,7 @@ test("T-deep-link", () => {
     assert.equal(docMenu[0].getAttribute("aria-label"), "Menu");
     assert.equal(docPanel.length, 1);
     assert.equal(docPanel[0].getAttribute("role"), "menu");
-    assert.deepEqual(docPanel[0].childNodes.map((node) => node.textContent), ["Attach image", "Rename", "Delete file", "Vim keys"]);
+    assert.deepEqual(docPanel[0].childNodes.map((node) => node.textContent), ["Attach image", "Rename", "Delete file"]);
     fireHash();
     assert.equal(opens().length, 1);
     const commentDoc = "See {c1}fox{/c1}.\n\n```comment c1 resolved\nhi\n```\n";
@@ -23343,9 +23343,9 @@ test("vim keys checkbox, status, and caret", () => {
   assert.equal(editorRule.includes("caret-shape"), false);
   assert.match(css, /\.editor\.md-vim-block\s*\{[^}]*caret-shape:\s*block/);
   assert.equal(css.split("caret-shape").length, 2);
-  assert.match(css, /button\.md-doc-menu-item\.md-vim-keys\s*\{[^}]*display:\s*flex;/);
-  assert.match(css, /button\.md-doc-menu-item\.md-vim-keys \.md-vim-check\s*\{[^}]*width:\s*1\.1em;[^}]*height:\s*1\.1em;[^}]*min-width:\s*1\.1em;[^}]*min-height:\s*1\.1em;[^}]*color:\s*#8fdb8a;/);
-  assert.match(css, /button\.md-doc-menu-item\.md-vim-keys \.md-vim-check svg\s*\{[^}]*width:\s*1\.1em;[^}]*height:\s*1\.1em;/);
+  assert.match(css, /button\.md-app-menu-item\.md-vim-keys\s*\{[^}]*display:\s*flex;/);
+  assert.match(css, /button\.md-app-menu-item\.md-vim-keys \.md-vim-check\s*\{[^}]*width:\s*1\.1em;[^}]*height:\s*1\.1em;[^}]*min-width:\s*1\.1em;[^}]*min-height:\s*1\.1em;[^}]*color:\s*#8fdb8a;/);
+  assert.match(css, /button\.md-app-menu-item\.md-vim-keys \.md-vim-check svg\s*\{[^}]*width:\s*1\.1em;[^}]*height:\s*1\.1em;/);
   assert.equal(src.includes("vimKey"), true);
   assert.match(src, /typedAt - typingRun\.at <= 1000/);
 
@@ -23554,7 +23554,8 @@ test("vim keys checkbox, status, and caret", () => {
     const ticketPanel = byClass(mounted.root, "md-doc-menu-panel")[0];
     assert.equal(ticketPanel.childNodes.find((node) => node.textContent === "Rename").hidden, true);
     assert.equal(ticketPanel.childNodes.find((node) => node.textContent === "Delete file").hidden, true);
-    assert.equal(ticketPanel.childNodes.find((node) => node.textContent === "Vim keys").textContent, "Vim keys");
+    assert.equal(ticketPanel.childNodes.find((node) => node.textContent === "Vim keys"), undefined);
+    assert.equal(byClass(mounted.root, "md-app-menu-panel")[0].childNodes.some((node) => node.textContent === "Vim keys"), true);
     click(vimButton());
     assert.equal(vimMark(vimButton()).label, ticketOn.label);
     assertVimMark(vimButton(), false);
@@ -30019,6 +30020,78 @@ test("a block left in place still follows comment controls", () => {
     assert.equal(hidden.classList.contains("md-comment"), false);
     resolved.destroy();
   } finally {
+    mounted.restore();
+  }
+});
+
+test("the page menu holds Vim keys and the theme", () => {
+  const mounted = mountEditor();
+  const previousLocal = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: undefined });
+  const data = {};
+  const store = {
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(data, key) ? data[key] : null;
+    },
+    setItem(key, value) {
+      data[key] = String(value);
+    },
+    removeItem(key) {
+      delete data[key];
+    },
+  };
+  const click = (node) => node.listeners.click({ preventDefault() {}, stopPropagation() {} });
+  const named = (label) => walkNodes(mounted.root, (node) => node.tagName === "BUTTON" && node.textContent === label)[0];
+  const appButton = () => walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-app-menu"))[0];
+  const appPanel = () => walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-app-menu-panel"))[0];
+  const svgOf = (button) => [...button.childNodes].find((node) => node && node.localName === "svg");
+  const strokes = (button) => [...svgOf(button).childNodes].filter((node) => node && node.localName === "path").map((node) => node.getAttribute("stroke"));
+  try {
+    const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
+    assert.match(css, /button\.md-app-menu\s*\{[^}]*position:\s*fixed/);
+    assert.match(css, /button\.md-app-menu\s*\{[^}]*top:\s*0\.35rem/);
+    assert.match(css, /button\.md-app-menu\s*\{[^}]*right:\s*0\.35rem/);
+    assert.match(css, /button\.md-app-menu\s*\{[^}]*z-index:\s*8/);
+    assert.match(css, /html\[data-theme="woodcut"\]/);
+    assert.match(css, /html\[data-theme="glass"\]/);
+    const view = createEditor(mounted.root, "alpha\n", 0, null, store);
+    const docPanel = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-doc-menu-panel"))[0];
+    assert.deepEqual(docPanel.childNodes.map((node) => node.textContent), ["Attach image", "Rename", "Delete file"]);
+    assert.equal(appButton().getAttribute("aria-label"), "Page menu");
+    assert.equal(appButton().getAttribute("title"), "Open the page menu");
+    assert.equal(appPanel().getAttribute("role"), "menu");
+    assert.deepEqual(appPanel().childNodes.map((node) => node.textContent), ["Vim keys", "Theme", "Original", "Wood cut", "Stained glass"]);
+    assert.equal(mounted.root.childNodes.at(-1), viewToggleOf(mounted.root));
+    assert.equal(mounted.root.childNodes.indexOf(appPanel()), mounted.root.childNodes.indexOf(appButton()) + 1);
+    assert.equal(named("Vim keys").getAttribute("role"), "menuitemcheckbox");
+    assert.equal(named("Original").getAttribute("role"), "menuitemradio");
+    assert.equal(named("Original").getAttribute("aria-checked"), "true");
+    assert.equal(named("Wood cut").getAttribute("aria-checked"), "false");
+    assert.equal(svgOf(appButton()).getAttribute("data-themed"), null);
+    assert.deepEqual(iconPaths(appButton()), ["M4 6h16M4 12h16M4 18h16"]);
+    click(named("Wood cut"));
+    assert.equal(store.getItem("viewmark.theme"), "woodcut");
+    assert.equal(named("Wood cut").getAttribute("aria-checked"), "true");
+    assert.equal(named("Original").getAttribute("aria-checked"), "false");
+    assert.equal(svgOf(appButton()).getAttribute("data-themed"), "1");
+    assert.equal(svgOf(appButton()).getAttribute("data-theme"), "woodcut");
+    assert.ok(strokes(appButton()).includes("#1f1a15"));
+    assert.ok(strokes(appButton()).includes("#fbf6ea"));
+    click(named("Stained glass"));
+    assert.equal(store.getItem("viewmark.theme"), "glass");
+    assert.equal(named("Stained glass").getAttribute("aria-checked"), "true");
+    assert.equal(svgOf(appButton()).getAttribute("data-theme"), "glass");
+    assert.ok(strokes(appButton()).includes("#f0c860"));
+    assert.ok(strokes(appButton()).includes("#15100c"));
+    click(named("Original"));
+    assert.equal(store.getItem("viewmark.theme"), null);
+    assert.equal(named("Original").getAttribute("aria-checked"), "true");
+    assert.equal(svgOf(appButton()).getAttribute("data-themed"), null);
+    assert.deepEqual(iconPaths(appButton()), ["M4 6h16M4 12h16M4 18h16"]);
+    view.destroy();
+  } finally {
+    if (previousLocal) Object.defineProperty(globalThis, "localStorage", previousLocal);
+    else delete globalThis.localStorage;
     mounted.restore();
   }
 });

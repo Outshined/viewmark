@@ -9,7 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 // The sentences a reader needs for the parts that are not stock vim.
 const VIM_FACTS = [
-  "The document menu item Vim keys is off until it is checked.",
+  "The page menu item Vim keys is off until it is checked.",
   "stores it as `viewmark.vim`",
   "A vim line in the formatted view is a rendered block.",
   "`gc` comments the highlight.",
@@ -132,7 +132,7 @@ test("starter docs, project docs, and the README cover vim keys", async () => {
 
   assertHeadingTight("samples/ARCHITECTURE.md", architecture, "### Vim keys");
   for (const fact of [
-    "The document menu item Vim keys is off until it is checked.",
+    "The page menu item Vim keys is off until it is checked.",
     "`viewmark.vim`",
     "`src/vim.js`",
     "`gc` comments the highlight.",
