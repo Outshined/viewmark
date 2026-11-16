@@ -30072,6 +30072,14 @@ test("the page menu holds Vim keys and the theme", () => {
     assert.match(css, /src\/style\/glass\/pane\.svg/);
     assert.match(css, /html\[data-theme="woodcut"\] #editor::after/);
     assert.match(css, /html\[data-theme="glass"\] #editor::after/);
+    assert.match(css, /\.file-tree button\.md-file:hover,\s*\.file-tree button\.md-dir-toggle:hover\s*\{[^}]*background:\s*#2c3440/);
+    assert.ok(css.indexOf(".file-tree button.md-file:hover") < css.indexOf(".file-tree button.md-file.md-file-current"));
+    assert.match(css, /html\[data-theme="woodcut"\] \.md-table th\s*\{[^}]*background:\s*#e7d3a8/);
+    assert.match(css, /html\[data-theme="woodcut"\] \.md-table th\s*\{[^}]*color:\s*#1f1a15/);
+    assert.match(css, /html\[data-theme="woodcut"\] \.ticket-tree \.md-ticket-row:hover,\s*html\[data-theme="woodcut"\] \.file-tree button\.md-file:hover,\s*html\[data-theme="woodcut"\] \.file-tree button\.md-dir-toggle:hover\s*\{[^}]*background:\s*#ece0c2/);
+    assert.match(css, /html\[data-theme="woodcut"\] \.ticket-tree \.md-ticket-row:hover,\s*html\[data-theme="woodcut"\] \.file-tree button\.md-file:hover,\s*html\[data-theme="woodcut"\] \.file-tree button\.md-dir-toggle:hover\s*\{[^}]*color:\s*#1f1a15/);
+    assert.match(css, /html\[data-theme="woodcut"\] \.ticket-tree \.md-ticket-row\.md-ticket-current,\s*html\[data-theme="woodcut"\] \.file-tree button\.md-file\.md-file-current\s*\{[^}]*background:\s*#c4a574/);
+    assert.match(css, /html\[data-theme="woodcut"\] \.ticket-tree \.md-ticket-row\.md-ticket-current,\s*html\[data-theme="woodcut"\] \.file-tree button\.md-file\.md-file-current\s*\{[^}]*color:\s*#1f1a15/);
     const view = createEditor(mounted.root, "alpha\n", 0, null, store);
     const docPanel = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-doc-menu-panel"))[0];
     assert.deepEqual(docPanel.childNodes.map((node) => node.textContent), ["Attach image", "Rename", "Delete file"]);

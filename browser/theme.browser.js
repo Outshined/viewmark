@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { launchBrowser, Page, startHub } from "./harness.js";
+import { REPO, USER, cli, launchBrowser, Page, startHub } from "./harness.js";
 
 const OPEN = `(() => { const el = document.querySelector(".md-app-menu-panel"); return !!el && !el.hidden && el.getClientRects().length > 0; })()`;
 
@@ -152,4 +152,125 @@ test("the page menu switches Original, Wood cut, and Stained glass", async (t) =
   assert.equal(back.body, rgb("#1c1b19"));
   assert.equal(back.strip, rgb("#1c1b19"));
   assert.equal(back.radios.find((item) => item.text === "Original").checked, "true");
+});
+
+async function pointOf(page, selector) {
+  const point = await page.eval(`(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return null;
+    return { x: r.left + Math.min(16, r.width / 2), y: r.top + r.height / 2 };
+  })()`);
+  assert.ok(point, selector);
+  return point;
+}
+
+async function moveTo(page, selector) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const point = await pointOf(page, selector);
+    await page.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
+    await page.frame();
+    const hovered = await page.eval(`document.querySelector(${JSON.stringify(selector)}).matches(":hover")`);
+    if (hovered) return;
+  }
+  assert.fail(`${selector} is not under the pointer`);
+}
+
+async function restPointer(page) {
+  const away = await page.eval(`(() => {
+    const r = document.getElementById("editor").getBoundingClientRect();
+    return { x: Math.min(r.right - 24, r.left + r.width * 0.75), y: r.top + 80 };
+  })()`);
+  await page.session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: away.x, y: away.y });
+  await page.until(
+    () => page.eval(`!document.querySelector(".md-file-drawer").classList.contains("md-file-wide") && !document.querySelector(".md-ticket-drawer").classList.contains("md-ticket-wide")`),
+    "the panes at rest",
+  );
+  await page.frame();
+}
+
+function paintOf(page, selector) {
+  return page.eval(`(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    const style = getComputedStyle(el);
+    return { background: style.backgroundColor, color: style.color };
+  })()`);
+}
+
+test("Wood cut table headings and list rows stay readable, and Files highlights like Tickets", async (t) => {
+  const hub = await startHub();
+  let browser;
+  t.after(async () => {
+    if (browser) await browser.close();
+    await hub.close();
+  });
+  await hub.create("a.md", "A line.\n\n| Name | Note |\n| --- | --- |\n| One | Two |\n");
+  await hub.create("b.md", "Second.\n");
+  await hub.create("notes/c.md", "Inside.\n");
+  const made = await cli(hub.port, ["--user", USER, "--repo", REPO, "ticket", "create", "--title", "Drawer row"], "Body.\n");
+  assert.equal(made.code, 0, made.stderr);
+  const id = made.stdout.trim().split("\n")[0];
+  browser = await launchBrowser();
+  const page = new Page(browser.session, hub.port);
+  await page.init();
+  await page.login();
+  await page.open("a.md");
+  const file = `.file-tree button.md-file[data-path="b.md"]`;
+  const dir = `.file-tree button.md-dir-toggle[data-dir="notes"]`;
+  const current = `.file-tree button.md-file.md-file-current`;
+  const row = ".ticket-tree .md-ticket-row";
+  await page.until(() => page.eval(`!!document.querySelector(".md-table th")`), "the table heading");
+  await page.until(() => page.eval(`!!document.querySelector(${JSON.stringify(file)})`), "the other file");
+  await page.until(() => page.eval(`!!document.querySelector(${JSON.stringify(dir)})`), "the directory");
+  await page.until(() => page.eval(`!!document.querySelector(${JSON.stringify(row)})`), "the ticket row");
+  await restPointer(page);
+  const openFile = await paintOf(page, current);
+  assert.equal(openFile.background, rgb("#3d5a80"));
+  await moveTo(page, file);
+  const fileHover = await paintOf(page, file);
+  assert.equal(fileHover.background, rgb("#2c3440"));
+  await moveTo(page, dir);
+  const dirHover = await paintOf(page, dir);
+  assert.equal(dirHover.background, rgb("#2c3440"));
+  await restPointer(page);
+  await moveTo(page, row);
+  const ticketHover = await paintOf(page, row);
+  assert.equal(ticketHover.background, rgb("#2c3440"));
+
+  await openPageMenu(page);
+  await clickText(page, "Wood cut");
+  await restPointer(page);
+  const head = await paintOf(page, ".md-table th");
+  assert.equal(head.background, rgb("#e7d3a8"));
+  assert.equal(head.color, rgb("#1f1a15"));
+  const woodOpen = await paintOf(page, current);
+  assert.equal(woodOpen.background, rgb("#c4a574"));
+  assert.equal(woodOpen.color, rgb("#1f1a15"));
+  await moveTo(page, file);
+  const woodFile = await paintOf(page, file);
+  assert.equal(woodFile.background, rgb("#ece0c2"));
+  assert.equal(woodFile.color, rgb("#1f1a15"));
+  await moveTo(page, dir);
+  const woodDir = await paintOf(page, dir);
+  assert.equal(woodDir.background, rgb("#ece0c2"));
+  assert.equal(woodDir.color, rgb("#1f1a15"));
+  await restPointer(page);
+  await moveTo(page, row);
+  const woodTicket = await paintOf(page, row);
+  assert.equal(woodTicket.background, rgb("#ece0c2"));
+  assert.equal(woodTicket.color, rgb("#1f1a15"));
+  const ticketButton = await paintOf(page, `${row} button.md-ticket`);
+  assert.equal(ticketButton.background, "rgba(0, 0, 0, 0)");
+  assert.equal(ticketButton.color, rgb("#1f1a15"));
+
+  const since = page.frames.length;
+  page.loads = (page.loads || 0) + 1;
+  await page.session.send("Page.navigate", { url: `http://127.0.0.1:${page.port}/?load=${page.loads}#${REPO}/ticket/${encodeURIComponent(id)}` });
+  await page.until(() => page.frames.slice(since).some((frame) => frame.dir === "in" && frame.data && frame.data.type === "file" && frame.data.path === `tickets/${id}.md`), "open ticket");
+  await page.until(() => page.eval(`!!document.querySelector(".md-ticket-current")`), "current ticket row");
+  await restPointer(page);
+  const woodCurrent = await paintOf(page, ".ticket-tree .md-ticket-row.md-ticket-current");
+  assert.equal(woodCurrent.background, rgb("#c4a574"));
+  assert.equal(woodCurrent.color, rgb("#1f1a15"));
 });

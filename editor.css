@@ -613,6 +613,11 @@ nav.files .md-ticket-filter-menu input {
   justify-content: center;
 }
 
+.file-tree button.md-file:hover,
+.file-tree button.md-dir-toggle:hover {
+  background: #2c3440;
+}
+
 .file-tree button.md-file.md-file-current {
   background: #3d5a80;
   border: 1px solid #c4b8a4;
@@ -2472,6 +2477,25 @@ html[data-theme="woodcut"] .file-block,
 html[data-theme="woodcut"] .ticket-block,
 html[data-theme="woodcut"] .md-ticket-wide .ticket-tree {
   border-color: transparent;
+}
+
+html[data-theme="woodcut"] .md-table th {
+  background: #e7d3a8;
+  color: #1f1a15;
+}
+
+html[data-theme="woodcut"] .ticket-tree .md-ticket-row:hover,
+html[data-theme="woodcut"] .file-tree button.md-file:hover,
+html[data-theme="woodcut"] .file-tree button.md-dir-toggle:hover {
+  background: #ece0c2;
+  color: #1f1a15;
+}
+
+html[data-theme="woodcut"] .ticket-tree .md-ticket-row.md-ticket-current,
+html[data-theme="woodcut"] .file-tree button.md-file.md-file-current {
+  background: #c4a574;
+  color: #1f1a15;
+  border-color: #2b241d;
 }
 
 html[data-theme="glass"] {
