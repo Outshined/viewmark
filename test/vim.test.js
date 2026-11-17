@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { playVimChange, vimKey, vimMatchStarts, vimSubmit, visualBlockOffset, visualKeepGlyph, VIM_SEARCH_LIMIT } from "../src/vim.js";
-import { backspace, caretAfterEdit, codeSpanAt, commentStorageReason, createState, deleteForward, insert, linkSpanAt, skipHidden, sourceLine } from "../src/doc.js";
+import { backspace, caretAfterEdit, codeSpanAt, commentStorageReason, createState, deleteForward, insert, linkSpanAt, skipHidden, sourceLine, undo } from "../src/doc.js";
 
 const CARET = "‸";
 
@@ -1333,17 +1333,25 @@ test("a colon count moves like G, and a change across a fence or a table writes 
   assert.equal(run(table.replace("After.", "‸After."), ["j"]).doc, table);
   assert.equal(lineAtCaret(run(table.replace("After.", "‸After."), ["k"])), "| 3 | 4 |");
   assert.equal(lineAtCaret(run(table.replace("After.", "‸After."), ["2", "G"])), "| a | b |");
-  const row = table.indexOf("| 1 | 2 |");
-  const removed = run(table.slice(0, row) + "‸" + table.slice(row), ["d", "d"], { vim: armed() });
-  assert.equal(removed.doc.includes("|"), false);
-  assert.equal(removed.doc.includes("Top."), true);
-  assert.equal(removed.doc.includes("After."), true);
-  assert.equal(removed.doc, "Top.\n\n\nAfter.\n");
+  const place = (needle) => {
+    const at = table.indexOf(needle);
+    return table.slice(0, at) + "‸" + table.slice(at);
+  };
+  const header = run(place("| a | b |"), ["d", "d"], { vim: armed() });
+  assert.equal(header.doc, "Top.\n\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nAfter.\n");
+  assert.notEqual(header.vim.register.text, "OLD");
+  const removed = run(place("| 1 | 2 |"), ["d", "d"], { vim: armed() });
+  assert.equal(removed.doc, "Top.\n\n| a | b |\n|---|---|\n| 3 | 4 |\n\nAfter.\n");
   assert.notEqual(removed.vim.register.text, "OLD");
-  const wider = run(table.slice(0, row) + "‸" + table.slice(row), ["2", "d", "d"], { vim: armed() });
-  assert.equal(wider.doc, table);
-  assert.equal(wider.vim.register.text, "OLD");
-  assert.equal(wider.vim.input.operator, null);
+  const wider = run(place("| 1 | 2 |"), ["2", "d", "d"], { vim: armed() });
+  assert.equal(wider.doc, "Top.\n\n| a | b |\n|---|---|\n\nAfter.\n");
+  assert.notEqual(wider.vim.register.text, "OLD");
+  const stuck = run(place("| 3 | 4 |"), ["2", "d", "d"], { vim: armed() });
+  assert.equal(stuck.doc, table);
+  assert.equal(stuck.show, place("| 3 | 4 |"));
+  assert.equal(stuck.vim.register.text, "OLD");
+  assert.equal(stuck.vim.input.operator, null);
+  assert.equal(run("‸" + table, ["d", "5", "j"], { vim: armed() }).doc, "");
 
   const fence = "Above.\n\n```js\none\ntwo\n```\n\nAfter.\n";
   const held = (start, keys) => {
@@ -1377,6 +1385,30 @@ test("a colon count moves like G, and a change across a fence or a table writes 
   assert.equal(ex("‸alpha\nbeta\ngamma\n", "%d").doc, "");
   const substituted = ex(fence.slice(0, body) + "‸" + fence.slice(body), "s/one/ONE/");
   assert.equal(substituted.doc, "Above.\n\n```js\nONE\ntwo\n```\n\nAfter.\n");
+});
+
+test("a linewise delete that holds a whole table is one edit", () => {
+  const keep = "Keep.\n\nTop.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nAfter.\n\nTail.\n";
+  const out = run(keep.replace("Top.", "‸Top."), ["V", "j", "j", "j", "j", "j", "d"]);
+  assert.equal(out.doc, "Keep.\n\nTail.\n");
+  const effect = oneSplice(out);
+  assert.equal(effect.text, "");
+  const state = insert(createState(keep, effect.to, effect.from), "", false, false, true);
+  assert.equal(state.doc, "Keep.\n\nTail.\n");
+  let text = state.doc;
+  for (let i = state.changes.length - 1; i >= 0; i -= 1) {
+    const change = state.changes[i];
+    const end = change.from + change.inserted.length;
+    assert.equal(text.slice(change.from, end), change.inserted);
+    text = text.slice(0, change.from) + change.removed + text.slice(end);
+  }
+  assert.equal(text, keep);
+  assert.equal(undo(state).doc, keep);
+
+  const two = "Alpha.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n| c | d |\n|---|---|\n| 3 | 4 |\n\nOmega.\n";
+  const partial = run(two.replace("| 1 | 2 |", "‸| 1 | 2 |"), ["V", "j", "d"]);
+  assert.equal(partial.doc, two);
+  assert.equal(partial.steps.some((step) => step.effect && step.effect.type === "splice"), false);
 });
 
 test("x5fxzp58 j and k skip the blank after a heading", () => {

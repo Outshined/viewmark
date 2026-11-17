@@ -1135,8 +1135,7 @@ function pastLastCommentFence(doc, cursor) {
 // The last drawn row there is the blank between fences, and deleting it
 // would leave the caret with no line.
 function countedLines(doc, origin, count, raw) {
-  // A caret on a row opens the table. dd still names the closed table, one vim line.
-  const lines = !raw && opensTable(doc, origin) ? renderedLines(doc, -1) : vimLines(doc, origin, raw);
+  const lines = vimLines(doc, origin, raw);
   let index = lineIndex(lines, doc, origin, raw);
   if (index >= lines.length) {
     if (!raw && pastLastCommentFence(doc, origin)) return { from: origin, to: origin };
@@ -3423,7 +3422,11 @@ function structureList(doc) {
     if (!block || typeof block.start !== "number" || typeof block.end !== "number") continue;
     const fence = block.fence === true || block.type === "diagram" || block.type === "svg";
     if (!fence && block.type !== "table") continue;
-    spans.push({ start: block.start, end: structureEnd(doc, block.start, block.end) });
+    spans.push({
+      start: block.start,
+      end: structureEnd(doc, block.start, block.end),
+      table: block.type === "table",
+    });
   }
   for (const thread of commentThreads(doc)) {
     if (typeof thread.start !== "number" || typeof thread.end !== "number") continue;
@@ -3442,7 +3445,8 @@ function vimLinesCovered(doc, cursor, raw, from, to) {
   return count;
 }
 
-// More than one vim line, and the bytes are not inside one fence or one table.
+// More than one vim line that cuts into a fence or a table. Text on both sides
+// of a table holds that table, so the splice is one edit.
 function crossesFenceOrTable(doc, cursor, raw, from, to) {
   if (!Number.isInteger(from) || !Number.isInteger(to) || from >= to) return false;
   if (vimLinesCovered(doc, cursor, raw, from, to) < 2) return false;
@@ -3450,6 +3454,7 @@ function crossesFenceOrTable(doc, cursor, raw, from, to) {
   let hit = null;
   for (const span of spans) {
     if (from >= span.end || to <= span.start) continue;
+    if (span.table && from < span.start && to > span.end) continue;
     if (hit) return true;
     hit = span;
   }

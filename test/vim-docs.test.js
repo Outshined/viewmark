@@ -39,7 +39,7 @@ const VIM_FACTS = [
   "There is no visual-block mode.",
   "`.` in normal repeats the last change at the caret, and a count typed before `.` replaces the count stored on that change.",
   "In normal, `U` changes nothing.",
-  "A change that covers more than one vim line and crosses a fence or a table writes nothing.",
+  "A change that covers more than one vim line and crosses a fence writes nothing. A change that cuts into a table writes nothing. A change that holds a whole table is one edit.",
 ];
 
 function fenceCount(text) {
