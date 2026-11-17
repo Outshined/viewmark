@@ -21,8 +21,8 @@ unordered second under second numbered
 * Third list item
 
 1. first
-2. second
-3. third
+3. second
+1. third
 
 Image pasted in (raining cats and dogs):
 
