@@ -272,7 +272,7 @@ test("VC.1 (ticket 7vdep2z4)", async (t) => {
   assert.equal(off.svgs, 0);
   assert.equal(off.glyph, null);
   assert.ok(off.slot.w > 8 && off.slot.h > 8, JSON.stringify(off.slot));
-  assert.ok(off.label.x + off.label.w <= off.slot.x + 1, JSON.stringify({ label: off.label, slot: off.slot }));
+  assert.ok(off.slot.x + off.slot.w <= off.label.x + 1, JSON.stringify({ label: off.label, slot: off.slot }));
 
   await clickVimItem(page);
   assert.equal(await page.eval(`localStorage.getItem(${JSON.stringify(VIM)})`), "1");
@@ -285,7 +285,7 @@ test("VC.1 (ticket 7vdep2z4)", async (t) => {
   assertCheckGlyph(toggled.glyph);
   samePlace(off.label, toggled.label, "label");
   samePlace(off.slot, toggled.slot, "slot");
-  assert.ok(toggled.label.x + toggled.label.w <= toggled.slot.x + 1, JSON.stringify({ label: toggled.label, slot: toggled.slot }));
+  assert.ok(toggled.slot.x + toggled.slot.w <= toggled.label.x + 1, JSON.stringify({ label: toggled.label, slot: toggled.slot }));
 
   await clickVimItem(page);
   assert.equal(await page.eval(`localStorage.getItem(${JSON.stringify(VIM)})`), null);
@@ -310,7 +310,7 @@ test("VC.1 (ticket 7vdep2z4)", async (t) => {
   assert.equal(on.checked, "true");
   assert.equal(on.svgs, 1);
   assertCheckGlyph(on.glyph);
-  assert.ok(on.label.x + on.label.w <= on.slot.x + 1, JSON.stringify({ label: on.label, slot: on.slot }));
+  assert.ok(on.slot.x + on.slot.w <= on.label.x + 1, JSON.stringify({ label: on.label, slot: on.slot }));
 
   const made = await cli(hub.port, ["--user", USER, "--repo", REPO, "ticket", "create", "--title", "Alpha"], "Alpha body.\n");
   assert.equal(made.code, 0, made.stderr);
@@ -327,7 +327,7 @@ test("VC.1 (ticket 7vdep2z4)", async (t) => {
     const panel = document.querySelector(".md-doc-menu-panel");
     return panel ? [...panel.querySelectorAll("button")].filter((el) => !el.hidden && el.getClientRects().length > 0).map((el) => el.textContent.trim()) : [];
   })()`);
-  assert.deepEqual(shown, ["Attach image"]);
+  assert.deepEqual(shown, ["Attach image", "Show resolved comments"]);
   assert.equal(ticket.checked, "true");
   assert.equal(ticket.svgs, 1);
   assert.equal(ticket.text, "Vim keys");

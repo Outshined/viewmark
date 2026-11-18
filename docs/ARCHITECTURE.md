@@ -79,7 +79,7 @@ Inside a fence, braces are ordinary characters. In the document text, a pair has
 {c1}the selected words{/c1}
 ```
 
-In the block that holds the caret, each marker is drawn as a rounded handle, and dragging a handle moves that end of the comment. In every other block the markers are omitted, and the words inside keep their inline formatting. The raw view draws the markers as characters. The thread is shown in the comment column. Resolved threads remain in the document and stay out of that column until show resolved is turned on. That switch is view state. It is a checkbox at the top of the comment column, and it is shown when a resolved thread exists.
+In the block that holds the caret, each marker is drawn as a rounded handle, and dragging a handle moves that end of the comment. In every other block the markers are omitted, and the words inside keep their inline formatting. The raw view draws the markers as characters. The thread is shown in the comment column. Resolved threads remain in the document and stay out of that column until Show resolved comments is turned on. That switch is view state. It is a check in the document menu, under Attach image, and it starts off when another document opens.
 
 A thread fence holds notes separated by `:: N` lines. Each note starts with `@<ISO time> <author>`. The hub writes the id and the author line.
 

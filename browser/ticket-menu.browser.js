@@ -678,7 +678,7 @@ test("the document menu lists Attach image and Delete file, and Vim keys is on t
   const doc = await read();
   assert.equal(doc.label, "Menu");
   assert.equal(doc.role, "menu");
-  assert.deepEqual(doc.items, ["Attach image", "Rename", "Delete file"]);
+  assert.deepEqual(doc.items, ["Attach image", "Show resolved comments", "Rename", "Delete file"]);
   const pageMenu = await page.eval(`(() => {
     const panel = document.querySelector(".md-app-menu-panel");
     return panel ? [...panel.querySelectorAll("button")].map((el) => el.textContent.trim()) : [];
@@ -691,7 +691,7 @@ test("the document menu lists Attach image and Delete file, and Vim keys is on t
   await openTicket(page, id);
   await openDocMenu(page);
   const ticket = await read();
-  assert.deepEqual(ticket.items, ["Attach image"]);
+  assert.deepEqual(ticket.items, ["Attach image", "Show resolved comments"]);
   assert.equal(ticket.commit, false);
   assert.equal(ticket.label, "Menu");
   assert.ok(ticket.menu.right <= ticket.raw.left + 1, "the menu covers the raw toggle on a ticket");
