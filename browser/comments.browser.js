@@ -141,10 +141,27 @@ test("Delete on a card with the caret elsewhere, and on a resolved thread", asyn
   await cardDelete(page, "c1");
   assert.equal(await bytes(hub, "a.md"), "See this now.\n");
   await open(page, "r.md");
-  const box = await page.eval(`(() => { const r = document.getElementById("show-resolved").getBoundingClientRect(); return { x: r.left + 4, y: r.top + 4 }; })()`);
-  await page.click(box.x, box.y);
+  const menuPoint = await page.eval(`(() => {
+    const el = document.querySelector("button.md-doc-menu");
+    const r = el.getBoundingClientRect();
+    return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
+  })()`);
+  await page.click(menuPoint.x, menuPoint.y);
   await page.quiet();
-  assert.equal(await page.eval(`document.getElementById("show-resolved").checked`), true, "the click did not reach the show resolved box");
+  const itemPoint = await page.eval(`(() => {
+    const el = [...document.querySelectorAll(".md-doc-menu-panel button")].find((node) => (node.textContent || "").trim() === "Show resolved comments");
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return null;
+    return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
+  })()`);
+  assert.ok(itemPoint, "Show resolved comments is not in the document menu");
+  await page.click(itemPoint.x, itemPoint.y);
+  await page.quiet();
+  assert.equal(await page.eval(`(() => {
+    const el = [...document.querySelectorAll("button.md-doc-menu-item")].find((node) => (node.textContent || "").trim() === "Show resolved comments");
+    return el && el.getAttribute("aria-checked");
+  })()`), "true", "the click did not reach Show resolved comments");
   await cardClick(page, "c1");
   await cardDelete(page, "c1");
   assert.equal(await bytes(hub, "r.md"), "See this now.\n");

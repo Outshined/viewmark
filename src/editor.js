@@ -3801,6 +3801,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   let docMenuPanel = null;
   let docMenuDelete = null;
   let docMenuRename = null;
+  let docMenuResolved = null;
   let appMenuButton = null;
   let appMenuPanel = null;
   let appMenuVim = null;
@@ -6158,33 +6159,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     ensureDocMenu();
     const list = comments || [];
     pruneCommentDrafts(list);
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = showResolved;
-    checkbox.disabled = false;
-    checkbox.id = "show-resolved";
-    if (typeof checkbox.setAttribute === "function") {
-      checkbox.setAttribute("type", "checkbox");
-      checkbox.setAttribute("id", "show-resolved");
-    }
-    const label = document.createElement("label");
-    label.htmlFor = "show-resolved";
-    if (typeof label.setAttribute === "function") label.setAttribute("for", "show-resolved");
-    label.textContent = "show resolved";
-    checkbox.addEventListener("change", () => {
-      showResolved = checkbox.checked === true;
-      render();
-    });
-    const row = document.createElement("div");
-    row.className = "md-show-resolved";
-    row.appendChild(checkbox);
-    row.appendChild(label);
-    let anyResolved = false;
-    for (const comment of list) {
-      if (comment && comment.resolved === true) anyResolved = true;
-    }
-    if (anyResolved) showElement(row);
-    else hideElement(row);
     const visible = [];
     for (const comment of list) {
       if (comment.resolved && !showResolved) continue;
@@ -6197,9 +6171,9 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       if (child === docAttachInput) continue;
       detachNode(child);
     }
-    commentsAside.appendChild(row);
     for (const card of cards) commentsAside.appendChild(card);
     syncEntryLink();
+    syncResolvedItem();
   }
 
   function elementRect(el) {
@@ -6446,8 +6420,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     const asideRect = elementRect(commentsAside);
     if (!asideRect || typeof cards[0].getBoundingClientRect !== "function") return;
     const spans = findSpans(state.doc);
-    // A hidden row still reports offsetHeight, so it must not raise the floor.
-    // The box is what matters once in-flow controls sit above that row.
     let floor = COMMENT_CARD_GAP;
     const shownBottom = (el) => {
       if (!el || el.hidden || el.parentElement !== commentsAside) return 0;
@@ -6456,13 +6428,6 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const bottom = rect.bottom - asideRect.top;
       return Number.isFinite(bottom) ? bottom : 0;
     };
-    const resolvedRow = findClassChild(commentsAside, "md-show-resolved");
-    if (resolvedRow && !resolvedRow.hidden) {
-      const rowHeight = typeof resolvedRow.offsetHeight === "number" ? resolvedRow.offsetHeight : 0;
-      floor = rowHeight + COMMENT_CARD_GAP;
-      const rowBottom = shownBottom(resolvedRow);
-      if (rowBottom > 0) floor = Math.max(floor, rowBottom + COMMENT_CARD_GAP);
-    }
     // Absolute cards paint over a shown control. A hidden one still reports a box, so it does not count.
     for (const control of [docAttachInput]) {
       const bottom = shownBottom(control);
@@ -7024,7 +6989,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     for (const child of childArray(node)) restoreCommentClass(child);
   }
 
-  // plan paints every comment span. The checkbox decides whether a resolved thread keeps that paint.
+  // plan paints every comment span. showResolved decides whether a resolved thread keeps that paint.
   function hideResolvedHighlights() {
     if (showResolved) {
       if (paintedHiddenKey === "*") return;
@@ -9056,10 +9021,22 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
         panel.addEventListener("pointerdown", stopViewEvent, { signal: ac.signal });
       }
       const attach = plainButton("md-doc-menu-item", "Attach image");
+      const resolved = plainButton("md-doc-menu-item md-resolved-comments", "Show resolved comments");
       const rename = plainButton("md-doc-menu-item", "Rename");
       const remove = plainButton("md-doc-menu-item", "Delete file");
+      docMenuResolved = resolved;
       docMenuRename = rename;
       docMenuDelete = remove;
+      if (typeof resolved.setAttribute === "function") {
+        resolved.setAttribute("role", "menuitemcheckbox");
+        resolved.setAttribute("aria-checked", "false");
+      }
+      const resolvedCheck = document.createElement("span");
+      resolvedCheck.className = "md-vim-check";
+      const resolvedLabel = document.createElement("span");
+      resolvedLabel.textContent = "Show resolved comments";
+      // The slot keeps its box while the mark is absent, so the label does not move.
+      if (typeof resolved.replaceChildren === "function") resolved.replaceChildren(resolvedCheck, resolvedLabel);
       // A host with no listeners still has to build the items. The click is the only binding.
       const onItem = (button, run) => {
         if (typeof button.addEventListener !== "function") return;
@@ -9072,6 +9049,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       onItem(attach, () => {
         if (docAttachInput && typeof docAttachInput.click === "function") docAttachInput.click();
       });
+      onItem(resolved, () => {
+        showResolved = !showResolved;
+        render();
+      });
       onItem(rename, () => {
         if (!openPath || openPath.startsWith("tickets/")) return;
         openRenameDialog(openPath, false);
@@ -9083,6 +9064,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       });
       if (typeof panel.appendChild === "function") {
         panel.appendChild(attach);
+        panel.appendChild(resolved);
         panel.appendChild(rename);
         panel.appendChild(remove);
       }
@@ -9090,6 +9072,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       docMenuPanel = panel;
     }
     syncVimItem();
+    syncResolvedItem();
     appendEditorChrome(docMenuButton);
     appendEditorChrome(docMenuPanel);
   }
@@ -9107,13 +9090,10 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     }
   }
 
-  function syncVimItem() {
-    if (!appMenuVim || typeof appMenuVim.setAttribute !== "function") return;
-    appMenuVim.setAttribute("aria-checked", vimOn ? "true" : "false");
-    const slot = findClassChild(appMenuVim, "md-vim-check");
+  function paintCheck(slot, on) {
     if (!slot || typeof slot.appendChild !== "function") return;
     const mark = childArray(slot).find((node) => node && node.localName === "svg");
-    if (!vimOn) {
+    if (!on) {
       if (mark) detachNode(mark);
       return;
     }
@@ -9126,12 +9106,33 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     slot.appendChild(svg);
   }
 
+  function syncVimItem() {
+    if (!appMenuVim || typeof appMenuVim.setAttribute !== "function") return;
+    appMenuVim.setAttribute("aria-checked", vimOn ? "true" : "false");
+    paintCheck(findClassChild(appMenuVim, "md-vim-check"), vimOn);
+  }
+
   function syncThemeItems() {
     if (!appMenuPanel) return;
     for (const item of childArray(appMenuPanel)) {
       if (!hasClass(item, "md-theme-item") || typeof item.getAttribute !== "function" || typeof item.setAttribute !== "function") continue;
-      item.setAttribute("aria-checked", item.getAttribute("data-theme-value") === activeTheme ? "true" : "false");
+      const on = item.getAttribute("data-theme-value") === activeTheme;
+      item.setAttribute("aria-checked", on ? "true" : "false");
+      paintCheck(findClassChild(item, "md-vim-check"), on);
     }
+  }
+
+  function syncResolvedItem() {
+    if (!docMenuResolved || typeof docMenuResolved.setAttribute !== "function") return;
+    docMenuResolved.setAttribute("aria-checked", showResolved ? "true" : "false");
+    paintCheck(findClassChild(docMenuResolved, "md-vim-check"), showResolved);
+  }
+
+  // Resolved threads belong to the document that was open. A different path starts hidden.
+  function leaveResolved(path) {
+    if (path === openPath) return;
+    showResolved = false;
+    syncResolvedItem();
   }
 
   function openDocMenu() {
@@ -9155,6 +9156,11 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       button.setAttribute("data-theme-value", value);
       button.setAttribute("aria-checked", activeTheme === value ? "true" : "false");
     }
+    const slot = document.createElement("span");
+    slot.className = "md-vim-check";
+    const text = document.createElement("span");
+    text.textContent = label;
+    if (typeof button.replaceChildren === "function") button.replaceChildren(slot, text);
     return button;
   }
 
@@ -9204,7 +9210,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       const vimCheck = document.createElement("span");
       vimCheck.className = "md-vim-check";
       // The slot keeps its box while the mark is absent, so the label does not move.
-      if (typeof vimItem.replaceChildren === "function") vimItem.replaceChildren(vimLabel, vimCheck);
+      if (typeof vimItem.replaceChildren === "function") vimItem.replaceChildren(vimCheck, vimLabel);
       const themeLabel = document.createElement("div");
       themeLabel.className = "md-app-menu-label";
       themeLabel.textContent = "Theme";
@@ -10636,6 +10642,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
   }
 
   function openListed(path) {
+    leaveResolved(path);
     hashComment = null;
     pinnedComment = null;
     openPath = path;
@@ -14505,6 +14512,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
     if (openPath === path) row.classList.add("md-ticket-current");
     open.addEventListener("click", (event) => {
       if (event && typeof event.preventDefault === "function") event.preventDefault();
+      leaveResolved(path);
       hashComment = null;
       pinnedComment = null;
       openPath = path;
@@ -16556,6 +16564,7 @@ export function createEditor(root, doc, cursor = 0, transport, storage = null) {
       syncEntryLink();
       return;
     }
+    if (path !== openPath) leaveResolved(path);
     followCaret = null;
     followPath = false;
     openPath = path;

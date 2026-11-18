@@ -10296,10 +10296,19 @@ function mountSheet() {
 }
 
 function docMenuOf(aside) {
-  const row = (aside.childNodes || []).find((node) => node.classList && node.classList.contains("md-show-resolved"));
-  const checkbox = row && (row.childNodes || []).find((node) => node.tagName === "INPUT" && node.type === "checkbox");
-  const label = row && (row.childNodes || []).find((node) => node.tagName === "LABEL");
-  return { row, checkbox, label };
+  const host = aside && aside.parentElement ? aside.parentElement : aside;
+  const panel = walkNodes(host, (node) => node.classList && node.classList.contains("md-doc-menu-panel"))[0];
+  const item = panel && (panel.childNodes || []).find((node) => node.textContent === "Show resolved comments");
+  const slot = item && (item.childNodes || []).find((node) => node.classList && node.classList.contains("md-vim-check"));
+  const label = item && (item.childNodes || []).find((node) => node !== slot && node.nodeType === 1);
+  return { panel, item, slot, label };
+}
+
+function clickShowResolved(aside) {
+  const menu = docMenuOf(aside);
+  assert.ok(menu.item, "Show resolved comments");
+  menu.item.listeners.click({ preventDefault() {}, stopPropagation() {} });
+  return docMenuOf(aside);
 }
 
 test("comment cards edit the thread and line up with the highlight", () => {
@@ -10499,38 +10508,34 @@ test("comment cards edit the thread and line up with the highlight", () => {
     const menu = docMenuOf(mounted.aside);
     assert.equal(mounted.aside.childNodes[0].classList.contains("md-attach-input"), true);
     assert.equal(mounted.aside.childNodes[0].hidden, true);
-    assert.equal(mounted.aside.childNodes[1], menu.row);
-    assert.equal(menu.row.hidden, true);
-    assert.equal(menu.row.hasAttribute("hidden"), true);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-show-resolved")).length, 0);
     assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-pin-source")).length, 0);
     assert.equal(mounted.aside.childNodes.some((node) => node.classList && node.classList.contains("md-pin-source")), false);
-    assert.equal(cards[0], mounted.aside.childNodes[2]);
+    assert.equal(cards[0], mounted.aside.childNodes[1]);
     assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-doc-commit")).length, 0);
     assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-attach")).length, 0);
     assert.equal(mounted.findAll((node) => node.tagName === "BUTTON" && node.textContent === "Commit repo").length, 0);
     assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-doc-link")).length, 0);
-    assert.equal(menu.checkbox.type, "checkbox");
-    assert.equal(menu.checkbox.id, "show-resolved");
-    assert.equal(menu.checkbox.checked, false);
-    assert.equal(menu.checkbox.disabled, false);
-    assert.equal(menu.checkbox.parentElement, menu.row);
-    assert.equal(menu.row.classList.contains("md-show-resolved"), true);
-    assert.notEqual(mounted.aside.childNodes[0], menu.checkbox);
-    assert.equal(menu.label.tagName, "LABEL");
-    assert.equal(menu.label.textContent, "show resolved");
-    assert.equal(menu.label.parentElement, menu.row);
+    assert.equal(menu.item.getAttribute("role"), "menuitemcheckbox");
+    assert.equal(menu.item.textContent, "Show resolved comments");
+    assert.equal(menu.item.hidden, false);
+    assert.equal(menu.item.getAttribute("aria-checked"), "false");
+    assert.equal(menu.slot, menu.item.childNodes[0]);
+    assert.equal(menu.slot.childNodes.length, 0);
+    assert.equal(menu.label.textContent, "Show resolved comments");
+    assert.equal(menu.label, menu.item.childNodes[1]);
+    assert.equal(menu.item.parentElement, menu.panel);
     const keptInput = mounted.aside.childNodes[0];
-    menu.checkbox.checked = true;
-    menu.checkbox.listeners.change();
-    const rerendered = docMenuOf(mounted.aside);
+    const shown = clickShowResolved(mounted.aside);
     assert.equal(mounted.aside.childNodes[0], keptInput);
-    assert.equal(rerendered.checkbox.checked, true);
-    assert.equal(rerendered.checkbox.parentElement, rerendered.row);
-    assert.equal(rerendered.row.classList.contains("md-show-resolved"), true);
-    assert.equal(rerendered.row.hidden, true);
+    assert.equal(shown.item, menu.item);
+    assert.equal(shown.item.getAttribute("aria-checked"), "true");
+    assert.equal(shown.slot.childNodes.length, 1);
+    assert.equal(shown.item.hidden, false);
     assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card")).length, 2);
-    rerendered.checkbox.checked = false;
-    rerendered.checkbox.listeners.change();
+    clickShowResolved(mounted.aside);
+    assert.equal(menu.item.getAttribute("aria-checked"), "false");
+    assert.equal(menu.slot.childNodes.length, 0);
 
     globalThis.window.matchMedia = () => ({ matches: true });
     mounted.listeners.resize = null;
@@ -10541,12 +10546,12 @@ test("comment cards edit the thread and line up with the highlight", () => {
     assert.ok(stacked.every((card) => card.styleProps.position === "static"));
     const narrowMenu = docMenuOf(mounted.aside);
     assert.equal(mounted.aside.childNodes[0].classList.contains("md-attach-input"), true);
-    assert.equal(mounted.aside.childNodes[1], narrowMenu.row);
-    assert.equal(narrowMenu.checkbox.type, "checkbox");
-    assert.equal(narrowMenu.checkbox.parentElement, narrowMenu.row);
-    assert.equal(narrowMenu.row.hidden, true);
-    assert.notEqual(mounted.aside.childNodes[0], narrowMenu.checkbox);
-    assert.equal(narrowMenu.label.textContent, "show resolved");
+    assert.equal(mounted.aside.childNodes[1], stacked[0]);
+    assert.equal(narrowMenu.item.getAttribute("role"), "menuitemcheckbox");
+    assert.equal(narrowMenu.item.hidden, false);
+    assert.equal(narrowMenu.slot, narrowMenu.item.childNodes[0]);
+    assert.equal(narrowMenu.label.textContent, "Show resolved comments");
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-show-resolved")).length, 0);
     narrow.destroy();
   } finally {
     mounted.restore();
@@ -11140,18 +11145,17 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
   try {
     const fresh = createEditor(mounted.root, "hello fox two deer\n", 0);
     const openedMenu = docMenuOf(mounted.aside);
-    const checkbox = openedMenu.checkbox;
+    const item = openedMenu.item;
     const label = openedMenu.label;
-    assert.equal(checkbox.type, "checkbox");
-    assert.equal(checkbox.checked, false);
-    assert.equal(checkbox.disabled, false);
-    assert.equal(checkbox.parentElement, openedMenu.row);
-    assert.equal(openedMenu.row.hidden, true);
-    assert.notEqual(mounted.aside.childNodes[0], checkbox);
-    assert.equal(label.tagName, "LABEL");
-    assert.equal(label.textContent, "show resolved");
-    assert.equal(label.parentElement, openedMenu.row);
+    assert.equal(item.getAttribute("role"), "menuitemcheckbox");
+    assert.equal(item.getAttribute("aria-checked"), "false");
+    assert.equal(item.hidden, false);
+    assert.equal(openedMenu.slot.childNodes.length, 0);
+    assert.equal(item.parentElement, openedMenu.panel);
+    assert.equal(label.textContent, "Show resolved comments");
+    assert.equal(label, item.childNodes[1]);
     assert.equal(mounted.aside.childNodes[0].classList.contains("md-attach-input"), true);
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-show-resolved")).length, 0);
     chooseFox();
     const add = mounted.findAll((node) => node.classList && node.classList.contains("md-add-comment"))[0];
     add.listeners.mousedown({ button: 0, preventDefault() {} });
@@ -11259,13 +11263,10 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(cards().length, 0);
     assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-comment")).length, 0);
     let shown = docMenuOf(mounted.aside);
-    assert.equal(shown.row.hidden, false);
-    let toggle = shown.checkbox;
-    assert.equal(toggle.checked, false);
-    assert.equal(toggle.disabled, false);
-    assert.notEqual(mounted.aside.childNodes[0], toggle);
-    toggle.checked = true;
-    toggle.listeners.change();
+    assert.equal(shown.item.hidden, false);
+    assert.equal(shown.item.getAttribute("aria-checked"), "false");
+    assert.equal(shown.slot.childNodes.length, 0);
+    clickShowResolved(mounted.aside);
     assert.equal(cards().length, 1);
     assert.ok(mounted.findAll((node) => node.classList && node.classList.contains("md-comment")).length > 0);
     assert.equal(areas().length, 0);
@@ -11273,11 +11274,11 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     pressIn(cards()[0], "Resolve");
     assert.equal(saved.getState().doc, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n:: 1\nmore\n```\n");
     assert.equal(cards().length, 1);
-    toggle = docMenuOf(mounted.aside).checkbox;
-    assert.equal(toggle.checked, true);
-    assert.equal(docMenuOf(mounted.aside).row.hidden, true);
-    toggle.checked = false;
-    toggle.listeners.change();
+    shown = docMenuOf(mounted.aside);
+    assert.equal(shown.item.getAttribute("aria-checked"), "true");
+    assert.equal(shown.item.hidden, false);
+    assert.equal(shown.slot.childNodes.length, 1);
+    clickShowResolved(mounted.aside);
     assert.equal(cards().length, 1);
     const undoDelete = saved.getState().undo.length;
     pressIn(cards()[0], "Delete");
@@ -11331,23 +11332,22 @@ test("comment cards save, reply, resolve, and discard without writing keystrokes
     assert.equal(cards().length, 0);
     assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-comment")).length, 0);
     const showMenu = docMenuOf(mounted.aside);
-    const show = showMenu.checkbox;
-    assert.equal(show.checked, false);
-    assert.equal(show.disabled, false);
-    assert.equal(show.parentElement, showMenu.row);
-    assert.equal(showMenu.row.classList.contains("md-show-resolved"), true);
-    assert.equal(showMenu.row.hidden, false);
-    assert.equal(showMenu.row.hasAttribute("hidden"), false);
+    assert.equal(showMenu.item.getAttribute("role"), "menuitemcheckbox");
+    assert.equal(showMenu.item.getAttribute("aria-checked"), "false");
+    assert.equal(showMenu.item.hidden, false);
+    assert.equal(showMenu.slot, showMenu.item.childNodes[0]);
+    assert.equal(showMenu.slot.childNodes.length, 0);
+    assert.equal(showMenu.label.textContent, "Show resolved comments");
+    assert.equal(showMenu.label, showMenu.item.childNodes[1]);
+    assert.equal(showMenu.item.parentElement.classList.contains("md-doc-menu-panel"), true);
     assert.equal(mounted.aside.childNodes[0].classList.contains("md-attach-input"), true);
-    assert.equal(mounted.aside.childNodes[1], showMenu.row);
-    assert.notEqual(mounted.aside.childNodes[0], show);
-    assert.equal(showMenu.label.textContent, "show resolved");
-    assert.equal(showMenu.label.parentElement, showMenu.row);
-    show.checked = true;
-    show.listeners.change();
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-show-resolved")).length, 0);
+    clickShowResolved(mounted.aside);
     assert.ok(mounted.findAll((node) => node.classList && node.classList.contains("md-comment")).length > 0);
     assert.equal(cards().length, 1);
-    assert.equal(docMenuOf(mounted.aside).row.hidden, false);
+    assert.equal(docMenuOf(mounted.aside).item.getAttribute("aria-checked"), "true");
+    assert.equal(docMenuOf(mounted.aside).slot.childNodes[0].localName, "svg");
+    assert.equal(docMenuOf(mounted.aside).item.hidden, false);
     assert.equal(areas().length, 0);
     assert.equal(texts()[0].textContent, "hi");
     hidden.destroy();
@@ -11660,7 +11660,6 @@ test("comment cards start below the shown comment controls", () => {
     const view = createEditor(mounted.root, "hello {c1}fox{/c1} two deer\n\n```comment c1\n:: 0\nhi\n```\n", 0);
     const card = () => mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card"))[0];
     const input = mounted.aside.childNodes[0];
-    const row = docMenuOf(mounted.aside).row;
     assert.equal(input.classList.contains("md-attach-input"), true);
     assert.equal(card().styleProps.top, "12px");
     const asideTop = 100;
@@ -11679,10 +11678,6 @@ test("comment cards start below the shown comment controls", () => {
     input.setAttribute("hidden", "");
     onResize();
     assert.equal(card().styleProps.top, "12px");
-    show(row);
-    row.getBoundingClientRect = () => box(asideTop + 80, 36);
-    onResize();
-    assert.equal(card().styleProps.top, "128px");
     globalThis.window.matchMedia = () => ({ matches: true });
     onResize();
     assert.equal(card().styleProps.position, "static");
@@ -11972,10 +11967,10 @@ test("comment cards mark the thread being acted on", () => {
     pressIn(cards()[0], "Resolve");
     assert.equal(cards().length, 0);
     assert.equal(resolved.getState().doc.includes("```comment c1 resolved"), true);
-    const toggle = docMenuOf(mounted.aside).checkbox;
-    assert.notEqual(mounted.aside.childNodes[0], toggle);
-    toggle.checked = true;
-    toggle.listeners.change();
+    const toggle = docMenuOf(mounted.aside).item;
+    assert.equal(toggle.parentElement.classList.contains("md-doc-menu-panel"), true);
+    assert.equal(toggle.getAttribute("aria-checked"), "false");
+    clickShowResolved(mounted.aside);
     assert.equal(cards().length, 1);
     assert.equal(cards()[0].dataset.resolved, "true");
     assert.deepEqual(currentCards().map((card) => card.dataset.comment), ["c1"]);
@@ -14670,7 +14665,7 @@ test("document menu offers Attach image and Delete file", () => {
     assert.deepEqual(iconPaths(button), ["M4 6h16M4 12h16M4 18h16"]);
     assert.equal(panel.getAttribute("role"), "menu");
     assert.equal(panel.hidden, true);
-    assert.deepEqual(panel.childNodes.map((node) => node.textContent), ["Attach image", "Rename", "Delete file"]);
+    assert.deepEqual(panel.childNodes.map((node) => node.textContent), ["Attach image", "Show resolved comments", "Rename", "Delete file"]);
     const deleteItem = () => panel.childNodes.find((node) => node.textContent === "Delete file");
     const renameItem = () => panel.childNodes.find((node) => node.textContent === "Rename");
     assert.equal(renameItem().hidden, true);
@@ -18909,7 +18904,7 @@ test("T-deep-link", () => {
     assert.equal(docMenu[0].getAttribute("aria-label"), "Menu");
     assert.equal(docPanel.length, 1);
     assert.equal(docPanel[0].getAttribute("role"), "menu");
-    assert.deepEqual(docPanel[0].childNodes.map((node) => node.textContent), ["Attach image", "Rename", "Delete file"]);
+    assert.deepEqual(docPanel[0].childNodes.map((node) => node.textContent), ["Attach image", "Show resolved comments", "Rename", "Delete file"]);
     fireHash();
     assert.equal(opens().length, 1);
     const commentDoc = "See {c1}fox{/c1}.\n\n```comment c1 resolved\nhi\n```\n";
@@ -18918,7 +18913,8 @@ test("T-deep-link", () => {
     assert.equal(card.dataset.comment, "c1");
     assert.equal(card.classList.contains("md-comment-current"), true);
     assert.equal(card.scrolled, true);
-    assert.equal(docMenuOf(mounted.aside).checkbox.checked, true);
+    assert.equal(docMenuOf(mounted.aside).item.getAttribute("aria-checked"), "true");
+    assert.equal(docMenuOf(mounted.aside).slot.childNodes.length, 1);
     assert.equal(opens().length, 1);
     const row = card.childNodes[0].childNodes[0];
     assert.equal(row.childNodes[0].classList.contains("md-comment-by"), true);
@@ -18945,9 +18941,23 @@ test("T-deep-link", () => {
     assert.equal(mounted.findAll((node) => node.tagName === "TEXTAREA").length, 0);
     assert.equal(docLinks().length, 0);
     assert.equal(view.getState().doc, commentDoc);
+    clickShowResolved(mounted.aside);
+    assert.equal(docMenuOf(mounted.aside).item.getAttribute("aria-checked"), "false");
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card")).length, 0);
+    globalThis.location.hash = "#viewmark/doc/docs%2Fa.md";
+    fireHash();
+    assert.equal(opens().length, 1);
+    assert.equal(docMenuOf(mounted.aside).item.getAttribute("aria-checked"), "false");
+    globalThis.location.hash = "#viewmark/comment/docs%2Fa.md/c1";
+    fireHash();
+    assert.equal(opens().length, 1);
+    assert.equal(docMenuOf(mounted.aside).item.getAttribute("aria-checked"), "true");
+    assert.equal(mounted.findAll((node) => node.classList && node.classList.contains("md-comment-card")).length, 1);
     transport.deliver({ type: "docs", files: ["docs/a.md", "other.md"] });
     const other = walkNodes(mounted.nav, (node) => node.dataset && node.dataset.path === "other.md")[0];
     other.listeners.click({ preventDefault() {} });
+    assert.equal(docMenuOf(mounted.aside).item.getAttribute("aria-checked"), "false");
+    assert.equal(docMenuOf(mounted.aside).slot.childNodes.length, 0);
     assert.equal(opens().at(-1).path, "other.md");
     assert.equal(globalThis.location.hash, "#viewmark/doc/other.md");
     assert.equal(urls.at(-1), "/app#viewmark/doc/other.md");
@@ -18956,9 +18966,12 @@ test("T-deep-link", () => {
     assert.equal(opens().length, opened);
     const linked = "Go [ticket](#viewmark/ticket/mp27ndxf) now.\n\n";
     transport.deliver({ type: "file", rev: 2, text: linked, path: "other.md", cursor: linked.length, anchor: linked.length });
+    clickShowResolved(mounted.aside);
+    assert.equal(docMenuOf(mounted.aside).item.getAttribute("aria-checked"), "true");
     const anchor = mounted.findAll((node) => node.tagName === "A")[0];
     assert.equal(anchor.href, "#viewmark/ticket/mp27ndxf");
     mounted.listeners.click({ target: anchor, clientX: 1, clientY: 1, preventDefault() {} });
+    assert.equal(docMenuOf(mounted.aside).item.getAttribute("aria-checked"), "false");
     assert.equal(opens().at(-1).path, "tickets/mp27ndxf.md");
     assert.equal(globalThis.location.hash, "#viewmark/ticket/mp27ndxf");
     assert.equal(urls.at(-1), "/app#viewmark/ticket/mp27ndxf");
@@ -20834,16 +20847,14 @@ test("resolved highlights follow the show resolved checkbox", () => {
     assert.equal(marked("two"), true);
     assert.equal(text("two").parentElement.dataset.comment, "c2");
     assert.deepEqual(cards().map((card) => card.dataset.comment), ["c2"]);
-    const checkbox = docMenuOf(mounted.aside).checkbox;
-    assert.equal(checkbox.checked, false);
-    checkbox.checked = true;
-    checkbox.listeners.change();
+    const checkbox = docMenuOf(mounted.aside).item;
+    assert.equal(checkbox.getAttribute("aria-checked"), "false");
+    assert.equal(checkbox.getAttribute("role"), "menuitemcheckbox");
+    clickShowResolved(mounted.aside);
     assert.equal(marked("one"), true);
     assert.equal(marked("two"), true);
     assert.deepEqual(cards().map((card) => card.dataset.comment).sort(), ["c1", "c2"]);
-    const shown = docMenuOf(mounted.aside).checkbox;
-    shown.checked = false;
-    shown.listeners.change();
+    clickShowResolved(mounted.aside);
     assert.equal(marked("one"), false);
     assert.equal(marked("two"), true);
     assert.deepEqual(cards().map((card) => card.dataset.comment), ["c2"]);
@@ -23389,9 +23400,9 @@ test("vim keys checkbox, status, and caret", () => {
     const mark = vimMark(button);
     assert.equal(button.textContent, "Vim keys");
     assert.equal(button.childNodes.length, 2);
-    assert.equal(mark.label, button.childNodes[0]);
+    assert.equal(mark.slot, button.childNodes[0]);
     assert.equal(mark.label.textContent, "Vim keys");
-    assert.equal(mark.slot, button.childNodes[1]);
+    assert.equal(mark.label, button.childNodes[1]);
     assert.equal(mark.svgs.length, on ? 1 : 0);
     if (!on) {
       assert.equal(mark.slot.childNodes.length, 0);
@@ -30008,14 +30019,10 @@ test("a block left in place still follows comment controls", () => {
     assert.ok(hidden);
     assert.equal(hidden.classList.contains("md-comment"), false);
     assert.equal(hidden.dataset.comment, "c1");
-    const shown = docMenuOf(mounted.aside).checkbox;
-    shown.checked = true;
-    shown.listeners.change();
+    clickShowResolved(mounted.aside);
     assert.equal(wordSpan(), hidden);
     assert.equal(hidden.classList.contains("md-comment"), true);
-    const hiddenAgain = docMenuOf(mounted.aside).checkbox;
-    hiddenAgain.checked = false;
-    hiddenAgain.listeners.change();
+    clickShowResolved(mounted.aside);
     assert.equal(wordSpan(), hidden);
     assert.equal(hidden.classList.contains("md-comment"), false);
     resolved.destroy();
@@ -30058,6 +30065,22 @@ test("the page menu holds Vim keys and the theme", () => {
     walk(svgOf(button));
     return found;
   };
+  const themeMark = (label) => {
+    const button = named(label);
+    const slot = [...button.childNodes].find((node) => node.classList && node.classList.contains("md-vim-check"));
+    const svg = slot && [...(slot.childNodes || [])].find((node) => node.localName === "svg");
+    return { button, slot, svg };
+  };
+  const assertThemeMarks = (active) => {
+    for (const label of ["Original", "Wood cut", "Stained glass"]) {
+      const mark = themeMark(label);
+      assert.equal(mark.slot, mark.button.childNodes[0], label);
+      assert.equal(mark.button.childNodes[1].textContent, label);
+      assert.equal(mark.button.getAttribute("aria-checked"), label === active ? "true" : "false", label);
+      if (label === active) assert.equal(mark.svg.getAttribute("aria-hidden"), "true", label);
+      else assert.equal(mark.svg, undefined, label);
+    }
+  };
   try {
     const css = readFileSync(new URL("../editor.css", import.meta.url), "utf8");
     assert.match(css, /button\.md-app-menu\s*\{[^}]*position:\s*fixed/);
@@ -30080,9 +30103,11 @@ test("the page menu holds Vim keys and the theme", () => {
     assert.match(css, /html\[data-theme="woodcut"\] \.ticket-tree \.md-ticket-row:hover,\s*html\[data-theme="woodcut"\] \.file-tree button\.md-file:hover,\s*html\[data-theme="woodcut"\] \.file-tree button\.md-dir-toggle:hover\s*\{[^}]*color:\s*#1f1a15/);
     assert.match(css, /html\[data-theme="woodcut"\] \.ticket-tree \.md-ticket-row\.md-ticket-current,\s*html\[data-theme="woodcut"\] \.file-tree button\.md-file\.md-file-current\s*\{[^}]*background:\s*#c4a574/);
     assert.match(css, /html\[data-theme="woodcut"\] \.ticket-tree \.md-ticket-row\.md-ticket-current,\s*html\[data-theme="woodcut"\] \.file-tree button\.md-file\.md-file-current\s*\{[^}]*color:\s*#1f1a15/);
+    assert.match(css, /button\.md-app-menu-item\.md-theme-item \.md-vim-check\s*\{[^}]*width:\s*1\.1em;[^}]*height:\s*1\.1em;[^}]*min-width:\s*1\.1em;[^}]*min-height:\s*1\.1em;[^}]*color:\s*#8fdb8a;/);
+    assert.match(css, /button\.md-doc-menu-item\.md-resolved-comments \.md-vim-check\s*\{[^}]*width:\s*1\.1em;[^}]*height:\s*1\.1em;[^}]*min-width:\s*1\.1em;[^}]*min-height:\s*1\.1em;[^}]*color:\s*#8fdb8a;/);
     const view = createEditor(mounted.root, "alpha\n", 0, null, store);
     const docPanel = walkNodes(mounted.root, (node) => node.classList && node.classList.contains("md-doc-menu-panel"))[0];
-    assert.deepEqual(docPanel.childNodes.map((node) => node.textContent), ["Attach image", "Rename", "Delete file"]);
+    assert.deepEqual(docPanel.childNodes.map((node) => node.textContent), ["Attach image", "Show resolved comments", "Rename", "Delete file"]);
     assert.equal(appButton().getAttribute("aria-label"), "Page menu");
     assert.equal(appButton().getAttribute("title"), "Open the page menu");
     assert.equal(appPanel().getAttribute("role"), "menu");
@@ -30093,12 +30118,15 @@ test("the page menu holds Vim keys and the theme", () => {
     assert.equal(named("Original").getAttribute("role"), "menuitemradio");
     assert.equal(named("Original").getAttribute("aria-checked"), "true");
     assert.equal(named("Wood cut").getAttribute("aria-checked"), "false");
+    assertThemeMarks("Original");
+    assert.equal(themeMark("Original").svg.childNodes.find((node) => node.localName === "path").getAttribute("d"), "M20 6 9 17l-5-5");
     assert.equal(svgOf(appButton()).getAttribute("data-themed"), null);
     assert.deepEqual(iconPaths(appButton()), ["M4 6h16M4 12h16M4 18h16"]);
     click(named("Wood cut"));
     assert.equal(store.getItem("viewmark.theme"), "woodcut");
     assert.equal(named("Wood cut").getAttribute("aria-checked"), "true");
     assert.equal(named("Original").getAttribute("aria-checked"), "false");
+    assertThemeMarks("Wood cut");
     assert.equal(svgOf(appButton()).getAttribute("data-themed"), "1");
     assert.equal(svgOf(appButton()).getAttribute("data-theme"), "woodcut");
     assert.ok(paints(appButton()).includes("#1f1a15"));
@@ -30106,6 +30134,7 @@ test("the page menu holds Vim keys and the theme", () => {
     click(named("Stained glass"));
     assert.equal(store.getItem("viewmark.theme"), "glass");
     assert.equal(named("Stained glass").getAttribute("aria-checked"), "true");
+    assertThemeMarks("Stained glass");
     assert.equal(svgOf(appButton()).getAttribute("data-theme"), "glass");
     assert.ok(paints(appButton()).includes("#15100c"));
     assert.ok(paints(appButton()).includes("#ffe46a"));
@@ -30113,6 +30142,7 @@ test("the page menu holds Vim keys and the theme", () => {
     click(named("Original"));
     assert.equal(store.getItem("viewmark.theme"), null);
     assert.equal(named("Original").getAttribute("aria-checked"), "true");
+    assertThemeMarks("Original");
     assert.equal(svgOf(appButton()).getAttribute("data-themed"), null);
     assert.deepEqual(iconPaths(appButton()), ["M4 6h16M4 12h16M4 18h16"]);
     view.destroy();
