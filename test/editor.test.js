@@ -17989,6 +17989,58 @@ test("a double-click selects the word under the first press", () => {
   }
 });
 
+test("a selection on a text fence body copies that word", () => {
+  globalThis.NodeFilter = globalThis.NodeFilter || { SHOW_TEXT: 4 };
+  const mounted = mountEditor();
+  const note = "```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z qa\nNote.\n```\n";
+  const doc = "Above.\n\n```text\none\ntwo\n```\n\nAfter.\n\n" + note;
+  const selectWord = (view) => {
+    const node = mounted.findAll((item) => item.nodeType === 3 && item.textContent === "one")[0];
+    assert.ok(node);
+    const end = node.textContent.length;
+    globalThis.window.getSelection = () => ({
+      rangeCount: 1,
+      anchorNode: node,
+      anchorOffset: 0,
+      focusNode: node,
+      focusOffset: end,
+      isCollapsed: false,
+      getRangeAt() {
+        return {
+          startContainer: node,
+          startOffset: 0,
+          endContainer: node,
+          endOffset: end,
+          collapsed: false,
+          commonAncestorContainer: node,
+        };
+      },
+    });
+    fireDocument(mounted, "selectionchange");
+    let copied = "";
+    mounted.listeners.copy({
+      preventDefault() {},
+      clipboardData: { setData(_type, value) { copied = value; } },
+    });
+    assert.equal(copied, "one");
+    assert.equal(selectedSlice(view.getState()), "one");
+    assert.equal(view.getState().doc, doc);
+  };
+  try {
+    const outside = createEditor(mounted.root, doc, 0);
+    assert.equal(mounted.root.textContent.includes("```"), false);
+    selectWord(outside);
+    outside.destroy();
+    const insideAt = doc.indexOf("\none\n") + 1;
+    const inside = createEditor(mounted.root, doc, insideAt);
+    assert.equal(mounted.root.textContent.includes("```text"), true);
+    selectWord(inside);
+    inside.destroy();
+  } finally {
+    mounted.restore();
+  }
+});
+
 // DC.cm.1. The first press lands on the word. Rendering it draws handles, and
 // the second press lands on one. The word from the first press is the selection.
 test("DC.cm.1 a double-click on a comment word selects it when the second press hits a handle", () => {

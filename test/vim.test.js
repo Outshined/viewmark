@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { playVimChange, vimKey, vimMatchStarts, vimSubmit, visualBlockOffset, visualKeepGlyph, VIM_SEARCH_LIMIT } from "../src/vim.js";
-import { backspace, caretAfterEdit, codeSpanAt, commentStorageReason, createState, deleteForward, insert, linkSpanAt, skipHidden, sourceLine, undo } from "../src/doc.js";
+import { backspace, caretAfterEdit, codeSpanAt, commentStorageReason, createState, deleteForward, insert, linkSpanAt, selectedSlice, skipHidden, sourceLine, undo } from "../src/doc.js";
 
 const CARET = "‸";
 
@@ -1385,6 +1385,146 @@ test("a colon count moves like G, and a change across a fence or a table writes 
   assert.equal(ex("‸alpha\nbeta\ngamma\n", "%d").doc, "");
   const substituted = ex(fence.slice(0, body) + "‸" + fence.slice(body), "s/one/ONE/");
   assert.equal(substituted.doc, "Above.\n\n```js\nONE\ntwo\n```\n\nAfter.\n");
+});
+
+test("a broken text fence drops both markers and a body line yanks only that line", () => {
+  const note = "```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z qa\nNote.\n```\n";
+  const head = "Above.\n\n```text\none\ntwo\n```\n\nAfter.\n\n";
+  const doc = head + note;
+  const bare = "Above.\n\none\ntwo\n\nAfter.\n\n" + note;
+  const opener = doc.indexOf("```text");
+  const closer = doc.indexOf("\n```\n", opener) + 1;
+  const one = doc.indexOf("\none\n") + 1;
+  const reasonOf = (before, after) => commentStorageReason(before, after.changes);
+
+  const opened = backspace(createState(doc, opener + 1));
+  assert.equal(opened.doc, bare);
+  assert.equal(opened.cursor, bare.indexOf("one"));
+  assert.equal(reasonOf(doc, opened), null);
+  assert.equal(undo(opened).doc, doc);
+
+  const lineEnd = doc.indexOf("\n", opener) + 1;
+  const selected = deleteForward(createState(doc, lineEnd, opener));
+  assert.equal(selected.doc, bare);
+  assert.equal(reasonOf(doc, selected), null);
+  const exact = insert(createState(doc, lineEnd, opener), "", false, false, true);
+  assert.equal(exact.doc, bare);
+  assert.equal(reasonOf(doc, exact), null);
+
+  const tick = deleteForward(createState(doc, opener));
+  assert.equal(tick.doc, bare);
+  assert.equal(reasonOf(doc, tick), null);
+  const xed = run(doc.slice(0, opener) + "‸" + doc.slice(opener), ["x"]);
+  assert.equal(xed.doc, bare);
+
+  const closed = deleteForward(createState(doc, closer));
+  assert.equal(closed.doc, bare);
+  assert.equal(closed.cursor, bare.indexOf("two\n") + "two\n".length);
+  assert.equal(reasonOf(doc, closed), null);
+  const closedBack = backspace(createState(doc, closer + 1));
+  assert.equal(closedBack.doc, bare);
+  assert.equal(reasonOf(doc, closedBack), null);
+  const lastTick = closer + "```".length - 1;
+  const last = insert(createState(doc, lastTick + 1, lastTick), "", false, false, true);
+  assert.equal(last.doc, bare);
+  assert.equal(reasonOf(doc, last), null);
+
+  const info = opener + "```".length;
+  const keptInfo = deleteForward(createState(doc, info));
+  assert.equal(keptInfo.doc, doc.slice(0, info) + doc.slice(info + 1));
+  assert.equal(keptInfo.doc.startsWith("Above.\n\n```ext\none\ntwo\n```\n\nAfter.\n\n```c"), true);
+  assert.equal(reasonOf(doc, keptInfo), null);
+
+  const word = insert(createState(doc, one + "one".length, one), "", false, false, true);
+  assert.equal(word.doc, doc.replace("\none\n", "\n\n"));
+  assert.equal(word.doc.includes("```text\n"), true);
+  assert.equal(word.doc.includes("\n```\n"), true);
+  assert.equal(reasonOf(doc, word), null);
+
+  const joined = backspace(createState(doc, one));
+  assert.equal(joined.doc, doc.replace("```text\none\n", "```textone\n"));
+  assert.equal(reasonOf(doc, joined), null);
+
+  const afterAt = doc.indexOf("After.");
+  const pasted = insert(createState(doc, afterAt), "one\n", true, false, true);
+  assert.equal(pasted.changes[0].inserted, "one\n");
+  assert.equal(pasted.doc.includes("```text\none\ntwo\n```\n"), true);
+  assert.equal(pasted.doc.includes(note), true);
+  assert.equal(reasonOf(doc, pasted), null);
+
+  const fenceEnd = closer + "```\n".length;
+  const whole = insert(createState(doc, fenceEnd, opener), "", false, false, true);
+  assert.equal(whole.doc, "Above.\n\n\nAfter.\n\n" + note);
+  assert.equal(whole.doc.includes("one"), false);
+  assert.equal(reasonOf(doc, whole), null);
+
+  const unclosed = "Above.\n\n```text\none\ntwo\n\nAfter.\n";
+  const openTick = unclosed.indexOf("```text");
+  const stillOpen = deleteForward(createState(unclosed, openTick));
+  assert.equal(stillOpen.doc, unclosed.slice(0, openTick) + unclosed.slice(openTick + 1));
+  assert.equal(reasonOf(unclosed, stillOpen), null);
+
+  const commentTick = doc.indexOf("```comment");
+  const commentHit = deleteForward(createState(doc, commentTick));
+  assert.equal(commentHit.doc, doc.slice(0, commentTick) + doc.slice(commentTick + 1));
+  assert.equal(reasonOf(doc, commentHit), "changes a comment fence");
+
+  const wide = "Above.\n\n````\none\ntwo\n````\n\nAfter.\n\n" + note;
+  const wideTick = wide.indexOf("````");
+  const wideKept = deleteForward(createState(wide, wideTick));
+  assert.equal(wideKept.doc, wide.slice(0, wideTick) + wide.slice(wideTick + 1));
+  assert.equal(wideKept.doc.includes("```\none\ntwo\n````\n"), true);
+  assert.equal(reasonOf(wide, wideKept), null);
+
+  const js = "Above.\n\n```js\none\ntwo\n```\n\nAfter.\n";
+  const jsOne = js.indexOf("one");
+  const yanked = run(js.slice(0, jsOne) + "‸" + js.slice(jsOne), ["y", "y"]);
+  assert.equal(yanked.doc, js);
+  assert.equal(yanked.vim.register.text, "one\n");
+  assert.equal(yanked.vim.register.linewise, true);
+  assert.equal(yanked.vim.register.text.includes("`"), false);
+  const twoAt = js.indexOf("two");
+  const second = run(js.slice(0, twoAt) + "‸" + js.slice(twoAt), ["y", "y"]);
+  assert.equal(second.vim.register.text, "two\n");
+  const after = js.indexOf("After.");
+  const put = run(js.slice(0, after) + "‸" + js.slice(after), ["p"], { vim: yanked.vim });
+  const putEffect = oneSplice(put);
+  assert.equal(putEffect.text, "one\n");
+  assert.equal(put.doc.includes("```js\none\ntwo\n```\n"), true);
+  assert.equal(put.doc.includes("After.\none\n"), true);
+  const stored = insert(createState(js, putEffect.to, putEffect.from), putEffect.text, false, false, true);
+  assert.equal(stored.doc, put.doc);
+  assert.equal(commentStorageReason(js, stored.changes), null);
+  const notedAfter = doc.indexOf("After.");
+  const notedYank = run(doc.slice(0, one) + "‸" + doc.slice(one), ["y", "y"]);
+  assert.equal(notedYank.vim.register.text, "one\n");
+  const notedPut = run(doc.slice(0, notedAfter) + "‸" + doc.slice(notedAfter), ["p"], { vim: notedYank.vim });
+  const notedEffect = oneSplice(notedPut);
+  assert.equal(notedEffect.text, "one\n");
+  assert.equal(notedPut.doc.includes("```text\none\ntwo\n```\n"), true);
+  assert.equal(notedPut.doc.includes(note), true);
+  const notedStored = insert(createState(doc, notedEffect.to, notedEffect.from), notedEffect.text, false, false, true);
+  assert.equal(notedStored.doc, notedPut.doc);
+  assert.equal(commentStorageReason(doc, notedStored.changes), null);
+  assert.equal(selectedSlice(createState(js, jsOne + "one".length, jsOne)), "one");
+
+  const inside = run(js.slice(0, jsOne) + "‸" + js.slice(jsOne), ["d", "j"]);
+  assert.equal(inside.doc, "Above.\n\n```js\n```\n\nAfter.\n");
+  assert.equal(inside.vim.register.text, "one\ntwo\n");
+  const cut = oneSplice(inside);
+  const hub = insert(createState(js, cut.to, cut.from), cut.text, false, false, true);
+  assert.equal(hub.doc, inside.doc);
+  assert.equal(commentStorageReason(js, hub.changes), null);
+
+  const openerDd = run(js.slice(0, js.indexOf("```js")) + "‸" + js.slice(js.indexOf("```js")), ["d", "d"]);
+  assert.equal(openerDd.doc.includes("```"), false);
+  assert.equal(openerDd.doc.includes("one"), false);
+  assert.equal(openerDd.doc.includes("Above."), true);
+  assert.equal(openerDd.doc.includes("After."), true);
+  const dd = oneSplice(openerDd);
+  const ddHub = insert(createState(js, dd.to, dd.from), dd.text, false, false, true);
+  assert.equal(ddHub.doc, openerDd.doc);
+  assert.equal(commentStorageReason(js, ddHub.changes), null);
 });
 
 test("a linewise delete that holds a whole table is one edit", () => {

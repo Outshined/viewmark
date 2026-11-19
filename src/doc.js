@@ -6362,7 +6362,84 @@ function splice(state, from, to, text, cursor) {
   };
 }
 
+function linePast(doc, line) {
+  if (line.end < doc.length && doc[line.end] === "\n") return line.end + 1;
+  return line.end;
+}
+
+function spanHits(from, to, start, end) {
+  if (!(end > start)) return false;
+  if (from === to) return from >= start && from < end;
+  return from < end && to > start;
+}
+
+// A deleted offset lands on the first byte that remains. A byte at the splice
+// point moves past an insertion.
+function mapThrough(offset, from, to, insertLen) {
+  if (offset < from) return offset;
+  if (offset >= to) return offset - (to - from) + insertLen;
+  return from;
+}
+
+function fenceBodySource(doc, opener, closer) {
+  const from = opener.end < doc.length && doc[opener.end] === "\n" ? opener.end + 1 : opener.end;
+  if (closer.start < from) return "";
+  return doc.slice(from, closer.start);
+}
+
+function markersHold(doc, opener, closer, from, to, inserted) {
+  const next = doc.slice(0, from) + inserted + doc.slice(to);
+  const insertLen = inserted.length;
+  const oLine = sourceLine(next, Math.min(next.length, mapThrough(opener.start, from, to, insertLen)));
+  const cLine = sourceLine(next, Math.min(next.length, mapThrough(closer.start, from, to, insertLen)));
+  if (oLine.start === cLine.start) return false;
+  const opened = fenceOpen(oLine.text);
+  if (!opened || !isFenceClose(cLine.text, opened)) return false;
+  const nextLines = lineSpans(next);
+  for (const item of fenceContentRanges(next)) {
+    if (item.start !== oLine.start || !item.closed) continue;
+    const closeLine = nextLines[item.lastIndex];
+    return Boolean(closeLine && closeLine.start === cLine.start);
+  }
+  return false;
+}
+
+// Breaking a marker line makes that fence's closer a new opener, and the new
+// opener swallows a following comment fence. Drop both marker lines instead.
+// A caret insert takes no marker byte: prefixing the opener is still that
+// fence, and only a splice that removes or replaces bytes can open the closer.
+function liftBrokenFence(doc, from, to, text) {
+  if (typeof doc !== "string" || from < 0 || to < from || to > doc.length) return null;
+  if (from === to) return null;
+  if (doc.indexOf("```") < 0 && doc.indexOf("~~~") < 0) return null;
+  const inserted = typeof text === "string" ? text : "";
+  const lines = lineSpans(doc);
+  for (const fence of fenceContentRanges(doc)) {
+    if (!fence.closed || fence.lang === "comment") continue;
+    const opener = lines[fence.openIndex];
+    const closer = lines[fence.lastIndex];
+    if (!opener || !closer) continue;
+    const hitOpener = spanHits(from, to, opener.start, linePast(doc, opener));
+    const hitCloser = spanHits(from, to, closer.start, fence.end);
+    if (!hitOpener && !hitCloser) continue;
+    if (from <= fence.start && to >= fence.end) continue;
+    if (from < fence.start || to > fence.end) continue;
+    if (markersHold(doc, opener, closer, from, to, inserted)) continue;
+    const body = fenceBodySource(doc, opener, closer);
+    const cursor = hitCloser && !hitOpener ? fence.start + body.length : fence.start;
+    return { from: fence.start, to: fence.end, text: body, cursor };
+  }
+  return null;
+}
+
 function applySplice(state, from, to, text, cursor) {
+  const lifted = liftBrokenFence(state.doc, from, to, text);
+  if (lifted) {
+    from = lifted.from;
+    to = lifted.to;
+    text = lifted.text;
+    cursor = lifted.cursor;
+  }
   const next = splice(state, from, to, text, cursor);
   if (next === state) return state;
   const cleaned = cleanupComments(next.doc, next.cursor);

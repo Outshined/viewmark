@@ -1135,7 +1135,10 @@ function pastLastCommentFence(doc, cursor) {
 // The last drawn row there is the blank between fences, and deleting it
 // would leave the caret with no line.
 function countedLines(doc, origin, count, raw) {
-  const lines = vimLines(doc, origin, raw);
+  // Marker lines stay one fence, so a linewise delete there takes the whole
+  // fence. A body line is only that source line: the markers are not yanked.
+  const body = raw ? null : fenceBodyLines(doc, origin, origin);
+  const lines = body || vimLines(doc, origin, raw);
   let index = lineIndex(lines, doc, origin, raw);
   if (index >= lines.length) {
     if (!raw && pastLastCommentFence(doc, origin)) return { from: origin, to: origin };
