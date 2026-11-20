@@ -126,20 +126,14 @@ function classifyList(text) {
 // A caret in a fence body gets one newline. The opener and the closer are not body.
 function fenceBody(doc, offset) {
   const lines = lineSpans(doc);
-  let opened = null;
-  for (const line of lines) {
-    if (line.start > offset) break;
-    if (!opened) {
-      const found = fenceOpen(line.text);
-      if (found && found.lang !== "comment" && offset > line.end) opened = found;
-      continue;
-    }
-    if (isFenceClose(line.text, opened)) {
-      if (offset <= line.end) return false;
-      opened = null;
-    }
+  for (const fence of fenceContentRanges(doc)) {
+    if (fence.lang === "comment") continue;
+    const open = lines[fence.openIndex];
+    if (!open || offset <= open.end) continue;
+    const limit = fence.closed ? lines[fence.lastIndex].start : doc.length + 1;
+    if (offset < limit) return true;
   }
-  return opened !== null;
+  return false;
 }
 
 // Enter at the end of a paragraph that would swallow the new line writes the
@@ -926,6 +920,28 @@ function svgFenceAtom(opened, lines, index, last, closed) {
   };
 }
 
+// A comment fence always opens. Any other line opens only when a closer comes
+// before the next comment fence, or when the file has no later comment fence.
+// A broken marker is then ordinary text, and the comment fence stays a comment
+// fence. A comment line inside a fence that did open is body text.
+function fenceRun(lines, index) {
+  const opened = fenceOpen(lines[index].text);
+  if (!opened) return null;
+  let end = index + 1;
+  if (opened.lang !== "comment") {
+    while (end < lines.length) {
+      if (isFenceClose(lines[end].text, opened)) break;
+      const next = fenceOpen(lines[end].text);
+      if (next && next.lang === "comment") return null;
+      end += 1;
+    }
+  } else {
+    while (end < lines.length && !isFenceClose(lines[end].text, opened)) end += 1;
+  }
+  const closed = end < lines.length;
+  return { opened, closed, last: closed ? end : lines.length - 1 };
+}
+
 // contentEnd stops at the closing fence line. end includes that line's newline so
 // deleting a comment thread does not leave the fence row behind.
 function fenceContentRanges(doc) {
@@ -933,15 +949,14 @@ function fenceContentRanges(doc) {
   const ranges = [];
   let index = 0;
   while (index < lines.length) {
-    const opened = fenceOpen(lines[index].text);
-    if (!opened) {
+    const run = fenceRun(lines, index);
+    if (!run) {
       index += 1;
       continue;
     }
-    let end = index + 1;
-    while (end < lines.length && !isFenceClose(lines[end].text, opened)) end += 1;
-    const closed = end < lines.length;
-    const last = closed ? end : lines.length - 1;
+    const opened = run.opened;
+    const closed = run.closed;
+    const last = run.last;
     const start = lines[index].start;
     const contentEnd = closed ? lines[last].end : doc.length;
     let rangeEnd = contentEnd;
@@ -3472,11 +3487,9 @@ function listJoin(lines, index) {
 }
 
 function fenceEnd(lines, index) {
-  const opened = fenceOpen(lines[index].text);
-  let end = index + 1;
-  while (end < lines.length && !isFenceClose(lines[end].text, opened)) end += 1;
-  const closed = end < lines.length;
-  return { closed, last: closed ? end : lines.length - 1 };
+  const run = fenceRun(lines, index);
+  if (!run) return null;
+  return { opened: run.opened, closed: run.closed, last: run.last };
 }
 
 export function lockSpans(doc) {
@@ -3486,9 +3499,9 @@ export function lockSpans(doc) {
   let index = 0;
   while (index < lines.length) {
     const textLine = lines[index].text;
-    const opened = fenceOpen(textLine);
-    if (opened) {
-      const fence = fenceEnd(lines, index);
+    const fence = fenceEnd(lines, index);
+    if (fence) {
+      const opened = fence.opened;
       if (opened.lang === "comment") {
         pushLines(spans, lines, index, index);
         const stop = fence.closed ? fence.last : lines.length;
@@ -3569,12 +3582,12 @@ function fenceBodySpan(doc, offset) {
   const lines = lockLines(doc);
   let index = 0;
   while (index < lines.length) {
-    const opened = fenceOpen(lines[index].text);
-    if (!opened) {
+    const fence = fenceEnd(lines, index);
+    if (!fence) {
       index += 1;
       continue;
     }
-    const fence = fenceEnd(lines, index);
+    const opened = fence.opened;
     const start = lines[index].start;
     const end = lines[fence.last].end;
     if (offset < start || offset > end || opened.lang === "comment") {
@@ -3751,12 +3764,11 @@ function cellBlocks(lines, spans, refs) {
   const blocks = [];
   let index = 0;
   while (index < lines.length) {
-    const opened = fenceOpen(lines[index].text);
-    if (opened) {
-      let end = index + 1;
-      while (end < lines.length && !isFenceClose(lines[end].text, opened)) end += 1;
-      const closed = end < lines.length;
-      const last = closed ? end : lines.length - 1;
+    const run = fenceRun(lines, index);
+    if (run) {
+      const opened = run.opened;
+      const closed = run.closed;
+      const last = run.last;
       const svg = svgFenceAtom(opened, lines, index, last, closed);
       if (opened.diagram) {
         const bodyLines = lines.slice(index + 1, closed ? last : last + 1);
@@ -3862,8 +3874,8 @@ function collectRefs(doc) {
   const seen = new Set();
   let index = 0;
   while (index < lines.length) {
-    if (fenceOpen(lines[index].text)) {
-      const fence = fenceEnd(lines, index);
+    const fence = fenceEnd(lines, index);
+    if (fence) {
       index = fence.last + 1;
       continue;
     }
@@ -4058,12 +4070,11 @@ function structures(doc) {
   const footnotes = [];
   let index = 0;
   while (index < lines.length) {
-    const opened = fenceOpen(lines[index].text);
-    if (opened) {
-      let end = index + 1;
-      while (end < lines.length && !isFenceClose(lines[end].text, opened)) end += 1;
-      const closed = end < lines.length;
-      const last = closed ? end : lines.length - 1;
+    const run = fenceRun(lines, index);
+    if (run) {
+      const opened = run.opened;
+      const closed = run.closed;
+      const last = run.last;
       if (opened.lang === "comment") {
         index = last + 1;
         continue;
@@ -6362,84 +6373,7 @@ function splice(state, from, to, text, cursor) {
   };
 }
 
-function linePast(doc, line) {
-  if (line.end < doc.length && doc[line.end] === "\n") return line.end + 1;
-  return line.end;
-}
-
-function spanHits(from, to, start, end) {
-  if (!(end > start)) return false;
-  if (from === to) return from >= start && from < end;
-  return from < end && to > start;
-}
-
-// A deleted offset lands on the first byte that remains. A byte at the splice
-// point moves past an insertion.
-function mapThrough(offset, from, to, insertLen) {
-  if (offset < from) return offset;
-  if (offset >= to) return offset - (to - from) + insertLen;
-  return from;
-}
-
-function fenceBodySource(doc, opener, closer) {
-  const from = opener.end < doc.length && doc[opener.end] === "\n" ? opener.end + 1 : opener.end;
-  if (closer.start < from) return "";
-  return doc.slice(from, closer.start);
-}
-
-function markersHold(doc, opener, closer, from, to, inserted) {
-  const next = doc.slice(0, from) + inserted + doc.slice(to);
-  const insertLen = inserted.length;
-  const oLine = sourceLine(next, Math.min(next.length, mapThrough(opener.start, from, to, insertLen)));
-  const cLine = sourceLine(next, Math.min(next.length, mapThrough(closer.start, from, to, insertLen)));
-  if (oLine.start === cLine.start) return false;
-  const opened = fenceOpen(oLine.text);
-  if (!opened || !isFenceClose(cLine.text, opened)) return false;
-  const nextLines = lineSpans(next);
-  for (const item of fenceContentRanges(next)) {
-    if (item.start !== oLine.start || !item.closed) continue;
-    const closeLine = nextLines[item.lastIndex];
-    return Boolean(closeLine && closeLine.start === cLine.start);
-  }
-  return false;
-}
-
-// Breaking a marker line makes that fence's closer a new opener, and the new
-// opener swallows a following comment fence. Drop both marker lines instead.
-// A caret insert takes no marker byte: prefixing the opener is still that
-// fence, and only a splice that removes or replaces bytes can open the closer.
-function liftBrokenFence(doc, from, to, text) {
-  if (typeof doc !== "string" || from < 0 || to < from || to > doc.length) return null;
-  if (from === to) return null;
-  if (doc.indexOf("```") < 0 && doc.indexOf("~~~") < 0) return null;
-  const inserted = typeof text === "string" ? text : "";
-  const lines = lineSpans(doc);
-  for (const fence of fenceContentRanges(doc)) {
-    if (!fence.closed || fence.lang === "comment") continue;
-    const opener = lines[fence.openIndex];
-    const closer = lines[fence.lastIndex];
-    if (!opener || !closer) continue;
-    const hitOpener = spanHits(from, to, opener.start, linePast(doc, opener));
-    const hitCloser = spanHits(from, to, closer.start, fence.end);
-    if (!hitOpener && !hitCloser) continue;
-    if (from <= fence.start && to >= fence.end) continue;
-    if (from < fence.start || to > fence.end) continue;
-    if (markersHold(doc, opener, closer, from, to, inserted)) continue;
-    const body = fenceBodySource(doc, opener, closer);
-    const cursor = hitCloser && !hitOpener ? fence.start + body.length : fence.start;
-    return { from: fence.start, to: fence.end, text: body, cursor };
-  }
-  return null;
-}
-
 function applySplice(state, from, to, text, cursor) {
-  const lifted = liftBrokenFence(state.doc, from, to, text);
-  if (lifted) {
-    from = lifted.from;
-    to = lifted.to;
-    text = lifted.text;
-    cursor = lifted.cursor;
-  }
   const next = splice(state, from, to, text, cursor);
   if (next === state) return state;
   const cleaned = cleanupComments(next.doc, next.cursor);

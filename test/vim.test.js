@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { playVimChange, vimKey, vimMatchStarts, vimSubmit, visualBlockOffset, visualKeepGlyph, VIM_SEARCH_LIMIT } from "../src/vim.js";
-import { backspace, caretAfterEdit, codeSpanAt, commentStorageReason, createState, deleteForward, insert, linkSpanAt, selectedSlice, skipHidden, sourceLine, undo } from "../src/doc.js";
+import { backspace, caretAfterEdit, codeFenceBodies, codeSpanAt, commentStorageReason, commentThreads, createState, deleteForward, insert, linkSpanAt, plan, selectedSlice, skipHidden, sourceLine, undo } from "../src/doc.js";
 
 const CARET = "‸";
 
@@ -1387,47 +1387,75 @@ test("a colon count moves like G, and a change across a fence or a table writes 
   assert.equal(substituted.doc, "Above.\n\n```js\nONE\ntwo\n```\n\nAfter.\n");
 });
 
-test("a broken text fence drops both markers and a body line yanks only that line", () => {
+test("a character taken from a text fence leaves that character out and a body line yanks only that line", () => {
   const note = "```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z qa\nNote.\n```\n";
   const head = "Above.\n\n```text\none\ntwo\n```\n\nAfter.\n\n";
   const doc = head + note;
-  const bare = "Above.\n\none\ntwo\n\nAfter.\n\n" + note;
   const opener = doc.indexOf("```text");
   const closer = doc.indexOf("\n```\n", opener) + 1;
   const one = doc.indexOf("\none\n") + 1;
   const reasonOf = (before, after) => commentStorageReason(before, after.changes);
+  const dropAt = (text, at) => text.slice(0, at) + text.slice(at + 1);
+  const asText = (text) => {
+    const threads = commentThreads(text);
+    assert.equal(threads.length, 1);
+    assert.equal(threads[0].id, "c1");
+    assert.equal(threads[0].body.includes("Note."), true);
+    for (const fence of codeFenceBodies(text)) {
+      const body = text.slice(fence.start, fence.end);
+      assert.equal(body.includes("one"), false, body);
+      assert.equal(body.includes("After."), false, body);
+      assert.equal(body.includes("```comment"), false, body);
+    }
+    const blocks = plan(text, 0).blocks;
+    const prose = blocks.filter((block) => block.type === "line" && !block.fence).map((block) => block.text);
+    assert.equal(prose.some((line) => line.includes("one")), true);
+    assert.equal(prose.some((line) => line.includes("two")), true);
+    assert.equal(prose.some((line) => line.includes("After.")), true);
+    for (const block of blocks) {
+      if (!block.fence && block.type !== "diagram" && block.type !== "svg") continue;
+      const slice = text.slice(block.start, block.end);
+      assert.equal(slice.includes("one"), false, slice);
+      assert.equal(slice.includes("Note."), false, slice);
+    }
+  };
 
   const opened = backspace(createState(doc, opener + 1));
-  assert.equal(opened.doc, bare);
-  assert.equal(opened.cursor, bare.indexOf("one"));
+  assert.equal(opened.doc, dropAt(doc, opener));
+  assert.equal(opened.cursor, opener);
   assert.equal(reasonOf(doc, opened), null);
   assert.equal(undo(opened).doc, doc);
+  asText(opened.doc);
 
   const lineEnd = doc.indexOf("\n", opener) + 1;
+  const lineGone = doc.slice(0, opener) + doc.slice(lineEnd);
   const selected = deleteForward(createState(doc, lineEnd, opener));
-  assert.equal(selected.doc, bare);
+  assert.equal(selected.doc, lineGone);
   assert.equal(reasonOf(doc, selected), null);
+  asText(selected.doc);
   const exact = insert(createState(doc, lineEnd, opener), "", false, false, true);
-  assert.equal(exact.doc, bare);
+  assert.equal(exact.doc, lineGone);
   assert.equal(reasonOf(doc, exact), null);
 
   const tick = deleteForward(createState(doc, opener));
-  assert.equal(tick.doc, bare);
+  assert.equal(tick.doc, dropAt(doc, opener));
   assert.equal(reasonOf(doc, tick), null);
   const xed = run(doc.slice(0, opener) + "‸" + doc.slice(opener), ["x"]);
-  assert.equal(xed.doc, bare);
+  assert.equal(xed.doc, dropAt(doc, opener));
 
   const closed = deleteForward(createState(doc, closer));
-  assert.equal(closed.doc, bare);
-  assert.equal(closed.cursor, bare.indexOf("two\n") + "two\n".length);
+  assert.equal(closed.doc, dropAt(doc, closer));
+  assert.equal(closed.cursor, closer);
   assert.equal(reasonOf(doc, closed), null);
+  asText(closed.doc);
   const closedBack = backspace(createState(doc, closer + 1));
-  assert.equal(closedBack.doc, bare);
+  assert.equal(closedBack.doc, dropAt(doc, closer));
   assert.equal(reasonOf(doc, closedBack), null);
   const lastTick = closer + "```".length - 1;
   const last = insert(createState(doc, lastTick + 1, lastTick), "", false, false, true);
-  assert.equal(last.doc, bare);
+  assert.equal(last.doc, dropAt(doc, lastTick));
   assert.equal(reasonOf(doc, last), null);
+  asText(last.doc);
 
   const info = opener + "```".length;
   const keptInfo = deleteForward(createState(doc, info));
