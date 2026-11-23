@@ -10,8 +10,10 @@ import { launchBrowser, Page, startHub } from "./harness.js";
 
 const VIM = "viewmark.vim";
 const NOTE = "```comment c1\n:: 0\n@2026-10-05T16:00:00.000Z qa\nA note.\n```\n";
+const NOTE2 = "```comment c2\n:: 0\n@2026-10-05T16:00:00.000Z qa\nAnother note.\n```\n";
 const LIST = "Para one.\n\n- item\n";
 const FENCED = `Para {c1}one{/c1}.\n\n- item\n\n${NOTE}`;
+const STACKED = `Para {c1}one{/c1}.\n\n- item\n\n${NOTE}\n${NOTE2}`;
 const INDENTED = "alpha\n  indented last\n";
 
 async function setup(t, files) {
@@ -102,6 +104,15 @@ for (const file of ["list.md", "fenced.md"]) {
     await drawnOn(page, caret, at + 2, `${file} G`);
   });
 }
+
+test("r5kwsdqr: with vim keys on, G lands on - item when more than one comment fence follows it", async (t) => {
+  const { page } = await setup(t, { "stacked.md": STACKED });
+  const at = STACKED.indexOf("- item");
+  const caret = await pressG(page, "stacked.md");
+  assert.ok(caret.focus === at || caret.focus === at + 2, `G put the caret at ${caret.focus}, not at ${at} or ${at + 2}, the start of - item`);
+  assert.equal(caret.anchor, caret.focus, `G left a selection from ${caret.anchor} to ${caret.focus}`);
+  await drawnOn(page, caret, at + 2, "stacked.md G");
+});
 
 test("r5kwsdqr: with vim keys on, G and then o write the new line under - item, before a comment's fence at the end of the file", async (t) => {
   const { hub, page } = await setup(t, { "fenced.md": FENCED });

@@ -963,6 +963,36 @@ test("r5kwsdqr G lands on the last line, not past a final newline or a comment f
   assert.ok(opened.doc.endsWith("```\n"));
   assert.equal(run("al‸pha\n\n\n", ["G"]).show, "alpha\n\n‸\n");
   assert.equal(run("al‸pha\n\n\n", ["G"], { raw: true }).show, "alpha\n\n‸\n");
+  const stacked = [
+    "Last line.",
+    "",
+    "```comment c1",
+    ":: 0",
+    "@2026-10-05T16:00:00.000Z qa",
+    "Note.",
+    "```",
+    "",
+    "```comment c2",
+    ":: 0",
+    "@2026-10-05T16:00:00.000Z qa",
+    "Note.",
+    "```",
+    "",
+  ].join("\n");
+  const pastNotes = run(`‸${stacked}`, ["G"]);
+  assert.equal(pastNotes.cursor, 0);
+  assert.equal(pastNotes.show.startsWith("‸Last line.\n"), true);
+  assert.equal(run(`‸${stacked}`, ["9", "9", "G"]).cursor, pastNotes.cursor);
+  assert.equal(run(`L‸ast line.\n${stacked.slice("Last line.\n".length)}`, ["j"]).cursor, 1);
+  const between = stacked.replace("```\n\n```comment c2", "```\n \n```comment c2");
+  const spaced = run(`‸${between}`, ["G"]);
+  const spaceAt = between.indexOf("\n \n") + 1;
+  assert.equal(spaced.cursor, spaceAt);
+  const rawStacked = run(`‸${stacked}`, ["G"], { raw: true });
+  const rawClose = rawStacked.doc.lastIndexOf("```");
+  assert.ok(rawStacked.cursor >= rawClose && rawStacked.cursor < rawStacked.doc.length);
+  const below = `${stacked}Below.\n`;
+  assert.equal(run(`‸${below}`, ["G"]).show.endsWith("\n‸Below.\n"), true);
   assert.equal(run("‸\n", ["G"]).show, "‸\n");
   assert.equal(run("‸alpha\nbeta\n", ["9", "G"], { raw: true }).show, "alpha\n‸beta\n");
 });
@@ -4118,7 +4148,7 @@ test("dd after G on a trailing comment fence stays on a drawn row", () => {
   assert.equal(out.doc.endsWith("\n"), true);
 });
 
-test("dd past the last comment fence deletes nothing and leaves the caret", () => {
+test("dd past the last comment fence deletes nothing, and G then dd deletes the last drawn line", () => {
   const fence = (id) => `\`\`\`comment ${id} resolved\n:: 0\n@2026-10-05T16:00:00.000Z qa\nNote.\n\`\`\`\n`;
   const doc = `Para.\n\n${fence("c7")}\n${fence("c8")}\n${fence("c9")}`;
   const atEnd = run(`${doc}‸`, ["d", "d"]);
@@ -4126,10 +4156,17 @@ test("dd past the last comment fence deletes nothing and leaves the caret", () =
   assert.equal(atEnd.cursor, doc.length);
   assert.equal(atEnd.steps.some((step) => step.effect && step.effect.type === "splice"), false);
 
+  const gapAt = doc.indexOf("```\n\n```comment c8") + "```\n".length;
+  const held = run(`${doc.slice(0, gapAt)}‸${doc.slice(gapAt)}`, ["d", "d"]);
+  assert.equal(held.doc, doc);
+  assert.equal(held.cursor, gapAt);
+  assert.equal(held.steps.some((step) => step.effect && step.effect.type === "splice"), false);
+
   const between = run(`‸${doc}`, ["G", "d", "d"]);
-  assert.equal(between.doc, doc);
-  assert.notEqual(between.cursor, 0);
-  assert.equal(between.steps.some((step) => step.effect && step.effect.type === "splice"), false);
+  assert.equal(between.doc, doc.slice("Para.\n".length));
+  assert.equal(between.doc.includes("```comment c7 resolved"), true);
+  assert.equal(between.doc.includes("```comment c9 resolved"), true);
+  assert.equal(between.steps.some((step) => step.effect && step.effect.type === "splice"), true);
 
   const followed = `Para.\n\n${fence("c1")}After.\n`;
   const cut = run(`‸${followed}`, ["G", "d", "d"]);

@@ -272,15 +272,50 @@ function diagramEnds(doc) {
   return ends;
 }
 
+// A comment fence is not drawn. The breaks between two of them are planned as
+// empty lines, and those lines are not the end of the buffer.
+function commentFenceGaps(doc) {
+  const threads = commentThreads(doc);
+  const gaps = [];
+  for (let i = 0; i < threads.length - 1; i += 1) {
+    const start = threads[i].end;
+    const end = threads[i + 1].start;
+    if (end <= start) continue;
+    const gap = doc.slice(start, end);
+    let breaks = gap.length > 0;
+    for (let n = 0; n < gap.length; n += 1) {
+      const ch = gap[n];
+      if (ch !== "\n" && ch !== "\r") {
+        breaks = false;
+        break;
+      }
+    }
+    if (breaks) gaps.push({ start, end });
+  }
+  return gaps;
+}
+
+function inCommentFenceGap(gaps, block) {
+  if (!block.empty || gaps.length === 0) return false;
+  const at = block.start;
+  for (let i = 0; i < gaps.length; i += 1) {
+    const gap = gaps[i];
+    if (at >= gap.start && at < gap.end && block.end <= gap.end) return true;
+  }
+  return false;
+}
+
 function renderedLines(doc, cursor, expandFences) {
   const blocks = plan(doc, cursor).blocks;
   const bodies = expandFences ? codeFenceBodies(doc) : null;
+  const gaps = commentFenceGaps(doc);
   let ends = null;
   const lines = [];
   for (let i = 0; i < blocks.length; i += 1) {
     const block = blocks[i];
     if (block.classes && block.classes.includes("md-paragraph-gap")) continue;
     if (typeof block.start !== "number" || typeof block.end !== "number") continue;
+    if (inCommentFenceGap(gaps, block)) continue;
     // j and k step a line of code. The fence stays one block for a linewise delete.
     if (bodies && block.fence) {
       const fence = bodies.find((item) => item.start === block.start);
@@ -1131,14 +1166,24 @@ function pastLastCommentFence(doc, cursor) {
   return end >= 0 && cursor >= end;
 }
 
-// A caret past the last fence is not on a row inside the stored comments.
-// The last drawn row there is the blank between fences, and deleting it
-// would leave the caret with no line.
+function onVimLine(lines, cursor) {
+  for (let i = 0; i < lines.length; i += 1) {
+    if (cursor >= lines[i].start && cursor <= lines[i].end) return true;
+  }
+  return false;
+}
+
+// A caret on the break between two comment fences is not on a drawn line.
+// Deleting that break would leave no row. A caret past the last fence is the
+// same: it is not a row inside the stored comments.
 function countedLines(doc, origin, count, raw) {
   // Marker lines stay one fence, so a linewise delete there takes the whole
   // fence. A body line is only that source line: the markers are not yanked.
   const body = raw ? null : fenceBodyLines(doc, origin, origin);
   const lines = body || vimLines(doc, origin, raw);
+  if (!raw && !onVimLine(lines, origin) && inCommentFenceGap(commentFenceGaps(doc), { empty: true, start: origin, end: origin })) {
+    return { from: origin, to: origin };
+  }
   let index = lineIndex(lines, doc, origin, raw);
   if (index >= lines.length) {
     if (!raw && pastLastCommentFence(doc, origin)) return { from: origin, to: origin };
