@@ -84,11 +84,11 @@ function leaks(page) {
   return "";
 }
 
-// A linewise put of the original yank after the first line. The caret is the first character of that line.
+// A linewise put of the original yank under the first line. The caret is the first character of that line.
 function linewisePut(before, line) {
   const nl = before.indexOf("\n");
-  const bytes = `${before.slice(0, nl + 1)}${line}${before.slice(nl + 1)}`;
-  const focus = nl + 1;
+  const bytes = `${before.slice(0, nl + 1)}\n${line}${before.slice(nl + 1)}`;
+  const focus = nl + 2;
   return { bytes, show: show(bytes, focus, focus) };
 }
 

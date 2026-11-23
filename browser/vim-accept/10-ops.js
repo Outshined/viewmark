@@ -206,17 +206,6 @@ async function oneSplice(hub, page, file, item) {
   await undoOnce(hub, page, file, before.text, after.text, after.rev);
 }
 
-async function emptyBetween(page, caret, got) {
-  const lines = await page.eval(`(() => [...document.querySelectorAll("#editor .md-line")].map((line) => ({
-    start: Number(line.dataset.start),
-    text: line.textContent,
-  })))()`);
-  const at = lines.findIndex((line) => line.text === "" && line.start === caret.focus);
-  assert.ok(at > 0, `${got} empty line ${JSON.stringify(lines)}`);
-  assert.equal(lines.slice(0, at).some((line) => line.text.includes("one")), true, `${got} ${JSON.stringify(lines)}`);
-  assert.equal(lines.slice(at + 1).some((line) => line.text.includes("three")), true, `${got} ${JSON.stringify(lines)}`);
-}
-
 test("VO.1 (ticket 7vdep2z4)", async (t) => {
   const { hub, page } = await setup(t);
   const commands = [
@@ -299,21 +288,44 @@ test("VO.9 (ticket 7vdep2z4)", async (t) => {
 test("VO.10 (ticket 7vdep2z4)", async (t) => {
   await cases(t, [
     { start: "al‸pha\nbeta\n", keys: "dd", expect: "‸" },
-    { start: "alpha\n\nbe‸ta\n\ngamma\n", keys: "dd", expect: "alpha\n\n‸\ngamma\n" },
+    { start: "alpha\n\nbe‸ta\n\ngamma\n", keys: "dd", expect: "alpha\n\n‸gamma\n" },
     { start: "alpha\nbe‸ta\ngamma\n", keys: "dd", expect: "alpha\n‸gamma\n", raw: true },
     { start: "alpha\nbe‸ta\ngamma\n", keys: "2dd", expect: "alpha\n‸", raw: true },
   ]);
 });
 
+test("dd then p swaps the line with the one below", async (t) => {
+  const { hub, page } = await setup(t);
+  const file = "swap.md";
+  const { doc, focus } = marked("al‸pha\n\nbeta\n");
+  await hub.create(file, doc);
+  await page.open(file);
+  await place(page, focus);
+  const before = await hub.show(file);
+  await sendKeys(page, "dd");
+  const cut = await hub.show(file);
+  const cutCaret = await page.caret();
+  assert.equal(seen(cut.text, cutCaret), "‸beta\n", "dd");
+  assert.equal(cut.rev, before.rev + 1, "dd rev");
+  await sendKeys(page, "p");
+  const after = await hub.show(file);
+  const caret = await page.caret();
+  assert.equal(seen(after.text, caret), "beta\n\n‸alpha\n", "p");
+  assert.equal(after.rev, cut.rev + 1, "p rev");
+  assert.equal(await status(page), "N");
+  const lines = await page.eval(`(() => [...document.querySelectorAll("#editor .md-line:not(.md-paragraph-gap)")].map((line) => line.textContent))()`);
+  assert.deepEqual(lines, ["beta", "alpha"]);
+});
+
 test("VO.11 (ticket 7vdep2z4)", async (t) => {
   await cases(t, [
-    { start: "one\n\nt‸wo\n\nthree\n", keys: "dd", expect: "one\n\n‸\nthree\n", after: emptyBetween },
+    { start: "one\n\nt‸wo\n\nthree\n", keys: "dd", expect: "one\n\n‸three\n" },
   ]);
 });
 
 test("VO.12 (ticket 7vdep2z4)", async (t) => {
   await cases(t, [
-    { start: "‸one\n\ntwo\n\nthree\n", keys: "2dd", expect: "‸\nthree\n" },
+    { start: "‸one\n\ntwo\n\nthree\n", keys: "2dd", expect: "‸three\n" },
     { start: "‸one\n\ntwo\n\nthree\n", keys: "2dd", expect: "‸two\n\nthree\n", raw: true },
   ]);
 });

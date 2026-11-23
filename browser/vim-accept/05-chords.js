@@ -749,5 +749,5 @@ test("VK.16 (ticket 7vdep2z4)", { timeout: 180000 }, async (t) => {
 
   await page.key("p");
   shot = await snap(hub, page);
-  expectShot(shot, "VK.16 p", { text: "alpha\nbeta\nalpha\nbeta\n", focus: 11, anchor: 11, rev: before.rev + 1, status: "N", collapsed: true });
+  expectShot(shot, "VK.16 p", { text: "alpha\nbeta\n\nalpha\nbeta\n", focus: 12, anchor: 12, rev: before.rev + 1, status: "N", collapsed: true });
 });

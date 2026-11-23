@@ -1374,7 +1374,7 @@ test("a colon count moves like G, and a change across a fence or a table writes 
   assert.equal(removed.doc, "Top.\n\n| a | b |\n|---|---|\n| 3 | 4 |\n\nAfter.\n");
   assert.notEqual(removed.vim.register.text, "OLD");
   const wider = run(place("| 1 | 2 |"), ["2", "d", "d"], { vim: armed() });
-  assert.equal(wider.doc, "Top.\n\n| a | b |\n|---|---|\n\nAfter.\n");
+  assert.equal(wider.doc, "Top.\n\n| a | b |\n|---|---|\nAfter.\n");
   assert.notEqual(wider.vim.register.text, "OLD");
   const stuck = run(place("| 3 | 4 |"), ["2", "d", "d"], { vim: armed() });
   assert.equal(stuck.doc, table);
@@ -1406,7 +1406,7 @@ test("a colon count moves like G, and a change across a fence or a table writes 
   assert.equal(inside.doc, "Above.\n\n```js\n```\n\nAfter.\n");
   assert.equal(inside.vim.register.text, "one\ntwo\n");
   const above = run(fence.replace("Above.", "‸Above."), ["d", "d"], { vim: armed() });
-  assert.equal(above.doc, "\n```js\none\ntwo\n```\n\nAfter.\n");
+  assert.equal(above.doc, "```js\none\ntwo\n```\n\nAfter.\n");
   assert.equal(ex("‸" + fence, "%d", { vim: armed() }).doc, fence);
   assert.equal(ex("‸" + fence, "%d", { vim: armed() }).effect, null);
   assert.equal(ex("‸" + fence, "%d", { vim: armed() }).vim.register.text, "OLD");
@@ -1547,9 +1547,9 @@ test("a character taken from a text fence leaves that character out and a body l
   const after = js.indexOf("After.");
   const put = run(js.slice(0, after) + "‸" + js.slice(after), ["p"], { vim: yanked.vim });
   const putEffect = oneSplice(put);
-  assert.equal(putEffect.text, "one\n");
+  assert.equal(putEffect.text, "\none\n");
   assert.equal(put.doc.includes("```js\none\ntwo\n```\n"), true);
-  assert.equal(put.doc.includes("After.\none\n"), true);
+  assert.equal(put.doc.includes("After.\n\none\n"), true);
   const stored = insert(createState(js, putEffect.to, putEffect.from), putEffect.text, false, false, true);
   assert.equal(stored.doc, put.doc);
   assert.equal(commentStorageReason(js, stored.changes), null);
@@ -1558,7 +1558,7 @@ test("a character taken from a text fence leaves that character out and a body l
   assert.equal(notedYank.vim.register.text, "one\n");
   const notedPut = run(doc.slice(0, notedAfter) + "‸" + doc.slice(notedAfter), ["p"], { vim: notedYank.vim });
   const notedEffect = oneSplice(notedPut);
-  assert.equal(notedEffect.text, "one\n");
+  assert.equal(notedEffect.text, "\none\n");
   assert.equal(notedPut.doc.includes("```text\none\ntwo\n```\n"), true);
   assert.equal(notedPut.doc.includes(note), true);
   const notedStored = insert(createState(doc, notedEffect.to, notedEffect.from), notedEffect.text, false, false, true);
@@ -3391,7 +3391,7 @@ test("VE.1", () => {
   assert.equal(yanked.doc, "alpha\n");
   assert.equal(yanked.vim.register.text, "alpha\n");
   assert.equal(yanked.vim.register.linewise, true);
-  assert.equal(run(yanked.show, ["p"], { vim: yanked.vim }).show, "alpha\n‸alpha\n");
+  assert.equal(run(yanked.show, ["p"], { vim: yanked.vim }).show, "alpha\n\n‸alpha\n");
 
   assert.equal(ex("‸alpha\n", "u").effect.direction, "undo");
   assert.equal(ex("‸alpha\n", "undo").effect.direction, "undo");
@@ -3943,8 +3943,9 @@ test("VY.1", () => {
   assert.equal(insertedSplice(before).text, "alpha\n");
 
   const end = run("‸alpha\n", ["y", "y", "p"]);
-  assert.equal(end.show, "alpha\n‸alpha\n");
-  assert.equal(insertedSplice(end).text, "alpha\n");
+  assert.equal(end.show, "alpha\n\n‸alpha\n");
+  assert.equal(end.doc, "alpha\n\nalpha\n");
+  assert.equal(insertedSplice(end).text, "\nalpha\n");
 
   const raw = run("‸alpha\nbeta\n", ["y", "y", "p"], { raw: true });
   assert.equal(raw.show, "alpha\n‸alpha\nbeta\n");
@@ -3968,10 +3969,10 @@ test("linewise yank of an unterminated line", () => {
   assert.equal(yank.yank.text, "alpha\nbeta\n");
   assert.equal(yank.yank.linewise, true);
   const put = run(yanked.show, ["p"], { vim: yanked.vim });
-  assert.equal(put.show, "alpha\nbeta\n‸alpha\nbeta\n");
-  assert.equal(put.doc, "alpha\nbeta\nalpha\nbeta\n");
+  assert.equal(put.show, "alpha\nbeta\n\n‸alpha\nbeta\n");
+  assert.equal(put.doc, "alpha\nbeta\n\nalpha\nbeta\n");
   const inserted = insertedSplice(put);
-  assert.equal(inserted.text, "\nalpha\nbeta\n");
+  assert.equal(inserted.text, "\n\nalpha\nbeta\n");
   assert.equal(inserted.from, "alpha\nbeta".length);
   assert.equal(inserted.to, inserted.from);
   assert.equal(inserted.yank, null);
@@ -3981,7 +3982,7 @@ test("linewise yank of an unterminated line", () => {
   assert.equal(crlf.vim.register.text, "alpha\r\nbeta\r\n");
   assert.equal(oneSplice(crlf).text, "alpha\r\nbeta");
   assert.equal(oneSplice(crlf).yank.text, "alpha\r\nbeta\r\n");
-  assert.equal(run(crlf.show, ["p"], { vim: crlf.vim }).show, "alpha\r\nbeta\r\n‸alpha\r\nbeta\r\n");
+  assert.equal(run(crlf.show, ["p"], { vim: crlf.vim }).show, "alpha\r\nbeta\r\n\r\n‸alpha\r\nbeta\r\n");
 
   const visual = run("alpha\n‸beta", ["V", "y"]);
   assert.equal(visual.doc, "alpha\nbeta");
@@ -4132,8 +4133,34 @@ test("Y yanks the line", () => {
 
 test("dd stores the line", () => {
   const out = run("‸one\n\ntwo\n", ["d", "d"]);
+  assert.equal(out.doc, "two\n");
+  assert.equal(out.show, "‸two\n");
   assert.equal(out.vim.register.text, "one\n");
   assert.equal(out.vim.register.linewise, true);
+});
+
+test("dd then p swaps the line with the one below", () => {
+  const swapped = run("al‸pha\n\nbeta\n", ["d", "d", "p"]);
+  assert.equal(swapped.doc, "beta\n\nalpha\n");
+  assert.equal(swapped.show, "beta\n\n‸alpha\n");
+  assert.equal(swapped.vim.register.text, "alpha\n");
+  assert.equal(swapped.vim.register.linewise, true);
+
+  const middle = run("al‸pha\n\nbeta\n\ngamma\n", ["d", "d", "p"]);
+  assert.equal(middle.doc, "beta\n\nalpha\n\ngamma\n");
+  assert.equal(middle.show, "beta\n\n‸alpha\n\ngamma\n");
+
+  const items = run("- al‸pha\n- beta\n", ["d", "d", "p"]);
+  assert.equal(items.doc, "- beta\n- alpha\n");
+  assert.equal(items.show, "- beta\n‸- alpha\n");
+
+  const heading = run("# Al‸pha\n\n# Beta\n", ["d", "d", "p"]);
+  assert.equal(heading.doc, "# Beta\n# Alpha\n");
+  assert.equal(heading.show, "# Beta\n‸# Alpha\n");
+
+  const crlf = run("al‸pha\r\n\r\nbeta\r\n", ["d", "d", "p"]);
+  assert.equal(crlf.doc, "beta\r\n\r\nalpha\r\n");
+  assert.equal(crlf.show, "beta\r\n\r\n‸alpha\r\n");
 });
 
 test("dd after G on a trailing comment fence stays on a drawn row", () => {
@@ -4615,12 +4642,12 @@ test("dot puts the register as it is now, and ]p reindents in one splice (ticket
   const yanked = run("‸ab\n", ["y", "y"]);
   assert.equal(yanked.vim.change, null);
   const put = run("‸zz\n", ["p"], { vim: yanked.vim });
-  assert.equal(put.doc, "zz\nab\n");
+  assert.equal(put.doc, "zz\n\nab\n");
   assert.equal(changeKeys(put), "p");
   const other = run("‸QQ\n", ["y", "y"]);
   put.vim.register = other.vim.register;
   const dot = run(put.show, ["."], { vim: put.vim });
-  assert.equal(dot.doc, "zz\nab\nQQ\n");
+  assert.equal(dot.doc, "zz\n\nab\n\nQQ\n");
   assert.equal(dot.vim.register.text, "QQ\n");
   const child = run("‸\tchild\n", ["y", "y"], { raw: true });
   const indented = run("\tparent\n‸here\n", ["]", "p"], { raw: true, vim: child.vim });

@@ -243,10 +243,10 @@ test(cell("VE.7"), { timeout: TIMEOUT }, async (t) => {
   await page.key("p");
   await page.quiet();
   const pasted = await hub.show("yank.md");
-  assert.equal(pasted.text, "alpha\nalpha\n", `p got ${JSON.stringify(pasted.text)}`);
+  assert.equal(pasted.text, "alpha\n\nalpha\n", `p got ${JSON.stringify(pasted.text)}`);
   assert.equal(pasted.rev, yanked.rev + 1, `p rev ${yanked.rev} -> ${pasted.rev}`);
   const caret = await page.caret();
-  assert.equal(caret.focus, "alpha\n".length, `p caret ${caret.focus}`);
+  assert.equal(caret.focus, "alpha\n\n".length, `p caret ${caret.focus}`);
   assert.equal(caret.anchor, caret.focus);
 });
 

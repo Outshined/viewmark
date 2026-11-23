@@ -24416,7 +24416,7 @@ test("vim yy sends no edit and the following p sends one", () => {
     vimType(mounted, "p");
     assert.equal(edits.length, 1);
     assert.equal(edits[0].op, "insert");
-    assert.equal(edits[0].text, "alpha\n");
+    assert.equal(edits[0].text, "\nalpha\n");
     assert.equal(edits[0].rev, 0);
     assert.equal(view.getState().doc, "alpha\n\nalpha\n");
     assert.equal(view.getState().anchor, view.getState().cursor);

@@ -1556,7 +1556,9 @@ function applyRange(op, doc, range, motion, vim) {
   if (from === to) return null;
   const removed = doc.slice(from, to);
   const linewise = !!(motion && motion.linewise);
-  const stored = linewiseText(doc, removed, linewise);
+  // The blank under the line goes with the delete. The register keeps the line.
+  const yankedTo = Number.isInteger(range.yankTo) ? range.yankTo : to;
+  const stored = linewiseText(doc, doc.slice(from, yankedTo), linewise);
   if (op === "y") {
     const caret = motion && motion.cursor < (motion.origin == null ? from : motion.origin) ? from : motion && motion.cursor < from ? from : null;
     return {
@@ -1600,24 +1602,24 @@ function applyRange(op, doc, range, motion, vim) {
   return null;
 }
 
-// endPast stops on the paragraph's own newline. The blank under it is not a
-// vim line, so a rendered linewise delete has to take that gap too.
+// endPast stops on the block's own newline. The blank under it is not a vim
+// line, so a rendered linewise delete has to take that gap too. A break run
+// stops at the next vim line. Bytes that are not breaks, such as a comment
+// fence, stay where they are.
 function throughGap(doc, to) {
-  if (to < 0 || to >= doc.length || doc[to] !== "\n") return to;
-  const blocks = plan(doc, to).blocks;
-  let end = to;
-  while (end < doc.length && doc[end] === "\n") {
-    let gap = false;
-    for (let i = 0; i < blocks.length; i += 1) {
-      const block = blocks[i];
-      if (block && block.start === end && block.classes && block.classes.includes("md-paragraph-gap")) {
-        gap = true;
-        break;
-      }
+  if (to < 0 || to > doc.length) return to;
+  const lines = renderedLines(doc, to > 0 ? to - 1 : 0);
+  let next = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].start >= to) {
+      next = lines[i].start;
+      break;
     }
-    if (!gap) break;
-    end += 1;
   }
+  const limit = next == null ? doc.length : next;
+  let end = to;
+  while (end < limit && (doc[end] === "\n" || doc[end] === "\r")) end += 1;
+  if (end < limit) return to;
   return end;
 }
 
@@ -1658,6 +1660,31 @@ function putAt(doc, cursor, raw, after) {
   return pastVimLine(doc, at);
 }
 
+// A paragraph joins across one break. The point is inside a fence or a table
+// when the put is a line of that block, and that line does not open a paragraph.
+function putInsideStructure(doc, at) {
+  for (const fence of codeFenceBodies(doc)) {
+    if (at > fence.start && at < fence.end) return true;
+  }
+  for (const block of plan(doc, -1).blocks) {
+    if (block && block.type === "table" && at > block.start && at < block.end) return true;
+  }
+  return false;
+}
+
+function putJoinsBackward(doc, at, text) {
+  if (at <= 0 || !text || putInsideStructure(doc, at)) return false;
+  const merged = doc.slice(0, at) + text + doc.slice(at);
+  const blocks = plan(merged, -1).blocks;
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = blocks[i];
+    if (!block || typeof block.start !== "number" || typeof block.end !== "number") continue;
+    if (block.classes && block.classes.includes("md-paragraph-gap")) continue;
+    if (block.start < at && block.end > at) return true;
+  }
+  return false;
+}
+
 // Inserting on the far side of the gap still joins a following paragraph
 // unless the splice carries a gap of its own.
 function putJoinsForward(doc, at, text) {
@@ -1682,8 +1709,11 @@ function putLead(doc, at) {
 
 function linewisePutText(doc, at, text, raw, after) {
   const headed = putLead(doc, at) + text;
-  const body = headed.endsWith("\n") ? headed : headed + "\n";
-  if (raw || !after || body.endsWith("\n\n") || !putJoinsForward(doc, at, body)) return body;
+  let body = headed.endsWith("\n") ? headed : headed + "\n";
+  if (raw || !after) return body;
+  // The line opens under the block above. One break would leave it on that block.
+  if (putJoinsBackward(doc, at, body)) body = fileBreak(doc) + body;
+  if (body.endsWith("\n\n") || body.endsWith("\r\n\r\n") || !putJoinsForward(doc, at, body)) return body;
   return body + (body.endsWith("\r\n") ? "\r\n" : "\n");
 }
 
@@ -1972,8 +2002,14 @@ function repeatedLine(vim, doc, cursor, raw, operator) {
   const range = countedLines(doc, cursor, repeatOf(vim), indentOp(operator) ? true : raw);
   if (caseOp(operator)) return spliceCase(vim, doc, range.from, range.to, operator);
   if (indentOp(operator)) return applyIndent(vim, doc, range.from, range.to, operator);
-  const motion = { cursor: range.to, linewise: true, inclusive: false, past: false, word: false, origin: cursor };
-  const applied = applyRange(operator, doc, { ...range, originCaret: cursor }, motion, vim);
+  let to = range.to;
+  let yankTo = null;
+  if (operator === "d" && !raw) {
+    yankTo = range.to;
+    to = throughGap(doc, range.to);
+  }
+  const motion = { cursor: to, linewise: true, inclusive: false, past: false, word: false, origin: cursor };
+  const applied = applyRange(operator, doc, { ...range, to, originCaret: cursor, yankTo }, motion, vim);
   const next = clearInput(vim);
   if (!applied) return pack("full", true, next, null);
   next.mode = applied.mode;
@@ -2146,7 +2182,12 @@ function putRegister(vim, doc, anchor, cursor, raw, after, adjust) {
     const lead = putLead(doc, at);
     let text = linewisePutText(doc, at, reg.text, raw, after);
     if (adjust) text = shiftInserted(doc, at, text);
-    const caret = putCaret(at + lead.length, text.slice(lead.length));
+    const registerBody = reg.text.endsWith("\n") ? reg.text : reg.text + fileBreak(doc);
+    let skip = lead.length;
+    const placed = text.slice(skip);
+    const gap = fileBreak(doc);
+    if (placed.startsWith(gap) && !registerBody.startsWith(gap)) skip += gap.length;
+    const caret = putCaret(at + skip, text.slice(skip));
     const kept = vim.mode === "visual" || vim.mode === "visual-line" ? "normal" : vim.mode;
     next.mode = kept;
     return pack("full", true, next, { type: "splice", from: at, to: at, text, caret, yank: null });
