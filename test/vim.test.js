@@ -554,8 +554,8 @@ test("VN.6", () => {
 });
 
 test("VN.7", () => {
-  assert.equal(run("‸alpha, beta\n", ["w"]).show, "alpha, ‸beta\n");
-  assert.equal(run("‸alpha, beta\n", ["e"]).show, "alpha‸, beta\n");
+  assert.equal(run("‸alpha, beta\n", ["w"]).show, "alpha‸, beta\n");
+  assert.equal(run("‸alpha, beta\n", ["e"]).show, "alph‸a, beta\n");
   assert.equal(run("alpha, be‸ta\n", ["b"]).show, "alpha, ‸beta\n");
   assert.equal(run("alpha, be‸ta\n", ["g", "e"]).show, "alpha‸, beta\n");
   assert.equal(run("‸alpha\n", ["e"]).show, "alph‸a\n");
@@ -563,7 +563,7 @@ test("VN.7", () => {
 
 test("VN.8", () => {
   assert.equal(run("‸alpha,beta gamma\n", ["W"]).show, "alpha,beta ‸gamma\n");
-  assert.equal(run("‸alpha,beta gamma\n", ["w"]).show, "alpha,beta ‸gamma\n");
+  assert.equal(run("‸alpha,beta gamma\n", ["w"]).show, "alpha‸,beta gamma\n");
   assert.equal(run("alpha,beta gam‸ma\n", ["E"]).show, run("alpha,beta gam‸ma\n", ["e"]).show);
   assert.equal(run("alpha,beta gam‸ma\n", ["g", "E"]).show, run("alpha,beta gam‸ma\n", ["g", "e"]).show);
 });
@@ -1768,9 +1768,9 @@ test("4wch9t9w h l 0 $ w and b on a mermaid opener, closer, and the prose under 
   const blank = closer + "```\n".length;
   const prose = doc.indexOf("After.");
   const spots = [
-    { name: "opener", at: opener, mid: opener + 4, zero: opener, dollar: opener + "```mermaid".length - 1, w: body, b: 0 },
-    { name: "closer", at: closer, mid: closer + 1, zero: closer, dollar: closer + 2, w: prose, b: body },
-    { name: "prose", at: prose, mid: prose + 2, zero: prose, dollar: prose + "After.".length - 1, w: prose + "After.".length, b: closer },
+    { name: "opener", at: opener, mid: opener + 4, zero: opener, dollar: opener + "```mermaid".length - 1, w: opener + 3, b: doc.indexOf(".") },
+    { name: "closer", at: closer, mid: closer + 1, zero: closer, dollar: closer + 2, w: prose, b: doc.indexOf("B") },
+    { name: "prose", at: prose, mid: prose + 2, zero: prose, dollar: prose + "After.".length - 1, w: prose + "After".length, b: closer },
   ];
   for (const spot of spots) {
     const left = run(caretAt(doc, spot.mid), ["h"]);
@@ -4865,8 +4865,19 @@ test("markdown syntax is a word boundary for edit commands (ticket 3pc2ayzj)", (
   assert.equal(run("‸don't stop\n", ["c", "w"]).show, "‸ stop\n");
   assert.equal(run("‸alpha, beta\n", ["c", "w"]).show, "‸ beta\n");
   assert.equal(run("say \\‸*hi\n", ["c", "w"]).doc, "say \\\n");
-  assert.equal(run("**‸foo** bar\n", ["w"]).show, "**foo** ‸bar\n");
-  assert.equal(run("**‸foo** bar\n", ["e"]).show, "**foo*‸* bar\n");
+  assert.equal(run("**‸foo** bar\n", ["w"]).show, "**foo‸** bar\n");
+  assert.equal(run("**‸foo** bar\n", ["e"]).show, "**fo‸o** bar\n");
+  assert.equal(run("(‸foo) bar\n", ["w"]).show, "(foo‸) bar\n");
+  assert.equal(run("(‸foo) bar\n", ["W"]).show, "(foo) ‸bar\n");
+  assert.equal(run("(fo‸o) bar\n", ["b"]).show, "(‸foo) bar\n");
+  assert.equal(run("(fo‸o) bar\n", ["B"]).show, "‸(foo) bar\n");
+  assert.equal(run("(‸foo) bar\n", ["e"]).show, "(fo‸o) bar\n");
+  assert.equal(run("(‸foo) bar\n", ["E"]).show, "(foo‸) bar\n");
+  assert.equal(run("(‸foo) bar\n", ["c", "w"]).show, "(‸ bar\n");
+  assert.equal(run("{c1}alp‸ha{/c1} beta\n", ["w"]).show, "{c1}alpha{/c1} ‸beta\n");
+  assert.equal(run("{c1}alpha{/c1} ‸beta\n", ["b"]).show, "{c1}‸alpha{/c1} beta\n");
+  assert.equal(run("{c1}‸alpha{/c1} beta\n", ["e"]).show, "{c1}alph‸a{/c1} beta\n");
+  assert.equal(run("{c1}alp‸ha{/c1} beta\n", ["W"]).show, "{c1}alpha{/c1} ‸beta\n");
   assert.equal(run("**‸foo**\n", ["c", "w"], { raw: true }).doc, "****\n");
   assert.equal(run("```\n**‸nope**\n```\n", ["c", "w"]).doc, "```\n**\n```\n");
   assert.equal(run("**‸foo** bar\n", ["2", "c", "w"]).doc, "** bar\n");

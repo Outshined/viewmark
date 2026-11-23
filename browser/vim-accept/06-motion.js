@@ -299,8 +299,8 @@ test(cell("VN.6"), async (t) => {
 test(cell("VN.7"), async (t) => {
   const { hub, page } = await setup(t, "alpha, beta\n");
   const rev = (await hub.show(FILE)).rev;
-  await runMove(page, hub, FILE, "‸alpha, beta\n", ["w"], "alpha, ‸beta\n", rev);
-  await runMove(page, hub, FILE, "‸alpha, beta\n", ["e"], "alpha‸, beta\n", rev);
+  await runMove(page, hub, FILE, "‸alpha, beta\n", ["w"], "alpha‸, beta\n", rev);
+  await runMove(page, hub, FILE, "‸alpha, beta\n", ["e"], "alph‸a, beta\n", rev);
   await runMove(page, hub, FILE, "alpha, be‸ta\n", ["b"], "alpha, ‸beta\n", rev);
   await runMove(page, hub, FILE, "alpha, be‸ta\n", ["g", "e"], "alpha‸, beta\n", rev);
 });
@@ -309,7 +309,7 @@ test(cell("VN.8"), async (t) => {
   const { hub, page } = await setup(t, "alpha,beta gamma\n");
   const rev = (await hub.show(FILE)).rev;
   await runMove(page, hub, FILE, "‸alpha,beta gamma\n", ["W"], "alpha,beta ‸gamma\n", rev);
-  await runMove(page, hub, FILE, "‸alpha,beta gamma\n", ["w"], "alpha,beta ‸gamma\n", rev);
+  await runMove(page, hub, FILE, "‸alpha,beta gamma\n", ["w"], "alpha‸,beta gamma\n", rev);
   await runMove(page, hub, FILE, "alpha,beta gam‸ma\n", ["b"], "alpha,beta ‸gamma\n", rev);
   await runMove(page, hub, FILE, "alpha,beta gam‸ma\n", ["B"], "alpha,beta ‸gamma\n", rev);
   await runMove(page, hub, FILE, "alpha,beta gam‸ma\n", ["e"], "alpha,beta gamm‸a\n", rev);

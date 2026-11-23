@@ -691,7 +691,49 @@ function words(doc) {
   return found;
 }
 
-// A motion keeps punctuation on the word. An operator stops where markdown
+function keywordChar(ch) {
+  return /[\p{L}\p{Nd}_]/u.test(ch);
+}
+
+// w, b, e, and ge. Letters, digits, and underscores are one run. Any other
+// characters that are not spaces are the next run. A comment marker is not a
+// word. W, B, E, and gE use words().
+function smallWords(doc) {
+  const text = typeof doc === "string" ? doc : "";
+  const markers = [];
+  for (const span of findSpans(text)) {
+    markers.push([span.openStart, span.openEnd], [span.closeStart, span.closeEnd]);
+  }
+  markers.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let markerAt = 0;
+  const covering = (index) => {
+    while (markerAt < markers.length && markers[markerAt][1] <= index) markerAt += 1;
+    const marker = markers[markerAt];
+    if (!marker || index < marker[0] || index >= marker[1]) return null;
+    return marker;
+  };
+  const found = [];
+  let index = 0;
+  while (index < text.length) {
+    if (/\s/.test(text[index])) {
+      index += 1;
+      continue;
+    }
+    const marker = covering(index);
+    if (marker) {
+      index = marker[1];
+      continue;
+    }
+    const start = index;
+    const kind = keywordChar(text[index]);
+    index += 1;
+    while (index < text.length && !/\s/.test(text[index]) && keywordChar(text[index]) === kind && !covering(index)) index += 1;
+    found.push({ start, end: index });
+  }
+  return found;
+}
+
+// An operator keeps the punctuation on the word. It stops where markdown
 // syntax starts, and that syntax is its own word, so cw leaves the marks.
 function editWords(doc) {
   const text = typeof doc === "string" ? doc : "";
@@ -741,8 +783,8 @@ function stopIn(list, at, direction) {
   return at;
 }
 
-function moveEnd(doc, cursor, count, forward, editing) {
-  const list = editing ? editWords(doc) : words(doc);
+function moveEnd(doc, cursor, count, forward, editing, big) {
+  const list = editing ? editWords(doc) : big ? words(doc) : smallWords(doc);
   let at = cursor;
   for (let n = 0; n < count; n += 1) {
     let land = null;
@@ -767,10 +809,10 @@ function moveEnd(doc, cursor, count, forward, editing) {
   return at;
 }
 
-function moveWord(doc, cursor, count, forward, editing) {
+function moveWord(doc, cursor, count, forward, editing, big) {
   let at = cursor;
   const dir = forward ? 1 : -1;
-  const list = editing ? editWords(doc) : null;
+  const list = editing ? editWords(doc) : big ? null : smallWords(doc);
   for (let n = 0; n < count; n += 1) {
     const next = list ? stopIn(list, at, dir) : wordStop(doc, at, dir);
     if (next === at) break;
@@ -1093,13 +1135,15 @@ function runMotion(id, spec) {
   if (id === "w" || id === "W" || id === "b" || id === "B") {
     const forward = id === "w" || id === "W";
     const editing = Boolean(spec.vim && spec.vim.input && spec.vim.input.operator);
-    const at = legal(doc, moveWord(doc, cursor, count, forward, editing), forward ? 1 : -1, raw);
+    const big = id === "W" || id === "B";
+    const at = legal(doc, moveWord(doc, cursor, count, forward, editing, big), forward ? 1 : -1, raw);
     return { kind: "caret", cursor: at, column: null, linewise: false, inclusive: false, past: false, word: true };
   }
   if (id === "e" || id === "E" || id === "ge" || id === "gE") {
     const forward = id === "e" || id === "E";
     const editing = Boolean(spec.vim && spec.vim.input && spec.vim.input.operator);
-    const at = legal(doc, moveEnd(doc, cursor, count, forward, editing), forward ? 1 : -1, raw);
+    const big = id === "E" || id === "gE";
+    const at = legal(doc, moveEnd(doc, cursor, count, forward, editing, big), forward ? 1 : -1, raw);
     return { kind: "caret", cursor: at, column: null, linewise: false, inclusive: true, past: false, word: true };
   }
   if (id === "%" ) {
