@@ -1,5 +1,5 @@
 // Pure key match. The page applies the effect. This module does not touch the editor.
-import { backspace, codeFenceBodies, codeSpanAt, commentStorageReason, commentThreads, createState, deleteForward, endBeforeTail, findSpans, imageLine, insert, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, syntaxSpans, wordStop } from "./doc.js";
+import { backspace, caretAfterEdit, codeFenceBodies, codeSpanAt, commentStorageReason, commentThreads, createState, deleteForward, endBeforeTail, enterBreak, findSpans, imageLine, insert, lineCaret, linkSpanAt, lockSpans, markerSplice, plan, skipHidden, snapSourceFenceLines, sourceLine, sourceLineComment, syntaxSpans, wordStop } from "./doc.js";
 
 const REPEAT_CAP = 10000;
 const PAGE = 20;
@@ -3907,6 +3907,8 @@ function insertLogEntry(key) {
   if (key.key === "ArrowRight") return { t: "right" };
   if (key.key === "ArrowUp") return { t: "up" };
   if (key.key === "ArrowDown") return { t: "down" };
+  // Enter is the editor's break. One newline inside a paragraph is drawn as a space.
+  if (key.key === "Enter" && key.shift !== true) return { t: "enter" };
   if (key.key === "Enter") return { t: "text", text: "\n" };
   if (typeof key.key === "string" && (key.key.length === 1 || surrogateKey(key.key))) return { t: "text", text: key.key };
   return null;
@@ -3969,6 +3971,33 @@ function applyInsertText(state, text) {
   state.doc = next.doc;
   state.cursor = next.cursor;
   state.anchor = next.cursor;
+}
+
+// The same break Enter inserts at this caret. Raw mode stores one file newline.
+function applyEnter(state) {
+  if (state.raw) {
+    applyInsertText(state, "\n");
+    return;
+  }
+  const brk = enterBreak(state.doc, state.cursor, state.cursor);
+  const text = brk && typeof brk.text === "string" ? brk.text : "";
+  let from = state.cursor;
+  let to = state.cursor;
+  if (brk && typeof brk.anchor === "number" && typeof brk.cursor === "number") {
+    from = Math.min(brk.anchor, brk.cursor);
+    to = Math.max(brk.anchor, brk.cursor);
+  }
+  if (text === "" && from === to) return;
+  const next = insert(createState(state.doc, to, from), text, false, false, true);
+  if (!next || next.refused || typeof next.doc !== "string") return;
+  let cursor = next.cursor;
+  if (typeof brk.caret === "number" && Array.isArray(next.changes)) {
+    const mapped = caretAfterEdit(state.doc.length, next.changes, brk.caret, next.doc.length);
+    if (mapped != null) cursor = mapped;
+  }
+  state.doc = next.doc;
+  state.cursor = cursor;
+  state.anchor = cursor;
 }
 
 function repeatWordChar(ch) {
@@ -4096,7 +4125,8 @@ function feedKeys(state, keys) {
 function playLog(state, log) {
   for (const entry of log || []) {
     if (!entry) continue;
-    if (entry.t === "text") applyInsertText(state, entry.text);
+    if (entry.t === "enter") applyEnter(state);
+    else if (entry.t === "text") applyInsertText(state, entry.text);
     else if (entry.t === "bs") applyBackspace(state);
     else if (entry.t === "del") applyDeleteForward(state);
     else if (entry.t === "cw") applyWordDelete(state);

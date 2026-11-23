@@ -62,3 +62,20 @@ test("dot repeats x, an insert, and dd on a rendered paragraph (ticket py7xfb9e)
   await page.quiet();
   assert.equal((await hub.show("lines.md")).text, "beta\n\ngamma\n");
 });
+
+test("dot repeats the newline Enter inserted", async (t) => {
+  const { hub, page } = await setup(t);
+  await openAt(page, hub, "break.md", "alpha beta\n");
+  await page.key("l");
+  await page.key("l");
+  await page.key("i");
+  await page.key("Enter");
+  await page.key("Escape");
+  await page.quiet();
+  assert.equal((await hub.show("break.md")).text, "al\n\npha beta\n");
+  await page.key("w");
+  await page.quiet();
+  await page.key(".");
+  await page.quiet();
+  assert.equal((await hub.show("break.md")).text, "al\n\npha b\n\neta\n");
+});

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { playVimChange, vimKey, vimMatchStarts, vimSubmit, visualBlockOffset, visualKeepGlyph, VIM_SEARCH_LIMIT } from "../src/vim.js";
-import { backspace, caretAfterEdit, codeFenceBodies, codeSpanAt, commentStorageReason, commentThreads, createState, deleteForward, insert, linkSpanAt, plan, selectedSlice, skipHidden, sourceLine, undo } from "../src/doc.js";
+import { backspace, caretAfterEdit, codeFenceBodies, codeSpanAt, commentStorageReason, commentThreads, createState, deleteForward, enterBreak, insert, linkSpanAt, plan, selectedSlice, skipHidden, sourceLine, undo } from "../src/doc.js";
 
 const CARET = "‸";
 
@@ -138,6 +138,30 @@ function run(start, keys, opts = {}) {
   return { doc, cursor, anchor, vim, steps, show: show(doc, cursor, anchor) };
 }
 
+function looseEnter(doc, cursor, raw) {
+  if (raw) {
+    const next = insert(createState(doc, cursor, cursor), "\n", false, true, true);
+    return { doc: next.doc, cursor: next.cursor, anchor: next.cursor };
+  }
+  const brk = enterBreak(doc, cursor, cursor);
+  const text = brk && typeof brk.text === "string" ? brk.text : "";
+  let from = cursor;
+  let to = cursor;
+  if (brk && typeof brk.anchor === "number" && typeof brk.cursor === "number") {
+    from = Math.min(brk.anchor, brk.cursor);
+    to = Math.max(brk.anchor, brk.cursor);
+  }
+  if (text === "" && from === to) return { doc, cursor, anchor: cursor };
+  const next = insert(createState(doc, to, from), text, false, false, true);
+  if (!next || next.refused || typeof next.doc !== "string") return { doc, cursor, anchor: cursor };
+  let at = next.cursor;
+  if (typeof brk.caret === "number" && Array.isArray(next.changes)) {
+    const mapped = caretAfterEdit(doc.length, next.changes, brk.caret, next.doc.length);
+    if (mapped != null) at = mapped;
+  }
+  return { doc: next.doc, cursor: at, anchor: at };
+}
+
 function looseInsert(doc, cursor, key, raw) {
   if (key.ctrl || key.meta || key.alt) return null;
   if (key.key === "Backspace") {
@@ -148,10 +172,7 @@ function looseInsert(doc, cursor, key, raw) {
     const next = deleteForward(createState(doc, cursor, cursor));
     return { doc: next.doc, cursor: next.cursor, anchor: next.cursor };
   }
-  if (key.key === "Enter") {
-    const next = insert(createState(doc, cursor, cursor), "\n", false, raw, false);
-    return { doc: next.doc, cursor: next.cursor, anchor: next.cursor };
-  }
+  if (key.key === "Enter") return looseEnter(doc, cursor, raw);
   if (key.key === "ArrowLeft") {
     const at = cursor <= 0 ? 0 : cursor - 1;
     return { doc, cursor: at, anchor: at };
@@ -4336,6 +4357,21 @@ test("i repeats append after the parked glyph, and 2. writes the chunk twice (ti
   assert.equal(replaced.doc, "abababababx");
   assert.equal(replaced.show, "ababababa‸bx");
   assert.equal(replaced.vim.change.count, 2);
+});
+
+test("dot repeats the newline Enter inserted", () => {
+  const once = run("al‸pha beta\n", ["i", "Enter", "Escape"], { type: true });
+  assert.equal(once.doc, "al\n\npha beta\n");
+  assert.equal(once.show, "al\n\n‸pha beta\n");
+  assert.deepEqual(once.vim.change.log.map((entry) => entry.t), ["enter"]);
+  const again = run(once.show, ["."], { type: true, vim: once.vim });
+  assert.equal(again.doc, "al\n\np\n\nha beta\n");
+  const moved = run("zo‸om\n", ["."], { type: true, vim: once.vim });
+  assert.equal(moved.doc, "zoo\n\nm\n");
+  const typed = run("al‸pha\n", ["i", "Enter", "x", "Escape"], { type: true });
+  assert.equal(typed.doc, "al\n\nxpha\n");
+  const both = run("zo‸om\n", ["."], { type: true, vim: typed.vim });
+  assert.equal(both.doc, "zoo\n\nxm\n");
 });
 
 test("an insert log replays backspace, and an empty i inserts nothing (ticket py7xfb9e)", () => {
